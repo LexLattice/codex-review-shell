@@ -1,0 +1,1346 @@
+"use strict";
+
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const { assertFixtureRedacted } = require("../fixtures/redaction");
+const { updateDirectTurnUsageAttribution } = require("../usage/turn-attribution");
+
+const DIRECT_SESSION_INDEX_SCHEMA = "direct_codex_session_index@1";
+const DIRECT_SESSION_SCHEMA = "direct_codex_session@1";
+const DIRECT_TURN_SCHEMA = "direct_codex_turn@1";
+const DIRECT_DIAGNOSTIC_SCHEMA = "direct_codex_diagnostic@1";
+const DIRECT_TOOL_OBLIGATION_SCHEMA = "direct_codex_tool_obligation@1";
+const DIRECT_IMPORT_INDEX_SCHEMA = "direct_codex_import_index@1";
+const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/;
+const DIRECT_TURN_STATES = new Set([
+  "created",
+  "request_built",
+  "streaming",
+  "tool_waiting",
+  "authority_waiting",
+  "continuation_ready",
+  "continuation_sent",
+  "streaming_continuation",
+  "completed",
+  "failed",
+  "aborted",
+  "tool_call_blocked_text_only",
+  "transport_handoff_unknown",
+  "response_incomplete",
+  "content_filter_terminal",
+  "max_output_terminal",
+  "empty_output_terminal",
+  "checkpoint_required",
+]);
+const DIRECT_ACTIVE_TURN_STATES = new Set([
+  "request_built",
+  "streaming",
+  "tool_waiting",
+  "authority_waiting",
+  "continuation_ready",
+  "continuation_sent",
+  "streaming_continuation",
+]);
+const DIRECT_RECOVERABLE_ACTIVE_TURN_STATES = new Set([
+  "created",
+  "request_built",
+  "streaming",
+  "continuation_sent",
+  "streaming_continuation",
+]);
+const DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES = new Set([
+  "approved",
+  "declined",
+  "canceled",
+  "result_recorded",
+  "continuation_built",
+  "continuation_sent",
+  "unsupported",
+  "patch_declined",
+  "patch_canceled",
+  "patch_result_recorded",
+  "command_declined",
+  "command_canceled",
+  "command_result_recorded",
+]);
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeString(value, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function canonicalImportState(value) {
+  const state = normalizeString(value, "imported-readonly");
+  if (state === "checkpointed-runnable") return "checkpoint-validated";
+  return state;
+}
+
+function nowIso(nowMs = Date.now()) {
+  return new Date(Number(nowMs) || Date.now()).toISOString();
+}
+
+function newId(prefix) {
+  return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+}
+
+function normalizeId(value, fallbackPrefix) {
+  const text = normalizeString(value, "");
+  if (SAFE_ID_PATTERN.test(text)) return text;
+  return newId(fallbackPrefix);
+}
+
+function isSafeId(value) {
+  return SAFE_ID_PATTERN.test(normalizeString(value, ""));
+}
+
+function requireSafeId(value, label) {
+  const text = normalizeString(value, "");
+  if (isSafeId(text)) return text;
+  throw new Error(`Invalid ${label} id.`);
+}
+
+function normalizeTurnState(value, fallback = "created") {
+  const state = normalizeString(value, fallback);
+  return DIRECT_TURN_STATES.has(state) ? state : fallback;
+}
+
+function toolObligationKey(event = {}) {
+  return normalizeString(event.itemId || event.callId || event.name || `sequence_${event.sequence}`, "unknown_tool_call");
+}
+
+function toolObligationId(sessionId, turnId, key) {
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${normalizeString(sessionId, "")}:${normalizeString(turnId, "")}:${normalizeString(key, "")}`)
+    .digest("hex")
+    .slice(0, 20);
+  return `tool_obligation_${digest}`;
+}
+
+function toolLoopIdForTurn(sessionId, turnId) {
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${normalizeString(sessionId, "")}:${normalizeString(turnId, "")}:read_only_tool_loop`)
+    .digest("hex")
+    .slice(0, 20);
+  return `tool_loop_${digest}`;
+}
+
+function toolStepIdForObligation(sessionId, turnId, toolLoopId, stepOrdinal, obligationId) {
+  const digest = crypto
+    .createHash("sha256")
+    .update([
+      normalizeString(sessionId, ""),
+      normalizeString(turnId, ""),
+      normalizeString(toolLoopId, ""),
+      String(Number(stepOrdinal) || 1),
+      normalizeString(obligationId, ""),
+    ].join(":"))
+    .digest("hex")
+    .slice(0, 20);
+  return `tool_step_${digest}`;
+}
+
+function buildToolObligationsFromEvents(sessionId, turnId, events = [], options = {}) {
+  const obligations = new Map();
+  const toolLoopId = normalizeString(options.toolLoopId, toolLoopIdForTurn(sessionId, turnId));
+  const stepOrdinal = Math.max(1, Number(options.stepOrdinal || 1) || 1);
+  const parentResponseId = normalizeString(options.parentResponseId, "");
+  const parentResponseSource = normalizeString(options.parentResponseSource, stepOrdinal > 1
+    ? "native_direct_tool_continuation_stream"
+    : "native_direct_initial_stream");
+  const parentResponseDigest = parentResponseId
+    ? crypto.createHash("sha256").update(parentResponseId).digest("hex")
+    : "";
+  for (const event of Array.isArray(events) ? events : []) {
+    if (!["tool_call_started", "tool_call_delta", "tool_call_completed"].includes(event?.type)) continue;
+    const key = toolObligationKey(event);
+    const obligationId = toolObligationId(sessionId, turnId, key);
+    const existing = obligations.get(key) || {
+      schema: DIRECT_TOOL_OBLIGATION_SCHEMA,
+      obligationId,
+      sessionId: normalizeString(sessionId, ""),
+      turnId: normalizeString(turnId, ""),
+      toolLoopId,
+      stepId: toolStepIdForObligation(sessionId, turnId, toolLoopId, stepOrdinal, obligationId),
+      stepOrdinal,
+      parentResponseId,
+      parentResponseSource,
+      parentResponseDigest,
+      status: "collecting_arguments",
+      authorityState: "execution_disabled",
+      approvalAvailable: false,
+      executionAllowed: false,
+      sideEffectExecuted: false,
+      continuationAllowed: false,
+      toolCallSource: "provider-native-implicit",
+      sourceItemId: normalizeString(event.itemId, ""),
+      callId: normalizeString(event.callId, ""),
+      name: normalizeString(event.name, "tool_call"),
+      namespace: normalizeString(event.namespace, ""),
+      toolType: normalizeString(event.toolType, "unknown"),
+      providerCallType: normalizeString(event.toolType, "unknown"),
+      argumentsText: "",
+      detectedAtSequence: Number(event.sequence ?? 0),
+      completedAtSequence: null,
+    };
+    const next = {
+      ...existing,
+      sourceItemId: normalizeString(existing.sourceItemId || event.itemId, ""),
+      callId: normalizeString(existing.callId || event.callId, ""),
+      name: normalizeString(event.name, existing.name),
+      namespace: normalizeString(event.namespace, existing.namespace),
+      toolType: normalizeString(event.toolType, existing.toolType),
+      providerCallType: normalizeString(event.toolType, existing.providerCallType || existing.toolType),
+    };
+    if (event.type === "tool_call_delta") {
+      next.argumentsText = `${next.argumentsText || ""}${event.argumentsDelta || ""}`;
+    }
+    if (event.type === "tool_call_completed") {
+      next.status = "waiting";
+      next.approvalAvailable = false;
+      next.argumentsText = normalizeString(event.argumentsJson, next.argumentsText);
+      next.completedAtSequence = Number(event.sequence ?? next.completedAtSequence ?? 0);
+    }
+    obligations.set(key, next);
+  }
+  return [...obligations.values()];
+}
+
+function mergeToolArgumentsText(existing = "", incoming = "", incomingIsComplete = false) {
+  const previous = normalizeString(existing, "");
+  const next = normalizeString(incoming, "");
+  if (!previous || incomingIsComplete) return next || previous;
+  if (!next || previous === next || previous.endsWith(next)) return previous;
+  if (next.startsWith(previous)) return next;
+  return `${previous}${next}`;
+}
+
+function mergeToolObligation(existing = {}, incoming = {}) {
+  if (!isPlainObject(existing) || !existing.obligationId) return incoming;
+  if (DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES.has(normalizeString(existing.status, ""))) {
+    return {
+      ...existing,
+      argumentsText: mergeToolArgumentsText(existing.argumentsText, incoming.argumentsText, incoming.completedAtSequence !== null),
+      completedAtSequence: incoming.completedAtSequence ?? existing.completedAtSequence ?? null,
+      updatedAt: existing.updatedAt || incoming.updatedAt,
+    };
+  }
+  return {
+    ...existing,
+    ...incoming,
+    status: incoming.status === "waiting" || existing.status === "waiting" ? "waiting" : normalizeString(incoming.status, existing.status),
+    authorityState: "execution_disabled",
+    approvalAvailable: Boolean(existing.approvalAvailable || incoming.approvalAvailable),
+    executionAllowed: false,
+    sideEffectExecuted: Boolean(existing.sideEffectExecuted || incoming.sideEffectExecuted),
+    continuationAllowed: false,
+    toolLoopId: normalizeString(existing.toolLoopId || incoming.toolLoopId, ""),
+    stepId: normalizeString(existing.stepId || incoming.stepId, ""),
+    stepOrdinal: Number(existing.stepOrdinal || incoming.stepOrdinal || 1),
+    parentResponseId: normalizeString(existing.parentResponseId || incoming.parentResponseId, ""),
+    parentResponseSource: normalizeString(existing.parentResponseSource || incoming.parentResponseSource, ""),
+    parentResponseDigest: normalizeString(existing.parentResponseDigest || incoming.parentResponseDigest, ""),
+    sourceItemId: normalizeString(existing.sourceItemId || incoming.sourceItemId, ""),
+    callId: normalizeString(existing.callId || incoming.callId, ""),
+    name: normalizeString(incoming.name, existing.name),
+    namespace: normalizeString(incoming.namespace, existing.namespace),
+    toolType: normalizeString(incoming.toolType, existing.toolType),
+    providerCallType: normalizeString(incoming.providerCallType, existing.providerCallType || existing.toolType),
+    toolCallSource: normalizeString(existing.toolCallSource || incoming.toolCallSource, "provider-native-implicit"),
+    argumentsText: mergeToolArgumentsText(existing.argumentsText, incoming.argumentsText, incoming.completedAtSequence !== null),
+    detectedAtSequence: Number(existing.detectedAtSequence ?? incoming.detectedAtSequence ?? 0),
+    completedAtSequence: incoming.completedAtSequence ?? existing.completedAtSequence ?? null,
+  };
+}
+
+function equivalentTerminalObligation(existingObligations = [], incoming = {}) {
+  const incomingName = normalizeString(incoming?.name, "");
+  const incomingCallId = normalizeString(incoming?.callId, "");
+  if (!incomingCallId) return null;
+  return existingObligations.find((entry) => {
+    if (!DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES.has(normalizeString(entry?.status, ""))) return false;
+    if (normalizeString(entry?.name, "") !== incomingName) return false;
+    const entryCallId = normalizeString(entry?.callId, "");
+    return entryCallId && incomingCallId === entryCallId;
+  }) || null;
+}
+
+function toolTranscriptItemFromObligation(obligation = {}) {
+  const resultSummary = isPlainObject(obligation.result)
+    ? obligation.result.summary || obligation.result.textPreview || obligation.result.status
+    : (isPlainObject(obligation.authorityDecision) ? obligation.authorityDecision.reason : "");
+  return {
+    id: obligation.obligationId,
+    type: "dynamicToolCall",
+    turnId: obligation.turnId,
+    tool: normalizeString(obligation.name, "tool_call"),
+    status: normalizeString(obligation.status, "waiting"),
+    contentItems: normalizeString(obligation.argumentsText, ""),
+    result: resultSummary,
+    approvalAvailable: Boolean(obligation.approvalAvailable),
+    executionAllowed: Boolean(obligation.executionAllowed),
+    continuationAllowed: Boolean(obligation.continuationAllowed),
+    providerCallType: normalizeString(obligation.providerCallType || obligation.toolType, ""),
+    namespace: normalizeString(obligation.namespace, ""),
+    relPath: normalizeString(obligation.approvedRead?.relPath || obligation.result?.relPath, ""),
+    resultClass: normalizeString(obligation.result?.resultClass, ""),
+    toolCallSource: normalizeString(obligation.toolCallSource, "provider-native-implicit"),
+    toolLoopId: normalizeString(obligation.toolLoopId, ""),
+    stepId: normalizeString(obligation.stepId, ""),
+    stepOrdinal: Number(obligation.stepOrdinal || 1),
+    parentResponseSource: normalizeString(obligation.parentResponseSource, ""),
+  };
+}
+
+function ensureDirectory(directory) {
+  fs.mkdirSync(directory, { recursive: true });
+}
+
+function tempFilePath(targetPath) {
+  return path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${process.pid}.${Date.now()}.${crypto.randomUUID().slice(0, 8)}.tmp`);
+}
+
+function writeJsonAtomic(targetPath, value) {
+  ensureDirectory(path.dirname(targetPath));
+  const tempPath = tempFilePath(targetPath);
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    fs.renameSync(tempPath, targetPath);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {}
+    throw error;
+  }
+}
+
+function safeArtifactName(value) {
+  const name = normalizeString(value, "");
+  if (/^[a-z0-9][a-z0-9-]{0,80}\.json$/i.test(name)) return name;
+  throw new Error("Invalid direct import artifact name.");
+}
+
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function indexEntryFromSession(session) {
+  const sessionId = normalizeString(session.sessionId, "");
+  const turns = Array.isArray(session.turns) ? session.turns : [];
+  return {
+    sessionId,
+    projectId: normalizeString(session.projectId, ""),
+    title: normalizeString(session.title, "Untitled direct session"),
+    createdAt: normalizeString(session.createdAt, ""),
+    updatedAt: normalizeString(session.updatedAt, ""),
+    status: normalizeString(session.status, "created"),
+    model: normalizeString(session.model, ""),
+    reasoningEffort: normalizeString(session.reasoningEffort, ""),
+    agentId: normalizeString(session.agentId, ""),
+    agentRunId: normalizeString(session.agentRunId, ""),
+    agentKind: normalizeString(session.agentKind, ""),
+    agentThreadId: normalizeString(session.agentThreadId, sessionId),
+    parentThreadId: normalizeString(session.parentThreadId, ""),
+    primaryThreadId: normalizeString(session.primaryThreadId, ""),
+    agentLabel: normalizeString(session.agentLabel, ""),
+    agentRole: normalizeString(session.agentRole, ""),
+    roleHandoffPacketId: normalizeString(session.roleHandoffPacketId, ""),
+    roleHandoffPacketDigest: normalizeString(session.roleHandoffPacketDigest, ""),
+    workerStartTransitionId: normalizeString(session.workerStartTransitionId, ""),
+    workerStartTransitionDigest: normalizeString(session.workerStartTransitionDigest, ""),
+    workerContextPacketId: normalizeString(session.workerContextPacketId, ""),
+    workerContextPacketDigest: normalizeString(session.workerContextPacketDigest, ""),
+    workerGraphAlignmentId: normalizeString(session.workerGraphAlignmentId, ""),
+    workerGraphAlignmentDigest: normalizeString(session.workerGraphAlignmentDigest, ""),
+    runtimeMode: normalizeString(session.runtimeMode, ""),
+    directTransport: normalizeString(session.directTransport, ""),
+    workThreadId: normalizeString(session.workThreadId, ""),
+    workThreadBindingDigest: normalizeString(session.workThreadBindingDigest, ""),
+    modelSource: normalizeString(session.modelSource, ""),
+    modelEvidenceState: normalizeString(session.modelEvidenceState, ""),
+    modelEvidenceId: normalizeString(session.modelEvidenceId, ""),
+    profileSnapshotId: normalizeString(session.profileSnapshotId, ""),
+    turnCount: turns.length,
+    unresolvedObligationCount: Array.isArray(session.unresolvedObligations) ? session.unresolvedObligations.length : 0,
+    eventCount: turns.reduce((count, turn) => count + Number(turn.normalizedEventCount || 0), 0),
+    activeTurnCount: turns.filter((turn) => DIRECT_ACTIVE_TURN_STATES.has(turn.state)).length,
+    lastTurnState: turns[turns.length - 1]?.state || "",
+    activeToolLoopId: normalizeString(session.activeToolLoopId, ""),
+    activeToolStepOrdinal: Number(session.activeToolStepOrdinal || 0),
+  };
+}
+
+function latestToolResultSummary(store, index, options = {}) {
+  const projectId = normalizeString(options.projectId, "");
+  const sessions = Array.isArray(index?.sessions) ? index.sessions : [];
+  for (const sessionEntry of sessions) {
+    if (projectId && normalizeString(sessionEntry?.projectId, "") !== projectId) continue;
+    const sessionId = normalizeString(sessionEntry?.sessionId, "");
+    if (!sessionId) continue;
+    let session = null;
+    try {
+      session = store.readSession(sessionId);
+    } catch {}
+    if (projectId && normalizeString(session?.projectId, "") !== projectId) continue;
+    const turns = Array.isArray(session?.turns) ? session.turns : [];
+    for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
+      const turnSummary = turns[turnIndex];
+      const turnId = normalizeString(turnSummary?.turnId, "");
+      if (!turnId) continue;
+      let turn = null;
+      try {
+        turn = store.readTurn(sessionId, turnId);
+      } catch {}
+      const results = Array.isArray(turn?.toolResults) ? turn.toolResults : [];
+      if (!results.length) continue;
+      const obligations = Array.isArray(turn?.unresolvedObligations) ? turn.unresolvedObligations : [];
+      const result = results[results.length - 1] || {};
+      const obligation = obligations.find((entry) => normalizeString(entry?.obligationId, "") === normalizeString(result.obligationId, "")) || {};
+      const workspaceEffectSummary = isPlainObject(result.workspaceEffectSummary) ? result.workspaceEffectSummary : {};
+      const providerVisibility = isPlainObject(workspaceEffectSummary.providerVisibility) ? workspaceEffectSummary.providerVisibility : {};
+      const workspaceEffects = isPlainObject(result.workspaceEffects) ? result.workspaceEffects : {};
+      const changedPathCount = Number(workspaceEffectSummary.changedPathCount ?? workspaceEffects.changedPathCount ?? 0) || 0;
+      return {
+        schema: "direct_latest_tool_result_summary@1",
+        sessionId,
+        turnId,
+        obligationId: normalizeString(result.obligationId || obligation.obligationId, ""),
+        resultId: normalizeString(result.resultId, ""),
+        tool: normalizeString(result.tool || obligation.name, "tool"),
+        status: normalizeString(result.status, "unknown"),
+        resultClass: normalizeString(result.resultClass, ""),
+        sideEffectExecuted: result.sideEffectExecuted === true,
+        workspaceEffectSummaryId: normalizeString(result.workspaceEffectSummaryId || workspaceEffectSummary.effectSummaryId, ""),
+        workspaceEffectScanRan: isPlainObject(workspaceEffectSummary.scan) ? workspaceEffectSummary.scan.ran === true : false,
+        workspaceEffectScanSupported: isPlainObject(workspaceEffectSummary.scan) ? workspaceEffectSummary.scan.supported === true : false,
+        workspaceChangesDetected: changedPathCount > 0,
+        changedPathCount,
+        providerVisibility: normalizeString(providerVisibility.providerVisibilityCompleteness, changedPathCount > 0 ? "summary_only" : "none"),
+        providerSawChangedFileContents: providerVisibility.providerSawChangedFileContents === true,
+        providerSawAllChangedFileContents: providerVisibility.providerSawAllChangedFileContents === true,
+        postSideEffectPolicyViolation: normalizeString(result.postSideEffectPolicyViolation, ""),
+        rawProviderPayloadIncluded: false,
+        rawWorkspacePathIncluded: false,
+        rawToolOutputIncluded: false,
+      };
+    }
+  }
+  return {
+    schema: "direct_latest_tool_result_summary@1",
+    sessionId: "",
+    turnId: "",
+    obligationId: "",
+    resultId: "",
+    tool: "",
+    status: "none",
+    resultClass: "",
+    sideEffectExecuted: false,
+    workspaceEffectSummaryId: "",
+    workspaceEffectScanRan: false,
+    workspaceEffectScanSupported: false,
+    workspaceChangesDetected: false,
+    changedPathCount: 0,
+    providerVisibility: "none",
+    providerSawChangedFileContents: false,
+    providerSawAllChangedFileContents: false,
+    postSideEffectPolicyViolation: "",
+    rawProviderPayloadIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawToolOutputIncluded: false,
+  };
+}
+
+class DirectSessionStore {
+  constructor(options = {}) {
+    const rootDir = normalizeString(options.rootDir, "");
+    if (!rootDir) throw new Error("DirectSessionStore requires an explicit rootDir.");
+    this.rootDir = path.resolve(rootDir);
+    this._index = null;
+  }
+
+  indexPath() {
+    return path.join(this.rootDir, "index.json");
+  }
+
+  sessionPath(sessionId) {
+    return path.join(this.rootDir, "sessions", requireSafeId(sessionId, "session"), "session.json");
+  }
+
+  turnPath(sessionId, turnId) {
+    return path.join(this.rootDir, "turns", requireSafeId(sessionId, "session"), `${requireSafeId(turnId, "turn")}.json`);
+  }
+
+  eventPath(sessionId, turnId) {
+    return path.join(this.rootDir, "events", requireSafeId(sessionId, "session"), `${requireSafeId(turnId, "turn")}.normalized.jsonl`);
+  }
+
+  diagnosticPath(sessionId, fixtureId) {
+    return path.join(this.rootDir, "diagnostics", requireSafeId(sessionId, "session"), `${requireSafeId(fixtureId, "diagnostic")}.redacted.jsonl`);
+  }
+
+  importPath(importId, artifactName) {
+    return path.join(this.rootDir, "imports", requireSafeId(importId, "import"), safeArtifactName(artifactName));
+  }
+
+  importContinuationPath(importId, continuationId, artifactName) {
+    return path.join(
+      this.rootDir,
+      "imports",
+      requireSafeId(importId, "import"),
+      "checkpoint-continuations",
+      requireSafeId(continuationId, "checkpoint continuation"),
+      safeArtifactName(artifactName),
+    );
+  }
+
+  importIndexPath() {
+    return path.join(this.rootDir, "imports", "index.json");
+  }
+
+  ensure() {
+    for (const directory of ["sessions", "turns", "events", "diagnostics", "imports"]) {
+      ensureDirectory(path.join(this.rootDir, directory));
+    }
+    if (!fs.existsSync(this.indexPath())) {
+      return this.recoverIndex({ write: true });
+    }
+    return this.readIndex();
+  }
+
+  emptyImportIndex() {
+    return {
+      schema: DIRECT_IMPORT_INDEX_SCHEMA,
+      version: 1,
+      updatedAt: nowIso(),
+      imports: [],
+      recovery: {
+        recoveredAt: "",
+        healthyCount: 0,
+        partialCount: 0,
+        corruptedCount: 0,
+        reportOnlyCount: 0,
+      },
+    };
+  }
+
+  emptyIndex() {
+    return {
+      schema: DIRECT_SESSION_INDEX_SCHEMA,
+      version: 1,
+      updatedAt: nowIso(),
+      sessions: [],
+      recovery: {
+        recoveredAt: "",
+        recoveredSessionCount: 0,
+        missingSessionFileCount: 0,
+      },
+    };
+  }
+
+  readIndex() {
+    if (this._index) return this._index;
+    const index = readJsonFile(this.indexPath());
+    if (!index) return this.recoverIndex({ write: true });
+    if (index.schema !== DIRECT_SESSION_INDEX_SCHEMA || !Array.isArray(index.sessions)) {
+      return this.recoverIndex({ write: true });
+    }
+    this._index = index;
+    return index;
+  }
+
+  writeIndex(sessions, recovery = {}) {
+    const empty = this.emptyIndex();
+    const index = {
+      ...empty,
+      updatedAt: nowIso(),
+      sessions: sessions.slice().sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))),
+      recovery: {
+        ...empty.recovery,
+        ...recovery,
+      },
+    };
+    writeJsonAtomic(this.indexPath(), index);
+    this._index = index;
+    return index;
+  }
+
+  listSessionIdsFromDisk() {
+    const sessionsDir = path.join(this.rootDir, "sessions");
+    try {
+      return fs.readdirSync(sessionsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .filter(isSafeId);
+    } catch (error) {
+      if (error && error.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  listTurnIdsFromDisk(sessionId) {
+    const turnsDir = path.join(this.rootDir, "turns", requireSafeId(sessionId, "session"));
+    try {
+      return fs.readdirSync(turnsDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map((entry) => entry.name.slice(0, -".json".length))
+        .filter(isSafeId);
+    } catch (error) {
+      if (error && error.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  listImportIdsFromDisk() {
+    const importsDir = path.join(this.rootDir, "imports");
+    try {
+      return fs.readdirSync(importsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .filter(isSafeId);
+    } catch (error) {
+      if (error && error.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  writeImportArtifact(importId, artifactName, value) {
+    writeJsonAtomic(this.importPath(importId, artifactName), value);
+    return value;
+  }
+
+  readImportArtifact(importId, artifactName) {
+    return readJsonFile(this.importPath(importId, artifactName));
+  }
+
+  writeImportContinuationArtifact(importId, continuationId, artifactName, value) {
+    writeJsonAtomic(this.importContinuationPath(importId, continuationId, artifactName), value);
+    return value;
+  }
+
+  readImportContinuationArtifact(importId, continuationId, artifactName) {
+    return readJsonFile(this.importContinuationPath(importId, continuationId, artifactName));
+  }
+
+  listImportContinuationIds(importId) {
+    const directory = path.join(this.rootDir, "imports", requireSafeId(importId, "import"), "checkpoint-continuations");
+    try {
+      return fs.readdirSync(directory, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .filter(isSafeId);
+    } catch (error) {
+      if (error && error.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  listImportContinuationRecords(importId) {
+    return this.listImportContinuationIds(importId)
+      .map((continuationId) => this.readImportContinuationArtifact(importId, continuationId, "continuation.json"))
+      .filter((record) => isPlainObject(record));
+  }
+
+  setImportHidden(importId, hidden = true, options = {}) {
+    const safeImportId = requireSafeId(importId, "import");
+    if (!hidden) {
+      try {
+        fs.unlinkSync(this.importPath(safeImportId, "hidden.json"));
+      } catch (error) {
+        if (!error || error.code !== "ENOENT") throw error;
+      }
+      this.recoverImportIndex({ write: true, nowMs: options.nowMs });
+      return { importId: safeImportId, hidden: false };
+    }
+    const marker = {
+      schema: "direct_codex_import_hidden@1",
+      importId: safeImportId,
+      hidden: true,
+      hiddenAt: nowIso(options.nowMs),
+      reason: normalizeString(options.reason, "operator_hidden"),
+    };
+    writeJsonAtomic(this.importPath(safeImportId, "hidden.json"), marker);
+    this.recoverImportIndex({ write: true, nowMs: options.nowMs });
+    return marker;
+  }
+
+  recoverImportIndex(options = {}) {
+    const entries = [];
+    const recovery = {
+      recoveredAt: nowIso(options.nowMs),
+      healthyCount: 0,
+      partialCount: 0,
+      corruptedCount: 0,
+      reportOnlyCount: 0,
+    };
+    for (const importId of this.listImportIdsFromDisk()) {
+      let candidate = null;
+      let checkpoint = null;
+      let report = null;
+      let hidden = null;
+      let artifactReadFailed = false;
+      try {
+        candidate = this.readImportArtifact(importId, "candidate.json");
+      } catch {
+        artifactReadFailed = true;
+      }
+      try {
+        checkpoint = this.readImportArtifact(importId, "checkpoint.json");
+      } catch {
+        artifactReadFailed = true;
+      }
+      try {
+        report = this.readImportArtifact(importId, "validation-report.json");
+      } catch {
+        artifactReadFailed = true;
+      }
+      try {
+        hidden = this.readImportArtifact(importId, "hidden.json");
+      } catch {
+        artifactReadFailed = true;
+      }
+      let recoveryState = "healthy";
+      if (artifactReadFailed) recoveryState = "corrupted";
+      else if (!candidate && !checkpoint && report) recoveryState = "report-only";
+      else if (!artifactReadFailed && (!report || !checkpoint)) recoveryState = "partial";
+      if (report && checkpoint && report.lineage?.importId && checkpoint.lineage?.importId && report.lineage.importId !== checkpoint.lineage.importId) {
+        recoveryState = "corrupted";
+      }
+      if (recoveryState === "healthy") recovery.healthyCount += 1;
+      else if (recoveryState === "partial") recovery.partialCount += 1;
+      else if (recoveryState === "report-only") recovery.reportOnlyCount += 1;
+      else recovery.corruptedCount += 1;
+      const source = report?.source || checkpoint?.source || candidate?.source || {};
+      const workspaceMatch = report?.workspaceMatch || checkpoint?.workspaceMatch || {};
+      const state = canonicalImportState(report?.state || checkpoint?.state || candidate?.target?.state || "");
+      entries.push({
+        importId,
+        recoveryState,
+        state,
+        projectId: normalizeString(workspaceMatch.selectedProjectId, ""),
+        sourceDisplayName: normalizeString(source.sourceDisplayName, ""),
+        sourceRootDisplayName: normalizeString(source.sourceRootDisplayName, ""),
+        sourceFileSha256: normalizeString(source.sourceFileSha256, ""),
+        sourceFileSizeBytes: Number(source.sourceFileSizeBytes || 0),
+        sourceFileMtimeMs: Number(source.sourceFileMtimeMs || 0) || undefined,
+        threadId: normalizeString(source.threadId, ""),
+        timestampStart: normalizeString(source.timestampStart, ""),
+        timestampEnd: normalizeString(source.timestampEnd, ""),
+        recordCount: Number(source.recordCount || 0),
+        validationReportId: normalizeString(report?.reportId, ""),
+        materializedSessionId: normalizeString(report?.lineage?.materializedSessionId || checkpoint?.lineage?.materializedSessionId, ""),
+        checkpointEligible: state === "checkpoint-validated" && recoveryState === "healthy",
+        hidden: hidden?.hidden === true,
+        hiddenAt: normalizeString(hidden?.hiddenAt, ""),
+        updatedAt: normalizeString(report?.generatedAt || checkpoint?.validatedAt || checkpoint?.createdAt || candidate?.source?.importedAt, ""),
+      });
+    }
+    const index = {
+      ...this.emptyImportIndex(),
+      updatedAt: nowIso(options.nowMs),
+      imports: entries.sort((a, b) => String(a.importId).localeCompare(String(b.importId))),
+      recovery,
+    };
+    if (options.write) writeJsonAtomic(this.importIndexPath(), index);
+    return index;
+  }
+
+  recoverIndex(options = {}) {
+    const entries = [];
+    let missingSessionFileCount = 0;
+    for (const sessionId of this.listSessionIdsFromDisk()) {
+      const session = readJsonFile(this.sessionPath(sessionId));
+      if (!session || session.schema !== DIRECT_SESSION_SCHEMA) {
+        missingSessionFileCount += 1;
+        continue;
+      }
+      entries.push(indexEntryFromSession(session));
+    }
+    const recovery = {
+      recoveredAt: nowIso(),
+      recoveredSessionCount: entries.length,
+      missingSessionFileCount,
+    };
+    if (options.write) return this.writeIndex(entries, recovery);
+    return { ...this.emptyIndex(), sessions: entries, recovery };
+  }
+
+  updateIndexForSession(session) {
+    const index = this.readIndex();
+    const entry = indexEntryFromSession(session);
+    const sessions = index.sessions.filter((existing) => existing.sessionId !== entry.sessionId);
+    sessions.push(entry);
+    return this.writeIndex(sessions, index.recovery);
+  }
+
+  readSession(sessionId) {
+    const session = readJsonFile(this.sessionPath(sessionId));
+    if (!session || session.schema !== DIRECT_SESSION_SCHEMA) return null;
+    return session;
+  }
+
+  writeSession(session) {
+    if (!isPlainObject(session) || session.schema !== DIRECT_SESSION_SCHEMA) {
+      throw new Error("Direct session must use direct_codex_session@1.");
+    }
+    writeJsonAtomic(this.sessionPath(session.sessionId), session);
+    this.updateIndexForSession(session);
+    return session;
+  }
+
+  createSession(input = {}, options = {}) {
+    this.ensure();
+    const now = nowIso(options.nowMs);
+    const sessionId = normalizeId(input.sessionId, "direct_session");
+    const session = {
+      schema: DIRECT_SESSION_SCHEMA,
+      sessionId,
+      projectId: normalizeString(input.projectId, ""),
+      workspace: isPlainObject(input.workspace) ? input.workspace : {},
+      title: normalizeString(input.title, "Untitled direct session"),
+      status: "created",
+      createdAt: normalizeString(input.createdAt, now),
+      updatedAt: normalizeString(input.updatedAt, now),
+      model: normalizeString(input.model, ""),
+      reasoningEffort: normalizeString(input.reasoningEffort, ""),
+      agentId: normalizeString(input.agentId, ""),
+      agentRunId: normalizeString(input.agentRunId, ""),
+      parentAgentId: normalizeString(input.parentAgentId, ""),
+      parentAgentRunId: normalizeString(input.parentAgentRunId, ""),
+      agentKind: normalizeString(input.agentKind, ""),
+      agentThreadId: normalizeString(input.agentThreadId, sessionId),
+      parentThreadId: normalizeString(input.parentThreadId, ""),
+      primaryThreadId: normalizeString(input.primaryThreadId, input.parentThreadId || sessionId),
+      agentLabel: normalizeString(input.agentLabel, ""),
+      agentRole: normalizeString(input.agentRole, ""),
+      roleHandoffPacketId: normalizeString(input.roleHandoffPacketId, ""),
+      roleHandoffPacketDigest: normalizeString(input.roleHandoffPacketDigest, ""),
+      workerStartTransitionId: normalizeString(input.workerStartTransitionId, ""),
+      workerStartTransitionDigest: normalizeString(input.workerStartTransitionDigest, ""),
+      workerContextPacketId: normalizeString(input.workerContextPacketId, ""),
+      workerContextPacketDigest: normalizeString(input.workerContextPacketDigest, ""),
+      workerGraphAlignmentId: normalizeString(input.workerGraphAlignmentId, ""),
+      workerGraphAlignmentDigest: normalizeString(input.workerGraphAlignmentDigest, ""),
+      runtimeMode: normalizeString(input.runtimeMode, ""),
+      directTransport: normalizeString(input.directTransport, ""),
+      workspaceDisplayPath: normalizeString(input.workspaceDisplayPath, ""),
+      modelSource: normalizeString(input.modelSource, ""),
+      modelEvidenceState: normalizeString(input.modelEvidenceState, ""),
+      modelEvidenceId: normalizeString(input.modelEvidenceId, ""),
+      workThreadId: normalizeString(input.workThreadId, ""),
+      workThreadBindingDigest: normalizeString(input.workThreadBindingDigest, ""),
+      promptCacheKey: normalizeString(input.promptCacheKey, ""),
+      profileSnapshotId: normalizeString(input.profileSnapshotId, ""),
+      clientTurnRequests: isPlainObject(input.clientTurnRequests) ? input.clientTurnRequests : {},
+      messages: Array.isArray(input.messages) ? input.messages : [],
+      turns: [],
+      unresolvedObligations: Array.isArray(input.unresolvedObligations) ? input.unresolvedObligations : [],
+      compactionCheckpoints: Array.isArray(input.compactionCheckpoints) ? input.compactionCheckpoints : [],
+      sourceClass: normalizeString(input.sourceClass, ""),
+      nativeDirectSession: input.nativeDirectSession === true,
+      parentImportLineage: isPlainObject(input.parentImportLineage) ? input.parentImportLineage : null,
+      checkpointContinuationId: normalizeString(input.checkpointContinuationId, ""),
+      checkpointSeedId: normalizeString(input.checkpointSeedId, ""),
+      seedShapeHash: normalizeString(input.seedShapeHash, ""),
+      requestShapeHash: normalizeString(input.requestShapeHash, ""),
+      importedSessionId: normalizeString(input.importedSessionId, ""),
+      importedSessionReadOnly: input.importedSessionReadOnly === true,
+      providerContinuityAvailable: input.providerContinuityAvailable === true,
+      continuityState: normalizeString(input.continuityState, ""),
+      composerState: normalizeString(input.composerState, ""),
+      forkStartId: normalizeString(input.forkStartId, ""),
+      forkSeedId: normalizeString(input.forkSeedId, ""),
+      sourcePreviewId: normalizeString(input.sourcePreviewId, ""),
+      sourcePreviewDigest: normalizeString(input.sourcePreviewDigest, ""),
+      parentForkLineage: isPlainObject(input.parentForkLineage) ? input.parentForkLineage : null,
+      sourcePreviousResponseIdUsed: input.sourcePreviousResponseIdUsed === true,
+    };
+    this.writeSession(session);
+    return session;
+  }
+
+  readTurn(sessionId, turnId) {
+    const turn = readJsonFile(this.turnPath(sessionId, turnId));
+    if (!turn || turn.schema !== DIRECT_TURN_SCHEMA) return null;
+    return turn;
+  }
+
+  writeTurn(turn) {
+    if (!isPlainObject(turn) || turn.schema !== DIRECT_TURN_SCHEMA) {
+      throw new Error("Direct turn must use direct_codex_turn@1.");
+    }
+    writeJsonAtomic(this.turnPath(turn.sessionId, turn.turnId), turn);
+    return turn;
+  }
+
+  createTurn(sessionId, input = {}, options = {}) {
+    const session = this.readSession(sessionId);
+    if (!session) throw new Error(`Direct session not found: ${sessionId}`);
+    const now = nowIso(options.nowMs);
+    const turnId = normalizeId(input.turnId, "direct_turn");
+    const turn = {
+      schema: DIRECT_TURN_SCHEMA,
+      sessionId: session.sessionId,
+      turnId,
+      state: normalizeTurnState(input.state, "created"),
+      createdAt: normalizeString(input.createdAt, now),
+      updatedAt: normalizeString(input.updatedAt, now),
+      model: normalizeString(input.model, session.model),
+      reasoningEffort: normalizeString(input.reasoningEffort, session.reasoningEffort),
+      profileSnapshotId: normalizeString(input.profileSnapshotId, session.profileSnapshotId),
+      clientTurnRequestId: normalizeString(input.clientTurnRequestId, ""),
+      requestBuiltAt: "",
+      streamStartedAt: "",
+      streamPhase: "",
+      completedAt: "",
+      failedAt: "",
+      abortedAt: "",
+      requestShape: isPlainObject(input.requestShape) ? input.requestShape : {},
+      responseStatus: 0,
+      responseContentType: "",
+      input: Array.isArray(input.input) ? input.input : [],
+      normalizedEventCount: 0,
+      unresolvedObligations: Array.isArray(input.unresolvedObligations) ? input.unresolvedObligations : [],
+      toolResults: Array.isArray(input.toolResults) ? input.toolResults : [],
+      continuationRequests: Array.isArray(input.continuationRequests) ? input.continuationRequests : [],
+      usageAttribution: isPlainObject(input.usageAttribution) ? input.usageAttribution : null,
+      error: isPlainObject(input.error) ? input.error : null,
+      agentId: normalizeString(input.agentId, session.agentId),
+      agentRunId: normalizeString(input.agentRunId, session.agentRunId),
+      parentAgentId: normalizeString(input.parentAgentId, session.parentAgentId),
+      parentAgentRunId: normalizeString(input.parentAgentRunId, session.parentAgentRunId),
+      agentKind: normalizeString(input.agentKind, session.agentKind),
+      agentThreadId: normalizeString(input.agentThreadId, session.agentThreadId || session.sessionId),
+      parentThreadId: normalizeString(input.parentThreadId, session.parentThreadId),
+      agentLabel: normalizeString(input.agentLabel, session.agentLabel),
+      agentRole: normalizeString(input.agentRole, session.agentRole),
+      sourceClass: normalizeString(input.sourceClass, ""),
+      nativeDirectSession: input.nativeDirectSession === true,
+      parentImportLineage: isPlainObject(input.parentImportLineage) ? input.parentImportLineage : null,
+      checkpointContinuationId: normalizeString(input.checkpointContinuationId, ""),
+      checkpointSeedId: normalizeString(input.checkpointSeedId, ""),
+      seedShapeHash: normalizeString(input.seedShapeHash, ""),
+      importedSessionId: normalizeString(input.importedSessionId, ""),
+      importedSessionReadOnly: input.importedSessionReadOnly === true,
+      forkStartId: normalizeString(input.forkStartId, ""),
+      forkSeedId: normalizeString(input.forkSeedId, ""),
+      sourcePreviewId: normalizeString(input.sourcePreviewId, ""),
+      sourcePreviewDigest: normalizeString(input.sourcePreviewDigest, ""),
+      parentForkLineage: isPlainObject(input.parentForkLineage) ? input.parentForkLineage : null,
+      requestManifestId: normalizeString(input.requestManifestId, ""),
+      contextBuildId: normalizeString(input.contextBuildId, ""),
+      providerContinuityHandleUsed: input.providerContinuityHandleUsed === true,
+      previousResponseIdUsed: input.previousResponseIdUsed === true,
+      sourceProviderContinuityHandleUsed: input.sourceProviderContinuityHandleUsed === true,
+    };
+    this.writeTurn(turn);
+    const nextSession = {
+      ...session,
+      updatedAt: now,
+      status: "active",
+      turns: [
+        ...session.turns.filter((summary) => summary.turnId !== turnId),
+        {
+          turnId,
+          state: turn.state,
+          createdAt: turn.createdAt,
+          updatedAt: turn.updatedAt,
+          model: turn.model,
+          reasoningEffort: turn.reasoningEffort,
+          normalizedEventCount: 0,
+          usageAttributionStatus: normalizeString(turn.usageAttribution?.status, ""),
+          usageTotalTokensKnown: Number(turn.usageAttribution?.totals?.totalTokensKnown || 0),
+          agentKind: normalizeString(turn.agentKind, ""),
+          agentThreadId: normalizeString(turn.agentThreadId, ""),
+          parentThreadId: normalizeString(turn.parentThreadId, ""),
+          sourceClass: normalizeString(turn.sourceClass, ""),
+          checkpointContinuationId: normalizeString(turn.checkpointContinuationId, ""),
+          checkpointSeedId: normalizeString(turn.checkpointSeedId, ""),
+          seedShapeHash: normalizeString(turn.seedShapeHash, ""),
+        },
+      ],
+    };
+    this.writeSession(nextSession);
+    return turn;
+  }
+
+  updateTurnState(sessionId, turnId, nextState, patch = {}, options = {}) {
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+    const now = nowIso(options.nowMs);
+    const state = normalizeTurnState(nextState, turn.state);
+    const terminalPatch = {};
+    if (state === "request_built" && !turn.requestBuiltAt) terminalPatch.requestBuiltAt = now;
+    if (state === "completed") terminalPatch.completedAt = now;
+    if (state === "failed") terminalPatch.failedAt = now;
+    if (state === "aborted") terminalPatch.abortedAt = now;
+    const nextTurn = {
+      ...turn,
+      ...patch,
+      ...terminalPatch,
+      state,
+      updatedAt: now,
+    };
+    this.writeTurn(nextTurn);
+    const session = this.readSession(sessionId);
+    if (session) {
+      const usageTotals = isPlainObject(nextTurn.usageAttribution?.totals) ? nextTurn.usageAttribution.totals : {};
+      const nextSession = {
+        ...session,
+        updatedAt: now,
+        status: state,
+        turns: session.turns.map((summary) =>
+          summary.turnId === turnId
+            ? {
+              ...summary,
+              state,
+              updatedAt: now,
+              normalizedEventCount: nextTurn.normalizedEventCount,
+              usageAttributionStatus: normalizeString(nextTurn.usageAttribution?.status, summary.usageAttributionStatus || ""),
+              usageTotalTokensKnown: Number(usageTotals.totalTokensKnown ?? summary.usageTotalTokensKnown ?? 0),
+              agentKind: normalizeString(nextTurn.agentKind, summary.agentKind || ""),
+              agentThreadId: normalizeString(nextTurn.agentThreadId, summary.agentThreadId || ""),
+              parentThreadId: normalizeString(nextTurn.parentThreadId, summary.parentThreadId || ""),
+            }
+            : summary,
+        ),
+      };
+      this.writeSession(nextSession);
+    }
+    return nextTurn;
+  }
+
+  addToolObligations(sessionId, turnId, normalizedEvents = [], options = {}) {
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+    const existingStepOrdinals = (Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .map((obligation) => Number(obligation?.stepOrdinal || 0))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const inferredStepOrdinal = existingStepOrdinals.length ? Math.max(...existingStepOrdinals) + 1 : 1;
+    const obligations = buildToolObligationsFromEvents(sessionId, turnId, normalizedEvents, {
+      ...options,
+      toolLoopId: normalizeString(options.toolLoopId, turn.toolLoopId || toolLoopIdForTurn(sessionId, turnId)),
+      stepOrdinal: Number(options.stepOrdinal || inferredStepOrdinal),
+    });
+    if (!obligations.length) return { turn, obligations: [] };
+    const now = nowIso(options.nowMs);
+    const existingTurnObligations = new Map((Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .map((obligation) => [obligation.obligationId, obligation]));
+    const returnedObligationIds = [];
+    for (const obligation of obligations) {
+      const existing = existingTurnObligations.get(obligation.obligationId) ||
+        equivalentTerminalObligation([...existingTurnObligations.values()], obligation);
+      if (existing && existing.obligationId !== obligation.obligationId) {
+        existingTurnObligations.set(existing.obligationId, mergeToolObligation(existing, obligation));
+        continue;
+      }
+      existingTurnObligations.set(obligation.obligationId, mergeToolObligation(existing, obligation));
+      if (!DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES.has(normalizeString(existing?.status, ""))) {
+        returnedObligationIds.push(obligation.obligationId);
+      }
+    }
+    const nextTurn = {
+      ...turn,
+      state: "tool_waiting",
+      updatedAt: now,
+      toolLoopId: normalizeString(options.toolLoopId, turn.toolLoopId || obligations[0]?.toolLoopId),
+      activeToolStepId: normalizeString(obligations[0]?.stepId, turn.activeToolStepId),
+      activeToolStepOrdinal: Number(obligations[0]?.stepOrdinal || turn.activeToolStepOrdinal || 1),
+      unresolvedObligations: [...existingTurnObligations.values()],
+      error: null,
+    };
+    this.writeTurn(nextTurn);
+    const session = this.readSession(sessionId);
+    if (session) {
+      const existingSessionObligations = new Map((Array.isArray(session.unresolvedObligations) ? session.unresolvedObligations : [])
+        .map((obligation) => [obligation.obligationId, obligation]));
+      for (const obligation of obligations) {
+        existingSessionObligations.set(
+          obligation.obligationId,
+          mergeToolObligation(existingSessionObligations.get(obligation.obligationId), existingTurnObligations.get(obligation.obligationId)),
+        );
+      }
+      this.writeSession({
+        ...session,
+        status: "tool_waiting",
+        updatedAt: now,
+        activeToolLoopId: normalizeString(options.toolLoopId, session.activeToolLoopId || obligations[0]?.toolLoopId),
+        activeToolStepOrdinal: Number(obligations[0]?.stepOrdinal || session.activeToolStepOrdinal || 1),
+        unresolvedObligations: [...existingSessionObligations.values()],
+        turns: session.turns.map((summary) =>
+          summary.turnId === turnId
+            ? { ...summary, state: "tool_waiting", updatedAt: now, normalizedEventCount: nextTurn.normalizedEventCount }
+            : summary,
+        ),
+      });
+    }
+    return { turn: nextTurn, obligations: returnedObligationIds.map((obligationId) => existingTurnObligations.get(obligationId)).filter(Boolean) };
+  }
+
+  findToolObligation(sessionId, turnId, obligationId) {
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+    const obligationKey = normalizeString(obligationId, "");
+    const obligation = (Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .find((entry) => entry?.obligationId === obligationKey);
+    if (!obligation) throw new Error(`Direct tool obligation not found: ${obligationKey}`);
+    return { turn, obligation };
+  }
+
+  updateToolObligation(sessionId, turnId, obligationId, patch = {}, options = {}) {
+    const { turn, obligation } = this.findToolObligation(sessionId, turnId, obligationId);
+    const now = nowIso(options.nowMs);
+    const nextObligation = {
+      ...obligation,
+      ...patch,
+      updatedAt: now,
+    };
+    const nextObligations = (Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .map((entry) => entry?.obligationId === obligation.obligationId ? nextObligation : entry);
+    const nextState = normalizeTurnState(options.nextTurnState, turn.state);
+    const turnPatch = isPlainObject(options.turnPatch) ? options.turnPatch : {};
+    const nextTurn = {
+      ...turn,
+      ...turnPatch,
+      state: nextState,
+      updatedAt: now,
+      unresolvedObligations: nextObligations,
+      toolResults: Array.isArray(turn.toolResults) ? turn.toolResults : [],
+      continuationRequests: Array.isArray(turn.continuationRequests) ? turn.continuationRequests : [],
+    };
+    if (isPlainObject(patch.result)) {
+      const existingResults = new Map((Array.isArray(turn.toolResults) ? turn.toolResults : [])
+        .map((result) => [result.obligationId, result]));
+      existingResults.set(obligation.obligationId, patch.result);
+      nextTurn.toolResults = [...existingResults.values()];
+    }
+    if (isPlainObject(patch.continuationRequest)) {
+      const existingContinuations = new Map((Array.isArray(turn.continuationRequests) ? turn.continuationRequests : [])
+        .map((request) => [request.continuationId, request]));
+      existingContinuations.set(patch.continuationRequest.continuationId, patch.continuationRequest);
+      nextTurn.continuationRequests = [...existingContinuations.values()];
+    }
+    this.writeTurn(nextTurn);
+    const session = this.readSession(sessionId);
+    if (session) {
+      const sessionObligations = (Array.isArray(session.unresolvedObligations) ? session.unresolvedObligations : [])
+        .map((entry) => entry?.obligationId === obligation.obligationId ? nextObligation : entry);
+      const nextMessages = Array.isArray(session.messages)
+        ? session.messages.map((message) => ({
+            ...message,
+            items: Array.isArray(message.items)
+              ? message.items.map((item) => item?.id === obligation.obligationId
+                  ? toolTranscriptItemFromObligation(nextObligation)
+                  : item)
+              : message.items,
+          }))
+        : session.messages;
+      this.writeSession({
+        ...session,
+        status: nextState,
+        updatedAt: now,
+        unresolvedObligations: sessionObligations,
+        messages: nextMessages,
+        turns: session.turns.map((summary) =>
+          summary.turnId === turnId
+            ? { ...summary, state: nextState, updatedAt: now, normalizedEventCount: nextTurn.normalizedEventCount }
+            : summary,
+        ),
+      });
+    }
+    return { turn: nextTurn, obligation: nextObligation };
+  }
+
+  recoverInterruptedTurns(options = {}) {
+    const recoveredAt = nowIso(options.nowMs);
+    let recoveredTurnCount = 0;
+    for (const sessionId of this.listSessionIdsFromDisk()) {
+      const session = this.readSession(sessionId);
+      if (!session || !Array.isArray(session.turns)) continue;
+      const turnIds = new Set([
+        ...session.turns.map((summary) => summary?.turnId).filter(isSafeId),
+        ...this.listTurnIdsFromDisk(session.sessionId),
+      ]);
+      const recoveredByTurnId = new Map();
+      for (const turnId of turnIds) {
+        const turn = this.readTurn(session.sessionId, turnId);
+        if (!turn || !DIRECT_RECOVERABLE_ACTIVE_TURN_STATES.has(turn.state)) continue;
+        const nextTurn = {
+          ...turn,
+          state: "failed",
+          updatedAt: recoveredAt,
+          failedAt: recoveredAt,
+          error: {
+            code: "restart_interrupted_turn",
+            message: "Direct text probe turn was interrupted before a terminal event and needs explicit user resume.",
+            previousState: turn.state,
+            recoveredAt,
+          },
+        };
+        this.writeTurn(nextTurn);
+        recoveredByTurnId.set(nextTurn.turnId, nextTurn);
+        recoveredTurnCount += 1;
+      }
+      if (!recoveredByTurnId.size) continue;
+      const existingTurnIds = new Set(session.turns.map((summary) => summary.turnId));
+      const recoveredSummaries = [...recoveredByTurnId.values()]
+        .filter((turn) => !existingTurnIds.has(turn.turnId))
+        .map((turn) => ({
+          turnId: turn.turnId,
+          state: turn.state,
+          createdAt: turn.createdAt,
+          updatedAt: turn.updatedAt,
+          model: turn.model,
+          normalizedEventCount: turn.normalizedEventCount,
+        }));
+      this.writeSession({
+        ...session,
+        updatedAt: recoveredAt,
+        status: "failed",
+        turns: [
+          ...session.turns.map((summary) => {
+            const recovered = recoveredByTurnId.get(summary.turnId);
+            return recovered
+              ? {
+                  ...summary,
+                  state: recovered.state,
+                  updatedAt: recovered.updatedAt,
+                  normalizedEventCount: recovered.normalizedEventCount,
+                }
+              : summary;
+          }),
+          ...recoveredSummaries,
+        ],
+      });
+    }
+    return {
+      recoveredAt,
+      recoveredTurnCount,
+    };
+  }
+
+  appendNormalizedEvent(sessionId, turnId, event, options = {}) {
+    return this.appendNormalizedEvents(sessionId, turnId, [event], options);
+  }
+
+  appendNormalizedEvents(sessionId, turnId, events, options = {}) {
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+    const normalizedEvents = Array.isArray(events) ? events : [];
+    if (!normalizedEvents.length) return turn;
+    const at = nowIso(options.nowMs);
+    const lines = normalizedEvents.map((event) => JSON.stringify({ at, event })).join("\n");
+    ensureDirectory(path.dirname(this.eventPath(sessionId, turnId)));
+    fs.appendFileSync(this.eventPath(sessionId, turnId), `${lines}\n`, "utf8");
+    const session = this.readSession(sessionId);
+    const usageAttribution = updateDirectTurnUsageAttribution({
+      existing: turn.usageAttribution,
+      session,
+      turn,
+      events: normalizedEvents,
+      observedAt: at,
+      projectId: session?.projectId,
+      model: turn.model,
+      reasoningEffort: turn.reasoningEffort,
+    });
+    return this.updateTurnState(sessionId, turnId, turn.state, {
+      normalizedEventCount: turn.normalizedEventCount + normalizedEvents.length,
+      usageAttribution,
+    }, options);
+  }
+
+  writeDiagnostic(sessionId, fixtureId, record, options = {}) {
+    const diagnostic = {
+      schema: DIRECT_DIAGNOSTIC_SCHEMA,
+      capturedAt: nowIso(options.nowMs),
+      sessionId: requireSafeId(sessionId, "session"),
+      fixtureId: requireSafeId(fixtureId, "diagnostic"),
+      record,
+    };
+    assertFixtureRedacted(diagnostic, options.redactionOptions || {});
+    ensureDirectory(path.dirname(this.diagnosticPath(sessionId, fixtureId)));
+    fs.appendFileSync(this.diagnosticPath(sessionId, fixtureId), `${JSON.stringify(diagnostic)}\n`, "utf8");
+    return diagnostic;
+  }
+
+  status(options = {}) {
+    const index = this.ensure();
+    const projectId = normalizeString(options.projectId, "");
+    const indexedSessions = Array.isArray(index.sessions) ? index.sessions.filter(Boolean) : [];
+    const sessions = projectId
+      ? indexedSessions.filter((session) => normalizeString(session.projectId, "") === projectId)
+      : indexedSessions;
+    const updatedMs = (session) => {
+      const parsed = Date.parse(normalizeString(session?.updatedAt, ""));
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    const sortedSessions = [...sessions].sort((left, right) => updatedMs(right) - updatedMs(left));
+    const activeSession = sortedSessions.find((session) => Number(session.activeTurnCount || 0) > 0) || sortedSessions[0] || {};
+    const activeSessionId = normalizeString(activeSession.sessionId, "");
+    const activeSessionArtifact = activeSessionId ? this.readSession(activeSessionId) : null;
+    const activeTurnSummaries = Array.isArray(activeSessionArtifact?.turns) ? activeSessionArtifact.turns : [];
+    const activeTurnIds = new Set([
+      ...activeTurnSummaries.map((turn) => normalizeString(turn?.turnId, "")).filter(Boolean),
+      ...(activeSessionId ? this.listTurnIdsFromDisk(activeSessionId) : []),
+    ]);
+    const activeTurns = [...activeTurnIds]
+      .map((turnId) => {
+        const durableTurn = activeSessionId ? this.readTurn(activeSessionId, turnId) : null;
+        const summary = activeTurnSummaries.find((entry) => normalizeString(entry?.turnId, "") === turnId) || {};
+        return durableTurn || summary;
+      })
+      .filter((turn) => DIRECT_ACTIVE_TURN_STATES.has(normalizeString(turn?.state, "")))
+      .sort((left, right) => updatedMs(right) - updatedMs(left));
+    const activeTurnSummary = activeTurns[0] || null;
+    const sessionCount = sessions.length;
+    const turnCount = sessions.reduce((count, session) => count + Number(session.turnCount || 0), 0);
+    const eventCount = sessions.reduce((count, session) => count + Number(session.eventCount || 0), 0);
+    const activeTurnCount = sessions.reduce((count, session) => count + Number(session.activeTurnCount || 0), 0);
+    const unresolvedObligationCount = sessions.reduce((count, session) => count + Number(session.unresolvedObligationCount || 0), 0);
+    const activeToolSession = sessions.find((session) => Number(session.activeToolStepOrdinal || 0) > 0) || {};
+    return {
+      schema: "direct_codex_session_store_status@1",
+      available: true,
+      rootExposed: false,
+      sessionCount,
+      turnCount,
+      eventCount,
+      activeTurnCount,
+      unresolvedObligationCount,
+      lastTurnState: activeSession.lastTurnState || "",
+      activeSessionId,
+      activeTurnId: normalizeString(activeTurnSummary?.turnId, ""),
+      activeToolLoopId: normalizeString(activeToolSession.activeToolLoopId, ""),
+      activeToolStepOrdinal: Number(activeToolSession.activeToolStepOrdinal || 0),
+      lastSessionUpdatedAt: activeSession.updatedAt || "",
+      latestToolResult: latestToolResultSummary(this, { ...index, sessions: sortedSessions }, { projectId }),
+      recovery: index.recovery || {},
+    };
+  }
+}
+
+module.exports = {
+  DIRECT_DIAGNOSTIC_SCHEMA,
+  DIRECT_ACTIVE_TURN_STATES,
+  DIRECT_IMPORT_INDEX_SCHEMA,
+  DIRECT_RECOVERABLE_ACTIVE_TURN_STATES,
+  DIRECT_SESSION_INDEX_SCHEMA,
+  DIRECT_SESSION_SCHEMA,
+  DIRECT_TOOL_OBLIGATION_SCHEMA,
+  DIRECT_TURN_SCHEMA,
+  DIRECT_TURN_STATES,
+  DirectSessionStore,
+  buildToolObligationsFromEvents,
+  normalizeTurnState,
+  toolTranscriptItemFromObligation,
+  writeJsonAtomic,
+};

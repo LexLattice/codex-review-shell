@@ -23,9 +23,17 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   respondRequest: (key, result) => ipcRenderer.invoke("codex-surface:respond", { key, result }),
   reportThreadState: (state) => ipcRenderer.invoke("codex-surface:thread-state", state),
   reportAgentGraph: (graph) => ipcRenderer.invoke("codex-surface:agent-graph", graph),
+  reportContextManagementEvidence: (evidence) => ipcRenderer.invoke("codex-surface:context-management-evidence", evidence),
   focusSubAgent: (request) => ipcRenderer.invoke("codex-surface:focus-sub-agent", request),
+  getDirectCodexSurfaceProjection: (projectId, options = {}) => ipcRenderer.invoke("codex-surface:direct-projection", { projectId, ...options }),
+  createDirectWorkThreadDraftSession: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:create-work-thread-draft-session", { ...options, projectId }),
   getRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:get", request || {}),
   updateRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:update", request || {}),
+  getDirectImplementationLaneUiStatus: (projectId) => ipcRenderer.invoke("direct-ui:implementation-status", { projectId }),
+  readDirectImplementationOperationHistory: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-ui:operation-history", { ...options, projectId }),
+  getDirectImplementationPolicyView: (projectId) => ipcRenderer.invoke("direct-ui:policy-readonly-view", { projectId }),
   openWorkspaceLink: (url, options = {}) => ipcRenderer.invoke("link:open", { ...options, url }),
   openExternalUrl: (url) => ipcRenderer.invoke("external:open-url", { url }),
   openProjectFile: (projectId, relPath, options = {}) => ipcRenderer.invoke("file-view:open-project-file", { ...options, projectId, relPath }),

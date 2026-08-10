@@ -1,0 +1,28 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.refresh_success",
+  "name": "OAuth Refresh Response Shape",
+  "hypothesis": "A redacted synthetic refresh response normalizes separately from initial token exchange while preserving token presence semantics.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/refresh-success"
+  },
+  "authShape": {
+    "operation": "token_response_normalization"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "tokenType",
+      "expiresIn",
+      "hasAccessToken",
+      "hasRefreshToken"
+    ]
+  },
+  "blockedLiveGates": [
+    "No refresh token request.",
+    "No raw token exposure.",
+    "No credential persistence."
+  ]
+}

@@ -1,0 +1,1801 @@
+{
+  "schema": "direct_codex_odeu_profile@1",
+  "profileId": "chatgpt_codex_subscription_oai_server_baseline_2026_04_25",
+  "profileVersion": 1,
+  "backendContractVersion": "imported-baseline.openai-docs-and-local-specs.2026-04-25",
+  "observedAt": "2026-04-25T22:45:00Z",
+  "source": "imported-baseline",
+  "subject": {
+    "name": "ChatGPT subscription Codex backend path",
+    "provider": "OpenAI / ChatGPT Codex",
+    "compatibilityTier": "native",
+    "description": "Profile of the currently documented and specimen-observed OpenAI server-side allowances for Codex usage through ChatGPT subscription authentication. This is not an OpenAI Platform API profile and not a live-probed credentialed extraction."
+  },
+  "scope": {
+    "inScope": [
+      "ChatGPT sign-in path for Codex subscription access.",
+      "Observed/direct Codex Responses-style backend path at chatgpt.com/backend-api/codex/responses.",
+      "Official Codex app-server capabilities relevant to client harnesses, distinguished from raw OAI backend authority.",
+      "Model, input, response-event, reasoning, tool-call, continuation, quota, retry, and security allowances that can gate a future direct harness."
+    ],
+    "outOfScope": [
+      "Consumer ChatGPT web-thread API automation.",
+      "OpenAI Platform API entitlement or billing profile.",
+      "Public production API promise for chatgpt.com/backend-api/codex/responses.",
+      "Any live OAuth exchange or live model call.",
+      "Deep ADEU-native fork internals as default standalone-shell UX."
+    ],
+    "authorityLayerNotes": [
+      "OAI server-side allowances include model inference, Responses-style stream events, auth/quota classification, and hosted backend limits.",
+      "Codex app-server allowances are official client-harness protocol surfaces but are partly local harness/server functions rather than direct cloud endpoint powers.",
+      "Workspace reads, shell commands, patch application, and local tool execution remain local harness or workspace-backend authority, not an OAI server permission."
+    ]
+  },
+  "ontology": {
+    "transports": [
+      {
+        "id": "transport.sse.responses",
+        "name": "SSE over HTTP POST Responses-style stream",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "summary": "The direct subscription path is specified as SSE over fetch for phase 1 and the public Codex article says ChatGPT login uses the Codex Responses endpoint.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Direct spec requires phase-1 SSE and isolates raw stream events below a normalizer."
+          },
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "OpenAI says ChatGPT login uses chatgpt.com/backend-api/codex/responses for Codex CLI inference."
+          }
+        ],
+        "notes": [
+          "Accept for probes and fixture normalizers; require live probe before default direct-harness exposure."
+        ]
+      },
+      {
+        "id": "transport.websocket.responses",
+        "name": "Responses WebSocket parity",
+        "status": "unstable",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "summary": "WebSocket may exist or be used by Codex, but direct profile treats it as a later parity target after SSE baseline.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "WebSocket is phase 2 only if it materially improves latency or continuity."
+          },
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "App-server WebSocket transport is experimental and unsupported for the local JSON-RPC protocol."
+          }
+        ],
+        "notes": [
+          "Do not make this the first direct-harness default."
+        ]
+      },
+      {
+        "id": "transport.app_server_stdio",
+        "name": "Codex app-server stdio JSONL",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "summary": "Official app-server supports stdio JSONL as the default JSON-RPC transport for rich clients.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "Supported transports include stdio as default JSONL."
+          }
+        ]
+      },
+      {
+        "id": "transport.app_server_websocket",
+        "name": "Codex app-server WebSocket JSON-RPC",
+        "status": "unstable",
+        "authorityLayer": "codex-app-server",
+        "summary": "Official app-server supports WebSocket frames but marks the transport experimental and unsupported.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "WebSocket transport is experimental/unsupported and should use auth if non-loopback."
+          }
+        ]
+      }
+    ],
+    "authSurfaces": [
+      {
+        "id": "auth.chatgpt_managed",
+        "name": "ChatGPT managed sign-in",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "summary": "Codex supports signing in with ChatGPT for subscription access; CLI and IDE extension cache and refresh credentials.",
+        "evidence": [
+          {
+            "sourceId": "codex-auth-docs",
+            "grade": "official-doc",
+            "summary": "Codex supports ChatGPT sign-in for subscription access and refreshes tokens automatically during use."
+          }
+        ]
+      },
+      {
+        "id": "auth.chatgpt_device_code",
+        "name": "ChatGPT device-code sign-in",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "summary": "Headless/remote ChatGPT sign-in can use a device-code flow when enabled.",
+        "evidence": [
+          {
+            "sourceId": "codex-auth-docs",
+            "grade": "official-doc",
+            "summary": "Device-code login is documented for headless situations."
+          }
+        ]
+      },
+      {
+        "id": "auth.chatgpt_external_tokens",
+        "name": "Externally managed ChatGPT tokens",
+        "status": "unstable",
+        "authorityLayer": "codex-app-server",
+        "summary": "App-server has an experimental external token mode where host apps supply ChatGPT tokens and answer refresh requests.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "chatgptAuthTokens mode is experimental and refresh requests time out after about 10 seconds."
+          }
+        ],
+        "notes": [
+          "A direct harness must not fabricate tokens; renderer must never receive raw tokens."
+        ]
+      },
+      {
+        "id": "auth.api_key",
+        "name": "OpenAI Platform API key",
+        "status": "rejected",
+        "authorityLayer": "oai-server",
+        "summary": "API-key mode is documented for CLI/SDK/IDE, but this ODEU profile is specifically for ChatGPT subscription access, not Platform API access.",
+        "evidence": [
+          {
+            "sourceId": "codex-auth-docs",
+            "grade": "official-doc",
+            "summary": "Codex supports API keys separately; API key usage follows Platform settings."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Direct path is not an OpenAI Platform API integration."
+          }
+        ]
+      }
+    ],
+    "models": [
+      {
+        "id": "gpt-5.5",
+        "displayName": "GPT-5.5",
+        "status": "observed",
+        "availability": "Listed in current Codex pricing/docs for Plus/Pro/Business local messages; actual user availability must be discovered with model/list or live direct probe.",
+        "contextWindow": null,
+        "supportsReasoning": true,
+        "supportedReasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "supportsTools": true,
+        "supportsImages": null,
+        "notes": [
+          "Per-model modalities and reasoning efforts must be treated as account/catalog-discovered, not hardcoded."
+        ],
+        "evidence": [
+          {
+            "sourceId": "codex-pricing-docs",
+            "grade": "official-doc",
+            "summary": "Plus includes latest models including GPT-5.5; limits table lists GPT-5.5 local messages."
+          },
+          {
+            "sourceId": "codex-changelog",
+            "grade": "official-doc",
+            "summary": "GPT-5.5 is recommended for most Codex tasks when present in the picker."
+          }
+        ]
+      },
+      {
+        "id": "gpt-5.4",
+        "displayName": "GPT-5.4",
+        "status": "observed",
+        "availability": "Listed for Plus/Pro/Business local messages and documented as available in Codex app/CLI/IDE/cloud.",
+        "contextWindow": null,
+        "supportsReasoning": true,
+        "supportedReasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "supportsTools": true,
+        "supportsImages": true,
+        "notes": [
+          "Context window remains profile-unknown until model/list or live request exposes it for the account."
+        ],
+        "evidence": [
+          {
+            "sourceId": "codex-pricing-docs",
+            "grade": "official-doc",
+            "summary": "Codex Plus includes GPT-5.4."
+          },
+          {
+            "sourceId": "codex-changelog",
+            "grade": "official-doc",
+            "summary": "GPT-5.4 is available everywhere Codex can be used; docs also mention 1M context experimental support."
+          }
+        ]
+      },
+      {
+        "id": "gpt-5.4-mini",
+        "displayName": "GPT-5.4-mini",
+        "status": "observed",
+        "availability": "Listed as higher-usage model for routine local messages.",
+        "contextWindow": null,
+        "supportsReasoning": true,
+        "supportedReasoningEfforts": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "supportsTools": true,
+        "supportsImages": null,
+        "notes": [
+          "Exact direct endpoint id and modalities must be probed."
+        ],
+        "evidence": [
+          {
+            "sourceId": "codex-pricing-docs",
+            "grade": "official-doc",
+            "summary": "Plus includes GPT-5.4-mini for higher usage limits on routine local messages."
+          }
+        ]
+      },
+      {
+        "id": "gpt-5.3-codex",
+        "displayName": "GPT-5.3-Codex",
+        "status": "observed",
+        "availability": "Listed for local messages, cloud tasks, and code reviews; cloud tasks and code review run on GPT-5.3-Codex.",
+        "contextWindow": null,
+        "supportsReasoning": true,
+        "supportedReasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "supportsTools": true,
+        "supportsImages": null,
+        "notes": [
+          "Direct harness should verify exact backend model id string before normal UX exposure."
+        ],
+        "evidence": [
+          {
+            "sourceId": "codex-pricing-docs",
+            "grade": "official-doc",
+            "summary": "Pricing table lists GPT-5.3-Codex for local/cloud/code-review buckets and says cloud tasks/code review run on it."
+          }
+        ]
+      },
+      {
+        "id": "gpt-5.3-codex-spark",
+        "displayName": "GPT-5.3-Codex-Spark",
+        "status": "unstable",
+        "availability": "Research preview for ChatGPT Pro users only; not available in API at launch.",
+        "contextWindow": null,
+        "supportsReasoning": true,
+        "supportedReasoningEfforts": [
+          "low",
+          "medium"
+        ],
+        "supportsTools": true,
+        "supportsImages": false,
+        "notes": [
+          "Treat as plan-gated and preview-only; expose only when model/list/live probe reports it."
+        ],
+        "evidence": [
+          {
+            "sourceId": "codex-pricing-docs",
+            "grade": "official-doc",
+            "summary": "Spark is Pro-only research preview and not available in the API at launch."
+          }
+        ]
+      }
+    ],
+    "requestFields": [
+      {
+        "id": "request.endpoint",
+        "field": "POST /backend-api/codex/responses",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "HTTPS endpoint under https://chatgpt.com/backend-api",
+        "summary": "Observed/direct path for ChatGPT subscription Codex inference; not a stable public Platform API contract.",
+        "evidence": [
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "OpenAI states Codex CLI uses chatgpt.com/backend-api/codex/responses with ChatGPT login."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Direct path records backend base URL and response endpoint and warns it is not stable public Platform API."
+          }
+        ]
+      },
+      {
+        "id": "request.model",
+        "field": "model",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "string",
+        "summary": "Request selects a model id; available ids are account/catalog dependent.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses create requires/selects a model."
+          },
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "model/list exposes available models and capabilities."
+          }
+        ]
+      },
+      {
+        "id": "request.stream",
+        "field": "stream",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "boolean true",
+        "summary": "Direct harness phase 1 uses streaming responses.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Request construction requires stream: true."
+          },
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses API supports streaming SSE event frames."
+          }
+        ]
+      },
+      {
+        "id": "request.store",
+        "field": "store",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "boolean false",
+        "summary": "Codex direct profile should use stateless storage posture unless a later ODEU policy admits a different state model.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Request construction requires store: false."
+          },
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "Codex avoids previous_response_id to support stateless/ZDR-compatible behavior."
+          }
+        ]
+      },
+      {
+        "id": "request.instructions",
+        "field": "instructions",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "string",
+        "summary": "System/developer instruction field used by Responses-style endpoint.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses API includes instructions."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Request construction requires instructions."
+          }
+        ]
+      },
+      {
+        "id": "request.input",
+        "field": "input",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "array of Responses input items",
+        "summary": "Inputs carry user/developer/assistant/system role items and content parts.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses API input accepts role-bearing messages with text/image/file content."
+          },
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "Codex builds a role-ordered list of prompt items."
+          }
+        ]
+      },
+      {
+        "id": "request.tools",
+        "field": "tools",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "array of tool definitions",
+        "summary": "Server may select tools from those offered by the harness; harness remains execution authority for custom/local tools.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses supports built-in tools, MCP tools, and function/custom tools."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Adapter emits normalized tool_call and must not execute tools directly."
+          }
+        ]
+      },
+      {
+        "id": "request.tool_choice",
+        "field": "tool_choice",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "auto | none | required | allowed_tools | forced tool",
+        "summary": "Default direct Codex posture uses auto when tools are present.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "tool_choice controls whether/how tools are selected."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Request construction sets tool_choice: auto when tools are present."
+          }
+        ]
+      },
+      {
+        "id": "request.parallel_tool_calls",
+        "field": "parallel_tool_calls",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "boolean",
+        "summary": "Parallel tool calls can be requested unless harness explicitly serializes.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Request construction requires parallel_tool_calls: true unless serializing."
+          },
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Response examples include parallel_tool_calls true."
+          }
+        ]
+      },
+      {
+        "id": "request.reasoning",
+        "field": "reasoning",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "{effort?, summary?/generate_summary?}",
+        "summary": "Reasoning effort/summary controls are model-specific and must be gated by profile/model discovery.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Reasoning configuration supports effort values including none/minimal/low/medium/high/xhigh with model caveats."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Reasoning is included when selected by user/profile policy."
+          }
+        ]
+      },
+      {
+        "id": "request.text.verbosity",
+        "field": "text.verbosity",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "low | medium | high",
+        "summary": "Text verbosity can constrain response length; direct implementation turns should default low per spec.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Verbosity values are low, medium, high."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "text.verbosity defaults to low for implementation turns."
+          }
+        ]
+      },
+      {
+        "id": "request.prompt_cache_key",
+        "field": "prompt_cache_key",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "stable string",
+        "summary": "Session-affinity/cache key for prefix reuse and abuse detection bucketing.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "prompt_cache_key replaces user for caching optimizations."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "prompt_cache_key comes from local session id."
+          }
+        ]
+      },
+      {
+        "id": "request.include.reasoning_encrypted_content",
+        "field": "include[] = reasoning.encrypted_content",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "include array entry",
+        "summary": "Allows encrypted reasoning continuity in stateless/ZDR-compatible multi-turn loops.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "reasoning.encrypted_content includes encrypted reasoning for stateless/ZDR multi-turn use."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "include entries required to preserve reasoning/caching continuity."
+          }
+        ]
+      }
+    ],
+    "inputItems": [
+      {
+        "id": "input.message.roles",
+        "field": "message.role",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "system | developer | user | assistant",
+        "summary": "Responses-style input messages carry role hierarchy; Codex uses developer/user environment and instruction items before the user prompt.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Input message roles include user, assistant, system, developer."
+          },
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "Codex constructs role-ordered prompt items and environment context."
+          }
+        ]
+      },
+      {
+        "id": "input.text",
+        "field": "input_text",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "{type:'input_text', text:string}",
+        "summary": "Text input is a normal supported input content type.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses API supports text input."
+          }
+        ]
+      },
+      {
+        "id": "input.image",
+        "field": "input_image",
+        "status": "observed",
+        "authorityLayer": "oai-server",
+        "shape": "{type:'input_image', detail, file_id|image_url}",
+        "summary": "Image input is supported by Responses API and model/list can report input modalities; exact Codex model support is catalog-dependent.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses API supports image input with detail low/high/auto."
+          },
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "model/list exposes inputModalities such as text and image."
+          }
+        ]
+      },
+      {
+        "id": "input.file",
+        "field": "input_file",
+        "status": "observed",
+        "authorityLayer": "oai-server",
+        "shape": "{type:'input_file', file_id|file_data|file_url, filename?}",
+        "summary": "File inputs exist in Responses API, but direct Codex subscription file-input behavior requires probe before normal UX.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses API supports file inputs."
+          },
+          {
+            "sourceId": "direct-extraction-spec",
+            "grade": "local-spec",
+            "summary": "Fixture/probe suite must include import and input shape evidence before exposure."
+          }
+        ]
+      }
+    ],
+    "responseEventTypes": [
+      {
+        "id": "event.response.created",
+        "field": "response.created",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "SSE event with response status in_progress",
+        "summary": "Streaming responses begin with creation/in-progress events.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Streaming example includes response.created and response.in_progress."
+          }
+        ]
+      },
+      {
+        "id": "event.output_text_delta",
+        "field": "response.output_text.delta",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "delta text event",
+        "summary": "Text deltas stream incrementally.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Streaming example includes response.output_text.delta and done."
+          }
+        ]
+      },
+      {
+        "id": "event.output_item",
+        "field": "response.output_item.added/done",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "output item lifecycle events",
+        "summary": "Output items are added and finalized through SSE events.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Streaming example includes response.output_item.added/done."
+          }
+        ]
+      },
+      {
+        "id": "event.response.completed",
+        "field": "response.completed",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "terminal success event",
+        "summary": "Completion event carries final response and usage.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Streaming example includes response.completed with usage."
+          }
+        ]
+      },
+      {
+        "id": "event.function_call",
+        "field": "function_call output item",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "{type:'function_call', call_id, name, arguments, status}",
+        "summary": "Tool/function calls can be emitted as response output items.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Function-call example returns function_call item with call_id/name/arguments."
+          }
+        ]
+      },
+      {
+        "id": "event.normalized",
+        "field": "normalized direct harness events",
+        "status": "accepted",
+        "authorityLayer": "local-harness",
+        "shape": "session_started | message_delta | reasoning_delta | tool_call_* | usage_delta | response_completed | response_failed | quota_error | aborted",
+        "summary": "ADEU code must consume normalized events, not raw backend event names.",
+        "evidence": [
+          {
+            "sourceId": "direct-extraction-spec",
+            "grade": "local-spec",
+            "summary": "Minimum normalized event classes are specified."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "No ADEU/ODEU harness code should depend on raw backend event shapes."
+          }
+        ]
+      }
+    ],
+    "reasoningShapes": [
+      {
+        "id": "reasoning.effort",
+        "field": "reasoning.effort",
+        "status": "observed",
+        "authorityLayer": "oai-server",
+        "shape": "none | minimal | low | medium | high | xhigh",
+        "summary": "Reasoning effort can be constrained, but supported values are model-specific and must be discovered.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Reasoning effort values and model caveats are documented."
+          }
+        ]
+      },
+      {
+        "id": "reasoning.summary",
+        "field": "reasoning.summary / generate_summary",
+        "status": "observed",
+        "authorityLayer": "oai-server",
+        "shape": "auto | concise | detailed | off? depending on endpoint/schema",
+        "summary": "Visible reasoning summaries are possible but exact direct endpoint knobs need probe and schema pinning.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Internal contract allows summary auto/concise/detailed/off."
+          },
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Response schema includes reasoning summary/generate_summary fields."
+          }
+        ]
+      },
+      {
+        "id": "reasoning.encrypted_content",
+        "field": "reasoning.encrypted_content",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "opaque encrypted content included on request/response items",
+        "summary": "Server can use encrypted reasoning content for stateless/ZDR-compatible continuation; harness must treat it opaque.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "encrypted_content enables reasoning items in stateless/ZDR multi-turn conversations."
+          },
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "Codex uses encrypted content and stateless requests for ZDR-compatible continuity."
+          }
+        ]
+      },
+      {
+        "id": "reasoning.raw_text",
+        "field": "raw reasoning text",
+        "status": "unstable",
+        "authorityLayer": "codex-app-server",
+        "shape": "item/reasoning/textDelta when supported by model",
+        "summary": "App-server can stream raw reasoning text when supported, but a direct harness should not assume raw chain-of-thought visibility.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "App-server item deltas include raw reasoning text when supported by the model."
+          }
+        ]
+      }
+    ],
+    "toolCallShapes": [
+      {
+        "id": "tool.function",
+        "field": "function/custom tool call",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "JSON-schema defined function with call_id/name/arguments",
+        "summary": "Model can request custom function calls; harness must validate and decide authority before executing.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses supports function tools and function_call output items."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Adapter emits tool_call and authority router decides execution."
+          }
+        ]
+      },
+      {
+        "id": "tool.mcp",
+        "field": "MCP tool",
+        "status": "observed",
+        "authorityLayer": "oai-server",
+        "shape": "MCP server tool definitions and tool choice",
+        "summary": "Responses supports MCP tools, and app-server surfaces MCP status/calls; direct harness needs project authority and approval policy.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses supports MCP tools."
+          },
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "App-server lists/calls MCP server tools and handles OAuth/startup status."
+          }
+        ]
+      },
+      {
+        "id": "tool.builtin",
+        "field": "hosted built-in tools",
+        "status": "unstable",
+        "authorityLayer": "oai-server",
+        "shape": "file_search | web_search_preview | computer_use_preview | code_interpreter | image_generation",
+        "summary": "Responses API has hosted built-ins, but the direct ChatGPT/Codex subscription path should expose them only after probe and policy admission.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses API supports hosted built-in tool categories."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Direct path is Codex lineage first, not broad provider/platform API feature absorption."
+          }
+        ]
+      },
+      {
+        "id": "tool.shell_apply_patch",
+        "field": "Codex shell/apply_patch tools",
+        "status": "accepted",
+        "authorityLayer": "local-harness",
+        "shape": "client-supplied tools backed by local workspace/sandbox",
+        "summary": "Shell and patch execution are client/harness powers; OAI server only requests tool calls through the model output.",
+        "evidence": [
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "Codex tool definitions include the default shell tool and built-in plan tool in the request."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Tool calls must flow through the authority router; model request is not authority to mutate the workspace."
+          }
+        ]
+      },
+      {
+        "id": "tool.dynamic",
+        "field": "dynamic tools",
+        "status": "unstable",
+        "authorityLayer": "codex-app-server",
+        "shape": "dynamicTools on thread/start and item/tool/call request",
+        "summary": "App-server dynamic tools are experimental; default direct harness should decline or gate until tested.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "dynamicTools and item/tool/call are experimental APIs."
+          }
+        ]
+      }
+    ],
+    "continuationShapes": [
+      {
+        "id": "continuation.stateless_full_input",
+        "field": "full input replay",
+        "status": "accepted",
+        "authorityLayer": "local-harness",
+        "shape": "Full conversation/evidence state resent per turn",
+        "summary": "Codex avoids previous_response_id and instead manages context locally for stateless/ZDR-compatible turns.",
+        "evidence": [
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "Codex does not use previous_response_id today and keeps requests stateless."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Self-owned harness must replace Codex CLI session semantics."
+          }
+        ]
+      },
+      {
+        "id": "continuation.tool_result",
+        "field": "tool-call result continuation",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "shape": "subsequent model request includes tool results paired to call ids",
+        "summary": "Tool-result continuation is required for the direct tool loop; fixture/live probe still required before acceptance.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Probe suite includes tool-call request shape and tool-result continuation."
+          },
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses supports function calling with call ids and subsequent tool outputs."
+          }
+        ]
+      },
+      {
+        "id": "continuation.compaction",
+        "field": "compaction checkpoint",
+        "status": "observed",
+        "authorityLayer": "oai-server",
+        "shape": "compaction endpoint/items with encrypted content",
+        "summary": "Codex uses compaction to manage context; ADEU direct compaction must preserve ODEU commitments, not just trim tokens.",
+        "evidence": [
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "Codex uses /responses/compact and compaction items with opaque encrypted_content."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Compaction is an ADEU state transition preserving commitments and evidence."
+          }
+        ]
+      },
+      {
+        "id": "continuation.prompt_cache",
+        "field": "prompt cache/session affinity",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "prompt_cache_key and prompt_cache_retention",
+        "summary": "Cache keys improve prefix reuse and must remain stable for static prefix sections.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "prompt_cache_key and prompt_cache_retention are documented fields."
+          },
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "Codex performance relies on prompt caching and stable prefixes."
+          }
+        ]
+      }
+    ],
+    "serverManagedSurfaces": [
+      {
+        "id": "server.auth_quota",
+        "name": "Auth and quota classification",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "summary": "ChatGPT auth mode determines workspace permissions/policies and Codex rate limits/credits; app-server can expose account/rateLimit views.",
+        "evidence": [
+          {
+            "sourceId": "codex-auth-docs",
+            "grade": "official-doc",
+            "summary": "ChatGPT sign-in usage follows ChatGPT workspace permissions, RBAC, retention, and residency."
+          },
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "App-server account/rateLimits/read returns usage bucket state and updated notifications."
+          }
+        ]
+      },
+      {
+        "id": "server.model_inference",
+        "name": "Model inference",
+        "status": "observed",
+        "authorityLayer": "chatgpt-subscription-backend",
+        "summary": "Backend performs GPT/Codex Responses-style inference with streaming outputs.",
+        "evidence": [
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "Codex CLI sends HTTP requests to Responses API-compatible endpoint for inference."
+          },
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Responses endpoint creates model responses with streaming and tools."
+          }
+        ]
+      },
+      {
+        "id": "server.hosted_tools",
+        "name": "Hosted tool execution",
+        "status": "unstable",
+        "authorityLayer": "oai-server",
+        "summary": "Responses API supports hosted tools, but the direct ChatGPT/Codex subscription endpoint must be probed before exposing hosted tools as normal controls.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Built-in tools include web search, file search, computer use, code interpreter, and image generation."
+          },
+          {
+            "sourceId": "direct-extraction-spec",
+            "grade": "local-spec",
+            "summary": "Only accepted capabilities become normal user-facing controls."
+          }
+        ]
+      }
+    ],
+    "appServerClientSurfaces": [
+      {
+        "id": "appserver.schema_generation",
+        "name": "Version-pinned app-server schemas",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "summary": "Codex app-server can generate TypeScript and JSON Schema specific to the running Codex version.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "codex app-server generate-ts/generate-json-schema outputs version-specific schemas."
+          }
+        ]
+      },
+      {
+        "id": "appserver.thread_lifecycle",
+        "name": "Thread lifecycle and history",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "summary": "App-server supports thread start/resume/fork/read/list/archive/unarchive/status/turn listing.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "Thread API overview documents start/resume/fork/read/list/archive/etc."
+          }
+        ]
+      },
+      {
+        "id": "appserver.turn_stream",
+        "name": "Turn and item event stream",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "summary": "App-server streams turn lifecycle, item lifecycle, text/reasoning/plan/diff/tool/command events.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "Events include turn/*, item/*, serverRequest/resolved and tagged ThreadItem variants."
+          }
+        ]
+      },
+      {
+        "id": "appserver.approvals",
+        "name": "Server-initiated approval requests",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "summary": "App-server issues requests for command execution, file changes, network access, tool user input, MCP approvals, dynamic tools, and token refresh depending on mode.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "Approval and serverRequest flows are documented with method names and serverRequest/resolved cleanup."
+          },
+          {
+            "sourceId": "app-server-controller-spec",
+            "grade": "local-spec",
+            "summary": "Controller spec requires every server-initiated request to receive a valid response or explicit decline/cancel."
+          }
+        ]
+      },
+      {
+        "id": "appserver.fs",
+        "name": "Filesystem v2 API",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "summary": "App-server v2 filesystem methods operate on absolute paths and support watch/unwatch/change notifications.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "fs/readFile, writeFile, metadata, directory, remove, copy, watch/unwatch/changed are documented."
+          }
+        ]
+      },
+      {
+        "id": "appserver.config_plugins_skills",
+        "name": "Config, skills, plugins, apps, MCP management",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "summary": "App-server exposes skills, plugin, marketplace, app, MCP server, config, requirements, feedback, external-agent import surfaces.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "API overview lists skills, plugins, apps, MCP, config, requirements, externalAgentConfig methods."
+          }
+        ]
+      }
+    ],
+    "importSourceShapes": [
+      {
+        "id": "import.codex_jsonl",
+        "field": "Codex CLI/app-server JSONL",
+        "status": "accepted",
+        "authorityLayer": "local-harness",
+        "shape": "source identity, thread id, session file path, timestamps, roles, reasoning, tool calls/results, approvals, file changes, errors, compaction",
+        "summary": "Initial import target for ODEU translation into ADEU session candidates.",
+        "evidence": [
+          {
+            "sourceId": "direct-extraction-spec",
+            "grade": "local-spec",
+            "summary": "Import target is Codex CLI/app-server JSONL to normalized evidence graph."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Import requirements preserve roles, final messages, reasoning summaries, tool calls/results, approvals, failures, timestamps, source path."
+          }
+        ]
+      },
+      {
+        "id": "import.chatgpt_web_export",
+        "field": "ChatGPT web thread export/copy",
+        "status": "unstable",
+        "authorityLayer": "renderer",
+        "shape": "copied transcript/export with weak event boundaries",
+        "summary": "Later only; evidence boundaries are too weak for direct runnable session import.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "ChatGPT web thread exports or copied transcript bundles are later and only if evidence boundaries are clear."
+          }
+        ]
+      }
+    ]
+  },
+  "deontics": {
+    "authRequirements": [
+      {
+        "id": "auth.req.chatgpt_subscription",
+        "field": "ChatGPT sign-in for subscription access",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "browser login, device code, or managed token mode",
+        "summary": "Subscription path requires ChatGPT auth, not a Platform API key.",
+        "evidence": [
+          {
+            "sourceId": "codex-auth-docs",
+            "grade": "official-doc",
+            "summary": "Sign in with ChatGPT gives subscription access; API keys are separate usage-based path."
+          }
+        ]
+      },
+      {
+        "id": "auth.req.workspace_policy",
+        "field": "ChatGPT workspace policy binding",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "workspace permissions/RBAC/retention/residency apply",
+        "summary": "Server-side access follows ChatGPT workspace and plan governance.",
+        "evidence": [
+          {
+            "sourceId": "codex-auth-docs",
+            "grade": "official-doc",
+            "summary": "With ChatGPT login, Codex usage follows workspace permissions, RBAC, Enterprise retention and residency."
+          }
+        ]
+      },
+      {
+        "id": "auth.req.direct_oauth",
+        "field": "Direct OAuth lifecycle",
+        "status": "observed",
+        "authorityLayer": "local-harness",
+        "shape": "PKCE/browser/manual callback + token refresh",
+        "summary": "Direct harness must own OAuth and token refresh if bypassing Codex CLI; first profile slice should not do live auth yet.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Direct harness should own OAuth login and token refresh."
+          },
+          {
+            "sourceId": "direct-extraction-spec",
+            "grade": "local-spec",
+            "summary": "First slice should not perform live OAuth or live model calls."
+          }
+        ]
+      }
+    ],
+    "tokenStorageRules": [
+      "Store OAuth credentials outside project config.",
+      "Never expose access or refresh tokens to renderer IPC/DOM/logs.",
+      "Use user-only file permissions or OS keyring where available.",
+      "Refresh access tokens under a process-level lock and preserve refresh token across transient failures.",
+      "Redact bearer tokens, refresh tokens, authorization codes, cookies, and account ids from fixtures unless replaced by placeholders."
+    ],
+    "workspaceAuthorityRules": [
+      "A model tool call is only a request, not authority to mutate the workspace.",
+      "Local shell, file write, patch, and command execution must route through the workspace authority layer.",
+      "Destructive or network-affecting actions require explicit user approval unless a proven local policy gate admits them.",
+      "Imported tool calls are evidence only and must never be auto-replayed.",
+      "WSL/local workspace truth remains outside the OAI backend and must be mediated by the host/backend workspace bridge."
+    ],
+    "approvalRequiredFor": [
+      {
+        "id": "approval.command",
+        "field": "command execution",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "shape": "item/commandExecution/requestApproval with availableDecisions",
+        "summary": "Command/network/sandbox permission approval must roundtrip through user authority.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "Command approval request flow includes itemId/threadId/turnId, optional reason/command/cwd/network/additionalPermissions/availableDecisions."
+          }
+        ]
+      },
+      {
+        "id": "approval.file_change",
+        "field": "file change",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "shape": "item/fileChange/requestApproval",
+        "summary": "Proposed edits must be visible and user-approved/declined/canceled before applying.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "File change request flow includes proposed fileChange item and approval request."
+          }
+        ]
+      },
+      {
+        "id": "approval.network",
+        "field": "managed network access",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "shape": "networkApprovalContext host/protocol/port",
+        "summary": "Network approvals are destination-specific and must not be rendered as generic shell approvals.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "networkApprovalContext indicates managed network access and prompts can group by destination."
+          }
+        ]
+      },
+      {
+        "id": "approval.mcp_side_effect",
+        "field": "MCP side-effect tool approval",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "shape": "tool/requestUserInput with Accept/Decline/Cancel options",
+        "summary": "Side-effect/destructive app connector calls can require approval and complete with error if declined/canceled.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "MCP tool-call approvals use tool/requestUserInput and destructive annotations trigger approval."
+          }
+        ]
+      },
+      {
+        "id": "approval.dynamic_tool",
+        "field": "dynamic tool execution",
+        "status": "unstable",
+        "authorityLayer": "codex-app-server",
+        "shape": "item/tool/call server request",
+        "summary": "Dynamic tools are experimental and should be declined/gated until implemented with a trust model.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "Dynamic tool calls are experimental."
+          }
+        ]
+      }
+    ],
+    "blockedBehaviors": [
+      "Do not treat chatgpt.com/backend-api/codex/responses as a stable public Platform API.",
+      "Do not expose direct path as a public production multi-user API client.",
+      "Do not copy Pi/Codex CLI implementation code into the harness without license review; re-express observations as probes/profile deltas.",
+      "Do not let raw backend event names leak into ADEU session logic.",
+      "Do not execute local tools directly from the transport adapter.",
+      "Do not auto-approve destructive actions by default.",
+      "Do not use consumer ChatGPT web thread endpoints as a fake programmable review-thread API."
+    ],
+    "dataHandlingRules": [
+      {
+        "id": "data.chatgpt_policy",
+        "field": "ChatGPT workspace data policy",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "workspace RBAC/retention/residency",
+        "summary": "ChatGPT-authenticated Codex usage follows ChatGPT workspace/admin policies, not API organization settings.",
+        "evidence": [
+          {
+            "sourceId": "codex-auth-docs",
+            "grade": "official-doc",
+            "summary": "ChatGPT login follows ChatGPT workspace permissions, RBAC, Enterprise retention and residency."
+          }
+        ]
+      },
+      {
+        "id": "data.zdr_stateless",
+        "field": "stateless/ZDR-compatible request posture",
+        "status": "observed",
+        "authorityLayer": "oai-server",
+        "shape": "store:false, encrypted reasoning content, no previous_response_id",
+        "summary": "Codex favors stateless request state and encrypted reasoning content for ZDR compatibility.",
+        "evidence": [
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "Codex avoids previous_response_id and uses encrypted_content in ZDR-compatible flows."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Request construction uses store:false and profile-owned local sessions."
+          }
+        ]
+      }
+    ],
+    "clientHarnessDuties": [
+      {
+        "id": "client.normalize_events",
+        "field": "normalize events before ADEU",
+        "status": "accepted",
+        "authorityLayer": "local-harness",
+        "shape": "raw -> normalized event contract",
+        "summary": "ADEU code must consume local normalized event classes, not backend event strings.",
+        "evidence": [
+          {
+            "sourceId": "direct-extraction-spec",
+            "grade": "local-spec",
+            "summary": "All backend events must normalize before ADEU code sees them."
+          }
+        ]
+      },
+      {
+        "id": "client.schema_gate",
+        "field": "schema/profile gate UX controls",
+        "status": "accepted",
+        "authorityLayer": "local-harness",
+        "shape": "observed -> probed -> accepted",
+        "summary": "UX controls, tools, imports, compaction and analytics require accepted capability evidence.",
+        "evidence": [
+          {
+            "sourceId": "direct-extraction-spec",
+            "grade": "local-spec",
+            "summary": "Only accepted capabilities become normal user-facing controls."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Never start from desired UX controls and assume server support."
+          }
+        ]
+      },
+      {
+        "id": "client.errors",
+        "field": "classify transport/auth/quota errors",
+        "status": "observed",
+        "authorityLayer": "local-harness",
+        "shape": "retryable/auth/quota/error taxonomy",
+        "summary": "Direct adapter must map backend failures to internal retry/auth/quota categories and retry only transient failures.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "SSE requirements include mapping backend failures and retrying only transient network/rate/server failures."
+          }
+        ]
+      }
+    ]
+  },
+  "epistemics": {
+    "evidenceSources": [
+      {
+        "id": "direct-extraction-spec",
+        "kind": "repo-spec",
+        "title": "CHATGPT_CODEX_ODEU_PROFILE_EXTRACTION_SPEC.md",
+        "summary": "Root local spec defining versioned evidence-backed ODEU profile with ontology/deontics/epistemics/utility axes and acceptance states.",
+        "urlOrPath": "CHATGPT_CODEX_ODEU_PROFILE_EXTRACTION_SPEC.md",
+        "reliability": "high"
+      },
+      {
+        "id": "direct-path-spec",
+        "kind": "repo-spec",
+        "title": "CHATGPT_CODEX_DIRECT_PATH_SPEC.md",
+        "summary": "Local direct path spec defining ChatGPT subscription backend, direct adapter contract, OAuth, request construction, stream transport, tool loop and ODEU mapping.",
+        "urlOrPath": "CHATGPT_CODEX_DIRECT_PATH_SPEC.md",
+        "reliability": "high"
+      },
+      {
+        "id": "app-server-controller-spec",
+        "kind": "repo-spec",
+        "title": "APP_SERVER_CONTROLLER_SPEC.md",
+        "summary": "Local spec for turning app-server integration into a full local Codex controller with request roundtripping.",
+        "urlOrPath": "APP_SERVER_CONTROLLER_SPEC.md",
+        "reliability": "medium"
+      },
+      {
+        "id": "codex-auth-docs",
+        "kind": "official-doc",
+        "title": "OpenAI Codex Authentication",
+        "summary": "Official Codex auth docs for ChatGPT subscription access, API key split, credential storage, workspace policy and device-code login.",
+        "urlOrPath": "https://developers.openai.com/codex/auth",
+        "reliability": "high"
+      },
+      {
+        "id": "codex-app-server-docs",
+        "kind": "official-doc",
+        "title": "OpenAI Codex App Server",
+        "summary": "Official app-server JSON-RPC protocol, transports, model/list, thread APIs, events, approvals, fs, auth, rate limits, schemas.",
+        "urlOrPath": "https://developers.openai.com/codex/app-server",
+        "reliability": "high"
+      },
+      {
+        "id": "codex-pricing-docs",
+        "kind": "official-doc",
+        "title": "OpenAI Codex Pricing",
+        "summary": "Official Codex plan/model/limit/credit documentation for ChatGPT Plus, Pro, Business, Edu, Enterprise and API key modes.",
+        "urlOrPath": "https://developers.openai.com/codex/pricing",
+        "reliability": "high"
+      },
+      {
+        "id": "codex-changelog",
+        "kind": "official-doc",
+        "title": "OpenAI Codex Changelog",
+        "summary": "Official Codex current feature/model availability notes including GPT-5.5 and browser use.",
+        "urlOrPath": "https://developers.openai.com/codex/changelog",
+        "reliability": "high"
+      },
+      {
+        "id": "responses-api-docs",
+        "kind": "official-doc",
+        "title": "OpenAI Responses API Reference",
+        "summary": "Official Responses API request/stream/tool/reasoning/usage field reference used as shape evidence for the Codex-compatible endpoint.",
+        "urlOrPath": "https://developers.openai.com/api/reference/resources/responses/methods/create/",
+        "reliability": "high"
+      },
+      {
+        "id": "openai-unrolling-codex",
+        "kind": "official-blog",
+        "title": "Unrolling the Codex agent loop",
+        "summary": "OpenAI engineering article stating ChatGPT login path uses chatgpt.com/backend-api/codex/responses and explaining Codex request/context/tool/caching/compaction architecture.",
+        "urlOrPath": "https://openai.com/index/unrolling-the-codex-agent-loop/",
+        "reliability": "high"
+      }
+    ],
+    "confidenceByCapability": {
+      "chatgpt_subscription_auth": "accepted",
+      "direct_backend_endpoint": "observed",
+      "direct_sse_transport": "observed",
+      "responses_stream_event_shape": "accepted",
+      "model_catalog_actual_for_user": "unknown",
+      "model_list_via_app_server": "accepted",
+      "text_input": "accepted",
+      "image_input_for_codex_models": "observed",
+      "file_input_for_direct_codex": "observed",
+      "reasoning_effort_controls": "observed",
+      "reasoning_encrypted_content": "accepted",
+      "tool_call_request_shape": "observed",
+      "local_tool_execution_authority": "accepted",
+      "hosted_builtin_tools_for_direct_endpoint": "unstable",
+      "tool_result_continuation": "observed",
+      "compaction_resume": "observed",
+      "prompt_cache_key": "accepted",
+      "rate_limit_read_via_app_server": "accepted",
+      "direct_rate_limit_error_taxonomy": "unknown",
+      "app_server_approval_roundtrip": "accepted",
+      "consumer_chatgpt_thread_programmatic_control": "rejected"
+    },
+    "acceptanceRules": [
+      "Official docs can move a capability to accepted only for the documented surface; direct chatgpt.com endpoint behavior still requires a local fixture or live probe where the docs do not promise public stability.",
+      "Specimen observations from Pi/OpenCode/Codex CLI create probe hypotheses, not normal UX controls.",
+      "Any UX control that affects auth, tool execution, compaction, import, or reasoning mode requires an accepted profile record for the active transport/model/account.",
+      "Capabilities marked unstable may be visible only in diagnostics or lab toggles.",
+      "Rejected capabilities must not be exposed as user controls."
+    ],
+    "unknowns": [
+      "Exact OAuth authorization parameters and headers required by the current direct ChatGPT/Codex backend for this account.",
+      "Whether chatgpt.com/backend-api/codex/responses currently accepts all Platform Responses fields named in the direct spec.",
+      "Exact current model IDs and hidden/visible picker state for a given Plus/Pro/Business/Edu/Enterprise account.",
+      "Exact ChatGPT account-id header requirements on direct requests.",
+      "Exact error taxonomy for direct endpoint rate limits, quota exhaustion, credits, auth expiry, model unavailability, and malformed tool results.",
+      "Direct endpoint behavior for file input, image input, hosted tools, WebSocket, and compaction for this account.",
+      "Whether GPT-5.3-Codex-Spark is visible to a given Pro account and what modalities/tool settings it exposes."
+    ],
+    "driftWatch": [
+      "OAuth parameter or endpoint changes.",
+      "chatgpt.com/backend-api/codex/responses path/header changes.",
+      "New/removed model ids and model-list capability fields.",
+      "Reasoning summary/encrypted-content shape changes.",
+      "Tool-call serialization and tool-result continuation shape changes.",
+      "Prompt-cache/session-affinity behavior changes.",
+      "Rate-limit bucket and credit semantics.",
+      "Responses SSE/WebSocket event additions/removals.",
+      "App-server generated schema changes.",
+      "Official Codex UX states that imply new server-side capabilities."
+    ]
+  },
+  "utility": {
+    "latency": [
+      {
+        "id": "latency.sse",
+        "metric": "SSE streaming latency",
+        "status": "observed",
+        "unit": "qualitative",
+        "summary": "SSE lets the UI stream deltas as soon as they arrive; no numeric baseline without live probe.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "Streaming example shows delta events."
+          },
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "Phase 1 direct transport should use SSE over fetch."
+          }
+        ]
+      },
+      {
+        "id": "latency.websocket",
+        "metric": "WebSocket latency",
+        "status": "unstable",
+        "unit": "qualitative",
+        "summary": "WebSocket may improve latency/continuity but is not admitted before SSE baseline; app-server WebSocket is experimental.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "WebSocket phase 2 only if useful."
+          },
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "App-server WebSocket is experimental/unsupported."
+          }
+        ]
+      },
+      {
+        "id": "latency.prompt_cache",
+        "metric": "Prompt cache reuse",
+        "status": "accepted",
+        "unit": "qualitative",
+        "summary": "Stable static prefixes and prompt_cache_key can reduce recomputation; cache hits depend on exact prefix stability.",
+        "evidence": [
+          {
+            "sourceId": "openai-unrolling-codex",
+            "grade": "official-engineering-note",
+            "summary": "Prompt caching makes sampling closer to linear on cache hits and is sensitive to model/tools/sandbox/cwd changes."
+          },
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "prompt_cache_key/prompt_cache_retention are documented."
+          }
+        ]
+      }
+    ],
+    "usageFields": [
+      {
+        "id": "usage.tokens",
+        "field": "usage.input/output/total_tokens",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "input_tokens, output_tokens, total_tokens",
+        "summary": "Final Responses usage reports token counts.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "response.completed includes usage token fields."
+          }
+        ]
+      },
+      {
+        "id": "usage.cached_tokens",
+        "field": "input_tokens_details.cached_tokens",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "integer",
+        "summary": "Responses usage can report cached input tokens.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "usage includes cached token detail in examples."
+          }
+        ]
+      },
+      {
+        "id": "usage.reasoning_tokens",
+        "field": "output_tokens_details.reasoning_tokens",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "integer",
+        "summary": "Responses usage can report reasoning token counts.",
+        "evidence": [
+          {
+            "sourceId": "responses-api-docs",
+            "grade": "official-doc",
+            "summary": "usage output details include reasoning_tokens."
+          }
+        ]
+      },
+      {
+        "id": "usage.rate_limits",
+        "field": "account/rateLimits/read",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "shape": "usedPercent, windowDurationMins, resetsAt, rateLimitReachedType, credits",
+        "summary": "App-server can surface ChatGPT Codex rate-limit buckets and updates.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "account/rateLimits/read and updated include limitId, usedPercent, window duration, resetsAt, credits/rateLimitReachedType when present."
+          }
+        ]
+      },
+      {
+        "id": "usage.plan_limits",
+        "field": "plan/model usage ranges",
+        "status": "accepted",
+        "authorityLayer": "oai-server",
+        "shape": "Plus/Pro/Business/Edu/Enterprise local/cloud/review buckets",
+        "summary": "Plan limits are model and task-type dependent and can be extended with credits; exact current user availability is dynamic.",
+        "evidence": [
+          {
+            "sourceId": "codex-pricing-docs",
+            "grade": "official-doc",
+            "summary": "Pricing docs list current model/message/task limit ranges and credit behavior."
+          }
+        ]
+      }
+    ],
+    "retryBehavior": [
+      {
+        "id": "retry.transient",
+        "field": "transient network/rate/server failures",
+        "status": "observed",
+        "authorityLayer": "local-harness",
+        "shape": "retry with backoff only when classified retryable",
+        "summary": "Direct adapter should retry only transient failures and map quota/auth separately.",
+        "evidence": [
+          {
+            "sourceId": "direct-path-spec",
+            "grade": "local-spec",
+            "summary": "SSE requirements include retry only transient network/rate/server failures."
+          }
+        ]
+      },
+      {
+        "id": "retry.server_overloaded",
+        "field": "JSON-RPC -32001 overloaded",
+        "status": "accepted",
+        "authorityLayer": "codex-app-server",
+        "shape": "exponential delay + jitter",
+        "summary": "App-server WebSocket ingress can reject with overloaded error and client should retry with exponential backoff and jitter.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "Bounded queues reject with -32001 Server overloaded; retry later and clients should use backoff/jitter."
+          }
+        ]
+      },
+      {
+        "id": "retry.auth_refresh",
+        "field": "ChatGPT external token refresh",
+        "status": "unstable",
+        "authorityLayer": "codex-app-server",
+        "shape": "server request times out after about 10 seconds",
+        "summary": "External-token hosts must respond quickly with fresh tokens or fail explicitly.",
+        "evidence": [
+          {
+            "sourceId": "codex-app-server-docs",
+            "grade": "official-doc",
+            "summary": "External-token refresh request after 401 times out after about 10 seconds."
+          }
+        ]
+      }
+    ],
+    "degradationModes": [
+      "Auth expired or workspace disallowed.",
+      "Plan/credit quota exhausted or rate-limit bucket reached.",
+      "Model not available to account or hidden by rollout.",
+      "Reasoning effort or modality unsupported by selected model.",
+      "Malformed/unsupported tool result continuation.",
+      "Context window overflow when truncation/compaction is not admitted.",
+      "Prompt-cache miss due to changed model, tools, sandbox, approval mode, current working directory, or MCP tool set.",
+      "Direct backend private contract drift.",
+      "App-server schema drift across Codex versions.",
+      "Hosted tool or connector not authenticated/authorized."
+    ],
+    "recommendedUxAffordances": [
+      "Auth status panel showing ChatGPT workspace/account plan in redacted form.",
+      "Model selector populated from live model/list or direct probe, not a hardcoded list.",
+      "Reasoning selector gated by selected model capability.",
+      "Text verbosity selector with low default for implementation turns.",
+      "Tool-call approval queue that makes local authority explicit.",
+      "Usage/rate-limit meter with usedPercent, reset time, and credit state when available.",
+      "Diagnostics panel for unstable direct backend/event fields.",
+      "Profile snapshot attached to every direct harness session/turn."
+    ],
+    "blockedUxAffordances": [
+      "A normal user-facing direct mode before OAuth, plain-text turn, reasoning-summary turn, tool-call, tool-result continuation, abort, quota/error, and cache-affinity probes pass.",
+      "Auto-executing shell/patch/MCP tools because the model called them.",
+      "Exposing Spark or hosted tools as normal controls unless live model/profile reports them.",
+      "Presenting ChatGPT consumer thread control as an official programmable API.",
+      "Treating raw backend event names as stable ADEU ontology."
+    ]
+  },
+  "uxExposurePolicy": {
+    "normalControls": [
+      "ChatGPT subscription auth status, after local OAuth implementation.",
+      "Model picker from live capability discovery.",
+      "Reasoning and verbosity controls only when the active model/profile admits them.",
+      "Manual tool/handoff authority controls through local workspace gate.",
+      "Usage/rate-limit readouts when available."
+    ],
+    "diagnosticControls": [
+      "Raw endpoint/header/profile diff diagnostics with redaction.",
+      "Unknown event/method capture.",
+      "Rate/quota error classifier traces.",
+      "Cache hit/miss evidence where exposed through usage fields."
+    ],
+    "labControls": [
+      "Direct WebSocket transport parity.",
+      "Hosted built-in tools under ChatGPT subscription endpoint.",
+      "Externally managed ChatGPT token mode.",
+      "Compaction-resume experiments.",
+      "Spark research-preview model routing."
+    ],
+    "rejectedControls": [
+      "Platform API key mode as part of this ChatGPT-subscription ODEU profile.",
+      "Consumer ChatGPT web-thread send/upload/scrape automation as an assumed official API.",
+      "Persistent auto-approval policy for destructive actions before request lifecycle is proven.",
+      "Provider-neutral UX that erases GPT/Codex lineage before certification."
+    ]
+  }
+}

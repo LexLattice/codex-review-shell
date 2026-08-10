@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import fs from "node:fs/promises";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -9,6 +10,41 @@ import process from "node:process";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
 const agentPath = path.join(appRoot, "src", "backend", "wsl-agent.js");
+
+async function runAgentBatch(root, requests) {
+  const batchChild = spawn(process.execPath, [agentPath, "--root", root, "--workspace-kind", "local", "--project-id", "smoke"], {
+    cwd: root,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let batchBuffer = "";
+  const batchResponses = new Map();
+  const batchEvents = [];
+  batchChild.stdout.setEncoding("utf8");
+  batchChild.stdout.on("data", (chunk) => {
+    batchBuffer += chunk;
+    let index = batchBuffer.indexOf("\n");
+    while (index >= 0) {
+      const line = batchBuffer.slice(0, index);
+      batchBuffer = batchBuffer.slice(index + 1);
+      index = batchBuffer.indexOf("\n");
+      if (!line.trim()) continue;
+      const message = JSON.parse(line);
+      if (message.event) batchEvents.push(message);
+      else batchResponses.set(message.id, message);
+    }
+  });
+  batchChild.stderr.setEncoding("utf8");
+  batchChild.stderr.on("data", (chunk) => process.stderr.write(chunk));
+  for (const request of requests) {
+    batchChild.stdin.write(`${JSON.stringify(request)}\n`);
+  }
+  batchChild.stdin.end();
+  const batchTimeout = setTimeout(() => batchChild.kill(), 6000);
+  await once(batchChild, "exit");
+  clearTimeout(batchTimeout);
+  return { responses: batchResponses, events: batchEvents };
+}
+
 const child = spawn(process.execPath, [agentPath, "--root", appRoot, "--workspace-kind", "local", "--project-id", "smoke"], {
   cwd: appRoot,
   stdio: ["pipe", "pipe", "pipe"],
@@ -83,6 +119,59 @@ if (!matches.some((entry) => entry.relPath === "README.md")) {
   console.error("Matching-file smoke did not find README.md through the backend.");
 }
 
+const patchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-agent-patch-"));
+try {
+  fs.writeFileSync(path.join(patchRoot, "space name.txt"), "old line\n", "utf8");
+  const patchText = [
+    'diff --git "a/space name.txt" "b/space name.txt"',
+    '--- "a/space name.txt"',
+    '+++ "b/space name.txt"',
+    "@@ -1 +1 @@",
+    "-old line",
+    "+new line",
+    'diff --git "a/no newline.txt" "b/no newline.txt"',
+    "new file mode 100644",
+    "--- /dev/null",
+    '+++ "b/no newline.txt"',
+    "@@ -0,0 +1 @@",
+    "+hello",
+    "\\ No newline at end of file",
+    "",
+  ].join("\n");
+  const patchBatch = await runAgentBatch(patchRoot, [
+    { id: "patchDryRun", method: "applyPatch", params: { mode: "dryRun", patch: patchText } },
+    { id: "patchApply", method: "applyPatch", params: { mode: "apply", patch: patchText } },
+  ]);
+  const dryRun = patchBatch.responses.get("patchDryRun");
+  const applied = patchBatch.responses.get("patchApply");
+  if (!dryRun || dryRun.error || !applied || applied.error) {
+    failed = true;
+    console.error("Patch apply smoke failed.", dryRun?.error || applied?.error || "missing response");
+  } else {
+    const dryFiles = dryRun.result.files || [];
+    const spacePlan = dryFiles.find((file) => file.displayPath === "space name.txt");
+    const newlinePlan = dryFiles.find((file) => file.displayPath === "no newline.txt");
+    if (!spacePlan || !newlinePlan) {
+      failed = true;
+      console.error("Patch apply smoke did not preserve quoted paths with spaces.");
+    }
+    if (spacePlan?.previewText === newlinePlan?.previewText) {
+      failed = true;
+      console.error("Patch apply smoke expected per-file patch previews.");
+    }
+    if (fs.readFileSync(path.join(patchRoot, "space name.txt"), "utf8") !== "new line\n") {
+      failed = true;
+      console.error("Patch apply smoke did not update quoted path file.");
+    }
+    if (fs.readFileSync(path.join(patchRoot, "no newline.txt"), "utf8") !== "hello") {
+      failed = true;
+      console.error("Patch apply smoke did not preserve no-newline marker.");
+    }
+  }
+} finally {
+  fs.rmSync(patchRoot, { recursive: true, force: true });
+}
+
 if (failed) process.exit(1);
 
 function parseAgentLines(childProcess, onMessage) {
@@ -140,7 +229,7 @@ if (!brokenPipeReady) {
 if (failed) process.exit(1);
 
 const commandPidPath = path.join(os.tmpdir(), `codex-review-shell-agent-child-${process.pid}.pid`);
-await fs.rm(commandPidPath, { force: true });
+await fsp.rm(commandPidPath, { force: true });
 const childTrackingAgent = spawn(process.execPath, [agentPath, "--root", appRoot, "--workspace-kind", "local", "--project-id", "smoke-child-tracking"], {
   cwd: appRoot,
   stdio: ["pipe", "pipe", "pipe"],
@@ -181,7 +270,7 @@ if (!childTrackingReady) {
     (async () => {
       for (let attempt = 0; attempt < 30; attempt += 1) {
         try {
-          commandPid = Number((await fs.readFile(commandPidPath, "utf8")).trim()) || 0;
+          commandPid = Number((await fsp.readFile(commandPidPath, "utf8")).trim()) || 0;
           if (commandPid > 0) return true;
         } catch {}
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -221,7 +310,7 @@ if (!childTrackingReady) {
   }
 }
 
-await fs.rm(commandPidPath, { force: true });
+await fsp.rm(commandPidPath, { force: true });
 
 if (failed) process.exit(1);
 console.log("Workspace backend agent smoke passed.");

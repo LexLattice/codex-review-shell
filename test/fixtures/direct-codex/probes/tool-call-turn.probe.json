@@ -1,0 +1,33 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.fixture.tool_call_turn",
+  "name": "Tool Call Fixture Turn",
+  "hypothesis": "A committed tool-call stream fixture normalizes tool-call start, argument deltas, completion, usage, and response completion without executing tools.",
+  "fixture": {
+    "source": "committed-fixture",
+    "rawFixtureId": "raw/tool-call-turn"
+  },
+  "normalization": {
+    "expectedFixtureId": "normalized/tool-call-turn",
+    "failOnUnknown": true
+  },
+  "profileDelta": {
+    "expectedFixtureId": "profile-deltas/tool-call-turn"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredEventTypes": [
+      "session_started",
+      "tool_call_started",
+      "tool_call_delta",
+      "tool_call_completed",
+      "usage_delta",
+      "response_completed"
+    ]
+  },
+  "blockedLiveGates": [
+    "No model-requested tool execution.",
+    "No tool-result continuation.",
+    "No workspace mutation authority."
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "operation": "jwt_account_id_extraction",
+  "input": {
+    "syntheticJwt": "not-a-jwt"
+  },
+  "expected": {
+    "status": "invalid_jwt",
+    "accountId": "",
+    "claimPath": "https://api.openai.com/auth",
+    "reason": "JWT must have three segments."
+  }
+}

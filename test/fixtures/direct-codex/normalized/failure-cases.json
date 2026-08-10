@@ -1,0 +1,68 @@
+{
+  "events": [
+    {
+      "type": "response_incomplete",
+      "sequence": 0,
+      "source": {
+        "rawIndex": 0,
+        "rawType": "response.incomplete"
+      },
+      "responseId": "resp_fixture_incomplete",
+      "reason": "max_output_tokens"
+    },
+    {
+      "type": "response_failed",
+      "sequence": 1,
+      "source": {
+        "rawIndex": 1,
+        "rawType": "response.failed"
+      },
+      "responseId": "resp_fixture_failed",
+      "code": "server_error",
+      "message": "Synthetic server failure.",
+      "retryable": true
+    },
+    {
+      "type": "auth_error",
+      "sequence": 2,
+      "source": {
+        "rawIndex": 2,
+        "rawType": "error"
+      },
+      "code": "unauthorized",
+      "message": "Synthetic auth failure.",
+      "retryable": false
+    },
+    {
+      "type": "quota_error",
+      "sequence": 3,
+      "source": {
+        "rawIndex": 3,
+        "rawType": "error"
+      },
+      "code": "rate_limit_exceeded",
+      "message": "Synthetic quota failure.",
+      "retryable": true
+    },
+    {
+      "type": "transport_error",
+      "sequence": 4,
+      "source": {
+        "rawIndex": 4,
+        "rawType": "error"
+      },
+      "code": "server_overloaded",
+      "message": "Synthetic transient transport failure.",
+      "retryable": true
+    },
+    {
+      "type": "aborted",
+      "sequence": 5,
+      "source": {
+        "rawIndex": 5,
+        "rawType": "aborted"
+      },
+      "reason": "user_cancelled"
+    }
+  ]
+}

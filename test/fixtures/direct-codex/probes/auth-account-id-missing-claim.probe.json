@@ -1,0 +1,24 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.account_id_missing_claim",
+  "name": "OAuth Account Id Missing Claim Shape",
+  "hypothesis": "A syntactically valid synthetic JWT without the ChatGPT account claim is rejected before authenticated status projection.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/account-id-missing-claim"
+  },
+  "authShape": {
+    "operation": "jwt_account_id_extraction"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "claimPath"
+    ]
+  },
+  "blockedLiveGates": [
+    "No live access token.",
+    "No token storage."
+  ]
+}

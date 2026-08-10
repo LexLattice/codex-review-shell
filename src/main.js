@@ -19,6 +19,174 @@ const { CodexSurfaceSession } = require("./main/codex-surface-session");
 const { MiddleWebHost } = require("./main/middle-web-host");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
+const {
+  createDirectAuthIpcController,
+  registerDirectAuthIpcHandlers,
+} = require("./main/direct/auth/auth-ipc");
+const { createDirectAuthLoginCoordinator } = require("./main/direct/auth/auth-login");
+const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-server-auth-bridge");
+const { createCodexCliAuthStore, createDirectAuthCompositeStore } = require("./main/direct/auth/codex-cli-auth");
+const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-loader");
+const { DirectSessionStore } = require("./main/direct/session/session-store");
+const { DirectThreadStore } = require("./main/direct/thread/thread-store");
+const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
+const { DirectWorkThreadRegistryStore } = require("./main/direct/bridge/work-thread-registry");
+const { DirectAgentRegistryStore } = require("./main/direct/bridge/agent-registry");
+const { DirectImportController } = require("./main/direct/import/import-controller");
+const {
+  DirectMetaSessionStore,
+  assertMetaSessionRendererSafe,
+  buildDirectMetaSessionStatusProjection,
+} = require("./main/direct/meta-session");
+const {
+  DIRECT_IMPLEMENTATION_PROOF_RUNS_ROOT_NAME,
+  DirectImplementationProofEvidenceStore,
+} = require("./main/direct/probes/implementation-proof-evidence-store");
+const {
+  DIRECT_LIVE_PROBE_EVIDENCE_ROOT_NAME,
+  DirectLiveProbeEvidenceStore,
+} = require("./main/direct/probes/live-probe-evidence-store");
+const {
+  DIRECT_FIXTURE_SURFACE_TRANSPORT,
+  DirectFixtureController,
+  DirectFixtureSurfaceSession,
+  buildDirectFixtureCapabilities,
+} = require("./main/direct/controller/fixture-controller");
+const {
+  DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+  DirectLiveTextController,
+  DirectLiveTextSurfaceSession,
+  buildDirectLiveTextCapabilities,
+} = require("./main/direct/controller/live-text-controller");
+const {
+  DEFAULT_TEXT_PROBE_INSTRUCTIONS,
+  DEFAULT_TEXT_PROBE_PROMPT,
+  runTextOnlyDirectProbe,
+} = require("./main/direct/transport/codex-responses-transport");
+const {
+  buildDirectRuntimeStatus,
+  directRuntimeLaneLabel,
+  normalizeCodexBindingProvider,
+  normalizeDirectExperimentalRuntimeTier,
+  normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
+} = require("./main/direct/runtime/runtime-status");
+const {
+  bindingForDirectRuntimePath,
+  directRuntimePathFromBinding,
+  normalizeDirectRuntimePath,
+  resolveCodexThreadOpenRuntime,
+} = require("./main/direct/runtime/runtime-path-selection");
+const {
+  buildDirectImplementationLaneUiStatus,
+  buildDirectPolicyReadOnlyView,
+  projectOperationHistoryPage,
+} = require("./main/direct/ui/implementation-lane-ui");
+const {
+  assertDirectSettingsSurfaceRendererSafe,
+  buildDirectSettingsSurfaceProjection,
+} = require("./main/direct/ui/settings-surface");
+const {
+  buildDirectInformationBridgeAudit,
+} = require("./main/direct/bridge/information-registry");
+const {
+  assertDirectManualSmokeGateSafe,
+  buildDirectManualSmokeGate,
+} = require("./main/direct/readiness/manual-smoke-gate");
+const {
+  buildRuntimeWitnessProjection,
+  normalizeEvidenceRef,
+} = require("./main/direct/readiness/usage-readiness");
+const {
+  DirectServerMetadataAdapter,
+} = require("./main/direct/provider/metadata-adapter");
+const {
+  assertProviderHostedToolsStatusSafe,
+  buildProviderHostedToolsStatus,
+} = require("./main/direct/provider/hosted-tools");
+const {
+  assertPluginGovernanceStatusSafe,
+  buildPluginGovernanceStatus,
+} = require("./main/direct/external/plugin-governance");
+const {
+  assertContextPacketPreviewSafe,
+  buildContextPacketPreview,
+} = require("./main/direct/context/preview-workbench");
+const {
+  assertOperatorBrokerProjectionSafe,
+  assertOperatorBrokerResolutionSafe,
+  buildOperatorBrokerResolution,
+  buildOperatorBrokerResolutionProjection,
+} = require("./main/direct/governance/operator-broker-resolution");
+const {
+  buildAppServerFallbackParityReport,
+} = require("./main/direct/readiness/appserver-fallback-parity");
+const {
+  buildBridgeModuleStatusProjection,
+} = require("./main/direct/bridge/skills-hooks-apps");
+const {
+  buildAgentClassRegistry,
+  buildAgentClassStatusProjection,
+} = require("./main/direct/bridge/agent-class-spec");
+const {
+  buildToolCapabilityRegistry,
+  buildToolCapabilityStatusProjection,
+  validateToolCapabilityRegistry,
+} = require("./main/direct/bridge/tool-capability-registry");
+const {
+  buildDirectAgentUsageLedger,
+  buildDirectAgentUsageSummaryProjection,
+} = require("./main/direct/usage/agent-ledger");
+const {
+  assertAgentRuntimeSubstrateSafe,
+  buildAgentMailbox,
+  buildAgentRuntimeSubstrateStatus,
+  buildAgentThreadGraph,
+} = require("./main/direct/agents/runtime-substrate");
+const {
+  assertTextOnlySubAgentToolSurfaceSafe,
+  buildTextOnlySubAgentToolSurface,
+} = require("./main/direct/agents/text-tool-surface");
+const {
+  createDirectLiveSubAgentToolSurface,
+} = require("./main/direct/agents/live-tool-surface");
+const {
+  assertBatchAgentJobSurfaceSafe,
+  buildBatchAgentJobSurface,
+} = require("./main/direct/agents/batch-job-surface");
+const {
+  assertStatefulExecSessionSurfaceSafe,
+  buildStatefulExecSessionSurface,
+} = require("./main/direct/tools/stateful-exec-session");
+const {
+  assertCodeModeExecutionLaneSafe,
+  buildCodeModeExecutionLaneStatus,
+} = require("./main/direct/tools/code-mode-execution-lane");
+const {
+  assertExternalCapabilityDiscoveryRegistrySafe,
+  buildExternalCapabilityDiscoveryRegistry,
+  buildExternalCapabilityDiscoveryStatusProjection,
+} = require("./main/direct/external/capability-discovery");
+const {
+  buildExternalCapabilityProfile,
+} = require("./main/direct/external/external-capability-profile");
+const {
+  assertMcpResourceToolBoundarySafe,
+  buildMcpResourceToolBoundaryStatus,
+} = require("./main/direct/external/mcp-boundary");
+const {
+  assertControlToolSubstrateSafe,
+  buildControlToolSubstrateStatus,
+} = require("./main/direct/tools/control-perception-decision-substrate");
+const {
+  buildVanillaSiblingContextEvidence,
+} = require("./main/direct/context/maintenance");
+const {
+  DirectExperimentalActivationStore,
+  activeDirectTurnCountForProject,
+  activationProjectBindingDigest,
+  evaluateDirectTextOnlyRuntimeSelection,
+  evaluateDirectExperimentalProjectActivation,
+} = require("./main/direct/runtime/project-activation");
 const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
 const {
   createCodexSurfaceConnectionAuthority,
@@ -48,6 +216,9 @@ const {
 } = require("./main/attachment-staging-store");
 const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
 const { readUsageLedgerAnalytics } = require("./main/usage-ledger-analytics");
+const {
+  buildRuntimeAnalyticsProjection,
+} = require("./main/direct/analytics/runtime-analytics-adapter");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 const APP_TITLE = "Codex Review Shell";
@@ -57,6 +228,7 @@ const MIDDLE_WEB_HISTORY_FILE_NAME = "middle-web-history.json";
 const CHATGPT_THREAD_CACHE_VERSION = 1;
 const CHATGPT_THREAD_CACHE_MAX_ENTRIES = 1500;
 const THREAD_ANALYTICS_DB_FILE_NAME = "thread-analytics.sqlite";
+const DIRECT_SESSION_ROOT_NAME = "direct-sessions";
 const THREAD_ANALYTICS_ANALYZER_VERSION = "analytics-v0.1";
 const ANALYTICS_DISCOVERY_THREAD_LIMIT = 260;
 const ANALYTICS_DISCOVERY_SCAN_LIMIT = 420;
@@ -66,7 +238,9 @@ const CHATGPT_PARTITION = "persist:codex-review-shell-chatgpt";
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
 const CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES = 500;
+const PROFILE_ENV_VAR = "CODEX_REVIEW_SHELL_PROFILE";
 const USER_DATA_DIR_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_DIR";
+const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
 const CHATGPT_DOWNLOAD_MACRO_REQUEST_TTL_MS = 60_000;
 
 const appRoot = path.resolve(__dirname, "..");
@@ -108,30 +282,66 @@ function uniquePaths(values) {
   });
 }
 
-function configureAppIdentity() {
+function normalizeProfileName(value) {
+  const text = earlyNormalizeString(value, "");
+  if (!text || text === "default") return "";
+  return text.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+}
+
+function configureAppProfile() {
   app.setName(APP_TITLE);
   const explicitUserDataDir = earlyNormalizeString(process.env[USER_DATA_DIR_ENV_VAR], "");
   if (explicitUserDataDir) {
-    app.setPath("userData", path.resolve(explicitUserDataDir));
-    return;
+    const userData = path.resolve(explicitUserDataDir);
+    app.setPath("userData", userData);
+    return {
+      profileName: "explicit",
+      isolated: true,
+      userData,
+    };
   }
-  const appDataPath = app.getPath("appData");
-  const canonicalUserDataPath = path.join(appDataPath, APP_TITLE);
-  const legacyUserDataPath = path.join(appDataPath, "codex-review-shell");
-  const candidates = uniquePaths([canonicalUserDataPath, legacyUserDataPath, app.getPath("userData")]);
-  let selectedPath = canonicalUserDataPath;
-  let selectedMtime = 0;
-  for (const candidate of candidates) {
-    const mtime = existingFileMtimeMs(path.join(candidate, CONFIG_FILE_NAME));
-    if (mtime > selectedMtime) {
-      selectedPath = candidate;
-      selectedMtime = mtime;
+  const profileName = normalizeProfileName(process.env[PROFILE_ENV_VAR]);
+  if (!profileName) {
+    const appDataPath = app.getPath("appData");
+    const canonicalUserDataPath = path.join(appDataPath, APP_TITLE);
+    const legacyUserDataPath = path.join(appDataPath, "codex-review-shell");
+    const formerDirectUserDataPath = path.join(appDataPath, "codex-review-shell-direct");
+    // A promoted installation may have been active on either former lineage.
+    // Keep using the profile with the newest persisted workspace configuration.
+    const candidates = uniquePaths([
+      canonicalUserDataPath,
+      legacyUserDataPath,
+      formerDirectUserDataPath,
+      app.getPath("userData"),
+    ]);
+    let selectedPath = canonicalUserDataPath;
+    let selectedMtime = 0;
+    for (const candidate of candidates) {
+      const mtime = existingFileMtimeMs(path.join(candidate, CONFIG_FILE_NAME));
+      if (mtime > selectedMtime) {
+        selectedPath = candidate;
+        selectedMtime = mtime;
+      }
     }
+    app.setPath("userData", selectedPath);
+    return {
+      profileName: "default",
+      isolated: false,
+      userData: selectedPath,
+    };
   }
-  app.setPath("userData", selectedPath);
+  const configuredRoot = earlyNormalizeString(process.env[USER_DATA_ROOT_ENV_VAR], "");
+  const profileRoot = configuredRoot || path.join(app.getPath("appData"), APP_TITLE);
+  const userData = path.join(profileRoot, profileName);
+  app.setPath("userData", userData);
+  return {
+    profileName,
+    isolated: true,
+    userData,
+  };
 }
 
-configureAppIdentity();
+const activeAppProfile = configureAppProfile();
 
 let mainWindow = null;
 let shellView = null;
@@ -151,6 +361,25 @@ let codexAppServer = null;
 let localSurfaceServer = null;
 let codexSurfaceSessions = null;
 let threadAnalyticsStore = null;
+let directAuthController = null;
+let directAuthLoginCoordinator = null;
+let directCodexCliAuthStore = null;
+let directCodexProfileDoc = null;
+let directSessionStore = null;
+let directThreadStore = null;
+let directWorkThreadStore = null;
+let directAgentRegistryStore = null;
+let directThreadWorkbenchController = null;
+let directImportController = null;
+let directMetaSessionStore = null;
+let directLiveProbeEvidenceStore = null;
+let directImplementationProofEvidenceStore = null;
+let directFixtureController = null;
+let directLiveTextController = null;
+let directProviderMetadataAdapter = null;
+let directActivationStore = null;
+const directActivationLocks = new Map();
+const directAgentRegistryBackfillStateByProject = new Map();
 let chatgptDownloadHandler = null;
 let pendingChatgptDownloadMacroRequests = [];
 let activeChatgptContext = null;
@@ -165,9 +394,39 @@ const nativePlaneZoomFactors = {
 const lastSuccessfulCodexThreadByProject = new Map();
 const latestCodexOpenTargetByProject = new Map();
 const latestCodexThreadFailureByProject = new Map();
+const latestContextManagementEvidenceByProject = new Map();
+const contextManagementObservationsByProject = new Map();
+const latestCodexAgentGraphByProjectThread = new Map();
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function stableDigestValue(value, seen = new WeakSet()) {
+  if (typeof value === "bigint") return `bigint:${value.toString()}`;
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    return value.map((item) => stableDigestValue(item, seen));
+  }
+  if (value && typeof value === "object") {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    const output = {};
+    for (const key of Object.keys(value).sort()) {
+      if (value[key] !== undefined) output[key] = stableDigestValue(value[key], seen);
+    }
+    return output;
+  }
+  return value;
+}
+
+function stableDigest(value) {
+  try {
+    return crypto.createHash("sha256").update(JSON.stringify(stableDigestValue(value))).digest("hex");
+  } catch {
+    return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+  }
 }
 
 function newId(prefix) {
@@ -188,6 +447,30 @@ function middleWebHistoryPath() {
 
 function threadAnalyticsDbPath() {
   return path.join(app.getPath("userData"), THREAD_ANALYTICS_DB_FILE_NAME);
+}
+
+function directAuthRootDir() {
+  return path.join(app.getPath("userData"), "direct-auth");
+}
+
+function directProviderMetadataRootDir() {
+  return path.join(app.getPath("userData"), "direct-provider-metadata");
+}
+
+function directSessionRootDir() {
+  return path.join(app.getPath("userData"), DIRECT_SESSION_ROOT_NAME);
+}
+
+function directLiveProbeEvidenceRootDir() {
+  return path.join(app.getPath("userData"), DIRECT_LIVE_PROBE_EVIDENCE_ROOT_NAME);
+}
+
+function directImplementationProofRunsRootDir() {
+  return path.join(app.getPath("userData"), DIRECT_IMPLEMENTATION_PROOF_RUNS_ROOT_NAME);
+}
+
+function directMetaSessionRootDir() {
+  return path.join(app.getPath("userData"), ".direct-meta-session");
 }
 
 function tempFilePath(targetPath) {
@@ -289,11 +572,16 @@ function defaultConfig() {
         surfaceBinding: {
           codex: {
             mode: "managed",
+            bindingProvider: "codex-compatible",
+            runtimeMode: "legacy-app-server",
+            directTransport: "fixture",
             runtime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
+            profileId: "",
             target: "",
             binaryPath: "codex",
             model: "",
             reasoningEffort: "",
+            spawnAgentModelOverrides: false,
             label: "Managed Codex lane",
             provider: {
               kind: "codex_executable",
@@ -369,6 +657,11 @@ function normalizeCodexRuntime(value) {
   return ["auto", "host", "wsl"].includes(candidate) ? candidate : "auto";
 }
 
+function normalizeDirectExperimentalTransport(value) {
+  const candidate = normalizeString(value, "fixture").toLowerCase();
+  return ["fixture", "live-text"].includes(candidate) ? candidate : "fixture";
+}
+
 function normalizeRemoteAuthConfig(value) {
   const raw = isPlainObject(value) ? value : {};
   const modeCandidate = normalizeString(raw.mode, "none").toLowerCase();
@@ -414,7 +707,7 @@ function normalizeDownloadMacroConfig(value) {
 
 function normalizeReasoningEffort(value) {
   const candidate = normalizeString(value, "").toLowerCase();
-  return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(candidate) ? candidate : "";
+  return ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(candidate) ? candidate : "";
 }
 
 function normalizeApprovalPolicy(value) {
@@ -1131,6 +1424,12 @@ function normalizeProject(input, index = 0) {
   const rawChatgpt = isPlainObject(surfaceBinding.chatgpt) ? surfaceBinding.chatgpt : {};
   const rawFlow = isPlainObject(raw.flowProfile) ? raw.flowProfile : {};
   const codexMode = normalizeCodexMode(rawCodex.mode);
+  const codexRuntimeMode = normalizeDirectRuntimeModeForStatus(rawCodex.runtimeMode);
+  const directTransport = normalizeDirectExperimentalTransport(rawCodex.directTransport);
+  const directTier = normalizeDirectExperimentalRuntimeTier(
+    rawCodex.directTier || rawCodex.activationTier || rawCodex.runtimeTier,
+    codexRuntimeMode === "direct-experimental" && directTransport === "live-text" ? "implementation-lane" : "none",
+  );
   const patterns = Array.isArray(rawFlow.watchedFilePatterns)
     ? rawFlow.watchedFilePatterns.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
     : fallback.flowProfile.watchedFilePatterns;
@@ -1169,13 +1468,22 @@ function normalizeProject(input, index = 0) {
     surfaceBinding: {
       codex: {
         mode: codexMode,
+        bindingProvider: normalizeCodexBindingProvider(
+          rawCodex.bindingProvider || (typeof rawCodex.provider === "string" ? rawCodex.provider : ""),
+          codexRuntimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex",
+        ),
+        runtimeMode: codexRuntimeMode,
+        directTier,
+        directTransport,
         runtime: normalizeCodexRuntime(normalizeString(rawCodex.runtime, defaultCodexRuntimeForWorkspace(workspace))),
+        profileId: normalizeString(rawCodex.profileId, ""),
         target: normalizeString(rawCodex.target, codexMode === "url" ? "http://127.0.0.1:3000" : ""),
         binaryPath: normalizeString(rawCodex.binaryPath, "codex"),
         model: normalizeString(rawCodex.model, ""),
         reasoningEffort: normalizeReasoningEffort(rawCodex.reasoningEffort),
+        spawnAgentModelOverrides: rawCodex.spawnAgentModelOverrides === true,
         label: normalizeString(rawCodex.label, codexMode === "managed" ? "Managed Codex lane" : "Codex target"),
-        provider: normalizeCodexProviderConfig(rawCodex.provider || {
+        provider: normalizeCodexProviderConfig((isPlainObject(rawCodex.provider) ? rawCodex.provider : null) || {
           kind: rawCodex.providerKind,
           flavor: rawCodex.providerFlavor,
           configuredFlavor: rawCodex.configuredFlavor,
@@ -1608,6 +1916,2614 @@ function ensureThreadAnalyticsStore() {
   return threadAnalyticsStore;
 }
 
+function ensureDirectAuthController() {
+  if (directAuthController) return directAuthController;
+  directAuthController = createDirectAuthIpcController({
+    rootDir: directAuthRootDir(),
+    fallbackStore: () => ensureDirectCodexCliAuthStore(),
+    loginStarter: (payload, controller) => ensureDirectAuthLoginCoordinator().beginLogin(payload, controller),
+    manualLoginCompleter: (payload, controller) => ensureDirectAuthLoginCoordinator().completeManualLogin(payload, controller),
+  });
+  return directAuthController;
+}
+
+function ensureDirectAuthLoginCoordinator() {
+  if (directAuthLoginCoordinator) return directAuthLoginCoordinator;
+  directAuthLoginCoordinator = createDirectAuthLoginCoordinator({
+    openExternal: (url) => shell.openExternal(url),
+  });
+  return directAuthLoginCoordinator;
+}
+
+function ensureDirectCodexCliAuthStore() {
+  if (directCodexCliAuthStore) return directCodexCliAuthStore;
+  directCodexCliAuthStore = createCodexCliAuthStore();
+  return directCodexCliAuthStore;
+}
+
+function directRuntimeAuthStore() {
+  return createDirectAuthCompositeStore({
+    primaryStore: () => ensureDirectAuthController().activeStore(),
+    fallbackStore: () => ensureDirectCodexCliAuthStore(),
+  });
+}
+
+function directRuntimeAuthRefreshController() {
+  return {
+    activeStore: () => directRuntimeAuthStore(),
+  };
+}
+
+function refreshDirectRuntimeCredentials(options = {}) {
+  return ensureDirectAuthLoginCoordinator().refreshCredentials(directRuntimeAuthRefreshController(), options);
+}
+
+function ensureDirectProviderMetadataAdapter() {
+  if (directProviderMetadataAdapter) return directProviderMetadataAdapter;
+  directProviderMetadataAdapter = new DirectServerMetadataAdapter({
+    rootDir: directProviderMetadataRootDir(),
+    authStoreFactory: () => directRuntimeAuthStore(),
+    refreshCredentials: (options) => refreshDirectRuntimeCredentials(options),
+  });
+  return directProviderMetadataAdapter;
+}
+
+function directProviderMetadataStatusForProject(project = {}) {
+  try {
+    return ensureDirectProviderMetadataAdapter().cachedStatus(project?.id || "");
+  } catch (error) {
+    return {
+      profile: null,
+      driftReport: {
+        schema: "direct_metadata_drift_report@1",
+        projectId: normalizeString(project?.id, ""),
+        observedAt: nowIso(),
+        status: "unavailable",
+        cacheState: "missing",
+        fetchStatus: "failed",
+        source: normalizeString(error?.message, "metadata_cache_unavailable"),
+        validation: { ok: false, errors: ["metadata_cache_unavailable"], warnings: [] },
+        unknownEnums: [],
+        missingFields: [],
+        changedDefaults: [],
+        rawTextIncluded: false,
+        rawPathIncluded: false,
+        rawSecretIncluded: false,
+      },
+      cacheState: "missing",
+      error,
+    };
+  }
+}
+
+async function refreshDirectProviderMetadataForProject(project = {}) {
+  try {
+    return await ensureDirectProviderMetadataAdapter().refreshForProject(project);
+  } catch (error) {
+    return {
+      ...directProviderMetadataStatusForProject(project),
+      cacheState: "failed",
+      error,
+    };
+  }
+}
+
+function ensureDirectCodexProfileDoc() {
+  if (directCodexProfileDoc) return directCodexProfileDoc;
+  directCodexProfileDoc = loadDirectCodexProfile();
+  return directCodexProfileDoc;
+}
+
+function ensureDirectSessionStore() {
+  if (directSessionStore) return directSessionStore;
+  directSessionStore = new DirectSessionStore({ rootDir: directSessionRootDir() });
+  try {
+    directSessionStore.ensure();
+    directSessionStore.recoverInterruptedTurns();
+  } catch (error) {
+    console.warn("[direct] session recovery failed", error);
+  }
+  return directSessionStore;
+}
+
+function ensureDirectThreadStore() {
+  if (directThreadStore) return directThreadStore;
+  directThreadStore = new DirectThreadStore({
+    rootDir: directSessionRootDir(),
+    mode: "index_only",
+  });
+  return directThreadStore;
+}
+
+function ensureDirectWorkThreadStore() {
+  if (directWorkThreadStore) return directWorkThreadStore;
+  directWorkThreadStore = new DirectWorkThreadRegistryStore({
+    rootDir: directSessionRootDir(),
+  });
+  return directWorkThreadStore;
+}
+
+function ensureDirectAgentRegistryStore() {
+  if (directAgentRegistryStore) return directAgentRegistryStore;
+  directAgentRegistryStore = new DirectAgentRegistryStore({
+    rootDir: directSessionRootDir(),
+  });
+  return directAgentRegistryStore;
+}
+
+function ensureDirectThreadWorkbenchController() {
+  if (directThreadWorkbenchController) return directThreadWorkbenchController;
+  directThreadWorkbenchController = new DirectThreadWorkbenchController({
+    threadStore: ensureDirectThreadStore(),
+    sessionStore: ensureDirectSessionStore(),
+    workThreadStore: ensureDirectWorkThreadStore(),
+    projectResolver: (projectId) => getProjectById(projectId),
+    liveTextController: () => ensureDirectLiveTextController(),
+  });
+  return directThreadWorkbenchController;
+}
+
+function ensureDirectMetaSessionStore() {
+  if (directMetaSessionStore) return directMetaSessionStore;
+  directMetaSessionStore = new DirectMetaSessionStore({
+    rootDir: directMetaSessionRootDir(),
+    ensureRoot: false,
+  });
+  return directMetaSessionStore;
+}
+
+function buildDirectMetaSessionStatusForProject(project, options = {}) {
+  const projectId = normalizeString(project?.id, "");
+  const projectBindingDigest = project ? stableDigest({
+    projectId: project.id,
+    codexBinding: project.surfaceBinding?.codex || {},
+  }) : "";
+  try {
+    const projection = ensureDirectMetaSessionStore().readLatestStatusProjection({
+      metaSessionId: options?.metaSessionId,
+    });
+    const status = {
+      ...projection,
+      projectId,
+      projectBindingDigest,
+      actionability: {
+        actionable: false,
+        allowedActions: [],
+      },
+    };
+    assertMetaSessionRendererSafe(status);
+    return status;
+  } catch {
+    const status = {
+      ...buildDirectMetaSessionStatusProjection({
+        metaSessionId: normalizeString(options?.metaSessionId, ""),
+        health: "degraded",
+        ledgerStatus: { ok: false, ledgerHeadDigest: "", events: [] },
+        currentPointers: null,
+        sessionDir: "",
+        details: {
+          summaryRows: [
+            { label: "Session", value: "unavailable", state: "missing" },
+            { label: "Status", value: "read-only", state: "ok" },
+          ],
+          routeSummary: { total: 0, recentWindowCount: 0, proposed: 0, accepted: 0, dispatched: 0, dispatchBlocked: 0, latest: [] },
+          guardDecisionSummary: { total: 0, recentWindowCount: 0, allowShadow: 0, denyShadow: 0, askHumanShadow: 0, reclassifyShadow: 0, stopShadow: 0 },
+          attemptFailureSummary: { total: 0, recentWindowCount: 0, latestBlockerCodes: ["status_projection_unavailable"] },
+          availableMetaSessions: [],
+          rendererSafe: true,
+        },
+      }),
+      projectId,
+      projectBindingDigest,
+      unavailableReason: "meta_session_status_unavailable",
+      actionability: {
+        actionable: false,
+        allowedActions: [],
+      },
+    };
+    assertMetaSessionRendererSafe(status);
+    return status;
+  }
+}
+
+function directThreadStoreStatus() {
+  try {
+    return ensureDirectThreadStore().status();
+  } catch (error) {
+    return {
+      schema: "direct_thread_store_status@1",
+      available: false,
+      status: "disabled",
+      mode: "disabled",
+      schemaVersion: "",
+      rootExposed: false,
+      dbPathExposed: false,
+      projectionsHealthy: false,
+      contextBuildsAllowed: false,
+      threadCount: 0,
+      rolloutCount: 0,
+      turnCount: 0,
+      operationCount: 0,
+      projectionCount: 0,
+      contextBuildCount: 0,
+      requestManifestCount: 0,
+      contextPolicyCount: 0,
+      context: {
+        contextBuildsAllowed: false,
+        contextBuildRequiredForNewTurns: false,
+        reasonIfBlocked: "direct_thread_store_unavailable",
+      },
+      recovery: {
+        error: normalizeString(error?.message, "direct_thread_store_unavailable"),
+      },
+    };
+  }
+}
+
+function ensureDirectActivationStore() {
+  if (directActivationStore) return directActivationStore;
+  directActivationStore = new DirectExperimentalActivationStore({ rootDir: directSessionRootDir() });
+  return directActivationStore;
+}
+
+function ensureDirectImportController() {
+  if (directImportController) return directImportController;
+  directImportController = new DirectImportController({
+    sessionStore: ensureDirectSessionStore(),
+    projectResolver: (projectId) => getProjectById(projectId),
+    liveTextController: () => ensureDirectLiveTextController(),
+    checkpointContinuationEvidenceResolver: () => ({
+      accepted: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1",
+      status: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "runtime_probed" : "profile_required",
+      evidenceState: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "runtime_probed" : "unknown",
+      reason: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "" : "checkpoint_request_shape_unaccepted",
+    }),
+  });
+  return directImportController;
+}
+
+function ensureDirectLiveProbeEvidenceStore() {
+  if (directLiveProbeEvidenceStore) return directLiveProbeEvidenceStore;
+  directLiveProbeEvidenceStore = new DirectLiveProbeEvidenceStore({
+    rootDir: directLiveProbeEvidenceRootDir(),
+  });
+  return directLiveProbeEvidenceStore;
+}
+
+function ensureDirectImplementationProofEvidenceStore() {
+  if (directImplementationProofEvidenceStore) return directImplementationProofEvidenceStore;
+  directImplementationProofEvidenceStore = new DirectImplementationProofEvidenceStore({
+    rootDir: directImplementationProofRunsRootDir(),
+  });
+  return directImplementationProofEvidenceStore;
+}
+
+function ensureDirectFixtureController() {
+  if (directFixtureController) return directFixtureController;
+  directFixtureController = new DirectFixtureController({
+    sessionStore: ensureDirectSessionStore(),
+    profileDoc: ensureDirectCodexProfileDoc(),
+  });
+  return directFixtureController;
+}
+
+function ensureDirectLiveTextController() {
+  if (directLiveTextController) return directLiveTextController;
+  directLiveTextController = new DirectLiveTextController({
+    sessionStore: ensureDirectSessionStore(),
+    directThreadStore: ensureDirectThreadStore(),
+    workThreadStore: ensureDirectWorkThreadStore(),
+    profileDoc: ensureDirectCodexProfileDoc(),
+    authStore: () => directRuntimeAuthStore(),
+    refreshCredentials: () => refreshDirectRuntimeCredentials(),
+    modelEvidenceResolver: (context) => ensureDirectLiveProbeEvidenceStore().resolveModelEvidence(context),
+    implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
+    activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
+    subAgentStatusSurfaceResolver: (context) => directSubAgentStatusSurfaceFor(context),
+    externalCapabilityProfileResolver: (context) => buildDirectExternalCapabilityProfileForProject(context),
+    providerHostedToolsStatusResolver: (context) => buildDirectProviderHostedToolsStatusForProject(context),
+    workspaceRequest: (project, method, params, timeoutMs) => requestWorkspace(project, method, params, timeoutMs),
+  });
+  return directLiveTextController;
+}
+
+function currentLegacyAppServerSnapshot() {
+  return codexAppServer?.snapshot?.() || null;
+}
+
+function latestDirectSessionForProject(sessionStore, projectId) {
+  try {
+    const index = sessionStore?.ensure?.() || sessionStore?.readIndex?.() || {};
+    const sessions = Array.isArray(index.sessions) ? index.sessions : [];
+    return sessions.find((session) => normalizeString(session.projectId, "") === projectId) || null;
+  } catch {
+    return null;
+  }
+}
+
+function codexAgentGraphCacheKey(projectId = "", primaryThreadId = "") {
+  return `${normalizeString(projectId, "")}::${normalizeString(primaryThreadId, "")}`;
+}
+
+function normalizeCachedAgentGraphAgent(agent = {}) {
+  const key = agent.key && typeof agent.key === "object" ? agent.key : {};
+  const agentThreadId = normalizeString(
+    agent.agentThreadId || agent.threadId || key.threadId || agent.receiverThreadId || agent.childAgentId,
+    "",
+  );
+  return {
+    agentThreadId,
+    parentAgentThreadId: normalizeString(agent.parentAgentThreadId || agent.parentThreadId || key.parentThreadId, ""),
+    displayLabel: normalizeString(agent.displayLabel || agent.nickname || agent.label || agent.role, agentThreadId ? `Agent ${agentThreadId.slice(0, 8)}` : "Agent"),
+    nickname: normalizeString(agent.nickname || agent.displayLabel || agent.label, ""),
+    role: normalizeString(agent.role || agent.agentRole || "worker", "worker"),
+    agentClassKind: normalizeString(agent.agentClassKind || agent.kind || "sub_agent_worker", "sub_agent_worker"),
+    model: normalizeString(agent.model || agent.runtime?.model, ""),
+    reasoningEffort: normalizeString(agent.reasoningEffort || agent.reasoning_effort || agent.runtime?.reasoningEffort, ""),
+    lifecycleState: normalizeString(agent.lifecycleState || agent.lifecycleStatus || agent.status || agent.nodeState, "unknown"),
+    activityState: normalizeString(agent.activityState || agent.activityStatus || agent.nodeState, "unknown"),
+    completedAt: normalizeString(agent.completedAt, ""),
+    updatedAt: normalizeString(agent.updatedAt || agent.lastEventAt, ""),
+    evidenceRefs: Array.isArray(agent.evidenceRefs) ? agent.evidenceRefs : [],
+  };
+}
+
+function directSubAgentStatusSurfaceFor({ sessionId = "", project = {} } = {}) {
+  const projectId = normalizeString(project?.id || project?.projectId || project?.name, "");
+  const primaryThreadId = normalizeString(sessionId, "");
+  if (!projectId || !primaryThreadId) return null;
+  const graphState = latestCodexAgentGraphByProjectThread.get(codexAgentGraphCacheKey(projectId, primaryThreadId));
+  if (!graphState) return null;
+  const agents = (Array.isArray(graphState.agents) ? graphState.agents : [])
+    .map((agent) => normalizeCachedAgentGraphAgent(agent))
+    .filter((agent) => agent.agentThreadId);
+  return createDirectLiveSubAgentToolSurface({
+    projectId,
+    workThreadId: normalizeString(project.workThreadId, ""),
+    primaryThreadId,
+    agents,
+  });
+}
+
+function readContextMaintenanceArtifactSafe(threadStore, projectId, threadId, artifactName) {
+  if (!threadStore || !projectId || !threadId) return { artifact: null, errorCode: "" };
+  try {
+    return {
+      artifact: threadStore.readContextMaintenanceArtifact(projectId, threadId, artifactName),
+      errorCode: "",
+    };
+  } catch {
+    return { artifact: null, errorCode: `context_${artifactName.replace(/[^a-z0-9]+/gi, "_")}_corrupt` };
+  }
+}
+
+function contextEvidenceCounts(evidence = {}) {
+  return {
+    contextCompactionCount: Array.isArray(evidence.contextCompaction) ? evidence.contextCompaction.length : 0,
+    memoryCitationCount: Array.isArray(evidence.memoryCitations) ? evidence.memoryCitations.length : 0,
+    memoryModeObserved: Array.isArray(evidence.memoryControls)
+      ? evidence.memoryControls.some((control) => normalizeString(control.method, "") === "thread/memoryMode/set")
+      : false,
+    memoryResetObserved: Array.isArray(evidence.memoryControls)
+      ? evidence.memoryControls.some((control) => normalizeString(control.method, "") === "memory/reset")
+      : false,
+    compactControlObserved: Array.isArray(evidence.compactControls) && evidence.compactControls.length > 0,
+  };
+}
+
+function buildDirectContextMaintenanceRuntimeStatus(project, sessionStore, threadStore) {
+  const projectId = normalizeString(project?.id, "");
+  const latestSession = latestDirectSessionForProject(sessionStore, projectId);
+  const threadId = normalizeString(latestSession?.sessionId, "");
+  const blockers = [];
+  const { artifact: statusProjection, errorCode } = readContextMaintenanceArtifactSafe(threadStore, projectId, threadId, "status-projection.json");
+  if (errorCode) blockers.push(errorCode);
+  const siblingEvidence = latestContextManagementEvidenceByProject.get(projectId) || null;
+  const siblingCounts = contextEvidenceCounts(siblingEvidence || {});
+  return {
+    schema: "direct_context_maintenance_runtime_status@1",
+    projectId,
+    threadId,
+    sourceDigest: stableDigest({
+      projectId,
+      threadId,
+      statusProjectionDigest: statusProjection?.projectionDigest || "",
+      siblingEvidenceId: siblingEvidence?.evidenceId || "",
+      siblingObservedAt: siblingEvidence?.observedAt || "",
+    }),
+    statusProjection: isPlainObject(statusProjection) ? statusProjection : null,
+    pressureState: normalizeString(statusProjection?.pressureState, "unknown"),
+    memoryState: normalizeString(statusProjection?.memoryState, "none"),
+    memoryPointerState: normalizeString(statusProjection?.memoryPointerState, "none"),
+    batonState: normalizeString(statusProjection?.batonState, "not_required"),
+    batonRequirement: normalizeString(statusProjection?.batonRequirement, "not_required"),
+    omissionState: normalizeString(statusProjection?.omissionState, "none"),
+    providerCompactState: "not_proven",
+    providerCompactionEvidenceState: "missing",
+    appServerSibling: siblingEvidence ? {
+      ...siblingEvidence,
+      ...siblingCounts,
+      displayOnly: true,
+      directArtifactPromotionAllowed: false,
+      directContextPackUsable: false,
+    } : {
+      sourceClass: "vanilla_app_server_sibling",
+      sourceConfidence: "unknown",
+      displayOnly: true,
+      contextCompaction: [],
+      compactControls: [],
+      memoryCitations: [],
+      memoryControls: [],
+      contextCompactionCount: 0,
+      memoryCitationCount: 0,
+      memoryModeObserved: false,
+      memoryResetObserved: false,
+      compactControlObserved: false,
+      directArtifactPromotionAllowed: false,
+      directContextPackUsable: false,
+      rawTextIncluded: false,
+      rawPayloadIncluded: false,
+    },
+    blockers,
+    warnings: [],
+    evidenceKeys: [
+      statusProjection?.projectionDigest ? "direct_context_maintenance_status_projection@1" : "",
+      siblingEvidence?.evidenceId ? "vanilla_sibling_context_evidence@1" : "",
+    ].filter(Boolean),
+    displayOnly: true,
+    rawTextIncluded: false,
+    rawPayloadIncluded: false,
+    providerTransportAllowed: false,
+    maintenanceExecutionAllowed: false,
+    memoryEditorAllowed: false,
+    memoryResetAllowed: false,
+    compactActionAllowed: false,
+  };
+}
+
+function mergeUniqueByKey(existing = [], incoming = [], keyFn = (item) => JSON.stringify(item)) {
+  const byKey = new Map();
+  for (const item of [...existing, ...incoming]) {
+    const key = keyFn(item);
+    if (key) byKey.set(key, item);
+  }
+  return Array.from(byKey.values());
+}
+
+function sanitizeContextThreadItems(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => {
+      const type = normalizeString(item?.type, "");
+      const id = normalizeString(item?.id || item?.itemId, "");
+      if (!id) return null;
+      if (type === "contextCompaction") {
+        return {
+          id,
+          type,
+          lifecycle: normalizeString(item.lifecycle || item.status, "observed"),
+        };
+      }
+      if (isPlainObject(item?.memoryCitation)) {
+        return {
+          id,
+          type: type || "memoryCitation",
+          memoryCitation: {
+            evidenceKey: normalizeString(item.memoryCitation.evidenceKey || item.memoryCitation.memoryId || id, ""),
+          },
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
+function sanitizeContextControls(controls = []) {
+  const allowedMethods = new Set(["thread/compact/start", "thread/memoryMode/set", "memory/reset"]);
+  return (Array.isArray(controls) ? controls : [])
+    .map((control) => ({
+      method: normalizeString(control?.method, ""),
+      evidenceKey: normalizeString(control?.evidenceKey, ""),
+    }))
+    .filter((control) => allowedMethods.has(control.method) && control.evidenceKey);
+}
+
+function recordContextManagementEvidence(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const threadId = normalizeString(payload.threadId, "");
+  if (!projectId || !threadId) return null;
+  const incomingThreadItems = sanitizeContextThreadItems(payload.threadItems);
+  const incomingControls = sanitizeContextControls(payload.controlsObserved);
+  if (!incomingThreadItems.length && !incomingControls.length) return null;
+  const previous = contextManagementObservationsByProject.get(projectId) || {
+    threadId,
+    threadItems: [],
+    controlsObserved: [],
+  };
+  const scopedPrevious = normalizeString(previous.threadId, "") === threadId
+    ? previous
+    : { threadId, threadItems: [], controlsObserved: [] };
+  const threadItems = mergeUniqueByKey(scopedPrevious.threadItems, incomingThreadItems, (item) =>
+    `${item.type}:${item.id}:${item.memoryCitation?.evidenceKey || ""}`);
+  const controlsObserved = mergeUniqueByKey(scopedPrevious.controlsObserved, incomingControls, (control) =>
+    `${control.method}:${control.evidenceKey}`);
+  contextManagementObservationsByProject.set(projectId, {
+    threadId,
+    threadItems,
+    controlsObserved,
+  });
+  const evidence = buildVanillaSiblingContextEvidence({
+    projectId,
+    threadId,
+    threadItems,
+    controlsObserved,
+    sourceConfidence: "observed",
+    sourceRefs: [{
+      kind: "renderer_observation",
+      evidenceKey: "codex_surface_context_management_observation",
+      rawTextIncluded: false,
+    }],
+  });
+  latestContextManagementEvidenceByProject.set(projectId, {
+    ...evidence,
+    observedAt: nowIso(),
+  });
+  return latestContextManagementEvidenceByProject.get(projectId);
+}
+
+function buildDirectRuntimeStatusForProject(project, options = {}) {
+  const controller = ensureDirectAuthController();
+  const authSettings = controller.readSettings(options);
+  const runtimeAuthStore = directRuntimeAuthStore();
+  const runtimeAuthStatus = runtimeAuthStore.readStatus(options);
+  const credentials = runtimeAuthStore.readCredentials() || {};
+  authSettings.authStatus = runtimeAuthStatus;
+  const profileDoc = ensureDirectCodexProfileDoc();
+  const sessionStore = ensureDirectSessionStore();
+  const imports = ensureDirectImportController().statusForProject(project);
+  const liveTextStatus = ensureDirectLiveTextController().statusForProject(project);
+  const activationStore = ensureDirectActivationStore();
+  const projectId = normalizeString(project?.id, "");
+  const sessionStoreStatus = sessionStore.status({ projectId });
+  const activationStoreStatus = projectId ? activationStore.statusForProject(projectId) : {};
+  const legacySession = currentLegacyAppServerSnapshot();
+  const activationEvaluation = evaluateDirectExperimentalProjectActivation({
+    project,
+    authSettings,
+    authStatus: authSettings.authStatus,
+    profileDoc,
+    sessionStore: sessionStoreStatus,
+    sessionStoreObject: sessionStore,
+    imports,
+    liveTextStatus,
+    workspaceStatus: workspaceBackends?.statusForProject(project) || null,
+    activationStoreStatus,
+    latestActivation: activationStoreStatus.latestActivation || null,
+    accountEvidenceKey: normalizeString(credentials.accountId || credentials.chatgptAccountId, ""),
+    attachOnFirstTurnAccepted: false,
+    profileHash: normalizeString(profileDoc.summary?.profileHash || profileDoc.profile?.profileHash, ""),
+  });
+  const textOnlyEvaluation = evaluateDirectTextOnlyRuntimeSelection({
+    project,
+    authSettings,
+    authStatus: authSettings.authStatus,
+    profileDoc,
+    sessionStore: sessionStoreStatus,
+    liveTextStatus,
+    activationStoreStatus,
+    latestSelection: activationStoreStatus.latestRuntimeSelection || null,
+    profileHash: normalizeString(profileDoc.summary?.profileHash || profileDoc.profile?.profileHash, ""),
+  });
+  const runtimeStatus = buildDirectRuntimeStatus({
+    project,
+    authSettings,
+    authStatus: authSettings.authStatus,
+    profileDoc,
+    sessionStore: sessionStoreStatus,
+    directThreadStore: directThreadStoreStatus(),
+    imports,
+    activation: activationEvaluation.status,
+    fixtureRuntime: { available: true, capabilities: buildDirectFixtureCapabilities() },
+    liveTextRuntime: { available: true, status: liveTextStatus, capabilities: buildDirectLiveTextCapabilities(liveTextStatus) },
+    legacySession,
+  });
+  runtimeStatus.directTextOnly = {
+    ...(runtimeStatus.directTextOnly || {}),
+    ...textOnlyEvaluation.status,
+  };
+  const implementationBlockers = activationEvaluation.status.gateSummary?.blockers
+    ?.map((item) => item.blockerCode || item.reason || item.id)
+    .filter(Boolean) || [];
+  runtimeStatus.directImplementationLane = {
+    ...(runtimeStatus.directImplementationLane || {}),
+    tier: "implementation-lane",
+    status: activationEvaluation.status.enabled
+      ? (activationEvaluation.status.degraded ? "degraded" : "enabled")
+      : (activationEvaluation.status.eligible ? "eligible" : "blocked"),
+    selected: activationEvaluation.status.enabled === true,
+    canEnable: activationEvaluation.status.eligible === true,
+    blockers: implementationBlockers,
+    missingImplementationOnlyGates: implementationBlockers,
+  };
+  runtimeStatus.direct = {
+    ...(runtimeStatus.direct || {}),
+    status: runtimeStatus.directImplementationLane.selected
+      ? runtimeStatus.directImplementationLane.status
+      : runtimeStatus.directTextOnly?.selected
+        ? "degraded_text_only"
+        : runtimeStatus.directImplementationLane.canSelect || runtimeStatus.directImplementationLane.canEnable
+          ? "eligible"
+          : runtimeStatus.directTextOnly?.canEnable
+            ? "eligible_text_only_fallback"
+            : "blocked",
+    selected: runtimeStatus.directImplementationLane.selected === true || runtimeStatus.directTextOnly?.selected === true,
+    canSelect: runtimeStatus.directImplementationLane.canSelect === true ||
+      runtimeStatus.directImplementationLane.canEnable === true ||
+      runtimeStatus.directTextOnly?.canEnable === true,
+    toolMode: runtimeStatus.directImplementationLane.selected && runtimeStatus.liveTextRuntime?.toolsEnabled
+      ? "tool_capable"
+      : runtimeStatus.directTextOnly?.selected
+        ? "text_only_fallback"
+        : "unavailable",
+    toolsAvailable: runtimeStatus.directImplementationLane.selected === true && runtimeStatus.liveTextRuntime?.toolsEnabled === true,
+    textOnlyFallbackAvailable: runtimeStatus.directTextOnly?.canEnable === true,
+    blockers: runtimeStatus.directImplementationLane.canSelect || runtimeStatus.directImplementationLane.canEnable
+      ? []
+      : runtimeStatus.directImplementationLane.blockers,
+    fallbackBlockers: runtimeStatus.directTextOnly?.blockers || [],
+    userFacingLabel: "Direct",
+  };
+  let threadStoreForContext = null;
+  try {
+    threadStoreForContext = ensureDirectThreadStore();
+  } catch {}
+  runtimeStatus.directContextMaintenance = buildDirectContextMaintenanceRuntimeStatus(project, sessionStore, threadStoreForContext);
+  runtimeStatus.appServerFallbackParity = buildAppServerFallbackParityReport({
+    projectId,
+    runtimeStatus,
+    legacySession,
+    directFallbackBlockers: implementationBlockers,
+    generatedAt: runtimeStatus.generatedAt,
+  });
+  return runtimeStatus;
+}
+
+function buildDirectSettingsSurfaceStatusForProject(project) {
+  const projectId = normalizeString(project?.id, "");
+  const generatedAt = nowIso();
+  const runtimeStatus = buildDirectRuntimeStatusForProject(project);
+  const metaSessionStatus = buildDirectMetaSessionStatusForProject(project, {});
+  const moduleStatus = buildBridgeModuleStatusProjection({
+    projectId,
+    status: "shadow_only",
+    rendererSafeSummary: "Skills, hooks, and apps are classified by the bridge module contract; no execution runner is enabled.",
+  });
+  const agentClassRegistry = buildAgentClassRegistry({
+    projectId,
+    mode: "shadow",
+  });
+  const agentClassStatus = buildAgentClassStatusProjection({
+    projectId,
+    registry: agentClassRegistry,
+    status: "shadow_only",
+  });
+  const toolCapabilityRegistry = buildToolCapabilityRegistry({
+    projectId,
+    mode: "constitution_only",
+  });
+  validateToolCapabilityRegistry(toolCapabilityRegistry);
+  const toolCapabilityStatus = buildToolCapabilityStatusProjection({
+    projectId,
+    registry: toolCapabilityRegistry,
+    status: "constitution_only",
+  });
+  const externalDiscoveryStatus = buildDirectExternalCapabilityDiscoveryStatusForProject({
+    project,
+    generatedAt,
+  });
+  const mcpBoundaryStatus = buildDirectMcpBoundaryStatusForProject({
+    project,
+    generatedAt,
+  });
+  const agentUsageStatus = buildDirectAgentUsageStatusForProject(projectId);
+  const implementationLaneUiStatus = buildDirectImplementationLaneUiStatus({ project, runtimeStatus });
+  const directProviderMetadata = directProviderMetadataStatusForProject(project);
+  const providerHostedToolsStatus = buildDirectProviderHostedToolsStatusForProject({
+    project,
+    directProviderMetadata,
+    generatedAt,
+  });
+  const pluginGovernanceStatus = buildDirectPluginGovernanceStatusForProject({
+    project,
+    generatedAt,
+  });
+  const appServerFallbackParity = runtimeStatus.appServerFallbackParity || buildAppServerFallbackParityReport({
+    projectId,
+    runtimeStatus,
+    legacySession: currentLegacyAppServerSnapshot(),
+  });
+  const workThreadBundle = directWorkThreadProjectionForProject(project);
+  const agentRegistryBundle = directAgentRegistryProjectionForProject(project);
+  const runtimeWitnessProjection = buildDirectRuntimeWitnessProjectionForProject({
+    project,
+    runtimeStatus,
+    agentUsageStatus,
+    appServerFallbackParity,
+    directProviderMetadata,
+    generatedAt,
+  });
+  const controlToolStatus = buildDirectControlToolStatusForProject({
+    project,
+    runtimeStatus,
+    agentUsageStatus,
+    directProviderMetadata,
+    generatedAt,
+  });
+  const agentRuntimeStatus = buildDirectAgentRuntimeSubstrateStatusForProject({
+    project,
+    runtimeStatus,
+    agentUsageStatus,
+    generatedAt,
+  });
+  const agentToolSurfaceStatus = buildDirectTextSubAgentToolSurfaceForProject({
+    project,
+    runtimeStatus,
+    agentRuntimeStatus,
+    generatedAt,
+  });
+  const batchAgentJobSurfaceStatus = buildDirectBatchAgentJobSurfaceForProject({
+    project,
+    runtimeStatus,
+    workThreadBundle,
+    generatedAt,
+  });
+  const statefulExecStatus = buildDirectStatefulExecSessionSurfaceForProject({
+    project,
+    runtimeStatus,
+    workThreadBundle,
+    generatedAt,
+  });
+  const codeModeExecutionLaneStatus = buildDirectCodeModeExecutionLaneStatusForProject({
+    project,
+    runtimeStatus,
+    workThreadBundle,
+    generatedAt,
+  });
+  const contextPreview = directContextPreviewForProject(project, {
+    runtimeStatus,
+    runtimeWitnessProjection,
+    agentUsageStatus,
+    workThreadBundle,
+  });
+  const operatorBroker = directOperatorBrokerProjectionForProject(project, workThreadBundle);
+  const registryAudit = buildDirectInformationBridgeAudit({
+    branch: "codex/direct-chatgpt-harness",
+    generatedAt,
+  });
+  const projectionInput = {
+    projectId,
+    runtimeStatus,
+    registryAudit,
+    workThreads: workThreadBundle,
+    agents: agentRegistryBundle,
+    operatorBroker,
+    metaSessionStatus,
+    moduleStatus,
+    agentClassStatus,
+    toolCapabilityStatus,
+    externalDiscoveryStatus,
+    mcpBoundaryStatus,
+    providerHostedToolsStatus,
+    pluginGovernanceStatus,
+    controlToolStatus,
+    agentRuntimeStatus,
+    agentToolSurfaceStatus,
+    batchAgentJobSurfaceStatus,
+    statefulExecStatus,
+    codeModeExecutionLaneStatus,
+    continuityStatus: runtimeStatus.directContextMaintenance,
+    contextPreview,
+    runtimeWitnessProjection,
+    agentUsageStatus,
+    appServerFallbackParityReport: appServerFallbackParity,
+    generatedAt,
+  };
+  const baseProjection = buildDirectSettingsSurfaceProjection(projectionInput);
+  const manualSmokeGate = buildDirectManualSmokeGate({
+    ...projectionInput,
+    settingsProjection: baseProjection,
+    implementationLaneUiStatus,
+    runtimeWitnessProjection,
+    appServerFallbackParityReport: appServerFallbackParity,
+    appServerFallbackAvailable: runtimeStatus.diagnostics?.legacyAppServerAvailable === true,
+    generatedAt,
+  });
+  assertDirectManualSmokeGateSafe(manualSmokeGate);
+  const projection = buildDirectSettingsSurfaceProjection({
+    ...projectionInput,
+    manualSmokeGate,
+  });
+  assertDirectSettingsSurfaceRendererSafe(projection);
+  return projection;
+}
+
+function buildDirectAgentRuntimeSubstrateStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id || input.runtimeStatus?.projectId, "");
+  const primaryThreadId = normalizeString(
+    input.runtimeStatus?.activeProviderThreadId ||
+      input.runtimeStatus?.activeDirectSessionId ||
+      project.codexThreadId ||
+      project.threadId,
+    "primary_agent",
+  );
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const status = buildAgentRuntimeSubstrateStatus({
+    projectId,
+    primaryThreadId,
+    nodes: [],
+    edges: [],
+    messages: [],
+    lifecycleEntries: [],
+    generatedAt,
+  });
+  assertAgentRuntimeSubstrateSafe(status);
+  return status;
+}
+
+function buildDirectExternalCapabilityDiscoveryStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id, "");
+  const registry = buildExternalCapabilityDiscoveryRegistry({
+    projectId,
+    workThreadId: normalizeString(project.workThreadId, ""),
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertExternalCapabilityDiscoveryRegistrySafe(registry);
+  return buildExternalCapabilityDiscoveryStatusProjection(registry);
+}
+
+function buildDirectExternalCapabilityProfileForProject(input = {}) {
+  const project = input.project || input || {};
+  const projectId = normalizeString(project.id || project.projectId, "");
+  const workThreadId = normalizeString(input.workThreadId || project.workThreadId, "");
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const serverIdentities = [
+    ...(Array.isArray(input.serverIdentities) ? input.serverIdentities : []),
+    ...(Array.isArray(project.serverIdentities) ? project.serverIdentities : []),
+    ...(Array.isArray(project.mcpServerIdentities) ? project.mcpServerIdentities : []),
+    ...(Array.isArray(project.externalCapabilityProfile?.serverIdentities) ? project.externalCapabilityProfile.serverIdentities : []),
+    ...(Array.isArray(project.directExternalCapabilityProfile?.serverIdentities) ? project.directExternalCapabilityProfile.serverIdentities : []),
+    ...(Array.isArray(project.codex?.mcpServerIdentities) ? project.codex.mcpServerIdentities : []),
+    ...(Array.isArray(project.surfaceBinding?.codex?.mcpServerIdentities) ? project.surfaceBinding.codex.mcpServerIdentities : []),
+  ];
+  if (!serverIdentities.length) {
+    return {
+      status: "unavailable",
+      reason: "external_source_identity_missing",
+      projectId,
+      workThreadId,
+      serverIdentities: [],
+      rawEndpointIncluded: false,
+      rawCredentialIncluded: false,
+      rawSecretIncluded: false,
+    };
+  }
+  const discoveryRegistry = buildExternalCapabilityDiscoveryRegistry({
+    projectId,
+    workThreadId,
+    generatedAt,
+  });
+  assertExternalCapabilityDiscoveryRegistrySafe(discoveryRegistry);
+  const mcpBoundaryStatus = buildMcpResourceToolBoundaryStatus({
+    projectId,
+    workThreadId,
+    generatedAt,
+  });
+  assertMcpResourceToolBoundarySafe(mcpBoundaryStatus);
+  return buildExternalCapabilityProfile({
+    projectId,
+    workThreadId,
+    generatedAt,
+    discoveryRegistry,
+    mcpBoundaryStatus,
+    serverIdentities,
+  });
+}
+
+function buildDirectMcpBoundaryStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id, "");
+  const status = buildMcpResourceToolBoundaryStatus({
+    projectId,
+    workThreadId: normalizeString(project.workThreadId, ""),
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertMcpResourceToolBoundarySafe(status);
+  return status;
+}
+
+function buildDirectProviderHostedToolsStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id, "");
+  const directProviderMetadata = input.directProviderMetadata || {};
+  const existingStatus = [
+    input.providerHostedToolsStatus,
+    project.providerHostedToolsStatus,
+    project.directProviderHostedToolsStatus,
+    project.surfaceBinding?.codex?.providerHostedToolsStatus,
+  ].find(isPlainObject) || {};
+  const existingActivationSnapshot = [
+    input.providerHostedActivationSnapshot,
+    existingStatus.activationSnapshot,
+    project.providerHostedActivationSnapshot,
+    project.surfaceBinding?.codex?.providerHostedActivationSnapshot,
+  ].find(isPlainObject) || null;
+  const existingCapabilities = [
+    input.capabilities,
+    existingStatus.capabilities,
+    existingActivationSnapshot?.capabilities,
+    project.providerHostedCapabilities,
+    project.surfaceBinding?.codex?.providerHostedCapabilities,
+  ].find(Array.isArray) || [];
+  const status = buildProviderHostedToolsStatus({
+    projectId,
+    workThreadId: normalizeString(project.workThreadId, ""),
+    providerMetadataProfile: directProviderMetadata.profile || input.providerMetadataProfile || null,
+    ...(existingActivationSnapshot ? { activationSnapshot: existingActivationSnapshot } : {}),
+    ...(existingCapabilities.length ? { capabilities: existingCapabilities } : {}),
+    requestShapeProofs: [
+      ...(Array.isArray(input.requestShapeProofs) ? input.requestShapeProofs : []),
+      ...(Array.isArray(project.providerHostedRequestShapeProofs) ? project.providerHostedRequestShapeProofs : []),
+      ...(Array.isArray(project.providerHostedToolsStatus?.activationSnapshot?.requestShapeProofs) ? project.providerHostedToolsStatus.activationSnapshot.requestShapeProofs : []),
+      ...(Array.isArray(project.directProviderHostedToolsStatus?.activationSnapshot?.requestShapeProofs) ? project.directProviderHostedToolsStatus.activationSnapshot.requestShapeProofs : []),
+      ...(Array.isArray(existingActivationSnapshot?.requestShapeProofs) ? existingActivationSnapshot.requestShapeProofs : []),
+      ...(Array.isArray(project.surfaceBinding?.codex?.providerHostedRequestShapeProofs) ? project.surfaceBinding.codex.providerHostedRequestShapeProofs : []),
+    ],
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertProviderHostedToolsStatusSafe(status);
+  return status;
+}
+
+function buildDirectPluginGovernanceStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id, "");
+  const status = buildPluginGovernanceStatus({
+    projectId,
+    workThreadId: normalizeString(project.workThreadId, ""),
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertPluginGovernanceStatusSafe(status);
+  return status;
+}
+
+function buildDirectTextSubAgentToolSurfaceForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id || input.runtimeStatus?.projectId || input.agentRuntimeStatus?.projectId, "");
+  const primaryThreadId = normalizeString(
+    input.agentRuntimeStatus?.primaryThreadId ||
+      input.runtimeStatus?.activeProviderThreadId ||
+      input.runtimeStatus?.activeDirectSessionId ||
+      project.codexThreadId ||
+      project.threadId,
+    "primary_agent",
+  );
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const graph = buildAgentThreadGraph({
+    projectId,
+    primaryThreadId,
+    nodes: [],
+    edges: [],
+  });
+  const mailbox = buildAgentMailbox({
+    projectId,
+    primaryThreadId,
+    graphId: graph.graphId,
+    messages: [],
+  });
+  const surface = buildTextOnlySubAgentToolSurface({
+    projectId,
+    primaryThreadId,
+    graph,
+    mailbox,
+    spawnRequest: {
+      childAgentId: "planned_text_child_agent",
+      promptChars: 120,
+      promptEvidenceId: "planned_text_child_spawn_prompt",
+    },
+    waitPlan: {
+      targetAgentIds: ["planned_text_child_agent"],
+      waitMode: "specific",
+      timeoutMs: 30000,
+      maxWaitDepth: 1,
+    },
+    sendMessagePlan: {
+      targetAgentId: "planned_text_child_agent",
+      payloadId: "planned_text_child_message",
+    },
+    followupTaskPlan: {
+      targetAgentId: "planned_text_child_agent",
+      payloadId: "planned_text_child_followup",
+    },
+    interruptRequest: {
+      targetAgentId: "planned_text_child_agent",
+    },
+    generatedAt,
+  });
+  assertTextOnlySubAgentToolSurfaceSafe(surface);
+  return surface;
+}
+
+function buildDirectStatefulExecSessionSurfaceForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id || input.runtimeStatus?.projectId, "");
+  const workThreadId = normalizeString(
+    input.workThreadBundle?.activeWorkThreadId ||
+      input.workThreadBundle?.projection?.activeWorkThreadId ||
+      project.workThreadId,
+    "work_thread_stateful_exec_preview",
+  );
+  const surface = buildStatefulExecSessionSurface({
+    projectId,
+    workThreadId,
+    sessionPlan: {
+      projectId,
+      workThreadId,
+      sessionId: "planned_stateful_exec_session",
+      sessionState: "planned",
+      commandClass: "plain_pipe_process_session",
+      commandPreview: "metadata-only command preview",
+      transportMode: "plain_pipe",
+      cwdEvidenceKey: "workspace_root_evidence_key",
+      idleTimeoutMs: 30000,
+      hardTimeoutMs: 120000,
+      outputBudgetChars: 24000,
+      providerResultBudgetChars: 12000,
+    },
+    outputFrames: [],
+    stdinPlan: {
+      stdinPolicy: "blocked_until_policy",
+      inputPreviewChars: 0,
+    },
+    cleanupPlan: {
+      cleanupState: "not_required",
+    },
+    recoveryClassification: {
+      sessionState: "planned",
+    },
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertStatefulExecSessionSurfaceSafe(surface);
+  return surface;
+}
+
+function buildDirectBatchAgentJobSurfaceForProject(input = {}) {
+  const project = input.project || {};
+  const runtimeStatus = input.runtimeStatus || {};
+  const projectId = normalizeString(project.id || runtimeStatus.projectId, "");
+  const workThreadId = normalizeString(
+    input.workThreadBundle?.activeWorkThreadId ||
+      input.workThreadBundle?.projection?.activeWorkThreadId ||
+      project.workThreadId,
+    "work_thread_batch_agent_preview",
+  );
+  const surface = buildBatchAgentJobSurface({
+    projectId,
+    primaryThreadId: normalizeString(runtimeStatus.activeProviderThreadId || runtimeStatus.activeDirectSessionId || project.codexThreadId || project.threadId, ""),
+    workThreadId,
+    jobPlan: {
+      csvEvidenceKey: "planned_batch_csv_evidence_key",
+      csvHeaderDigest: "planned_batch_csv_header_digest",
+      rowCount: 0,
+      workerItems: [],
+      maxWorkers: 50,
+      concurrencyLimit: 4,
+    },
+    resultContract: {
+      resultEnvelopeType: "batch_worker_result_ref",
+      requiredFields: ["workerItemId", "resultState", "resultEvidenceKey"],
+    },
+    aggregationLedger: {
+      expectedWorkerCount: 0,
+      exportPolicy: "metadata_only",
+    },
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertBatchAgentJobSurfaceSafe(surface);
+  return surface;
+}
+
+function buildDirectCodeModeExecutionLaneStatusForProject(input = {}) {
+  const project = input.project || {};
+  const runtimeStatus = input.runtimeStatus || {};
+  const projectId = normalizeString(project.id || runtimeStatus.projectId, "");
+  const workThreadId = normalizeString(
+    input.workThreadBundle?.activeWorkThreadId ||
+      input.workThreadBundle?.projection?.activeWorkThreadId ||
+      project.workThreadId,
+    "work_thread_code_mode_preview",
+  );
+  const status = buildCodeModeExecutionLaneStatus({
+    projectId,
+    workThreadId,
+    threadId: normalizeString(runtimeStatus.activeProviderThreadId || runtimeStatus.activeDirectSessionId || project.codexThreadId || project.threadId, ""),
+    kernelSession: {
+      kernelSessionId: "planned_code_mode_kernel_session",
+      state: "not_started",
+      kernelKind: "provider_code_mode",
+      language: "unknown",
+      resourceClass: "unknown",
+      maxWallTimeMs: 0,
+      maxOutputBytes: 0,
+    },
+    executePosture: {
+      executionState: "blocked_execution_not_enabled",
+      requestShapeFamily: "code_mode_execute_request_posture",
+      estimatedResourceClass: "unknown",
+    },
+    waitCancelPolicy: {
+      waitState: "blocked_execution_not_enabled",
+      cancelState: "blocked_execution_not_enabled",
+      waitTimeoutMs: 0,
+    },
+    artifactOutputPolicy: {
+      artifactState: "metadata_only",
+      artifactRefPolicy: "metadata_only",
+      allowedArtifactKinds: ["structured_result_ref", "text_summary"],
+    },
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertCodeModeExecutionLaneSafe(status);
+  return status;
+}
+
+function buildDirectAgentUsageStatusForProject(projectId) {
+  const safeProjectId = normalizeString(projectId, "");
+  try {
+    const sessionStore = ensureDirectSessionStore();
+    const index = sessionStore.ensure();
+    const sessions = (Array.isArray(index.sessions) ? index.sessions : [])
+      .filter((entry) => !safeProjectId || normalizeString(entry?.projectId, "") === safeProjectId)
+      .map((entry) => {
+        const session = entry?.sessionId ? sessionStore.readSession(entry.sessionId) : null;
+        if (!session) return null;
+        const turnIds = new Set([
+          ...(Array.isArray(session.turns) ? session.turns.map((turn) => normalizeString(turn?.turnId, "")).filter(Boolean) : []),
+          ...(sessionStore.listTurnIdsFromDisk(session.sessionId) || []),
+        ]);
+        const turns = [...turnIds]
+          .map((turnId) => sessionStore.readTurn(session.sessionId, turnId))
+          .filter(Boolean);
+        return { session, turns };
+      })
+      .filter(Boolean);
+    const ledger = buildDirectAgentUsageLedger({
+      projectId: safeProjectId,
+      sessionTurns: sessions,
+    });
+    try {
+      ensureDirectThreadStore().recordDirectRuntimeAnalyticsFacts({
+        projectId: safeProjectId,
+        sessionTurns: sessions,
+      });
+    } catch {}
+    return buildDirectAgentUsageSummaryProjection(ledger);
+  } catch (error) {
+    return {
+      schema: "direct_agent_usage_summary_projection@1",
+      projectId: safeProjectId,
+      rowCount: 0,
+      totals: {
+        rowCount: 0,
+        turnCount: 0,
+        inputTokensKnown: 0,
+        cachedInputTokensKnown: 0,
+        nonCachedInputTokensKnown: 0,
+        outputTokensKnown: 0,
+        reasoningTokensKnown: 0,
+        totalTokensKnown: 0,
+        missingUsageRowCount: 0,
+        durationMsKnown: 0,
+      },
+      byAgent: [],
+      byWorkThread: [],
+      byRoute: [],
+      evidencePosture: {
+        exactWhereProviderReported: false,
+        missingUsageIsNotZero: true,
+        costComputed: false,
+        billingGrade: false,
+      },
+      privacy: {
+        rawPromptIncluded: false,
+        rawResponseIncluded: false,
+        rawProviderFrameIncluded: false,
+        rawTokenDetailsIncluded: false,
+      },
+      error: {
+        code: "direct_agent_usage_status_unavailable",
+        message: normalizeString(error?.message, "Direct agent usage status unavailable."),
+      },
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    };
+  }
+}
+
+function emptyDirectWorkThreadProjection(projectId, reason = "work_thread_registry_unavailable") {
+  return {
+    status: {
+      available: false,
+      reason,
+      workThreadCount: 0,
+      activeCount: 0,
+      projectionDigest: "",
+    },
+    projection: {
+      schema: "direct_work_thread_projection@1",
+      projectId,
+      generatedAt: nowIso(),
+      rowCount: 0,
+      activeCount: 0,
+      rows: [],
+      projectionDigest: "",
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+    },
+    resolutionReport: {
+      resolutionState: "unavailable",
+      routingGateState: "unavailable",
+      selectedWorkThreadId: "",
+      candidateCount: 0,
+      blockerCodes: [reason],
+      ambiguityBlockers: [reason],
+      clarificationRequired: false,
+      nonTargetPreservationRequired: true,
+      mutationBlocked: true,
+      providerCallBlocked: true,
+      reportDigest: "",
+    },
+  };
+}
+
+function directWorkThreadProjectionForProject(project = {}) {
+  const projectId = normalizeString(project?.id, "");
+  if (!projectId) return emptyDirectWorkThreadProjection("", "project_missing");
+  try {
+    const store = ensureDirectWorkThreadStore();
+    const status = store.status({ projectId });
+    const projection = store.buildProjection({ projectId });
+    const resolutionReport = store.resolveWorkTargetReport({
+      projectId,
+      activeRuntimePath: directRuntimePathFromBinding(project.surfaceBinding?.codex || {}),
+      maxAgeMs: 10 * 60 * 1000,
+    });
+    return { status, projection, resolutionReport };
+  } catch (error) {
+    return emptyDirectWorkThreadProjection(projectId, normalizeString(error?.code || error?.message, "work_thread_registry_unavailable"));
+  }
+}
+
+function emptyDirectAgentRegistryProjection(projectId, reason = "agent_registry_unavailable") {
+  return {
+    status: {
+      schema: "direct_agent_registry_status@1",
+      available: false,
+      state: "degraded",
+      reason,
+      projectId,
+      agentCount: 0,
+      backfilledCount: 0,
+      activeCount: 0,
+      threadLinkCount: 0,
+      registryPathExposed: false,
+      projectionDigest: "",
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    },
+    projection: {
+      schema: "direct_agent_registry_projection@1",
+      projectId,
+      generatedAt: nowIso(),
+      rowCount: 0,
+      backfilledCount: 0,
+      activeCount: 0,
+      rows: [],
+      projectionDigest: "",
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    },
+    backfillReport: null,
+  };
+}
+
+function directAgentRegistryProjectionForProject(project = {}) {
+  const projectId = normalizeString(project?.id, "");
+  if (!projectId) return emptyDirectAgentRegistryProjection("", "project_missing");
+  try {
+    const store = ensureDirectAgentRegistryStore();
+    const sessionStore = ensureDirectSessionStore();
+    const sessionStatus = sessionStore.status({ projectId });
+    const cacheKey = [
+      normalizeString(sessionStatus.lastSessionUpdatedAt, ""),
+      Number(sessionStatus.sessionCount || 0),
+      Number(sessionStatus.turnCount || 0),
+    ].join("::");
+    let backfillReport = null;
+    if (directAgentRegistryBackfillStateByProject.get(projectId) !== cacheKey) {
+      backfillReport = store.backfillFromSessionStore(sessionStore, { projectId });
+      directAgentRegistryBackfillStateByProject.set(projectId, cacheKey);
+    } else {
+      const projection = store.buildProjection({ projectId });
+      backfillReport = {
+        schema: "direct_agent_registry_backfill_report@1",
+        projectId,
+        generatedAt: nowIso(),
+        touchedAgentCount: 0,
+        touchedAgentRunCount: 0,
+        touchedThreadLinkCount: 0,
+        projection,
+        status: store.status({ projectId, projection, threadLinkCount: projection.rows.reduce((count, row) => count + Number(row.linkedThreadCount || 0), 0) }),
+        sessionRewritePerformed: false,
+        rawTextIncluded: false,
+        rawPathIncluded: false,
+        rawSecretIncluded: false,
+      };
+    }
+    return {
+      status: backfillReport.status,
+      projection: backfillReport.projection,
+      backfillReport: {
+        schema: backfillReport.schema,
+        projectId: backfillReport.projectId,
+        generatedAt: backfillReport.generatedAt,
+        touchedAgentCount: backfillReport.touchedAgentCount,
+        touchedAgentRunCount: backfillReport.touchedAgentRunCount,
+        touchedThreadLinkCount: backfillReport.touchedThreadLinkCount,
+        sessionRewritePerformed: false,
+        rawTextIncluded: false,
+        rawPathIncluded: false,
+        rawSecretIncluded: false,
+      },
+    };
+  } catch (error) {
+    return emptyDirectAgentRegistryProjection(projectId, normalizeString(error?.code || error?.message, "agent_registry_unavailable"));
+  }
+}
+
+function directOperatorBrokerProjectionForProject(project = {}, workThreadBundle = null) {
+  const projectId = normalizeString(project?.id, "");
+  if (!projectId) return null;
+  try {
+    const store = ensureDirectWorkThreadStore();
+    const workThreads = store.listWorkThreads({ projectId, includeArchived: true });
+    const resolution = buildOperatorBrokerResolution({
+      projectId,
+      activeRuntimePath: directRuntimePathFromBinding(project.surfaceBinding?.codex || {}),
+      workTargetResolutionReport: workThreadBundle?.resolutionReport,
+    }, workThreads, { nowMs: Date.now() });
+    assertOperatorBrokerResolutionSafe(resolution);
+    const projection = buildOperatorBrokerResolutionProjection(resolution);
+    assertOperatorBrokerProjectionSafe(projection);
+    return projection;
+  } catch (error) {
+    return {
+      schema: "operator_broker_resolution_projection@1",
+      brokerResolutionId: "",
+      projectId,
+      resolutionState: "unavailable",
+      routingGateState: "unavailable",
+      selectedWorkThreadId: "",
+      candidateCount: 0,
+      confidenceLabel: "none",
+      candidates: [],
+      ambiguityBlockers: [normalizeString(error?.code || error?.message, "operator_broker_unavailable")],
+      clarificationRequired: false,
+      nonTargetPreservationRequired: true,
+      nonTargetPreservationConstraints: ["preserve_non_target_workthreads"],
+      workWorldSnapshot: {},
+      authority: {
+        mutationAuthorityGranted: false,
+        providerCallAuthorityGranted: false,
+        routingEnforced: false,
+        workspaceMutationAllowed: false,
+        providerTransportAllowed: false,
+        rawTextIncluded: false,
+        rawPathIncluded: false,
+        rawSecretIncluded: false,
+      },
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    };
+  }
+}
+
+function directContextPreviewForProject(project = {}, input = {}) {
+  const projectId = normalizeString(project?.id, "");
+  const runtimePath = directRuntimePathFromBinding(project?.surfaceBinding?.codex || {});
+  const workThreadBundle = input.workThreadBundle || directWorkThreadProjectionForProject(project);
+  const contextMaintenance = input.runtimeStatus?.directContextMaintenance || {};
+  const preview = buildContextPacketPreview({
+    projectId,
+    harnessPolicyRows: [
+      {
+        sourceClass: "harness_policy",
+        sourceId: "direct_runtime_path",
+        label: `Direct runtime path: ${runtimePath || "unknown"}`,
+        includedInRequest: true,
+        required: true,
+        stale: false,
+        missing: !runtimePath,
+        retentionLaw: "runtime_selection_witness",
+      },
+      {
+        sourceClass: "harness_policy",
+        sourceId: "work_thread_registry",
+        label: `WorkThread registry: ${Number(workThreadBundle?.status?.workThreadCount || 0)} active-world row(s)`,
+        includedInRequest: true,
+        required: false,
+        stale: false,
+        missing: workThreadBundle?.status?.available !== true,
+        retentionLaw: "work_thread_identity_witness",
+      },
+      {
+        sourceClass: "harness_policy",
+        sourceId: "context_maintenance",
+        label: `Context maintenance: ${normalizeString(contextMaintenance.pressureState, "unknown")}`,
+        includedInRequest: true,
+        required: false,
+        stale: false,
+        missing: false,
+        retentionLaw: "context_status_witness",
+      },
+    ],
+    sourceArtifacts: [
+      {
+        artifactKind: "runtime_witness",
+        artifactId: input.runtimeWitnessProjection?.projectionId || "",
+        label: "Direct model/reasoning/quota/usage witness",
+        artifactDigest: input.runtimeWitnessProjection?.integrity?.artifactDigest || "",
+        requiredForRequest: false,
+      },
+      {
+        artifactKind: "usage_projection",
+        artifactId: input.agentUsageStatus?.projectionId || "",
+        label: "Direct usage summary projection",
+        artifactDigest: input.agentUsageStatus?.projectionDigest || "",
+        requiredForRequest: false,
+      },
+    ],
+  }, { nowMs: Date.now() });
+  assertContextPacketPreviewSafe(preview);
+  return preview;
+}
+
+function directWitnessStateFromEvidence(value) {
+  const state = normalizeString(value, "unknown");
+  if (state === "runtime_probed" || state === "accepted" || state === "exact") return "fresh";
+  if (state === "expired") return "expired";
+  if (state === "rejected" || state === "scope_mismatch") return "blocked";
+  if (state === "candidate" || state === "diagnostic" || state === "unstable") return "diagnostic";
+  return "unknown";
+}
+
+function runtimeWitnessEvidenceRef(kind, artifactId, label, confidence = "diagnostic") {
+  const digest = crypto.createHash("sha256").update(`${kind}:${artifactId || label || ""}`).digest("hex");
+  return normalizeEvidenceRef({
+    kind,
+    artifactId: normalizeString(artifactId, kind),
+    artifactDigest: digest,
+    sourceConfidence: confidence,
+    rendererSafeLabel: label,
+  });
+}
+
+function directMetadataModelItems(profile = {}) {
+  const items = profile?.modelCatalog?.items;
+  return Array.isArray(items) ? items : [];
+}
+
+function directMetadataModelById(profile = {}, value = "") {
+  const id = normalizeString(value, "");
+  if (!id) return null;
+  return directMetadataModelItems(profile).find((model) => (
+    normalizeString(model.id, "") === id ||
+    normalizeString(model.model, "") === id
+  )) || null;
+}
+
+function directMetadataSelectedModel(profile = {}, project = {}, runtimeStatus = {}) {
+  const codexBinding = project.surfaceBinding?.codex || {};
+  const liveText = runtimeStatus.liveTextRuntime || {};
+  const modelIds = Array.isArray(runtimeStatus.models?.ids) ? runtimeStatus.models.ids.filter(Boolean) : [];
+  const candidate = normalizeString(
+    codexBinding.model ||
+      profile?.runtimeSettings?.active?.model ||
+      profile?.modelCatalog?.defaultModel ||
+      liveText.liveProbeEvidence?.model ||
+      modelIds[0],
+    "",
+  );
+  return {
+    id: candidate,
+    descriptor: directMetadataModelById(profile, candidate),
+  };
+}
+
+function directMetadataReasoningEffort(profile = {}, project = {}, modelDescriptor = null) {
+  const codexBinding = project.surfaceBinding?.codex || {};
+  return normalizeString(
+    codexBinding.reasoningEffort ||
+      profile?.runtimeSettings?.active?.reasoningEffort ||
+      modelDescriptor?.defaultReasoningEffort,
+    "",
+  );
+}
+
+function directMetadataWitnessState(profile = {}, driftReport = {}) {
+  if (driftReport?.status === "invalid" || driftReport?.status === "blocked") return "blocked";
+  if (profile?.modelCatalog?.source === "server_model_list") return "fresh";
+  if (profile?.modelCatalog?.source === "cache") return "diagnostic";
+  return "unknown";
+}
+
+function directMetadataQuotaWindows(profile = {}) {
+  const windows = profile?.usage?.quota?.windows;
+  if (!Array.isArray(windows) || !windows.length) return [];
+  const codexWindows = windows.filter((window) => String(window?.windowId || "").startsWith("codex:"));
+  const selectedWindows = codexWindows.length ? codexWindows : windows;
+  return [...selectedWindows].sort((a, b) => {
+    const priority = (window) => {
+      const label = directMetadataQuotaWindowLabel(window);
+      if (label === "5h") return 1;
+      if (label === "W") return 2;
+      return 10;
+    };
+    const priorityDiff = priority(a) - priority(b);
+    if (priorityDiff) return priorityDiff;
+    const aPercent = Number(a?.usedPercent);
+    const bPercent = Number(b?.usedPercent);
+    if (Number.isFinite(aPercent) && Number.isFinite(bPercent) && aPercent !== bPercent) return bPercent - aPercent;
+    return 0;
+  });
+}
+
+function directMetadataQuotaWindowLabel(window = {}) {
+  const safeWindow = window ?? {};
+  if (safeWindow.windowKind === "weekly") return "W";
+  if (safeWindow.windowKind === "five_hour") return "5h";
+  const duration = Number(safeWindow.windowDurationMins || 0);
+  if (duration === 300) return "5h";
+  if (duration === 10080) return "W";
+  if (duration > 0 && duration < 60) return `${duration}m`;
+  if (duration > 0 && duration % 1440 === 0) return `${duration / 1440}d`;
+  if (duration > 0 && duration % 60 === 0) return `${duration / 60}h`;
+  return normalizeString(safeWindow.windowKind, "quota");
+}
+
+function directMetadataAvailablePercent(window = {}) {
+  const used = Number(window?.usedPercent);
+  if (!Number.isFinite(used)) return null;
+  return Math.max(0, Math.min(100, 100 - Math.round(used)));
+}
+
+function directMetadataResetLabel(window = {}) {
+  const resetAt = window?.resetsAt;
+  if (!resetAt) return "";
+  const date = new Date(resetAt);
+  if (!Number.isFinite(date.getTime())) return "";
+  const options = directMetadataQuotaWindowLabel(window) === "W"
+    ? { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }
+    : { hour: "2-digit", minute: "2-digit", hour12: false };
+  return new Intl.DateTimeFormat(undefined, options).format(date);
+}
+
+function directMetadataQuotaLabel(profile = {}) {
+  const windows = directMetadataQuotaWindows(profile);
+  if (!windows.length) return "Quota/rate unknown";
+  const parts = windows
+    .slice(0, 2)
+    .map((window) => {
+      const percent = directMetadataAvailablePercent(window);
+      if (percent == null) return "";
+      const reset = directMetadataResetLabel(window);
+      return [directMetadataQuotaWindowLabel(window), `${percent}%`, reset].filter(Boolean).join(" ");
+    })
+    .filter(Boolean);
+  return parts.length ? `Quota/rate ${parts.join(" / ")}` : "Quota/rate available";
+}
+
+function directMetadataContextLabel(profile = {}, modelDescriptor = null, agentUsageStatus = {}) {
+  const contextWindow = Number(profile?.usage?.context?.modelContextWindow || modelDescriptor?.contextWindow || 0);
+  const latestUsage = agentUsageStatus?.latestUsage || {};
+  const usedTokens = Number(
+    profile?.usage?.context?.usedTokens ??
+      profile?.usage?.context?.tokensInWindow ??
+      latestUsage.inputTokensKnown ??
+      0,
+  );
+  if (Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(usedTokens) && usedTokens > 0) {
+    const usedPercent = Math.max(0, Math.min(100, Math.round((usedTokens / contextWindow) * 100)));
+    return `Context ${usedPercent}% · ${usedTokens}/${contextWindow}`;
+  }
+  if (Number.isFinite(contextWindow) && contextWindow > 0) return `Context fill unknown · window ${contextWindow}`;
+  return "Context unknown";
+}
+
+function buildDirectControlToolStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id || input.runtimeStatus?.projectId, "");
+  const runtimeStatus = input.runtimeStatus || {};
+  const agentUsageStatus = input.agentUsageStatus || {};
+  const directProviderMetadata = input.directProviderMetadata || {};
+  const metadataProfile = directProviderMetadata.profile || input.providerMetadataProfile || null;
+  const selected = directMetadataSelectedModel(metadataProfile || {}, project, runtimeStatus);
+  const modelDescriptor = selected.descriptor || {};
+  const contextWindow = Number(metadataProfile?.usage?.context?.modelContextWindow || modelDescriptor.contextWindow || 0);
+  const usedTokenCandidate =
+    metadataProfile?.usage?.context?.usedTokens ??
+      metadataProfile?.usage?.context?.tokensInWindow ??
+      agentUsageStatus?.latestUsage?.inputTokensKnown;
+  const usedTokens = Number(usedTokenCandidate);
+  const hasUsageEvidence = usedTokenCandidate !== undefined && usedTokenCandidate !== null && Number.isFinite(usedTokens);
+  const tokensLeft = Number.isFinite(contextWindow) && contextWindow > 0 && hasUsageEvidence
+    ? Math.max(0, contextWindow - Math.max(0, usedTokens))
+    : null;
+  const estimateKind = metadataProfile?.usage?.context?.source === "provider_reported"
+    ? "provider_reported"
+    : Number.isFinite(tokensLeft)
+      ? "budget_policy_estimate"
+      : "unknown";
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const status = buildControlToolSubstrateStatus({
+    projectId,
+    generatedAt,
+    contextRemainingInput: {
+      projectId,
+      tokensLeft,
+      confidence: Number.isFinite(tokensLeft) ? "derived" : "unknown",
+      source: Number.isFinite(tokensLeft) ? "direct_provider_metadata_and_usage" : "unavailable",
+      estimateKind,
+      usableFor: "display_only",
+      observedAt: generatedAt,
+    },
+    planInput: {
+      projectId,
+      source: "model_tool_call",
+      status: "active",
+      sourceRefs: [{ kind: "tool_capability_row", ref: "vanilla.update_plan" }],
+      steps: [],
+      conflictsWithCurrentUserIntent: false,
+      createdAt: generatedAt,
+    },
+    viewImageInput: {
+      projectId,
+      providerVisibilityState: "metadata_only",
+      providerVisibilityEvidence: "not_sent",
+      metadataStrippingPolicy: "not_payload_sent",
+      decodeCapsApplied: true,
+      observedAt: generatedAt,
+    },
+    humanDecisionInput: {
+      projectId,
+      toolKind: "request_user_input",
+      promptPreview: "No active request_user_input packet.",
+      choices: [],
+      freeTextAllowed: true,
+      createdAt: generatedAt,
+    },
+    newContextInput: {
+      projectId,
+      reason: "blocked_until_context_maintenance_law",
+      observedAt: generatedAt,
+    },
+  });
+  assertControlToolSubstrateSafe(status);
+  return status;
+}
+
+function buildDirectRuntimeWitnessProjectionForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id || input.runtimeStatus?.projectId, "");
+  const runtimeStatus = input.runtimeStatus || {};
+  const agentUsageStatus = input.agentUsageStatus || {};
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const directProviderMetadata = input.directProviderMetadata || {};
+  const metadataProfile = directProviderMetadata.profile || input.providerMetadataProfile || null;
+  const driftReport = directProviderMetadata.driftReport || input.metadataDriftReport || null;
+  const selected = directMetadataSelectedModel(metadataProfile || {}, project, runtimeStatus);
+  const selectedModel = selected.id;
+  const modelEvidenceState = metadataProfile?.modelCatalog?.source || runtimeStatus.models?.source || "";
+  const modelState = metadataProfile ? directMetadataWitnessState(metadataProfile, driftReport || {}) : directWitnessStateFromEvidence(modelEvidenceState);
+  const reasoningEffort = directMetadataReasoningEffort(metadataProfile || {}, project, selected.descriptor);
+  const reasoningState = reasoningEffort
+    ? metadataProfile ? modelState : "diagnostic"
+    : "unknown";
+  const usageAvailable = agentUsageStatus.schema === "direct_agent_usage_summary_projection@1";
+  const missingUsage = Number(agentUsageStatus.totals?.missingUsageRowCount || 0);
+  const knownUsage = Number(agentUsageStatus.totals?.totalTokensKnown || 0);
+  const usageState = usageAvailable
+    ? missingUsage
+      ? "diagnostic"
+      : knownUsage > 0
+        ? "fresh"
+        : "unknown"
+    : "unknown";
+  const appServerFallback = input.appServerFallbackParity || {};
+  const appServerFallbackState = normalizeString(appServerFallback.parityState, "");
+  const quotaWindows = metadataProfile ? directMetadataQuotaWindows(metadataProfile) : [];
+  const quotaState = quotaWindows.length ? modelState : "unknown";
+  const contextLabel = metadataProfile ? directMetadataContextLabel(metadataProfile, selected.descriptor, agentUsageStatus) : "Context unknown";
+  const contextHasFill = Number(agentUsageStatus?.latestUsage?.inputTokensKnown ?? metadataProfile?.usage?.context?.usedTokens ?? metadataProfile?.usage?.context?.tokensInWindow ?? 0) > 0;
+  const contextState = contextHasFill
+    ? modelState
+    : selected.descriptor?.contextWindow
+      ? "diagnostic"
+      : "unknown";
+  const driftStatus = normalizeString(driftReport?.status, metadataProfile ? "stable" : "unknown");
+  const driftState = driftStatus === "invalid" || driftStatus === "blocked"
+    ? "blocked"
+    : driftStatus === "stable" || driftStatus === "ok"
+      ? modelState
+      : driftStatus === "unknown"
+        ? "unknown"
+        : "diagnostic";
+  return buildRuntimeWitnessProjection({
+    projectId,
+    generatedAt,
+    chips: [
+      {
+        kind: "model",
+        label: selectedModel
+          ? `Model ${selectedModel} (${modelEvidenceState || "unknown"})`
+          : "Model unknown",
+        state: modelState,
+        evidenceRefs: [runtimeWitnessEvidenceRef("direct_provider_metadata", metadataProfile?.profileDigest || runtimeStatus.statusDigest || "runtime_status", "Direct provider model metadata")],
+      },
+      {
+        kind: "reasoning",
+        label: reasoningEffort
+          ? `Reasoning ${reasoningEffort} (${metadataProfile ? "metadata" : "configured"})`
+          : "Reasoning effort unknown",
+        state: reasoningState,
+        evidenceRefs: [runtimeWitnessEvidenceRef("direct_provider_metadata", metadataProfile?.profileDigest || projectId || "project", "Direct reasoning metadata")],
+      },
+      {
+        kind: "quota",
+        label: metadataProfile ? directMetadataQuotaLabel(metadataProfile) : "Quota/rate unknown (no direct read authority)",
+        state: quotaState,
+        evidenceRefs: [runtimeWitnessEvidenceRef("quota", appServerFallbackState || "quota_not_read", "Quota/rate not read by direct witness", "unknown")],
+      },
+      {
+        kind: "usage",
+        label: usageAvailable
+          ? `Usage rows ${Number(agentUsageStatus.rowCount || 0)} · known tokens ${knownUsage}`
+          : "Usage unavailable",
+        state: usageState,
+        evidenceRefs: [runtimeWitnessEvidenceRef("direct_agent_usage", agentUsageStatus.projectionDigest || agentUsageStatus.ledgerDigest || "usage_projection", "Direct usage witness")],
+      },
+      {
+        kind: "context",
+        label: contextLabel,
+        state: contextState,
+        evidenceRefs: [runtimeWitnessEvidenceRef("direct_provider_metadata", metadataProfile?.profileDigest || "context_unknown", "Direct context metadata", metadataProfile ? "observed" : "unknown")],
+      },
+      {
+        kind: "drift",
+        label: driftReport
+          ? `Drift ${driftStatus} (${Number(driftReport.unknownEnums?.length || 0)} unknown, ${Number(driftReport.missingFields?.length || 0)} missing)`
+          : "Drift unknown (no direct drift report)",
+        state: driftState,
+        evidenceRefs: [runtimeWitnessEvidenceRef("direct_metadata_drift", driftReport?.reportDigest || "drift_not_run", "Direct metadata drift report", driftReport ? "observed" : "unknown")],
+      },
+    ],
+  });
+}
+
+function directRuntimeWitnessChip(witness = {}, kind = "") {
+  return (Array.isArray(witness.chips) ? witness.chips : [])
+    .find((chip) => normalizeString(chip?.kind, "") === kind) || null;
+}
+
+function directCompactWitnessLabel(label = "", prefix = "") {
+  const text = normalizeString(label, "");
+  if (!text) return "";
+  const trimmed = prefix && text.toLowerCase().startsWith(prefix.toLowerCase())
+    ? text.slice(prefix.length).trim()
+    : text;
+  return trimmed.replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
+
+function buildDirectComposerRuntimeWitness(input = {}) {
+  const runtimeWitness = input.runtimeWitnessProjection || {};
+  const contextPreview = input.contextPreview || {};
+  const agentUsage = input.agentUsageStatus || {};
+  const modelChip = directRuntimeWitnessChip(runtimeWitness, "model");
+  const reasoningChip = directRuntimeWitnessChip(runtimeWitness, "reasoning");
+  const quotaChip = directRuntimeWitnessChip(runtimeWitness, "quota");
+  const usageChip = directRuntimeWitnessChip(runtimeWitness, "usage");
+  const contextChip = directRuntimeWitnessChip(runtimeWitness, "context");
+  const sourceCount = Number(contextPreview?.rendererSafeSummary?.sourceCount ?? contextPreview?.counts?.rowCount ?? 0);
+  const includedCount = Number(contextPreview?.rendererSafeSummary?.includedSourceCount ?? contextPreview?.counts?.includedSourceCount ?? 0);
+  const blockerCount = Number(contextPreview?.rendererSafeSummary?.blockerCount ?? 0);
+  const knownTokens = Number(agentUsage?.totals?.totalTokensKnown || 0);
+  return {
+    schema: "direct_composer_runtime_witness@1",
+    modelLabel: directCompactWitnessLabel(modelChip?.label, "Model") || "model unknown",
+    modelState: normalizeString(modelChip?.state, "unknown"),
+    reasoningLabel: directCompactWitnessLabel(reasoningChip?.label, "Reasoning") || "reasoning unknown",
+    reasoningState: normalizeString(reasoningChip?.state, "unknown"),
+    quotaLabel: directCompactWitnessLabel(quotaChip?.label, "Quota/rate") || "quota unknown",
+    quotaState: normalizeString(quotaChip?.state, "unknown"),
+    usageLabel: knownTokens > 0
+      ? `usage ${knownTokens} token${knownTokens === 1 ? "" : "s"} known`
+      : directCompactWitnessLabel(usageChip?.label, "Usage") || "usage unknown",
+    usageState: normalizeString(usageChip?.state, "unknown"),
+    contextLabel: contextChip
+      ? directCompactWitnessLabel(contextChip.label, "Context")
+      : sourceCount
+      ? `context preview ${includedCount}/${sourceCount}`
+      : "context preview unknown",
+    contextState: blockerCount ? "blocked" : normalizeString(contextChip?.state, sourceCount ? "diagnostic" : "unknown"),
+    contextPreviewDigest: normalizeString(contextPreview.previewDigest, ""),
+    usageProjectionDigest: normalizeString(agentUsage.projectionDigest, ""),
+    runtimeWitnessDigest: normalizeString(runtimeWitness.integrity?.artifactDigest || runtimeWitness.projectionDigest, ""),
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+}
+
+function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
+  const projectId = normalizeString(project?.id, "");
+  const activeThreadId = normalizeString(input.threadId || input.activeThreadId || "", "");
+  const runtimeStatus = input.runtimeStatus || buildDirectRuntimeStatusForProject(project);
+  const liveTextStatus = input.liveTextStatus || ensureDirectLiveTextController().statusForProject(project);
+  const agentUsageStatus = input.agentUsageStatus || buildDirectAgentUsageStatusForProject(projectId);
+  const workThreadBundle = input.workThreadBundle || directWorkThreadProjectionForProject(project);
+  const agentRegistryBundle = input.agentRegistryBundle || directAgentRegistryProjectionForProject(project);
+  const appServerFallbackParity = input.appServerFallbackParity || runtimeStatus.appServerFallbackParity || buildAppServerFallbackParityReport({
+    projectId,
+    runtimeStatus,
+    legacySession: currentLegacyAppServerSnapshot(),
+  });
+  const directProviderMetadata = input.directProviderMetadata || directProviderMetadataStatusForProject(project);
+  if (directProviderMetadata?.profile) {
+    try {
+      ensureDirectThreadStore().recordDirectRuntimeAnalyticsFacts({
+        projectId,
+        providerMetadataProfile: directProviderMetadata.profile,
+      });
+    } catch {}
+  }
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const runtimeWitnessProjection = input.runtimeWitnessProjection || buildDirectRuntimeWitnessProjectionForProject({
+    project,
+    runtimeStatus,
+    agentUsageStatus,
+    appServerFallbackParity,
+    directProviderMetadata,
+    generatedAt,
+  });
+  const contextPreview = input.contextPreview || directContextPreviewForProject(project, {
+    runtimeStatus,
+    runtimeWitnessProjection,
+    agentUsageStatus,
+    workThreadBundle,
+  });
+  const operatorBroker = input.operatorBroker || directOperatorBrokerProjectionForProject(project, workThreadBundle);
+  const composerRuntimeWitness = buildDirectComposerRuntimeWitness({
+    runtimeWitnessProjection,
+    contextPreview,
+    agentUsageStatus,
+  });
+  let directRuntimeAnalyticsSnapshot = null;
+  try {
+    directRuntimeAnalyticsSnapshot = ensureDirectThreadStore().getDirectRuntimeAnalyticsFactSnapshot(projectId, {
+      threadId: activeThreadId,
+    });
+  } catch {}
+  const runtimeAnalyticsProjection = buildRuntimeAnalyticsProjection({
+    projectId,
+    threadId: activeThreadId,
+    runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || {}),
+    directFactSnapshot: directRuntimeAnalyticsSnapshot,
+    directProviderMetadataProfile: directProviderMetadata?.profile || null,
+    generatedAt,
+  });
+  const projection = {
+    schema: "direct_codex_surface_projection@1",
+    projectId,
+    generatedAt,
+    runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || {}),
+    liveTextStatus,
+    directAuthPreflight: input.directAuthPreflight || null,
+    runtimeWitnessProjection,
+    composerRuntimeWitness,
+    providerMetadataProfile: directProviderMetadata?.profile || null,
+    metadataDriftReport: directProviderMetadata?.driftReport || null,
+    metadataCacheState: normalizeString(directProviderMetadata?.cacheState, ""),
+    contextPreview,
+    agentUsageStatus,
+    runtimeAnalyticsProjection,
+    operatorBroker,
+    workThreads: {
+      status: workThreadBundle.status,
+      projection: workThreadBundle.projection,
+      resolutionReport: workThreadBundle.resolutionReport,
+    },
+    agents: {
+      status: agentRegistryBundle.status,
+      projection: agentRegistryBundle.projection,
+      backfillReport: agentRegistryBundle.backfillReport,
+    },
+    attachmentCapability: input.attachmentCapability || null,
+    authority: {
+      displayOnly: true,
+      rendererSafe: true,
+      runtimeMutationAllowed: false,
+      providerTransportAllowed: false,
+      workspaceMutationAllowed: false,
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    },
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  projection.projectionDigest = crypto.createHash("sha256").update(JSON.stringify([
+    projection.schema,
+    projectId,
+    generatedAt,
+    projection.runtimePath,
+    runtimeAnalyticsProjection.projectionDigest,
+    composerRuntimeWitness.runtimeWitnessDigest,
+    composerRuntimeWitness.contextPreviewDigest,
+    composerRuntimeWitness.usageProjectionDigest,
+    workThreadBundle?.projection?.projectionDigest || "",
+  ])).digest("hex");
+  return projection;
+}
+
+function emitDirectRuntimeStatus(project = currentProject) {
+  if (!project) return null;
+  const status = buildDirectRuntimeStatusForProject(project);
+  emitShellEvent({
+    type: "direct-runtime-status",
+    status,
+    at: nowIso(),
+  });
+  return status;
+}
+
+async function withDirectActivationLock(projectId, action) {
+  const key = normalizeString(projectId, "");
+  if (!key) throw new Error("Direct activation requires a project id.");
+  if (directActivationLocks.has(key)) {
+    const error = new Error("A direct activation or rollback is already running for this project.");
+    error.code = "direct_activation_conflict";
+    throw error;
+  }
+  const run = Promise.resolve()
+    .then(action)
+    .finally(() => {
+      if (directActivationLocks.get(key) === run) directActivationLocks.delete(key);
+    });
+  directActivationLocks.set(key, run);
+  return run;
+}
+
+function directActivationEvaluationForProject(project) {
+  const controller = ensureDirectAuthController();
+  const authSettings = controller.readSettings();
+  const runtimeAuthStore = directRuntimeAuthStore();
+  const runtimeAuthStatus = runtimeAuthStore.readStatus();
+  const credentials = runtimeAuthStore.readCredentials() || {};
+  authSettings.authStatus = runtimeAuthStatus;
+  const profileDoc = ensureDirectCodexProfileDoc();
+  const sessionStore = ensureDirectSessionStore();
+  const projectId = normalizeString(project?.id, "");
+  const activationStoreStatus = projectId ? ensureDirectActivationStore().statusForProject(projectId) : {};
+  return evaluateDirectExperimentalProjectActivation({
+    project,
+    authSettings,
+    authStatus: authSettings.authStatus,
+    profileDoc,
+    sessionStore: sessionStore.status(),
+    imports: ensureDirectImportController().statusForProject(project),
+    liveTextStatus: ensureDirectLiveTextController().statusForProject(project),
+    workspaceStatus: workspaceBackends?.statusForProject(project) || null,
+    activationStoreStatus,
+    latestActivation: activationStoreStatus.latestActivation || null,
+    accountEvidenceKey: normalizeString(credentials.accountId || credentials.chatgptAccountId, ""),
+    attachOnFirstTurnAccepted: false,
+    profileHash: normalizeString(profileDoc.summary?.profileHash || profileDoc.profile?.profileHash, ""),
+  });
+}
+
+function projectWithCodexBinding(project, codexBinding) {
+  return {
+    ...project,
+    updatedAt: nowIso(),
+    surfaceBinding: {
+      ...project.surfaceBinding,
+      codex: {
+        ...(project.surfaceBinding?.codex || {}),
+        ...(codexBinding || {}),
+      },
+    },
+  };
+}
+
+async function switchActiveCodexRuntimePath(project, runtimePath, reason = "active-runtime-path-switch") {
+  const projectId = normalizeString(project?.id, "");
+  if (!projectId) throw new Error("Project not found.");
+  const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), projectId);
+  if (activeTurns > 0) {
+    const error = new Error("A direct turn is active. Wait before changing the active runtime selection.");
+    error.code = "active_direct_turn_exists";
+    throw error;
+  }
+  const nextBinding = bindingForDirectRuntimePath(project.surfaceBinding?.codex || {}, runtimePath);
+  const activeProject = projectWithCodexBinding(project, nextBinding);
+  currentProject = activeProject;
+  await loadCodexSurface(activeProject, { activationEpoch: nextSurfaceActivationEpoch(reason) });
+  emitDirectRuntimeStatus(activeProject);
+  return {
+    ok: true,
+    runtimePath,
+    activeOnly: true,
+    project: activeProject,
+    config: null,
+    status: buildDirectRuntimeStatusForProject(activeProject),
+  };
+}
+
+async function enableDirectExperimentalProject(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  return withDirectActivationLock(projectId, async () => {
+    const config = await loadConfig();
+    const project = config.projects.find((item) => item.id === projectId);
+    if (!project) throw new Error("Project not found.");
+    const store = ensureDirectActivationStore();
+    const duplicate = store.findActivationByClientId(projectId, payload.clientActivationId);
+    if (duplicate?.transactionState === "committed") {
+      return {
+        ok: true,
+        duplicate: true,
+        activation: duplicate,
+        status: buildDirectRuntimeStatusForProject(project).activation,
+      };
+    }
+    if (duplicate && duplicate.transactionState !== "abandoned") {
+      const error = new Error("Direct activation idempotency key is already in use.");
+      error.code = "direct_activation_id_conflict";
+      throw error;
+    }
+    const evaluation = directActivationEvaluationForProject(project);
+    const gate = evaluation.gate;
+    if (gate.state !== "eligible") {
+      const error = new Error("Direct experimental activation gates are not eligible.");
+      error.code = "direct_activation_not_eligible";
+      error.activation = evaluation.status;
+      throw error;
+    }
+    if (normalizeString(payload.expectedGateId, "") && normalizeString(payload.expectedGateId, "") !== gate.gateId) {
+      const error = new Error("Direct experimental activation gate is stale.");
+      error.code = "gate_stale";
+      error.activation = evaluation.status;
+      throw error;
+    }
+    if (normalizeString(payload.expectedGateDigest, "") && normalizeString(payload.expectedGateDigest, "") !== gate.gateDigest) {
+      const error = new Error("Direct experimental activation digest is stale.");
+      error.code = "gate_stale";
+      error.activation = evaluation.status;
+      throw error;
+    }
+    const pending = store.createPendingActivation(project, gate, payload.clientActivationId || newId("client_activation"));
+    let committed = null;
+    try {
+      const latestConfig = await loadConfig();
+      const nextProjects = latestConfig.projects.map((item) =>
+        item.id === projectId ? projectWithCodexBinding(item, pending.activatedBindingPrivate) : item,
+      );
+      const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
+      const savedProject = saved.projects.find((item) => item.id === projectId) || project;
+      const savedDigest = activationProjectBindingDigest(savedProject.surfaceBinding?.codex || {});
+      if (savedDigest !== pending.activatedBindingDigest) {
+        store.markActivationAbandoned(pending, "binding_digest_mismatch");
+        throw new Error("Direct experimental activation binding digest mismatch.");
+      }
+      committed = store.markActivationCommitted(pending);
+      currentProject = savedProject;
+      await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-activation") });
+      const status = buildDirectRuntimeStatusForProject(savedProject).activation;
+      emitDirectRuntimeStatus(savedProject);
+      return { ok: true, activation: committed, project: savedProject, config: saved, status };
+    } catch (error) {
+      if (!committed) store.markActivationAbandoned(pending, error.message || "activation_failed");
+      throw error;
+    }
+  });
+}
+
+async function selectDirectTextOnlyRuntime(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  return withDirectActivationLock(projectId, async () => {
+    const config = await loadConfig();
+    const project = config.projects.find((item) => item.id === projectId);
+    if (!project) throw new Error("Project not found.");
+    const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), projectId);
+    if (activeTurns > 0) {
+      const error = new Error("A direct turn is active. Wait before changing the runtime selection.");
+      error.code = "active_direct_turn_exists";
+      throw error;
+    }
+    const store = ensureDirectActivationStore();
+    const clientOperationId = normalizeString(payload.clientOperationId || payload.clientSelectionId, "") || newId("client_runtime_selection");
+    const duplicate = store.findRuntimeSelectionByClientId(projectId, clientOperationId);
+    if (duplicate?.transactionState === "committed") {
+      return {
+        ok: true,
+        duplicate: true,
+        selection: duplicate,
+        status: buildDirectRuntimeStatusForProject(project).directTextOnly,
+      };
+    }
+    if (duplicate && duplicate.transactionState !== "abandoned") {
+      const error = new Error("Direct runtime selection idempotency key is already in use.");
+      error.code = "direct_runtime_selection_id_conflict";
+      throw error;
+    }
+    const controller = ensureDirectAuthController();
+    const authSettings = controller.readSettings();
+    authSettings.authStatus = directRuntimeAuthStore().readStatus();
+    const sessionStore = ensureDirectSessionStore();
+    const liveTextStatus = ensureDirectLiveTextController().statusForProject(project);
+    const activationStoreStatus = store.statusForProject(projectId);
+    const evaluation = evaluateDirectTextOnlyRuntimeSelection({
+      project,
+      authSettings,
+      authStatus: authSettings.authStatus,
+      profileDoc: ensureDirectCodexProfileDoc(),
+      sessionStore: sessionStore.status(),
+      liveTextStatus,
+      activationStoreStatus,
+      latestSelection: activationStoreStatus.latestRuntimeSelection || null,
+    });
+    const gate = evaluation.gate;
+    if (gate.state !== "eligible" && gate.state !== "enabled") {
+      const error = new Error("Direct text-only runtime gates are not eligible.");
+      error.code = "direct_text_only_not_eligible";
+      error.status = evaluation.status;
+      throw error;
+    }
+    if (normalizeString(payload.expectedGateId, "") && normalizeString(payload.expectedGateId, "") !== gate.gateId) {
+      const error = new Error("Direct text-only runtime gate is stale.");
+      error.code = "gate_stale";
+      error.status = evaluation.status;
+      throw error;
+    }
+    if (normalizeString(payload.expectedGateDigest, "") && normalizeString(payload.expectedGateDigest, "") !== gate.gateDigest) {
+      const error = new Error("Direct text-only runtime digest is stale.");
+      error.code = "gate_stale";
+      error.status = evaluation.status;
+      throw error;
+    }
+    const pending = store.createPendingRuntimeSelection(project, gate, clientOperationId);
+    let committed = null;
+    try {
+      const latestConfig = await loadConfig();
+      const nextProjects = latestConfig.projects.map((item) =>
+        item.id === projectId ? projectWithCodexBinding(item, pending.selectedBindingPrivate) : item,
+      );
+      const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
+      const savedProject = saved.projects.find((item) => item.id === projectId) || project;
+      const savedDigest = activationProjectBindingDigest(savedProject.surfaceBinding?.codex || {});
+      if (savedDigest !== pending.selectedBindingDigest) {
+        store.markRuntimeSelectionAbandoned(pending, "binding_digest_mismatch");
+        throw new Error("Direct text-only runtime binding digest mismatch.");
+      }
+      committed = store.markRuntimeSelectionCommitted(pending);
+      currentProject = savedProject;
+      await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-text-only-selection") });
+      const status = buildDirectRuntimeStatusForProject(savedProject).directTextOnly;
+      emitDirectRuntimeStatus(savedProject);
+      return { ok: true, selection: committed, project: savedProject, config: saved, status };
+    } catch (error) {
+      if (!committed) store.markRuntimeSelectionAbandoned(pending, error.message || "selection_failed");
+      throw error;
+    }
+  });
+}
+
+function directEmbarkStep(step, status = "completed", details = {}) {
+  return {
+    step,
+    status,
+    at: nowIso(),
+    ...details,
+  };
+}
+
+function directEmbarkResult(projectId, status, details = {}) {
+  return {
+    schema: "direct_runtime_embark_result@1",
+    ok: status === "direct_surface_ready" || status === "direct_thread_ready",
+    projectId,
+    status,
+    rawTokensExposed: false,
+    rawBackendFramesExposed: false,
+    ...details,
+  };
+}
+
+function directAuthIsAuthenticated(authStatus = {}) {
+  return normalizeString(authStatus.status, "") === "authenticated";
+}
+
+async function directEmbarkAuthStatus(steps = []) {
+  const authStore = directRuntimeAuthStore();
+  let authStatus = authStore.readStatus();
+  if (directAuthIsAuthenticated(authStatus)) {
+    steps.push(directEmbarkStep("auth_ready"));
+    return authStatus;
+  }
+  if (authStatus?.hasRefreshToken) {
+    steps.push(directEmbarkStep("auth_refresh", "started"));
+    try {
+      await refreshDirectRuntimeCredentials();
+      authStatus = authStore.readStatus();
+      steps.push(directEmbarkStep("auth_refresh", directAuthIsAuthenticated(authStatus) ? "completed" : "failed", {
+        authStatus: authStatus.status,
+      }));
+    } catch (error) {
+      steps.push(directEmbarkStep("auth_refresh", "failed", {
+        reason: normalizeString(error?.code || error?.message, "auth_refresh_failed"),
+      }));
+      authStatus = authStore.readStatus();
+    }
+  }
+  if (directAuthIsAuthenticated(authStatus)) {
+    steps.push(directEmbarkStep("auth_ready"));
+  }
+  return authStatus;
+}
+
+async function preflightDirectRuntimeAuth(reason = "direct-surface-load") {
+  const steps = [directEmbarkStep(reason, "started")];
+  try {
+    const authStatus = await directEmbarkAuthStatus(steps);
+    return {
+      ok: directAuthIsAuthenticated(authStatus),
+      authStatus,
+      steps,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      authStatus: directRuntimeAuthStore().readStatus(),
+      steps: [
+        ...steps,
+        directEmbarkStep(reason, "failed", {
+          reason: normalizeString(error?.code || error?.message, "direct_auth_preflight_failed"),
+        }),
+      ],
+      error: {
+        code: normalizeString(error?.code, "direct_auth_preflight_failed"),
+        message: normalizeString(error?.message, "Direct auth preflight failed."),
+      },
+    };
+  }
+}
+
+function directTextOnlyCanSelect(runtimeStatus = {}) {
+  const status = normalizeString(runtimeStatus.directTextOnly?.status, "");
+  return status === "eligible" || status === "enabled";
+}
+
+function directImplementationCanSelect(runtimeStatus = {}) {
+  const implementation = runtimeStatus.directImplementationLane || {};
+  const status = normalizeString(implementation.status, "");
+  return implementation.canSelect === true ||
+    implementation.canEnable === true ||
+    status === "eligible" ||
+    status === "enabled";
+}
+
+function directLiveProbeModel(project = {}, runtimeStatus = {}) {
+  return normalizeString(
+    project?.surfaceBinding?.codex?.model ||
+      runtimeStatus.liveTextRuntime?.model ||
+      runtimeStatus.liveTextRuntime?.status?.model ||
+      runtimeStatus.directTextOnly?.scope?.model,
+    "",
+  );
+}
+
+async function recordDirectEmbarkLiveProbe(project, runtimeStatus, steps = []) {
+  const profileDoc = ensureDirectCodexProfileDoc();
+  const authStore = directRuntimeAuthStore();
+  const model = directLiveProbeModel(project, runtimeStatus);
+  steps.push(directEmbarkStep("probing", "started", { model: model || "profile-default" }));
+  const result = await runTextOnlyDirectProbe({
+    authStore,
+    refreshCredentials: () => refreshDirectRuntimeCredentials(),
+    profileDoc,
+    model,
+    prompt: DEFAULT_TEXT_PROBE_PROMPT,
+    instructions: DEFAULT_TEXT_PROBE_INSTRUCTIONS,
+  });
+  const requestedModel = normalizeString(result.requestShape?.model || model, "");
+  const recorded = ensureDirectLiveProbeEvidenceStore().recordProbeResult(result, {
+    source: "direct-runtime-embark",
+    project,
+    profileDoc,
+    authStatus: authStore.readStatus(),
+    credentials: authStore.readCredentials(),
+    model: requestedModel,
+    promptClass: "fixed-live-text-probe",
+    prompt: DEFAULT_TEXT_PROBE_PROMPT,
+  });
+  steps.push(directEmbarkStep("probing", recorded.view?.usable ? "completed" : "failed", {
+    evidenceStatus: recorded.view?.status || "unknown",
+    evidenceId: recorded.view?.evidenceId || "",
+  }));
+  return {
+    probeResult: {
+      ok: Boolean(result.ok),
+      terminalState: normalizeString(result.terminal?.state, ""),
+      responseStatus: Number(result.response?.status || 0),
+      evidenceStatus: recorded.view?.status || "",
+      evidenceUsable: recorded.view?.usable === true,
+      evidenceId: recorded.view?.evidenceId || "",
+      rawBackendFramesExposed: false,
+    },
+    recorded,
+  };
+}
+
+async function embarkDirectRuntime(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const clientOperationId = normalizeString(payload.clientOperationId || payload.clientEmbarkId, "") || newId("client_direct_embark");
+  const steps = [directEmbarkStep("requested")];
+  const config = await loadConfig();
+  const project = config.projects.find((item) => item.id === projectId);
+  if (!project) throw new Error("Project not found.");
+
+  let authStatus = await directEmbarkAuthStatus(steps);
+  let runtimeStatus = buildDirectRuntimeStatusForProject(project);
+  let probeResult = null;
+  if (!directAuthIsAuthenticated(authStatus)) {
+    steps.push(directEmbarkStep("auth_required", "blocked", { authStatus: authStatus.status || "unknown" }));
+    return directEmbarkResult(projectId, "auth_required", {
+      loginRequired: true,
+      steps,
+      authStatus,
+      runtimeStatus,
+    });
+  }
+
+  if (!directImplementationCanSelect(runtimeStatus) && !directTextOnlyCanSelect(runtimeStatus)) {
+    steps.push(directEmbarkStep("probe_required"));
+    try {
+      const probe = await recordDirectEmbarkLiveProbe(project, runtimeStatus, steps);
+      probeResult = probe.probeResult;
+    } catch (error) {
+      runtimeStatus = buildDirectRuntimeStatusForProject(project);
+      return directEmbarkResult(projectId, "probe_failed", {
+        steps,
+        authStatus,
+        runtimeStatus,
+        error: {
+          code: normalizeString(error?.code, "direct_probe_failed"),
+          message: normalizeString(error?.message, "Direct probe failed."),
+        },
+      });
+    }
+    runtimeStatus = buildDirectRuntimeStatusForProject(project);
+  }
+
+  if (!directImplementationCanSelect(runtimeStatus) && !directTextOnlyCanSelect(runtimeStatus)) {
+    return directEmbarkResult(projectId, "probe_failed", {
+      steps,
+      authStatus,
+      runtimeStatus,
+      probeResult,
+      error: {
+        code: "direct_not_eligible",
+        message: "Direct gates are still blocked after probe.",
+      },
+    });
+  }
+
+  steps.push(directEmbarkStep("switching_backend", "started"));
+  try {
+    const runtimePath = directImplementationCanSelect(runtimeStatus) ? "direct-implementation" : "direct-text";
+    const selection = await setCodexRuntimePath({
+      ...payload,
+      projectId,
+      runtimePath,
+      clientOperationId,
+      expectedGateId: runtimePath === "direct-text" ? runtimeStatus.directTextOnly?.gateId || "" : "",
+      expectedGateDigest: runtimePath === "direct-text" ? runtimeStatus.directTextOnly?.gateDigest || "" : "",
+    });
+    steps.push(directEmbarkStep("switching_backend", "completed"));
+    return directEmbarkResult(projectId, "direct_surface_ready", {
+      duplicate: selection?.duplicate === true,
+      runtimePath,
+      steps,
+      authStatus: directRuntimeAuthStore().readStatus(),
+      runtimeStatus: selection?.status || buildDirectRuntimeStatusForProject(selection?.project || project),
+      probeResult,
+      project: selection?.project,
+      config: selection?.config,
+      selection: selection?.selection || null,
+    });
+  } catch (error) {
+    runtimeStatus = buildDirectRuntimeStatusForProject(project);
+    steps.push(directEmbarkStep("switching_backend", "failed", {
+      reason: normalizeString(error?.code || error?.message, "switch_failed"),
+    }));
+    return directEmbarkResult(projectId, "switch_failed", {
+      steps,
+      authStatus: directRuntimeAuthStore().readStatus(),
+      runtimeStatus,
+      error: {
+        code: normalizeString(error?.code, "switch_failed"),
+        message: normalizeString(error?.message, "Direct backend switch failed."),
+      },
+    });
+  }
+}
+
+async function setCodexRuntimePath(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const runtimePath = normalizeDirectRuntimePath(payload.runtimePath || payload.path);
+  const persistDefault = payload.persistDefault !== false;
+  const config = await loadConfig();
+  const project = config.projects.find((item) => item.id === projectId);
+  if (!project) throw new Error("Project not found.");
+
+  const currentPath = directRuntimePathFromBinding(project.surfaceBinding?.codex || {});
+  if (persistDefault && currentPath === runtimePath) {
+    return {
+      ok: true,
+      duplicate: true,
+      runtimePath,
+      project,
+      config,
+      status: buildDirectRuntimeStatusForProject(project),
+    };
+  }
+
+  if (runtimePath === "direct-implementation") {
+    return enableDirectExperimentalProject({
+      ...payload,
+      projectId,
+      clientActivationId: payload.clientActivationId || payload.clientOperationId,
+      expectedRuntimeMode: "direct-experimental",
+      expectedDirectTransport: "live-text",
+    });
+  }
+
+  if (!persistDefault) {
+    return switchActiveCodexRuntimePath(project, runtimePath, `active-runtime-path-${runtimePath}`);
+  }
+
+  if (runtimePath === "direct-text") {
+    return selectDirectTextOnlyRuntime({
+      ...payload,
+      projectId,
+      clientOperationId: payload.clientOperationId || payload.clientSelectionId,
+    });
+  }
+
+  return withDirectActivationLock(projectId, async () => {
+    const latestConfig = await loadConfig();
+    const latestProject = latestConfig.projects.find((item) => item.id === projectId);
+    if (!latestProject) throw new Error("Project not found.");
+    const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), projectId);
+    if (activeTurns > 0) {
+      const error = new Error("A direct turn is active. Wait before changing the runtime selection.");
+      error.code = "active_direct_turn_exists";
+      throw error;
+    }
+    const nextBinding = bindingForDirectRuntimePath(latestProject.surfaceBinding?.codex || {}, "app-server");
+    const nextProjects = latestConfig.projects.map((item) =>
+      item.id === projectId ? projectWithCodexBinding(item, nextBinding) : item,
+    );
+    const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
+    const savedProject = saved.projects.find((item) => item.id === projectId) || latestProject;
+    currentProject = savedProject;
+    await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("runtime-path-app-server") });
+    emitDirectRuntimeStatus(savedProject);
+    return {
+      ok: true,
+      runtimePath: "app-server",
+      project: savedProject,
+      config: saved,
+      status: buildDirectRuntimeStatusForProject(savedProject),
+    };
+  });
+}
+
+async function rollbackDirectExperimentalProject(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  return withDirectActivationLock(projectId, async () => {
+    const config = await loadConfig();
+    const project = config.projects.find((item) => item.id === projectId);
+    if (!project) throw new Error("Project not found.");
+    const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), projectId);
+    if (activeTurns > 0) {
+      const error = new Error("A direct turn is active. Abort or wait before rollback.");
+      error.code = "active_direct_turn_exists";
+      throw error;
+    }
+    const store = ensureDirectActivationStore();
+    const duplicate = store.findRollbackByClientId(projectId, payload.clientRollbackId);
+    if (duplicate?.transactionState === "committed") {
+      return {
+        ok: true,
+        duplicate: true,
+        rollback: duplicate,
+        status: buildDirectRuntimeStatusForProject(project).activation,
+      };
+    }
+    const activation = normalizeString(payload.activationId, "")
+      ? store.readActivation(projectId, payload.activationId)
+      : store.latestCommittedActivation(projectId);
+    if (!activation) {
+      const selection = store.latestCommittedRuntimeSelection(projectId);
+      const fallbackActivation = {
+        activationId: "",
+        previousBindingPrivate: selection?.previousBindingPrivate || {
+          ...(project.surfaceBinding?.codex || {}),
+          bindingProvider: "codex-compatible",
+          runtimeMode: "legacy-app-server",
+          directTier: "none",
+          directTransport: "fixture",
+        },
+      };
+      const pending = store.createPendingRollback(project, fallbackActivation, payload.clientRollbackId || newId("client_rollback"), "schema_incompatible");
+      const latestConfig = await loadConfig();
+      const nextProjects = latestConfig.projects.map((item) =>
+        item.id === projectId ? projectWithCodexBinding(item, pending.restoredBindingPrivate) : item,
+      );
+      const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
+      const committed = store.markRollbackCommitted(pending, null);
+      const savedProject = saved.projects.find((item) => item.id === projectId) || project;
+      currentProject = savedProject;
+      await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-rollback") });
+      emitDirectRuntimeStatus(savedProject);
+      return { ok: true, rollback: committed, project: savedProject, config: saved, status: buildDirectRuntimeStatusForProject(savedProject).activation };
+    }
+    const pending = store.createPendingRollback(project, activation, payload.clientRollbackId || newId("client_rollback"), payload.reason || "user_requested");
+    const latestConfig = await loadConfig();
+    const nextProjects = latestConfig.projects.map((item) =>
+      item.id === projectId ? projectWithCodexBinding(item, pending.restoredBindingPrivate) : item,
+    );
+    const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
+    const savedProject = saved.projects.find((item) => item.id === projectId) || project;
+    const savedDigest = activationProjectBindingDigest(savedProject.surfaceBinding?.codex || {});
+    if (savedDigest !== pending.restoredBindingDigest) {
+      const error = new Error("Direct experimental rollback binding digest mismatch.");
+      error.code = "direct_rollback_digest_mismatch";
+      throw error;
+    }
+    const committed = store.markRollbackCommitted(pending, activation);
+    currentProject = savedProject;
+    await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-rollback") });
+    emitDirectRuntimeStatus(savedProject);
+    return { ok: true, rollback: committed, project: savedProject, config: saved, status: buildDirectRuntimeStatusForProject(savedProject).activation };
+  });
+}
+
 function ensureCodexAppServerManager() {
   if (codexAppServer) return codexAppServer;
   codexAppServer = new CodexAppServerManager();
@@ -1630,6 +4546,13 @@ function ensureCodexAppServerManager() {
     });
   });
   return codexAppServer;
+}
+
+async function disposeCodexAppServerManager() {
+  if (!codexAppServer) return;
+  const manager = codexAppServer;
+  codexAppServer = null;
+  await manager.dispose();
 }
 
 function ensureLocalSurfaceServer() {
@@ -1798,11 +4721,27 @@ function isCodexSurfaceSender(sender) {
   return Boolean(codexView?.webContents && !codexView.webContents.isDestroyed() && sender.id === codexView.webContents.id);
 }
 
-function codexSurfaceSessionFor(sender) {
-  if (!isCodexSurfaceSender(sender)) throw new Error("Codex surface bridge is not available from this renderer.");
-  requireFullCodexSurfaceBridge(sender, "codex-surface session");
-  const sessions = ensureCodexSurfaceSessions();
-  if (sessions.has(sender.id)) return sessions.get(sender.id);
+function codexSurfaceSessionKindForConnection(connection = {}) {
+  const transport = normalizeString(connection?.transport, "");
+  if (transport === DIRECT_FIXTURE_SURFACE_TRANSPORT) return DIRECT_FIXTURE_SURFACE_TRANSPORT;
+  if (transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) return DIRECT_LIVE_TEXT_SURFACE_TRANSPORT;
+  return "codex-app-server";
+}
+
+function createCodexSurfaceSession(sender, connection = {}) {
+  const kind = codexSurfaceSessionKindForConnection(connection);
+  if (kind === DIRECT_FIXTURE_SURFACE_TRANSPORT) {
+    return new DirectFixtureSurfaceSession(sender, {
+      controller: ensureDirectFixtureController(),
+      project: currentProject,
+    });
+  }
+  if (kind === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) {
+    return new DirectLiveTextSurfaceSession(sender, {
+      controller: ensureDirectLiveTextController(),
+      project: currentProject,
+    });
+  }
   const usageLedger = new UsageLedgerCollector({
     getProjectById,
     emitStatus: (status) => {
@@ -1815,6 +4754,83 @@ function codexSurfaceSessionFor(sender) {
     },
   });
   const session = new CodexSurfaceSession(sender, { usageLedger });
+  session.transportKind = "codex-app-server";
+  return session;
+}
+
+function refreshActiveDirectCodexSurfaceCapabilities() {
+  const transport = normalizeString(activeCodexSurfaceConnection?.transport, "");
+  if (transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) {
+    const liveTextStatus = currentProject ? ensureDirectLiveTextController().statusForProject(currentProject) : null;
+    activeCodexSurfaceConnection = {
+      ...activeCodexSurfaceConnection,
+      capabilities: buildDirectLiveTextCapabilities(liveTextStatus || {}),
+      directLiveText: liveTextStatus || null,
+    };
+    return activeCodexSurfaceConnection.capabilities;
+  }
+  if (transport === DIRECT_FIXTURE_SURFACE_TRANSPORT) {
+    activeCodexSurfaceConnection = {
+      ...activeCodexSurfaceConnection,
+      capabilities: buildDirectFixtureCapabilities(),
+    };
+    return activeCodexSurfaceConnection.capabilities;
+  }
+  return activeCodexSurfaceConnection?.capabilities || {};
+}
+
+function directLiveTextAuthorizationCapabilities(capabilities = {}) {
+  const clone = typeof structuredClone === "function"
+    ? structuredClone(capabilities || {})
+    : JSON.parse(JSON.stringify(capabilities || {}));
+  clone.coreRuntime = {
+    ...(clone.coreRuntime || {}),
+    canInitialize: true,
+  };
+  clone.account = {
+    ...(clone.account || {}),
+    canRead: true,
+  };
+  clone.configRequirements = {
+    ...(clone.configRequirements || {}),
+    canRead: true,
+  };
+  clone.threads = {
+    ...(clone.threads || {}),
+    canStart: true,
+    canRead: true,
+    canList: true,
+  };
+  clone.turns = {
+    ...(clone.turns || {}),
+    canStart: true,
+    canInterrupt: true,
+  };
+  return clone;
+}
+
+function codexSurfaceRequestAuthorizationCapabilities() {
+  const capabilities = refreshActiveDirectCodexSurfaceCapabilities();
+  const transport = normalizeString(activeCodexSurfaceConnection?.transport, "");
+  if (transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) {
+    return directLiveTextAuthorizationCapabilities(capabilities);
+  }
+  return capabilities;
+}
+
+function codexSurfaceSessionFor(sender, options = {}) {
+  if (!isCodexSurfaceSender(sender)) throw new Error("Codex surface bridge is not available from this renderer.");
+  requireFullCodexSurfaceBridge(sender, "codex-surface session");
+  const sessions = ensureCodexSurfaceSessions();
+  const requestedKind = options.connection ? codexSurfaceSessionKindForConnection(options.connection) : "";
+  const existing = sessions.get(sender.id);
+  if (existing && (!requestedKind || existing.transportKind === requestedKind)) return existing;
+  if (existing) {
+    sessions.delete(sender.id);
+    if (existing.destroyedListener) sender.removeListener("destroyed", existing.destroyedListener);
+    existing.dispose({ silent: true, reason: "Codex surface runtime changed." }).catch(() => {});
+  }
+  const session = createCodexSurfaceSession(sender, options.connection || {});
   session.on("event", (payload) => {
     if (payload?.type === "rpc-request" || payload?.type === "rpc-request-updated") {
       emitShellEvent({
@@ -1834,11 +4850,76 @@ function codexSurfaceSessionFor(sender) {
     }
   });
   sessions.set(sender.id, session);
-  sender.once("destroyed", () => {
+  session.destroyedListener = () => {
+    if (sessions.get(sender.id) !== session) return;
     session.dispose({ silent: true, reason: "Codex surface renderer destroyed." }).catch(() => {});
     sessions.delete(sender.id);
-  });
+  };
+  sender.once("destroyed", session.destroyedListener);
   return session;
+}
+
+async function directAuthTokensForCodexAppServer(options = {}) {
+  const store = directRuntimeAuthStore();
+  let credentials = store.readCredentials();
+  if (!credentials) return null;
+
+  const status = store.readStatus();
+  if (options.refresh || status.status === "expired" || status.status === "refresh_failed") {
+    const refreshResult = await refreshDirectRuntimeCredentials();
+    if (!refreshResult.ok) {
+      const reason = normalizeString(refreshResult.reason || refreshResult.status, "direct_auth_refresh_failed");
+      const normalizedReason = reason.toLowerCase().replace(/[^a-z0-9_ -]+/g, " ").trim();
+      const error = new Error(
+        normalizedReason === "expired" || normalizedReason === "invalid_grant" || normalizedReason.includes("token expired")
+          ? "Direct auth expired. Sign in again before starting a direct Codex turn."
+          : reason,
+      );
+      error.code = normalizedReason === "expired" || normalizedReason === "invalid_grant" || normalizedReason.includes("token expired")
+        ? "direct_auth_expired"
+        : "direct_auth_refresh_failed";
+      throw error;
+    }
+    credentials = store.readCredentials();
+  }
+
+  const projected = codexAuthTokensFromCredentials(credentials || {}, {
+    includeType: options.includeType !== false,
+  });
+  if (!projected.ok) throw new Error(projected.reason || "direct_auth_tokens_unavailable");
+  return projected.tokens;
+}
+
+async function attachDirectAuthToCodexSession(session) {
+  const loginTokens = await directAuthTokensForCodexAppServer({ includeType: true });
+  if (!loginTokens) return { attached: false, reason: "direct_auth_unavailable" };
+  await session.request("account/login/start", loginTokens);
+  return { attached: true };
+}
+
+async function attachDirectAuthAfterInitialize(session, initializeResult) {
+  try {
+    return {
+      result: initializeResult,
+      directAuth: await attachDirectAuthToCodexSession(session),
+    };
+  } catch (error) {
+    const reason = error?.message || "direct_auth_attach_failed";
+    emitShellEvent({
+      type: "direct-auth-bridge-status",
+      status: "failed",
+      reason,
+      at: nowIso(),
+    });
+    return {
+      result: initializeResult,
+      directAuth: {
+        attached: false,
+        optional: true,
+        reason,
+      },
+    };
+  }
 }
 
 function findCodexSurfaceSessionForRequest(requestKey) {
@@ -1986,8 +5067,71 @@ async function loadCodexSurface(project, options = {}) {
   const codex = project.surfaceBinding.codex;
   const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+  const runtimeMode = normalizeDirectRuntimeModeForStatus(codex.runtimeMode);
+  if (runtimeMode !== "legacy-app-server") {
+    await disposeCodexAppServerManager();
+    const directAuthPreflight = await preflightDirectRuntimeAuth("direct-surface-load");
+    const directProviderMetadata = await refreshDirectProviderMetadataForProject(project);
+    const runtimeStatus = buildDirectRuntimeStatusForProject(project);
+    const directTransport = normalizeDirectExperimentalTransport(codex.directTransport);
+    const isLiveText = directTransport === "live-text";
+    const liveTextStatus = isLiveText ? ensureDirectLiveTextController().statusForProject(project) : null;
+    const transport = isLiveText ? DIRECT_LIVE_TEXT_SURFACE_TRANSPORT : DIRECT_FIXTURE_SURFACE_TRANSPORT;
+    const capabilities = isLiveText
+      ? buildDirectLiveTextCapabilities(liveTextStatus)
+      : buildDirectFixtureCapabilities();
+    const directSurfaceProjection = buildDirectCodexSurfaceProjectionForProject(project, {
+      runtimeStatus,
+      liveTextStatus,
+      directAuthPreflight,
+      directProviderMetadata,
+      attachmentCapability: capabilities.attachments || null,
+    });
+    const directConnection = {
+      connectionRef: newId("direct_codex_conn"),
+      projectId: project.id,
+      transport,
+      runtime: transport,
+      directTier: codex.directTier || "none",
+      workspaceRoot: workspaceRoot(project),
+      capabilities,
+      activationEpoch: Number(options.activationEpoch) || 0,
+      directLiveText: liveTextStatus || null,
+      directSurfaceProjection,
+      fixture: isLiveText ? null : {
+        id: "plain-text-turn",
+        source: "normalized-fixture",
+      },
+    };
+    activeCodexSurfaceConnection = directConnection;
+    const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
+      codexConnection: directConnection,
+      directSurfaceProjection,
+      activationEpoch: Number(options.activationEpoch) || 0,
+      error: [
+        `Direct runtime selected: ${runtimeStatus.runtimeModeLabel}.`,
+        `Direct tier: ${runtimeStatus.directTier || "none"}.`,
+        isLiveText
+          ? `Live text direct controller selected: ${liveTextStatus?.status || "unknown"}.`
+          : "Fixture-only direct controller is enabled; live direct backend turns are not runnable yet.",
+        `Model source: ${runtimeStatus.models.source}.`,
+      ].join(" "),
+    });
+    emitToShell("surface:event", {
+      surface: "codex",
+      type: "loaded",
+      title: directRuntimeLaneLabel(codex),
+      url: "",
+      at: nowIso(),
+    });
+    emitDirectRuntimeStatus(project);
+    if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+    setManagedCodexSurfaceAuthority(project, localUrl, "direct-local-ready");
+    await codexView.webContents.loadURL(localUrl);
+    return;
+  }
   if (codex.mode === "url") {
-    await ensureCodexAppServerManager().dispose();
+    await disposeCodexAppServerManager();
     activeCodexSurfaceConnection = null;
     const target = safeLoadableUrl(codex.target, "codex");
     if (target) {
@@ -2053,7 +5197,7 @@ async function loadCodexSurface(project, options = {}) {
       return;
     }
   }
-  await ensureCodexAppServerManager().dispose();
+  await disposeCodexAppServerManager();
   activeCodexSurfaceConnection = null;
   const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, { activationEpoch: Number(options.activationEpoch) || 0 });
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
@@ -2094,18 +5238,49 @@ async function ensureChatgptThreadDisplayed(project, chatThread) {
 async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sessionFilePath = "") {
   const nextThreadId = normalizeString(threadId, "");
   if (!nextThreadId) return { ok: false, error: "Codex thread id is required." };
-  let project = null;
+  let persistedProject = null;
   try {
-    project = await getProjectById(projectId);
+    persistedProject = await getProjectById(projectId);
   } catch (error) {
     return { ok: false, error: error.message || "Unable to resolve selected project." };
   }
+  let project = currentProject?.id === persistedProject?.id ? currentProject : persistedProject;
   if (!project) return { ok: false, error: "No project is selected." };
 
   let session = null;
   let sessionStartupError = "";
   const requestedHome = normalizeString(sourceHome, "");
   const requestedSessionFilePath = normalizeString(sessionFilePath, "");
+  const runtimeRoute = resolveCodexThreadOpenRuntime(project.surfaceBinding?.codex || {}, {
+    threadId: nextThreadId,
+    sourceHome: requestedHome,
+    sessionFilePath: requestedSessionFilePath,
+  });
+  if (runtimeRoute.autoSwitch && runtimeRoute.selectedRuntimePath === "app-server") {
+    const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), project.id);
+    if (activeTurns > 0) {
+      return {
+        ok: false,
+        error: "A Direct turn is active. Wait before opening this app-server-native Codex thread.",
+        runtimeRoute,
+      };
+    }
+    project = projectWithCodexBinding(
+      project,
+      bindingForDirectRuntimePath(project.surfaceBinding?.codex || {}, "app-server"),
+    );
+    currentProject = project;
+    emitDirectRuntimeStatus(project);
+    emitShellEvent({
+      type: "codex-runtime-auto-routed",
+      projectId: project.id,
+      threadId: nextThreadId,
+      fromRuntimePath: runtimeRoute.currentRuntimePath,
+      toRuntimePath: runtimeRoute.selectedRuntimePath,
+      continuityMode: runtimeRoute.continuityMode,
+      at: nowIso(),
+    });
+  }
   if (project.surfaceBinding?.codex?.mode === "managed") {
     try {
       session = await ensureCodexAppServerManager().ensureForProject(
@@ -2136,6 +5311,7 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
     sessionFilePath: requestedSessionFilePath,
     title: "",
     projectId: project.id,
+    runtimeRoute,
     at: nowIso(),
   };
   rememberCodexThreadRestoreTarget({
@@ -2206,6 +5382,7 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
       threadId: nextThreadId,
       sourceHome: requestedHome || session?.codexHome || "",
       warning: sessionStartupError,
+      runtimeRoute,
     };
   }
   codexView.webContents.send("codex-surface:event", openEventPayload);
@@ -2215,6 +5392,7 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
     threadId: nextThreadId,
     sourceHome: requestedHome || session?.codexHome || "",
     warning: sessionStartupError,
+    runtimeRoute,
   };
 }
 
@@ -4017,6 +7195,7 @@ function scheduleChatgptPolish() {
     setTimeout(async () => {
       if (!chatgptView || chatgptView.webContents.isDestroyed()) return;
       await forceChatgptDark();
+      if (!chatgptView || chatgptView.webContents.isDestroyed()) return;
       if (currentProject?.surfaceBinding?.chatgpt?.reduceChrome) {
         chatgptView.webContents.insertCSS(chatgptChromeCss()).catch(() => {});
       }
@@ -4034,6 +7213,7 @@ async function loadProjectSurfaces(project, activationBinding = null) {
     projectName: project.name,
     at: nowIso(),
   });
+  emitDirectRuntimeStatus(project);
   const codexOptions = { ...codexSurfaceOptionsForBinding(activationBinding), activationEpoch };
   await Promise.allSettled([
     loadCodexSurface(project, codexOptions),
@@ -4041,6 +7221,19 @@ async function loadProjectSurfaces(project, activationBinding = null) {
   ]);
   if (isStaleSurfaceActivationEpoch(activationEpoch)) return;
   scheduleLayoutPing("project-selected");
+}
+
+function loadProjectSurfacesDetached(project, activationBinding = null) {
+  const loadPromise = loadProjectSurfaces(project, activationBinding);
+  loadPromise.catch((error) => {
+    emitToShell("surface:event", {
+      surface: "shell",
+      type: "load-failed",
+      title: error.message || "Project surface load failed.",
+      at: nowIso(),
+    });
+  });
+  return loadPromise;
 }
 
 function isLikelyChatAuthOrAppUrl(rawUrl) {
@@ -4567,10 +7760,18 @@ async function getThreadAnalyticsDashboard(projectId, threadKey) {
   const usageLedger = dashboard
     ? await readUsageLedgerAnalytics(project, dashboard.thread?.threadId || "")
     : null;
+  const runtimeAnalyticsProjection = dashboard
+    ? buildRuntimeAnalyticsProjection({
+        projectId: project.id,
+        threadId: dashboard.thread?.threadId || "",
+        runtimePath: "app-server",
+        usageLedgerAnalytics: usageLedger,
+      })
+    : null;
   return {
     projectId: project.id,
     threadKey: key,
-    dashboard: dashboard ? { ...dashboard, usageLedger } : dashboard,
+    dashboard: dashboard ? { ...dashboard, usageLedger, runtimeAnalyticsProjection } : dashboard,
     analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
   };
 }
@@ -5341,6 +8542,18 @@ async function createWindow() {
     localSurfaceServer = null;
     threadAnalyticsStore?.close();
     threadAnalyticsStore = null;
+    directFixtureController = null;
+    directLiveTextController = null;
+    directLiveProbeEvidenceStore = null;
+    directImplementationProofEvidenceStore = null;
+    directActivationStore = null;
+    directThreadWorkbenchController = null;
+    directThreadStore?.close();
+    directThreadStore = null;
+    directSessionStore = null;
+    directWorkThreadStore = null;
+    directAgentRegistryStore = null;
+    directAgentRegistryBackfillStateByProject.clear();
     middleWebHost?.dispose();
     middleWebHost = null;
     if (chatgptDownloadHandler && chatgptView?.webContents && !chatgptView.webContents.isDestroyed()) {
@@ -5364,14 +8577,22 @@ async function createWindow() {
 ipcMain.handle("config:load", async () => {
   const config = await loadConfig();
   const defaultWorkspace = defaultProjectWorkspaceConfig();
+  const selectedProject = getSelectedProject(config);
   return {
     config,
     configPath: configPath(),
     repoRoot,
     appVersion: app.getVersion(),
     platform: process.platform,
+    profile: {
+      name: activeAppProfile.profileName,
+      isolated: activeAppProfile.isolated,
+      userData: activeAppProfile.userData,
+    },
     defaultWorkspace,
     defaultCodexRuntime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
+    directRuntimeStatus: selectedProject ? buildDirectRuntimeStatusForProject(selectedProject) : null,
+    directMetaSessionStatus: selectedProject ? buildDirectMetaSessionStatusForProject(selectedProject) : null,
     allowNonChatgptUrls: allowNonChatgptUrls(),
   };
 });
@@ -5396,7 +8617,7 @@ ipcMain.handle("project:select", async (_event, projectId) => {
   const binding = activation.binding?.id
     ? project?.laneBindings?.find((item) => item.id === activation.binding.id) || activation.binding
     : null;
-  await loadProjectSurfaces(project, binding);
+  loadProjectSurfacesDetached(project, binding);
   return { config: saved, project, activationBinding: binding || null };
 });
 
@@ -5439,18 +8660,39 @@ ipcMain.handle("codex:reload-runtime", async (_event, options) => {
 
 ipcMain.handle("codex-surface:connect", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:connect");
-  const session = codexSurfaceSessionFor(event.sender);
   const requestedConnection = payload?.connection || null;
-  const activeConnection = validateCodexSurfaceConnectionRequest(activeCodexSurfaceConnection, requestedConnection);
-  const connection = {
-    ...activeConnection,
-    remoteAuth: activeConnection.remoteAuth || { mode: "none" },
-  };
-  const result = await session.connect(connection);
+  const activeTransport = normalizeString(activeCodexSurfaceConnection?.transport, "");
+  const requestedTransport = normalizeString(requestedConnection?.transport, "");
+  const directTransport =
+    activeTransport === DIRECT_FIXTURE_SURFACE_TRANSPORT ||
+    activeTransport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT;
+  const connection = directTransport
+    ? (
+        requestedTransport === activeTransport
+          ? { ...activeCodexSurfaceConnection, remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" } }
+          : null
+      )
+    : {
+        ...validateCodexSurfaceConnectionRequest(activeCodexSurfaceConnection, requestedConnection),
+        remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" },
+      };
+  if (!connection) throw new Error("Renderer-supplied direct Codex connection ref is stale or invalid.");
+  const session = codexSurfaceSessionFor(event.sender, { connection });
+  const connectionWithProviders = directTransport
+    ? connection
+    : {
+        ...connection,
+        chatgptAuthTokensProvider: async () => directAuthTokensForCodexAppServer({
+          refresh: true,
+          includeType: false,
+        }),
+      };
+  const connected = await session.connect(connectionWithProviders);
   return {
     connected: true,
-    connection: publicCodexSurfaceConnection(connection),
-    connectionId: result?.connectionId || connection.connectionRef,
+    connection: directTransport ? connected?.connection || connection : publicCodexSurfaceConnection(connection),
+    connectionId: connected?.connectionId || connection.connectionRef,
+    directAuth: directTransport ? { attached: false, reason: "not_app_server_transport" } : { attached: false, reason: "pending_initialize" },
   };
 });
 
@@ -5461,21 +8703,46 @@ ipcMain.handle("codex-surface:disconnect", async (event) => {
   return true;
 });
 
+ipcMain.handle("codex-surface:direct-projection", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:direct-projection");
+  const requestedProjectId = normalizeString(payload?.projectId, "");
+  const project = currentProject?.id && currentProject.id === requestedProjectId
+    ? currentProject
+    : await getProjectById(requestedProjectId);
+  if (!project) throw new Error("Project not found.");
+  const directProviderMetadata = payload?.refreshMetadata
+    ? await refreshDirectProviderMetadataForProject(project)
+    : directProviderMetadataStatusForProject(project);
+  return buildDirectCodexSurfaceProjectionForProject(project, {
+    directProviderMetadata,
+    threadId: normalizeString(payload?.threadId, ""),
+  });
+});
+
 ipcMain.handle("codex-surface:request", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:request");
   const method = normalizeString(payload?.method, "");
-  const decision = codexClientRequestDecision(method, activeCodexSurfaceConnection?.capabilities || {});
+  const capabilities = codexSurfaceRequestAuthorizationCapabilities();
+  const decision = codexClientRequestDecision(method, capabilities);
   if (!decision.ok) {
     throw new Error(`Codex app-server request method is not authorized: ${method || "<empty>"} (${decision.reason})`);
   }
   const session = codexSurfaceSessionFor(event.sender);
-  return session.request(method, payload?.params || {});
+  const result = await session.request(method, payload?.params || {});
+  if (
+    method === "initialize" &&
+    ![DIRECT_FIXTURE_SURFACE_TRANSPORT, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT].includes(session.transportKind)
+  ) {
+    return attachDirectAuthAfterInitialize(session, result);
+  }
+  return result;
 });
 
 ipcMain.handle("codex-surface:notify", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:notify");
   const method = normalizeString(payload?.method, "");
-  const decision = codexClientNotificationDecision(method, activeCodexSurfaceConnection?.capabilities || {});
+  const capabilities = codexSurfaceRequestAuthorizationCapabilities();
+  const decision = codexClientNotificationDecision(method, capabilities);
   if (!decision.ok) {
     throw new Error(`Codex app-server notification method is not authorized: ${method || "<empty>"} (${decision.reason})`);
   }
@@ -5513,9 +8780,46 @@ ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
     connectionId: session.connectionId || "",
     at: nowIso(),
   };
+  const previousContextEvidence = latestContextManagementEvidenceByProject.get(state.projectId);
+  if (
+    previousContextEvidence &&
+    normalizeString(previousContextEvidence.threadId, "") &&
+    state.threadId &&
+    normalizeString(previousContextEvidence.threadId, "") !== state.threadId
+  ) {
+    latestContextManagementEvidenceByProject.delete(state.projectId);
+    contextManagementObservationsByProject.delete(state.projectId);
+  }
   rememberCodexThreadRestoreTarget(state);
   emitToShell("surface:event", state);
   return { ok: true };
+});
+
+ipcMain.handle("codex-surface:context-management-evidence", async (event, payload) => {
+  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  const session = codexSurfaceSessionFor(event.sender);
+  const evidence = recordContextManagementEvidence({
+    projectId: normalizeString(payload?.projectId, ""),
+    threadId: normalizeString(payload?.threadId, ""),
+    threadItems: payload?.threadItems,
+    controlsObserved: payload?.controlsObserved,
+  });
+  if (!evidence) return { ok: false, error: "context_management_evidence_empty" };
+  const state = {
+    surface: "codex",
+    type: "context-management-evidence",
+    projectId: evidence.projectId,
+    threadId: evidence.threadId,
+    evidenceId: evidence.evidenceId,
+    contextCompactionCount: Array.isArray(evidence.contextCompaction) ? evidence.contextCompaction.length : 0,
+    compactControlCount: Array.isArray(evidence.compactControls) ? evidence.compactControls.length : 0,
+    memoryCitationCount: Array.isArray(evidence.memoryCitations) ? evidence.memoryCitations.length : 0,
+    memoryControlCount: Array.isArray(evidence.memoryControls) ? evidence.memoryControls.length : 0,
+    connectionId: session.connectionId || "",
+    at: nowIso(),
+  };
+  emitToShell("surface:event", state);
+  return { ok: true, evidenceId: evidence.evidenceId };
 });
 
 ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
@@ -5538,6 +8842,9 @@ ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
     connectionId: session.connectionId || "",
     at: nowIso(),
   };
+  if (state.projectId && state.primaryThreadId) {
+    latestCodexAgentGraphByProjectThread.set(codexAgentGraphCacheKey(state.projectId, state.primaryThreadId), state);
+  }
   emitToShell("surface:event", state);
   return { ok: true };
 });
@@ -5812,6 +9119,312 @@ ipcMain.handle("workspace:status", async (_event, payload) => {
   return getWorkspaceStatus(payload?.projectId);
 });
 
+ipcMain.handle("direct-runtime:status", async (_event, payload) => {
+  const requestedProjectId = normalizeString(payload?.projectId, "");
+  const project = currentProject?.id && currentProject.id === requestedProjectId
+    ? currentProject
+    : await getProjectById(requestedProjectId);
+  return buildDirectRuntimeStatusForProject(project);
+});
+
+ipcMain.handle("direct-ui:implementation-status", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const runtimeStatus = buildDirectRuntimeStatusForProject(project);
+  return buildDirectImplementationLaneUiStatus({ project, runtimeStatus });
+});
+
+ipcMain.handle("direct-ui:operation-history", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const cursorOffset = Number.parseInt(String(payload?.cursor || ""), 10);
+  const rawOffset = Number.parseInt(String(payload?.offset || ""), 10);
+  const rawLimit = Number.parseInt(String(payload?.limit || ""), 10);
+  const offset = Number.isFinite(cursorOffset) ? cursorOffset : Number.isFinite(rawOffset) ? rawOffset : undefined;
+  const limit = Number.isFinite(rawLimit) ? rawLimit : undefined;
+  const params = {
+    limit,
+    offset,
+    operationTypes: payload?.operationTypes,
+    statuses: payload?.statuses,
+    targetTurnId: payload?.targetTurnId,
+    targetObligationId: payload?.targetObligationId,
+  };
+  const operationHistory = await ensureDirectThreadWorkbenchController().readOperationHistory(project, params);
+  return projectOperationHistoryPage({
+    projectId: project.id,
+    operationHistory,
+    request: {
+      scope: payload?.scope || "active-turn",
+      limit,
+      offset,
+    },
+  });
+});
+
+ipcMain.handle("direct-ui:policy-readonly-view", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const runtimeStatus = buildDirectRuntimeStatusForProject(project);
+  return buildDirectPolicyReadOnlyView({ project, runtimeStatus });
+});
+
+ipcMain.handle("direct-meta-session:status", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return buildDirectMetaSessionStatusForProject(project, payload || {});
+});
+
+ipcMain.handle("direct-settings:bridge-status", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return buildDirectSettingsSurfaceStatusForProject(project);
+});
+
+ipcMain.handle("direct-runtime:select-text-only", async (_event, payload) => {
+  return selectDirectTextOnlyRuntime(payload || {});
+});
+
+ipcMain.handle("direct-runtime:embark", async (_event, payload) => {
+  return embarkDirectRuntime(payload || {});
+});
+
+ipcMain.handle("direct-runtime:set-path", async (_event, payload) => {
+  return setCodexRuntimePath(payload || {});
+});
+
+ipcMain.handle("direct-runtime:enable-experimental", async (_event, payload) => {
+  return enableDirectExperimentalProject(payload || {});
+});
+
+ipcMain.handle("direct-runtime:rollback-experimental", async (_event, payload) => {
+  return rollbackDirectExperimentalProject(payload || {});
+});
+
+ipcMain.handle("direct-import:list-sources", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().listSources(project, payload || {});
+});
+
+ipcMain.handle("direct-import:choose-source-file", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  if (!mainWindow) return { ok: false, canceled: true, source: null };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Choose legacy Codex JSONL source",
+    properties: ["openFile"],
+    filters: [
+      { name: "Codex JSONL", extensions: ["jsonl"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true, source: null };
+  const sourcePath = result.filePaths[0];
+  const source = ensureDirectImportController().registerSourceHandle(project, {
+    sourcePath,
+    sourceRoot: path.dirname(sourcePath),
+    sourceSelectionMode: "native-file-picker",
+  });
+  return { ok: true, canceled: false, source, defaultCodexHomeScanned: false };
+});
+
+ipcMain.handle("direct-import:choose-source-root", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  if (!mainWindow) return { ok: false, canceled: true, sources: [] };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Choose legacy Codex JSONL source root",
+    properties: ["openDirectory"],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true, sources: [] };
+  return ensureDirectImportController().listSources(project, {
+    sourceRoot: result.filePaths[0],
+    sourceSelectionMode: "native-root-picker",
+  });
+});
+
+ipcMain.handle("direct-import:inspect-source", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().inspectSource(project, payload || {});
+});
+
+ipcMain.handle("direct-import:build-candidate", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().buildCandidate(project, payload || {});
+});
+
+ipcMain.handle("direct-import:build-checkpoint", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().buildCheckpoint(project, payload || {});
+});
+
+ipcMain.handle("direct-import:materialize", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().materialize(project, payload || {});
+});
+
+ipcMain.handle("direct-import:read-report", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().readReport(project, payload || {});
+});
+
+ipcMain.handle("direct-import:read-session", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().readImportSession(project, payload || {});
+});
+
+ipcMain.handle("direct-import:list-imports", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().listImports(project, payload || {});
+});
+
+ipcMain.handle("direct-import:hide", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().hideImport(project, payload || {});
+});
+
+ipcMain.handle("direct-import:unhide", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().unhideImport(project, payload || {});
+});
+
+ipcMain.handle("direct-import:cancel", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().cancelImport(project, payload || {});
+});
+
+ipcMain.handle("direct-import:preview-checkpoint-continuation", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().previewCheckpointContinuation(project, payload || {});
+});
+
+ipcMain.handle("direct-import:start-checkpoint-continuation", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const result = await ensureDirectImportController().startCheckpointContinuation(project, payload || {});
+  emitDirectRuntimeStatus(project);
+  return result;
+});
+
+ipcMain.handle("direct-thread-workbench:snapshot", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().getSnapshot(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:evidence-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().getEvidenceWorkbenchProjection(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:read-thread-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().readThreadProjection(project, payload?.threadId, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:read-project-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().readProjectProjection(project, payload?.projectionKind, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:read-preview-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().readPreviewProjection(project, payload?.previewId, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:read-operation-history", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().readOperationHistory(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:create-work-thread-draft-session", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const result = await ensureDirectThreadWorkbenchController().createWorkThreadDraftSession(project, payload || {});
+  emitDirectRuntimeStatus(project);
+  return result;
+});
+
+ipcMain.handle("direct-thread-workbench:prepare-soft-delete", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().prepareSoftDelete(project, payload?.threadId, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:run-lifecycle-action", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const result = await ensureDirectThreadWorkbenchController().runLifecycleAction(project, payload || {});
+  emitDirectRuntimeStatus(project);
+  return result;
+});
+
+ipcMain.handle("direct-thread-workbench:create-external-ref", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().createExternalRef(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:create-bridge", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().createBridge(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:unlink-bridge", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().unlinkBridge(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:create-merge-preview", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().createMergePreview(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:create-prune-preview", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().createPrunePreview(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:create-fork-preview", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().createForkPreview(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:prepare-fork-start", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().prepareForkStart(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:start-fork-from-preview", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const result = await ensureDirectThreadWorkbenchController().startForkFromPreview(project, payload || {});
+  emitDirectRuntimeStatus(project);
+  return result;
+});
+
+ipcMain.handle("direct-thread-workbench:prepare-derived-preview-fork-start", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().prepareDerivedPreviewForkStart(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:start-fork-from-derived-preview", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const result = await ensureDirectThreadWorkbenchController().startForkFromDerivedPreview(project, payload || {});
+  emitDirectRuntimeStatus(project);
+  return result;
+});
+
+ipcMain.handle("direct-thread-workbench:read-fork-start-status", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().readForkStartStatus(project, payload?.forkStartId);
+});
+
+ipcMain.handle("direct-thread-workbench:rebuild-lifecycle-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().rebuildLifecycleProjection(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:rebuild-graph-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().rebuildGraphProjection(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:rebuild-renderer-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().rebuildRendererTranscriptProjection(project, payload?.threadId, payload || {});
+});
+
+ipcMain.handle("workspace:run-command", async (_event, payload) => {
+  return runWorkspaceCommand(payload?.projectId, payload?.command);
+});
+
 ipcMain.handle("chatgpt:open-settings", async () => {
   const result = await openChatgptSettings();
   emitToShell("surface:event", {
@@ -5846,6 +9459,29 @@ app.on("before-quit", () => {
   workspaceBackends = null;
   threadAnalyticsStore?.close();
   threadAnalyticsStore = null;
+  directAuthLoginCoordinator = null;
+  directCodexCliAuthStore = null;
+  directFixtureController = null;
+  directLiveTextController = null;
+  directLiveProbeEvidenceStore = null;
+  directImplementationProofEvidenceStore = null;
+  directActivationStore = null;
+  directThreadWorkbenchController = null;
+    directThreadStore?.close();
+    directThreadStore = null;
+    directSessionStore = null;
+    directWorkThreadStore = null;
+    directAgentRegistryStore = null;
+    directAgentRegistryBackfillStateByProject.clear();
+});
+
+function emitDirectAuthAndRuntimeStatus(event) {
+  emitShellEvent(event);
+  emitDirectRuntimeStatus(currentProject);
+}
+
+registerDirectAuthIpcHandlers(ipcMain, () => ensureDirectAuthController(), {
+  onStatusChange: emitDirectAuthAndRuntimeStatus,
 });
 
 app.on("window-all-closed", () => {

@@ -1,0 +1,30 @@
+{
+  "operation": "refresh_failure_projection",
+  "input": {
+    "nowMs": 1700000000000,
+    "previous": {
+      "accessToken": "[REDACTED:token]",
+      "refreshToken": "[REDACTED:token]",
+      "expiresAt": 1699999900000,
+      "accountId": "[REDACTED:account-id]"
+    },
+    "error": {
+      "error": "server_error",
+      "errorDescription": "Synthetic transient refresh failure.",
+      "retryable": true
+    }
+  },
+  "expected": {
+    "status": "refresh_failed",
+    "accountId": "[REDACTED:account-id]",
+    "expiresAt": 1699999900000,
+    "expiresInMs": 0,
+    "hasAccessToken": true,
+    "hasRefreshToken": true,
+    "rawTokensExposed": false,
+    "error": "server_error",
+    "errorDescription": "Synthetic transient refresh failure.",
+    "retryable": true,
+    "preservesRefreshToken": true
+  }
+}

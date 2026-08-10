@@ -1,0 +1,24 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.callback_missing_code",
+  "name": "OAuth Callback Missing Code Shape",
+  "hypothesis": "A callback with matching state but no code or error is rejected before any token exchange attempt.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/callback-missing-code"
+  },
+  "authShape": {
+    "operation": "callback_parse"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "state"
+    ]
+  },
+  "blockedLiveGates": [
+    "No token endpoint request.",
+    "No token storage."
+  ]
+}

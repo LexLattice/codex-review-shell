@@ -1,0 +1,28 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.refresh_failure_preserves_refresh",
+  "name": "OAuth Refresh Failure Preservation Shape",
+  "hypothesis": "A transient refresh failure preserves the prior refresh token presence and reports a retryable redacted status.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/refresh-failure-preserves-refresh"
+  },
+  "authShape": {
+    "operation": "refresh_failure_projection"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "hasRefreshToken",
+      "preservesRefreshToken",
+      "retryable",
+      "rawTokensExposed"
+    ]
+  },
+  "blockedLiveGates": [
+    "No refresh token request.",
+    "No credential file mutation.",
+    "No raw refresh token exposure."
+  ]
+}

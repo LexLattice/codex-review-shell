@@ -1,0 +1,26 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.callback_success",
+  "name": "OAuth Callback Parse Shape",
+  "hypothesis": "A synthetic localhost callback URL parses into code and state only when the expected state matches.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/callback-success"
+  },
+  "authShape": {
+    "operation": "callback_parse"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "code",
+      "state"
+    ]
+  },
+  "blockedLiveGates": [
+    "No localhost callback server.",
+    "No authorization code exchange.",
+    "No token storage."
+  ]
+}

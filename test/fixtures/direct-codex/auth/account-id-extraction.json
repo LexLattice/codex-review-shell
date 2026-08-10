@@ -1,0 +1,11 @@
+{
+  "operation": "jwt_account_id_extraction",
+  "input": {
+    "syntheticJwt": "e30.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiW1JFREFDVEVEOmFjY291bnQtaWRdIn0sImV4cCI6MTg5MzQ1NjAwMH0.sigfixture"
+  },
+  "expected": {
+    "status": "ok",
+    "accountId": "[REDACTED:account-id]",
+    "claimPath": "https://api.openai.com/auth"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.manual_opaque_code",
+  "name": "OAuth Manual Opaque Code Shape",
+  "hypothesis": "A raw pasted authorization code containing equals characters remains an opaque code rather than being parsed as query text.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/manual-opaque-code"
+  },
+  "authShape": {
+    "operation": "manual_code_paste"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "code"
+    ]
+  },
+  "blockedLiveGates": [
+    "No token endpoint request.",
+    "No token storage."
+  ]
+}

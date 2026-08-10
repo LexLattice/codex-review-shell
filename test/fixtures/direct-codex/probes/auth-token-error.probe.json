@@ -1,0 +1,27 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.token_error",
+  "name": "OAuth Token Error Shape",
+  "hypothesis": "A synthetic token error normalizes into an error shape without retry or credential persistence side effects.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/token-error"
+  },
+  "authShape": {
+    "operation": "token_response_normalization"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "error",
+      "errorDescription",
+      "retryable"
+    ]
+  },
+  "blockedLiveGates": [
+    "No token endpoint request.",
+    "No retry loop.",
+    "No credential mutation."
+  ]
+}

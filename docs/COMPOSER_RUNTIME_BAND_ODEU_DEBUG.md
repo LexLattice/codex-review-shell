@@ -231,4 +231,3 @@ That keeps the implementation aligned with the workflow transition graph: UI aff
 ## Windows App Freshness Assumption
 
 If the Windows launcher is linked to the current WSL worktree, restarting the Windows app should load these file changes. If behavior does not match the current worktree after restart, verify the launcher path and build source before debugging renderer code.
-

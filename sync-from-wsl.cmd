@@ -3,6 +3,7 @@ setlocal EnableExtensions
 
 set "SYNC_ROOT=%~dp0"
 if "%SYNC_ROOT:~-1%"=="\" set "SYNC_ROOT=%SYNC_ROOT:~0,-1%"
+pushd "%SYNC_ROOT%" >nul
 
 set "WSL_DISTRO=%CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO%"
 if not defined WSL_DISTRO set "WSL_DISTRO=Ubuntu"
@@ -36,20 +37,40 @@ exit /b 0
 
 :read_wsl_head
 set "WSL_HEAD=unknown"
-for /f %%H in ('wsl.exe -d "%WSL_DISTRO%" bash -lc "cd '%WSL_PATH%' && git rev-parse --short=12 HEAD" 2^>nul') do (
-  set "WSL_HEAD=%%H"
-)
-echo %WSL_HEAD%| findstr /R /I "^[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]$" >nul
-if errorlevel 1 (
-  >&2 echo Unable to verify WSL git HEAD via wsl.exe; using unknown sync stamp.
-  set "WSL_HEAD=unknown"
-)
+set "WSL_HEAD_TMP=%TEMP%\codex-review-shell-wsl-head-%RANDOM%.txt"
+C:\Windows\System32\wsl.exe -d "%WSL_DISTRO%" --cd "%WSL_PATH%" git rev-parse --short=12 HEAD > "%WSL_HEAD_TMP%" 2>nul
+if exist "%WSL_HEAD_TMP%" set /p WSL_HEAD=<"%WSL_HEAD_TMP%"
+if exist "%WSL_HEAD_TMP%" del "%WSL_HEAD_TMP%" >nul 2>nul
+call :validate_wsl_head
+if not "%WSL_HEAD%"=="unknown" exit /b 0
+set "WSL_HEAD_LINE="
+set "WSL_FULL_HEAD="
+if exist "%WSL_ROOT%\.git\HEAD" set /p WSL_HEAD_LINE=<"%WSL_ROOT%\.git\HEAD"
+if not defined WSL_HEAD_LINE exit /b 0
+set "WSL_HEAD_PREFIX=%WSL_HEAD_LINE:~0,5%"
+if not "%WSL_HEAD_PREFIX%"=="ref: " goto detached_head
+set "WSL_HEAD_REF=%WSL_HEAD_LINE:~5%"
+set "WSL_HEAD_REF=%WSL_HEAD_REF:/=\%"
+if exist "%WSL_ROOT%\.git\%WSL_HEAD_REF%" set /p WSL_FULL_HEAD=<"%WSL_ROOT%\.git\%WSL_HEAD_REF%"
+goto finish_wsl_head
+
+:detached_head
+set "WSL_FULL_HEAD=%WSL_HEAD_LINE%"
+
+:finish_wsl_head
+if defined WSL_FULL_HEAD set "WSL_HEAD=%WSL_FULL_HEAD:~0,12%"
+call :validate_wsl_head
+exit /b 0
+
+:validate_wsl_head
+if "%WSL_HEAD:~11,1%"=="" set "WSL_HEAD=unknown"
+if not "%WSL_HEAD:~12,1%"=="" set "WSL_HEAD=%WSL_HEAD:~0,12%"
 exit /b 0
 
 :mirror_repo
 robocopy "%WSL_ROOT%" "%SYNC_ROOT%" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP ^
-  /XD ".git" "node_modules" ".cache" ^
-  /XF ".wsl-sync-head.txt" "launcher-stdout.log" "launcher-stderr.log" "launcher-wsl-stdout.log" "launcher-wsl-stderr.log" "start-debug.log" >nul
+  /XD ".git" "node_modules" ".cache" ".profiles" ".codex-home" ^
+  /XF ".git" ".wsl-sync-head.txt" "launcher-stdout.log" "launcher-stderr.log" "launcher-wsl-stdout.log" "launcher-wsl-stderr.log" "start-debug.log" >nul
 set "RC=%ERRORLEVEL%"
 if %RC% GEQ 8 (
   >&2 echo robocopy failed for repo mirror

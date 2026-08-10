@@ -1,0 +1,22 @@
+{
+  "operation": "token_response_normalization",
+  "input": {
+    "response": {
+      "token_type": "Bearer",
+      "expires_in": 3600,
+      "scope": "openid profile email offline_access",
+      "access_token": "[REDACTED:token]",
+      "refresh_token": "[REDACTED:token]",
+      "id_token": "[REDACTED:token]"
+    }
+  },
+  "expected": {
+    "status": "ok",
+    "tokenType": "Bearer",
+    "expiresIn": 3600,
+    "scope": "openid profile email offline_access",
+    "hasAccessToken": true,
+    "hasRefreshToken": true,
+    "hasIdToken": true
+  }
+}

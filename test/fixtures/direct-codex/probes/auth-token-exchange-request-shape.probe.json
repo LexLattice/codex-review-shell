@@ -1,0 +1,27 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.token_exchange_request_shape",
+  "name": "OAuth Token Exchange Request Shape",
+  "hypothesis": "A redacted authorization code and PKCE verifier project to the expected token-exchange form request without network I/O or raw credential exposure.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/token-exchange-request-shape"
+  },
+  "authShape": {
+    "operation": "token_exchange_request_shape"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "grantType",
+      "hasAuthorizationCode",
+      "hasPkceVerifier",
+      "bodyFieldOrder"
+    ]
+  },
+  "blockedLiveGates": [
+    "No token endpoint request.",
+    "No token storage.",
+    "No raw authorization code exposure."
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "schema": "direct_codex_profile_delta@1",
+  "source": "fixture",
+  "fixtureId": "raw/plain-text-turn",
+  "normalizedEventCounts": {
+    "session_started": 1,
+    "message_delta": 1,
+    "usage_delta": 1,
+    "response_completed": 1
+  },
+  "rawEventTypes": [
+    "response.completed",
+    "response.created",
+    "response.output_text.delta"
+  ],
+  "unknownRawTypes": [],
+  "proposedCapabilities": [
+    {
+      "capabilityId": "event.normalized.message_delta",
+      "eventType": "message_delta",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/plain-text-turn",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.response_completed",
+      "eventType": "response_completed",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/plain-text-turn",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.session_started",
+      "eventType": "session_started",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/plain-text-turn",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.usage_delta",
+      "eventType": "usage_delta",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/plain-text-turn",
+        "eventCount": 1
+      }
+    }
+  ],
+  "acceptance": "candidate"
+}

@@ -1,0 +1,49 @@
+{
+  "events": [
+    {
+      "type": "session_started",
+      "sequence": 0,
+      "source": {
+        "rawIndex": 0,
+        "rawType": "response.created"
+      },
+      "responseId": "resp_fixture_plain",
+      "model": "gpt-5.4"
+    },
+    {
+      "type": "message_delta",
+      "sequence": 1,
+      "source": {
+        "rawIndex": 1,
+        "rawType": "response.output_text.delta"
+      },
+      "itemId": "msg_plain",
+      "text": "Hello from fixture."
+    },
+    {
+      "type": "usage_delta",
+      "sequence": 2,
+      "source": {
+        "rawIndex": 2,
+        "rawType": "response.completed"
+      },
+      "usage": {
+        "inputTokens": 12,
+        "outputTokens": 4,
+        "totalTokens": 16,
+        "cachedInputTokens": 2,
+        "reasoningTokens": 0
+      }
+    },
+    {
+      "type": "response_completed",
+      "sequence": 2,
+      "source": {
+        "rawIndex": 2,
+        "rawType": "response.completed"
+      },
+      "responseId": "resp_fixture_plain",
+      "stopReason": "completed"
+    }
+  ]
+}

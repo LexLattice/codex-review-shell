@@ -1,0 +1,33 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.fixture.failure_cases",
+  "name": "Failure And Degradation Fixture Cases",
+  "hypothesis": "Committed failure fixtures normalize incomplete, failed, auth, quota, transient transport, and abort cases into distinct local event classes.",
+  "fixture": {
+    "source": "committed-fixture",
+    "rawFixtureId": "raw/failure-cases"
+  },
+  "normalization": {
+    "expectedFixtureId": "normalized/failure-cases",
+    "failOnUnknown": true
+  },
+  "profileDelta": {
+    "expectedFixtureId": "profile-deltas/failure-cases"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredEventTypes": [
+      "response_incomplete",
+      "response_failed",
+      "auth_error",
+      "quota_error",
+      "transport_error",
+      "aborted"
+    ]
+  },
+  "blockedLiveGates": [
+    "No live quota or rate-limit request.",
+    "No live auth failure generation.",
+    "No live abort over network transport."
+  ]
+}

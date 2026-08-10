@@ -25,6 +25,7 @@ const HANDOFF_KINDS = {
 };
 const ACTIVE_HANDOFF_STATUSES = new Set(["staged", "copied", "opened-thread", "submitted-manually", "response-pending", "response-captured"]);
 const CHATGPT_ALLOWED_HOSTS = new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com", "www.chat.openai.com"]);
+const DIRECT_FORK_PREVIEW_ITEM_CAP = 20;
 const ZOOM_POLICY = bridge?.zoomConstants || {};
 // Fallbacks are only used when preload is absent; normal runtime gets these
 // values from the shared zoom policy exposed through the bridge.
@@ -102,6 +103,42 @@ const state = {
   analyticsDashboard: null,
   analyticsDashboardStatus: "idle",
   selectedAnalyticsThreadKey: "",
+  directImportWorkbench: {
+    projectId: "",
+    requestGeneration: 0,
+    status: "idle",
+    sources: [],
+    imports: [],
+    report: null,
+    selectedImportSession: null,
+    selectedHandleId: "",
+    selectedImportId: "",
+    selectedSessionId: "",
+    lastError: "",
+    includeHidden: false,
+  },
+  directThreadWorkbench: {
+    projectId: "",
+    requestGeneration: 0,
+    status: "idle",
+    snapshot: null,
+    evidenceProjection: null,
+    selectedThreadId: "",
+    selectedPreviewId: "",
+    selectedProjection: null,
+    selectedPreview: null,
+    forkStartPrompt: "",
+    newThreadDraftTitle: "",
+    newThreadDraftObjective: "",
+    newThreadDraftWorkThreadId: "",
+    lastError: "",
+    filters: {
+      includeHidden: false,
+      includeArchived: false,
+      includeSoftDeleted: false,
+      textQuery: "",
+    },
+  },
   surfaceEvents: {
     codex: { type: "idle" },
     chatgpt: { type: "idle" },
@@ -129,6 +166,26 @@ const state = {
   chatgptRecentThreadsStatus: "idle",
   chatgptRecentThreadsLoadingMode: "cache",
   chatgptRecentThreadsSource: "",
+  directAuthSettings: null,
+  directAuthStatus: null,
+  directAuthLoading: false,
+  directAuthError: "",
+  directRuntimeStatus: null,
+  activeCodexRuntimePathByProject: {},
+  directRuntimeLoading: false,
+  directRuntimeError: "",
+  directImplementationUiStatus: null,
+  directImplementationOperationHistory: null,
+  directImplementationPolicyView: null,
+  directImplementationUiLoading: false,
+  directImplementationUiError: "",
+  directImplementationUiWarning: "",
+  directMetaSessionStatus: null,
+  directMetaSessionLoading: false,
+  directMetaSessionError: "",
+  directBridgeSettingsStatus: null,
+  directBridgeSettingsLoading: false,
+  directBridgeSettingsError: "",
   selectedCodexThreadId: "",
   openedCodexProjectId: "",
   openedCodexThreadId: "",
@@ -144,6 +201,13 @@ const state = {
     thread: 0,
     codexThreads: 0,
     recentThreads: 0,
+    directImports: 0,
+    directImportOperation: 0,
+    directThreadWorkbench: 0,
+    directThreadWorkbenchOperation: 0,
+    directMetaSessionStatus: 0,
+    directBridgeSettingsStatus: 0,
+    directImplementationUiStatus: 0,
     analyticsThreads: 0,
     analyticsDetail: 0,
     workTree: 0,
@@ -165,12 +229,14 @@ const els = {
   overviewTabButton: document.getElementById("overviewTabButton"),
   projectTabButton: document.getElementById("projectTabButton"),
   threadsTabButton: document.getElementById("threadsTabButton"),
+  importsTabButton: document.getElementById("importsTabButton"),
   analyticsTabButton: document.getElementById("analyticsTabButton"),
   filesTabButton: document.getElementById("filesTabButton"),
   webTabButton: document.getElementById("webTabButton"),
   overviewTabPanel: document.getElementById("overviewTabPanel"),
   projectTabPanel: document.getElementById("projectTabPanel"),
   threadsTabPanel: document.getElementById("threadsTabPanel"),
+  importsTabPanel: document.getElementById("importsTabPanel"),
   analyticsTabPanel: document.getElementById("analyticsTabPanel"),
   filesTabPanel: document.getElementById("filesTabPanel"),
   webTabPanel: document.getElementById("webTabPanel"),
@@ -182,6 +248,21 @@ const els = {
   projectStashStatus: document.getElementById("projectStashStatus"),
   clearProjectStashButton: document.getElementById("clearProjectStashButton"),
   sendProjectStashButton: document.getElementById("sendProjectStashButton"),
+  directBridgeSettingsBadge: document.getElementById("directBridgeSettingsBadge"),
+  directBridgeSettingsRefreshButton: document.getElementById("directBridgeSettingsRefreshButton"),
+  directBridgeSettingsRuntimeList: document.getElementById("directBridgeSettingsRuntimeList"),
+  directBridgeSettingsRegistryList: document.getElementById("directBridgeSettingsRegistryList"),
+  directBridgeSettingsWorkThreadList: document.getElementById("directBridgeSettingsWorkThreadList"),
+  directBridgeSettingsOperatorBrokerList: document.getElementById("directBridgeSettingsOperatorBrokerList"),
+  directBridgeSettingsGovernanceList: document.getElementById("directBridgeSettingsGovernanceList"),
+  directBridgeSettingsModulesList: document.getElementById("directBridgeSettingsModulesList"),
+  directBridgeSettingsAgentClassList: document.getElementById("directBridgeSettingsAgentClassList"),
+  directBridgeSettingsContinuityList: document.getElementById("directBridgeSettingsContinuityList"),
+  directBridgeSettingsRuntimeWitnessList: document.getElementById("directBridgeSettingsRuntimeWitnessList"),
+  directBridgeSettingsAgentUsageList: document.getElementById("directBridgeSettingsAgentUsageList"),
+  directBridgeSettingsAppServerFallbackList: document.getElementById("directBridgeSettingsAppServerFallbackList"),
+  directBridgeSettingsManualSmokeList: document.getElementById("directBridgeSettingsManualSmokeList"),
+  directBridgeSettingsEvidence: document.getElementById("directBridgeSettingsEvidence"),
   projectList: document.getElementById("projectList"),
   projectCount: document.getElementById("projectCount"),
   threadDeck: document.getElementById("threadDeck"),
@@ -199,6 +280,10 @@ const els = {
   leftSplitter: document.getElementById("leftSplitter"),
   rightSplitter: document.getElementById("rightSplitter"),
   codexStatus: document.getElementById("codexStatus"),
+  codexRuntimeQuickStatus: document.getElementById("codexRuntimeQuickStatus"),
+  codexRuntimeQuickSelect: document.getElementById("codexRuntimeQuickSelect"),
+  codexRuntimeQuickApplyButton: document.getElementById("codexRuntimeQuickApplyButton"),
+  codexRuntimeSettingsButton: document.getElementById("codexRuntimeSettingsButton"),
   chatgptStatus: document.getElementById("chatgptStatus"),
   lastEvent: document.getElementById("lastEvent"),
   addProjectButton: document.getElementById("addProjectButton"),
@@ -210,6 +295,52 @@ const els = {
   externalChatButton: document.getElementById("externalChatButton"),
   forceDarkButton: document.getElementById("forceDarkButton"),
   chatSettingsButton: document.getElementById("chatSettingsButton"),
+  directAuthState: document.getElementById("directAuthState"),
+  directAuthStorageModeSelect: document.getElementById("directAuthStorageModeSelect"),
+  directAuthStorageBadge: document.getElementById("directAuthStorageBadge"),
+  directAuthExpiryBadge: document.getElementById("directAuthExpiryBadge"),
+  directAuthRefreshButton: document.getElementById("directAuthRefreshButton"),
+  directAuthLoginButton: document.getElementById("directAuthLoginButton"),
+  directAuthLogoutButton: document.getElementById("directAuthLogoutButton"),
+  directRuntimePathSelect: document.getElementById("directRuntimePathSelect"),
+  directRuntimePathApplyButton: document.getElementById("directRuntimePathApplyButton"),
+  directTextOnlyEnableButton: document.getElementById("directTextOnlyEnableButton"),
+  directExperimentalEnableButton: document.getElementById("directExperimentalEnableButton"),
+  directExperimentalRollbackButton: document.getElementById("directExperimentalRollbackButton"),
+  directAuthEvidence: document.getElementById("directAuthEvidence"),
+  directRuntimeModeBadge: document.getElementById("directRuntimeModeBadge"),
+  directRuntimeStatusBadge: document.getElementById("directRuntimeStatusBadge"),
+  directModelSourceBadge: document.getElementById("directModelSourceBadge"),
+  directContextPressureBadge: document.getElementById("directContextPressureBadge"),
+  directContextRouteBadge: document.getElementById("directContextRouteBadge"),
+  directContextMemoryBadge: document.getElementById("directContextMemoryBadge"),
+  directContextBatonBadge: document.getElementById("directContextBatonBadge"),
+  directContextOmissionBadge: document.getElementById("directContextOmissionBadge"),
+  directContextProviderCompactBadge: document.getElementById("directContextProviderCompactBadge"),
+  directContextEvidence: document.getElementById("directContextEvidence"),
+  directImplementationStatusBadge: document.getElementById("directImplementationStatusBadge"),
+  directImplementationRefreshButton: document.getElementById("directImplementationRefreshButton"),
+  directImplementationLaneList: document.getElementById("directImplementationLaneList"),
+  directImplementationApprovalList: document.getElementById("directImplementationApprovalList"),
+  directImplementationActiveTurnList: document.getElementById("directImplementationActiveTurnList"),
+  directImplementationToolResultList: document.getElementById("directImplementationToolResultList"),
+  directImplementationHistoryList: document.getElementById("directImplementationHistoryList"),
+  directImplementationPromotionList: document.getElementById("directImplementationPromotionList"),
+  directImplementationEvidence: document.getElementById("directImplementationEvidence"),
+  directMetaSessionHealthBadge: document.getElementById("directMetaSessionHealthBadge"),
+  directMetaSessionRefreshButton: document.getElementById("directMetaSessionRefreshButton"),
+  directMetaSessionSummary: document.getElementById("directMetaSessionSummary"),
+  directMetaSessionRoutes: document.getElementById("directMetaSessionRoutes"),
+  directMetaSessionEvidence: document.getElementById("directMetaSessionEvidence"),
+  directDiagnosticsStatusBadge: document.getElementById("directDiagnosticsStatusBadge"),
+  directDiagnosticsContextGrid: document.getElementById("directDiagnosticsContextGrid"),
+  directDiagnosticsArtifactList: document.getElementById("directDiagnosticsArtifactList"),
+  directDiagnosticsRecoveryList: document.getElementById("directDiagnosticsRecoveryList"),
+  directDiagnosticsGovernanceList: document.getElementById("directDiagnosticsGovernanceList"),
+  directDiagnosticsBrokerList: document.getElementById("directDiagnosticsBrokerList"),
+  directDiagnosticsTransitionList: document.getElementById("directDiagnosticsTransitionList"),
+  directDiagnosticsSubAgentList: document.getElementById("directDiagnosticsSubAgentList"),
+  directDiagnosticsEvidence: document.getElementById("directDiagnosticsEvidence"),
   promptRoleLabel: document.getElementById("promptRoleLabel"),
   activePromptPreview: document.getElementById("activePromptPreview"),
   handoffTargetThreadSelect: document.getElementById("handoffTargetThreadSelect"),
@@ -228,6 +359,19 @@ const els = {
   watchedRulesPreview: document.getElementById("watchedRulesPreview"),
   returnHeaderPreview: document.getElementById("returnHeaderPreview"),
   refreshCodexThreadsButton: document.getElementById("refreshCodexThreadsButton"),
+  refreshDirectThreadWorkbenchButton: document.getElementById("refreshDirectThreadWorkbenchButton"),
+  directThreadWorkbenchStatus: document.getElementById("directThreadWorkbenchStatus"),
+  directThreadIncludeHiddenInput: document.getElementById("directThreadIncludeHiddenInput"),
+  directThreadIncludeArchivedInput: document.getElementById("directThreadIncludeArchivedInput"),
+  directThreadIncludeSoftDeletedInput: document.getElementById("directThreadIncludeSoftDeletedInput"),
+  directThreadTextQueryInput: document.getElementById("directThreadTextQueryInput"),
+  directThreadActiveCount: document.getElementById("directThreadActiveCount"),
+  directThreadHiddenCount: document.getElementById("directThreadHiddenCount"),
+  directThreadArchivedCount: document.getElementById("directThreadArchivedCount"),
+  directThreadSoftDeletedCount: document.getElementById("directThreadSoftDeletedCount"),
+  directThreadWorkbenchList: document.getElementById("directThreadWorkbenchList"),
+  directThreadWorkbenchDetail: document.getElementById("directThreadWorkbenchDetail"),
+  directThreadWorkbenchSide: document.getElementById("directThreadWorkbenchSide"),
   refreshCodexThreadListButton: document.getElementById("refreshCodexThreadListButton"),
   refreshRecentChatThreadsButton: document.getElementById("refreshRecentChatThreadsButton"),
   bindingLaneInput: document.getElementById("bindingLaneInput"),
@@ -249,6 +393,17 @@ const els = {
   recentChatThreadList: document.getElementById("recentChatThreadList"),
   openThreadAttachButton: document.getElementById("openThreadAttachButton"),
   importRecentChatThreadButton: document.getElementById("importRecentChatThreadButton"),
+  directImportCount: document.getElementById("directImportCount"),
+  refreshDirectImportsButton: document.getElementById("refreshDirectImportsButton"),
+  chooseDirectImportFileButton: document.getElementById("chooseDirectImportFileButton"),
+  chooseDirectImportRootButton: document.getElementById("chooseDirectImportRootButton"),
+  directImportWorkspaceConfirmInput: document.getElementById("directImportWorkspaceConfirmInput"),
+  directImportHint: document.getElementById("directImportHint"),
+  directImportSourceCount: document.getElementById("directImportSourceCount"),
+  directImportSourceList: document.getElementById("directImportSourceList"),
+  directImportVisibleCount: document.getElementById("directImportVisibleCount"),
+  directImportList: document.getElementById("directImportList"),
+  directImportDetail: document.getElementById("directImportDetail"),
   analyticsThreadCount: document.getElementById("analyticsThreadCount"),
   updateAnalyticsButton: document.getElementById("updateAnalyticsButton"),
   analyticsHint: document.getElementById("analyticsHint"),
@@ -297,12 +452,18 @@ const els = {
   wslLinuxPathInput: document.getElementById("wslLinuxPathInput"),
   codexModeInput: document.getElementById("codexModeInput"),
   codexLabelInput: document.getElementById("codexLabelInput"),
+  codexDefaultPathInput: document.getElementById("codexDefaultPathInput"),
   codexProviderKindInput: document.getElementById("codexProviderKindInput"),
   codexProviderFlavorInput: document.getElementById("codexProviderFlavorInput"),
   codexRuntimeInput: document.getElementById("codexRuntimeInput"),
+  codexRuntimeModeInput: document.getElementById("codexRuntimeModeInput"),
+  codexDirectTransportInput: document.getElementById("codexDirectTransportInput"),
   codexBinaryPathInput: document.getElementById("codexBinaryPathInput"),
+  codexProfileIdInput: document.getElementById("codexProfileIdInput"),
   codexModelInput: document.getElementById("codexModelInput"),
   codexReasoningEffortInput: document.getElementById("codexReasoningEffortInput"),
+  codexSpawnAgentModelOverridesRow: document.getElementById("codexSpawnAgentModelOverridesRow"),
+  codexSpawnAgentModelOverridesInput: document.getElementById("codexSpawnAgentModelOverridesInput"),
   codexTargetInput: document.getElementById("codexTargetInput"),
   projectChatgptThreadSelect: document.getElementById("projectChatgptThreadSelect"),
   projectCodexThreadSelect: document.getElementById("projectCodexThreadSelect"),
@@ -2547,6 +2708,997 @@ function renderStatus() {
   }
 }
 
+function directAuthStatusLabel(status) {
+  const value = status?.status || "unauthenticated";
+  if (value === "authenticated") return "authenticated";
+  if (value === "expired") return "expired";
+  if (value === "refresh_failed") return "refresh failed";
+  return "unauthenticated";
+}
+
+function directAuthExpiryLabel(status) {
+  if (!status || !status.expiresAt) return "no expiry";
+  if (status.status === "expired") return "expired";
+  return `expires in ${formatDurationMs(status.expiresInMs)}`;
+}
+
+function sanitizedDirectAuthError(fallback) {
+  return fallback || "Direct auth request failed.";
+}
+
+function directAuthModeSignature(modes) {
+  return modes.map((mode) => String(mode || "")).join("|");
+}
+
+function directRuntimeStatusLabel(status) {
+  const textOnly = status?.directTextOnly || {};
+  const activation = status?.activation || {};
+  if (activation.state === "enabled") return "Direct enabled";
+  if (activation.state === "eligible") return "Direct eligible";
+  if (activation.state === "degraded") return "Direct degraded";
+  if (activation.state === "rollback_required") return "rollback required";
+  if (textOnly.status === "enabled") return "Direct selected (tools unavailable)";
+  if (textOnly.status === "eligible") return "Direct ready (text fallback)";
+  if (activation.state === "text_only_eligible") return "Direct text fallback";
+  const runtime = status?.directRuntime || {};
+  if (runtime.turnRunnable) return "turns runnable";
+  if (runtime.status === "not_selected") return "legacy bridge active";
+  if (runtime.status === "not_runnable") return "turns not runnable";
+  return runtime.status || status?.status || "unknown";
+}
+
+function directRuntimeModeLabel(status) {
+  return status?.runtimeModeLabel || status?.runtimeMode || "legacy app-server";
+}
+
+function directRuntimePathFromCodex(codex = {}) {
+  const runtimeMode = String(codex.runtimeMode || "legacy-app-server").toLowerCase();
+  const directTransport = String(codex.directTransport || "fixture").toLowerCase();
+  const directTier = String(codex.directTier || codex.activationTier || codex.runtimeTier || "none").toLowerCase();
+  if (runtimeMode !== "direct-experimental") return "app-server";
+  if (directTransport === "live-text" && (directTier === "implementation-lane" || directTier === "implementation_lane")) {
+    return "direct-implementation";
+  }
+  if (directTransport === "live-text" && (directTier === "text-only" || directTier === "text_only")) {
+    return "direct-text";
+  }
+  return "app-server";
+}
+
+function directRuntimeBindingFieldsForPath(runtimePath, currentCodex = null) {
+  if (runtimePath === "direct-text") {
+    return {
+      bindingProvider: "direct-chatgpt-codex",
+      runtimeMode: "direct-experimental",
+      directTransport: "live-text",
+      directTier: "text-only",
+    };
+  }
+  if (runtimePath === "direct-implementation" || runtimePath === "direct") {
+    return {
+      bindingProvider: "direct-chatgpt-codex",
+      runtimeMode: "direct-experimental",
+      directTransport: "live-text",
+      directTier: "implementation-lane",
+    };
+  }
+  return {
+    bindingProvider: "codex-compatible",
+    runtimeMode: "legacy-app-server",
+    directTransport: "fixture",
+    directTier: "none",
+  };
+}
+
+function projectWithRuntimePath(project, runtimePath) {
+  return {
+    ...project,
+    surfaceBinding: {
+      ...project.surfaceBinding,
+      codex: {
+        ...(project.surfaceBinding?.codex || {}),
+        ...directRuntimeBindingFieldsForPath(runtimePath),
+      },
+    },
+  };
+}
+
+function syncProjectRuntimeFieldsFromDefaultPath() {
+  if (!els.codexDefaultPathInput) return;
+  const existing = state.config?.projects.find((project) => project.id === els.projectIdInput?.value);
+  const fields = directRuntimeBindingFieldsForPath(els.codexDefaultPathInput.value || "app-server", existing?.surfaceBinding?.codex || null);
+  if (els.codexRuntimeModeInput) els.codexRuntimeModeInput.value = fields.runtimeMode;
+  if (els.codexDirectTransportInput) els.codexDirectTransportInput.value = fields.directTransport;
+}
+
+function updateCodexSpawnAgentControlAvailability() {
+  const active = els.codexModeInput?.value === "managed"
+    && (els.codexProviderKindInput?.value || "codex_executable") === "codex_executable"
+    && (els.codexRuntimeModeInput?.value || "legacy-app-server") === "legacy-app-server";
+  if (els.codexSpawnAgentModelOverridesInput) els.codexSpawnAgentModelOverridesInput.disabled = !active;
+  if (els.codexSpawnAgentModelOverridesRow) {
+    els.codexSpawnAgentModelOverridesRow.setAttribute("aria-disabled", active ? "false" : "true");
+    els.codexSpawnAgentModelOverridesRow.title = active
+      ? "Project-scoped managed app-server orchestration profile."
+      : "Dormant unless this project uses the managed codex_executable app-server path.";
+  }
+}
+
+function persistedDirectRuntimePath() {
+  return directRuntimePathFromCodex(activeProject()?.surfaceBinding?.codex || {});
+}
+
+function selectedDirectRuntimePath(options = {}) {
+  const project = activeProject();
+  if (!project) return "app-server";
+  if (options.scope === "default") return persistedDirectRuntimePath();
+  return state.activeCodexRuntimePathByProject?.[project.id] || persistedDirectRuntimePath();
+}
+
+function syncDirectRuntimePathControl(selectEl, applyButton, _status = state.directRuntimeStatus, options = {}) {
+  if (!selectEl) return;
+  const scope = options.persistDefault ? "default" : "active";
+  const currentPath = selectedDirectRuntimePath({ scope });
+  const directTextOption = [...selectEl.options].find((option) => option.value === "direct-text");
+  const directImplementationOption = [...selectEl.options].find((option) => option.value === "direct-implementation");
+  if (directTextOption) directTextOption.disabled = false;
+  if (directImplementationOption) directImplementationOption.disabled = false;
+  const visiblePath = currentPath === "direct-text" && !directTextOption ? "direct-implementation" : currentPath;
+  if (document.activeElement !== selectEl) selectEl.value = visiblePath;
+  const selectedPath = selectEl.value || visiblePath;
+  if (applyButton) {
+    applyButton.disabled =
+      state.directRuntimeLoading ||
+      !activeProject() ||
+      !bridge.setDirectRuntimePath ||
+      selectedPath === currentPath;
+    const prefix = options.persistDefault ? "Persist this Codex backend as the project default" : "Switch the active Codex lane";
+    applyButton.title = selectedPath === currentPath
+      ? (options.persistDefault
+          ? "This Codex backend is already the persisted project default."
+          : "This Codex backend is already active for this session.")
+      : selectedPath === "direct-text"
+        ? `${prefix}, validate Direct gates, and reload the Codex lane.`
+        : `${prefix}, validate Direct tool gates, and reload the Codex lane.`;
+  }
+}
+
+function directActivationBlockers(status = state.directRuntimeStatus) {
+  const blockers = status?.activation?.gateSummary?.blockers;
+  return Array.isArray(blockers) ? blockers : [];
+}
+
+function directActivationBlockedDetail(status = state.directRuntimeStatus) {
+  const activation = status?.activation || {};
+  const blockers = directActivationBlockers(status);
+  if (blockers.length) {
+    return blockers
+      .slice(0, 4)
+      .map((item) => `${item.label || item.id || "gate"}: ${item.reason || item.blockerCode || "blocked"}`)
+      .join("; ");
+  }
+  const reasons = activation.gateSummary?.blockedReasons || {};
+  const codes = Object.keys(reasons);
+  if (codes.length) return codes.slice(0, 4).join(", ");
+  return activation.labels?.detail || "Required activation gates are missing.";
+}
+
+function directTextOnlyBlockedDetail(status = state.directRuntimeStatus) {
+  const textOnly = status?.directTextOnly || {};
+  const blockers = Array.isArray(textOnly.gateSummary?.blockers) ? textOnly.gateSummary.blockers : [];
+  if (blockers.length) {
+    return blockers
+      .slice(0, 4)
+      .map((item) => `${item.label || item.id || "gate"}: ${item.reason || item.blockerCode || "blocked"}`)
+      .join("; ");
+  }
+  const codes = Array.isArray(textOnly.blockers) ? textOnly.blockers : [];
+  if (codes.length) return codes.slice(0, 4).join(", ");
+  return textOnly.labels?.detail || "Direct text-only gates are missing.";
+}
+
+function directEmbarkFailureMessage(result = {}) {
+  const error = result?.error || {};
+  const runtimeStatus = result?.runtimeStatus || state.directRuntimeStatus || {};
+  return error.message ||
+    directTextOnlyBlockedDetail(runtimeStatus) ||
+    directActivationBlockedDetail(runtimeStatus) ||
+    result.status ||
+    "Direct embark failed.";
+}
+
+async function embarkDirectRuntimeFromControl(project, options = {}) {
+  if (!project || !bridge.embarkDirectRuntime) {
+    throw new Error("Direct embark bridge is unavailable.");
+  }
+  let result = await bridge.embarkDirectRuntime(project.id, options);
+  if (result?.status === "auth_required" && result.loginRequired) {
+    setLastEvent("Direct login required; opening login flow.");
+    const loginResult = await beginDirectAuthLogin();
+    if (!loginResult?.ok) {
+      return {
+        ...result,
+        status: "auth_required",
+        error: {
+          code: loginResult?.status || "auth_required",
+          message: loginResult?.reason || "Direct login did not complete.",
+        },
+      };
+    }
+    result = await bridge.embarkDirectRuntime(project.id, options);
+  }
+  return result;
+}
+
+function directContextMaintenanceStatus(status = state.directRuntimeStatus) {
+  const value = status?.directContextMaintenance || status?.contextMaintenance || status?.directImplementationLane?.contextMaintenance || {};
+  const projection = value.statusProjection || {};
+  const sibling = value.appServerSibling || {};
+  const providerCompact = value.providerCompact || {};
+  return {
+    pressureState: String(value.pressureState || projection.pressureState || "unknown"),
+    routeKind: String(value.routeKind || value.currentRouteKind || projection.routeKind || projection.currentRouteId || "none"),
+    routeBlocked: value.routeBlocked === true || (Array.isArray(value.blockers) && value.blockers.length > 0),
+    memoryState: String(value.memoryState || projection.memoryState || "none"),
+    memoryPointerState: String(value.memoryPointerState || projection.memoryPointerState || "none"),
+    batonState: String(value.batonState || projection.batonState || "not_required"),
+    batonRequirement: String(value.batonRequirement || projection.batonRequirement || "not_required"),
+    omissionState: String(value.omissionState || projection.omissionState || "none"),
+    providerCompactState: String(providerCompact.state || value.providerCompactState || value.providerCompactionState || "not_proven"),
+    providerCompactEvidenceState: String(providerCompact.evidenceState || value.providerCompactionEvidenceState || "missing"),
+    appServerSibling: sibling,
+    contextCompactionCount: Number(sibling.contextCompactionCount || 0),
+    memoryCitationCount: Number(sibling.memoryCitationCount || 0),
+    memoryModeObserved: sibling.memoryModeObserved === true,
+    memoryResetObserved: sibling.memoryResetObserved === true,
+    compactActionAllowed: value.compactActionAllowed === true,
+    maintenanceExecutionAllowed: value.maintenanceExecutionAllowed === true,
+    memoryEditorAllowed: value.memoryEditorAllowed === true,
+    memoryResetAllowed: value.memoryResetAllowed === true,
+    providerTransportAllowed: value.providerTransportAllowed === true,
+    evidenceKeys: Array.isArray(value.evidenceKeys) ? value.evidenceKeys : [],
+    blockers: Array.isArray(value.blockers) ? value.blockers : [],
+  };
+}
+
+function formatDirectContextState(value) {
+  return String(value || "unknown").replace(/_/g, " ");
+}
+
+function formatDirectContextBlockers(blockers = []) {
+  return blockers
+    .slice(0, 4)
+    .map((blocker) => {
+      if (blocker && typeof blocker === "object") return blocker.label || blocker.id || blocker.blockerCode || blocker.code || "blocked";
+      return String(blocker || "").trim();
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
+function directDiagnosticsObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function directDiagnosticsArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function directDiagnosticsFirstObject(...values) {
+  return values.find((value) => value && typeof value === "object" && !Array.isArray(value)) || {};
+}
+
+function directDiagnosticsValue(value, fallback = "missing") {
+  if (value === true) return "yes";
+  if (value === false) return "no";
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : fallback;
+  return String(value).replace(/_/g, " ");
+}
+
+function directDiagnosticsShortId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= 18) return text;
+  return `${text.slice(0, 8)}…${text.slice(-6)}`;
+}
+
+function directDiagnosticsContextInput(status = state.directRuntimeStatus) {
+  return directDiagnosticsFirstObject(
+    status?.directContextMaintenance,
+    status?.contextMaintenance,
+    status?.directImplementationLane?.contextMaintenance,
+  );
+}
+
+function directDiagnosticsEvidenceKeys(...sources) {
+  const keys = [];
+  for (const source of sources) {
+    if (!source) continue;
+    if (Array.isArray(source)) {
+      for (const item of source) {
+        const key = typeof item === "string" ? item : item?.evidenceKey || item?.id || item?.ref || "";
+        if (key) keys.push(String(key));
+      }
+      continue;
+    }
+    if (typeof source === "string") keys.push(source);
+    if (typeof source === "object") {
+      for (const key of ["evidenceKey", "evidenceId", "sourceDigest", "projectionDigest", "artifactDigest", "schema"]) {
+        if (source[key]) keys.push(String(source[key]));
+      }
+      if (Array.isArray(source.evidenceKeys)) keys.push(...source.evidenceKeys.map(String));
+      if (Array.isArray(source.evidenceRefs)) {
+        keys.push(...source.evidenceRefs.map((ref) => ref?.evidenceKey || ref?.id || ref?.ref || "").filter(Boolean).map(String));
+      }
+    }
+  }
+  return [...new Set(keys.filter(Boolean))];
+}
+
+function directDiagnosticsSubAgentEntries(source = {}) {
+  const safeSource = directDiagnosticsObject(source);
+  const graph = directDiagnosticsObject(safeSource.agentGraph || safeSource.graph || safeSource);
+  const candidates = [
+    safeSource.agents,
+    safeSource.agentRows,
+    safeSource.threads,
+    safeSource.nodes,
+    graph.agents,
+    graph.nodes,
+    safeSource.progressRegistry?.entries,
+    safeSource.progressEntries,
+  ];
+  for (const value of candidates) {
+    if (Array.isArray(value) && value.length) return value;
+  }
+  return [];
+}
+
+function directDiagnosticsSubAgentLabel(agent = {}, index = 0) {
+  const safeAgent = directDiagnosticsObject(agent);
+  return safeAgent.displayLabel ||
+    safeAgent.nickname ||
+    safeAgent.agentNickname ||
+    safeAgent.agentRole ||
+    safeAgent.role ||
+    directDiagnosticsShortId(safeAgent.agentThreadId || safeAgent.threadId || safeAgent.id) ||
+    `agent ${index + 1}`;
+}
+
+function directDiagnosticsRow(label, value, stateLabel = "diagnostic", title = "") {
+  return { label, value: directDiagnosticsValue(value), stateLabel, title };
+}
+
+function renderDirectDiagnosticsRows(container, rows = [], emptyText = "No diagnostic evidence exposed.") {
+  if (!container) return;
+  container.textContent = "";
+  const visibleRows = rows.filter(Boolean);
+  if (!visibleRows.length) {
+    const empty = document.createElement("div");
+    empty.className = "direct-diagnostics-empty";
+    empty.textContent = emptyText;
+    container.appendChild(empty);
+    return;
+  }
+  for (const row of visibleRows) {
+    const item = document.createElement("div");
+    item.className = `direct-diagnostics-row state-${String(row.stateLabel || "diagnostic").replace(/[^a-z0-9_-]/gi, "-")}`;
+    if (row.title) item.title = row.title;
+    const label = document.createElement("span");
+    label.textContent = row.label || "Status";
+    const value = document.createElement("strong");
+    value.textContent = row.value || "missing";
+    item.append(label, value);
+    container.appendChild(item);
+  }
+}
+
+function directBridgeSettingsRows(sectionName) {
+  const rows = state.directBridgeSettingsStatus?.rows?.[sectionName];
+  return Array.isArray(rows) ? rows : [];
+}
+
+function directBridgeManualSmokeSummary(status) {
+  const gate = status?.sections?.manualSmokeGate || {};
+  const available = gate.available === true;
+  const gateState = typeof gate.gateState === "string" && gate.gateState ? gate.gateState : available ? "unknown" : "not exposed";
+  const blocked = Number(gate.blockedCount || 0);
+  const requiredBlocked = Number(gate.requiredBlockedCount || 0);
+  const warnings = Number(gate.warningCount || 0);
+  const notChecked = Number(gate.notCheckedCount || 0);
+  return {
+    available,
+    gateState,
+    blocked,
+    requiredBlocked,
+    warnings,
+    notChecked,
+    blockerCodes: Array.isArray(gate.blockerCodes) ? gate.blockerCodes.filter(Boolean) : [],
+    unexpectedAuthority: Boolean(
+      gate.manualSmokeExecutionAllowed ||
+      gate.runtimePathMutationAllowed ||
+      gate.workThreadMutationAllowed ||
+      gate.providerTransportAllowed ||
+      gate.workspaceMutationAllowed ||
+      gate.appServerReplacementAllowed ||
+      gate.autoApprovalAllowed ||
+      gate.moduleExecutionAllowed ||
+      gate.recursiveWorkerAllowed ||
+      gate.matrixPromotionAllowed
+    ),
+  };
+}
+
+function renderDirectBridgeSettingsStatus() {
+  if (!els.directBridgeSettingsBadge) return;
+  const status = state.directBridgeSettingsStatus || {};
+  const projectionOk = status.schema === "direct_settings_surface_projection@1";
+  const authority = status.authority || {};
+  const fallback = status.sections?.appServerFallbackParity || {};
+  const runtimeWitness = status.sections?.runtimeWitness || {};
+  const manualSmoke = directBridgeManualSmokeSummary(status);
+  const blockedAuthority = [
+    authority.runtimeMutationAllowed ? "runtime mutation" : "",
+    authority.routingEnforced ? "routing" : "",
+    authority.semanticBrokerEnforced ? "semantic broker" : "",
+    authority.moduleExecutionAllowed ? "module execution" : "",
+    authority.memoryEditingAllowed ? "memory edit" : "",
+    authority.memoryResetAllowed ? "memory reset" : "",
+    authority.providerCompactionAllowed ? "provider compact" : "",
+    authority.providerTransportAllowed ? "provider transport" : "",
+    authority.workspaceMutationAllowed ? "workspace mutation" : "",
+    runtimeWitness.providerTransportAllowed || runtimeWitness.quotaReadAllowed || runtimeWitness.modelMutationAllowed || runtimeWitness.costComputationAllowed ? "runtime witness authority" : "",
+    fallback.providerTransportAllowed || fallback.appServerSpawnAllowed || fallback.appServerReplacementAllowed || fallback.appServerMutationAllowed || fallback.runtimeSelectionMutationAllowed || fallback.workspaceMutationAllowed || fallback.recursiveWorkerAllowed || fallback.matrixPromotionAllowed ? "app-server fallback authority" : "",
+    manualSmoke.unexpectedAuthority ? "manual smoke authority" : "",
+  ].filter(Boolean);
+  els.directBridgeSettingsBadge.textContent = state.directBridgeSettingsLoading
+    ? "loading"
+    : projectionOk
+      ? manualSmoke.available
+        ? `smoke ${manualSmoke.gateState}`
+        : "status only"
+      : "not loaded";
+  els.directBridgeSettingsBadge.title = state.directBridgeSettingsError ||
+    (projectionOk
+      ? manualSmoke.available
+        ? `Manual smoke gate: ${manualSmoke.gateState} · blocked: ${manualSmoke.blocked} · required blockers: ${manualSmoke.requiredBlocked}`
+        : status.projectionDigest || "Renderer-safe direct bridge settings projection."
+      : "Projection not loaded.");
+  if (els.directBridgeSettingsRefreshButton) {
+    els.directBridgeSettingsRefreshButton.disabled = state.directBridgeSettingsLoading || !bridge.getDirectBridgeSettingsStatus;
+    els.directBridgeSettingsRefreshButton.title = "Refresh the renderer-safe direct bridge status surface.";
+  }
+  renderDirectDiagnosticsRows(els.directBridgeSettingsRuntimeList, directBridgeSettingsRows("runtime"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsRegistryList, directBridgeSettingsRows("registry"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsWorkThreadList, directBridgeSettingsRows("workThreads"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsOperatorBrokerList, directBridgeSettingsRows("operatorBroker"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsGovernanceList, directBridgeSettingsRows("governance"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsModulesList, directBridgeSettingsRows("modules"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsAgentClassList, directBridgeSettingsRows("agentClasses"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsContinuityList, directBridgeSettingsRows("continuity"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsRuntimeWitnessList, directBridgeSettingsRows("runtimeWitness"), "Runtime witness projection is not exposed by the current projection.");
+  renderDirectDiagnosticsRows(els.directBridgeSettingsAgentUsageList, directBridgeSettingsRows("agentUsage"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsAppServerFallbackList, directBridgeSettingsRows("appServerFallbackParity"), "App-server fallback parity is not exposed by the current projection.");
+  renderDirectDiagnosticsRows(els.directBridgeSettingsManualSmokeList, directBridgeSettingsRows("manualSmokeGate"), "Manual smoke gate is not exposed by the current projection.");
+  if (els.directBridgeSettingsEvidence) {
+    if (state.directBridgeSettingsError) {
+      els.directBridgeSettingsEvidence.textContent = `Bridge settings status unavailable: ${state.directBridgeSettingsError}`;
+    } else if (blockedAuthority.length) {
+      els.directBridgeSettingsEvidence.textContent = `WARNING: unexpected authority exposed (${blockedAuthority.join(", ")}).`;
+    } else if (projectionOk && manualSmoke.available) {
+      const blockerText = manualSmoke.blockerCodes.length ? ` · blockers: ${manualSmoke.blockerCodes.slice(0, 5).join(", ")}${manualSmoke.blockerCodes.length > 5 ? "…" : ""}` : "";
+      els.directBridgeSettingsEvidence.textContent = `Manual smoke gate is ${manualSmoke.gateState} · blocked ${manualSmoke.blocked} · required blockers ${manualSmoke.requiredBlocked} · warnings ${manualSmoke.warnings} · not checked ${manualSmoke.notChecked}${blockerText}. Display-only: no provider, app-server, module, workspace, approval, recursive worker, or promotion transition is exposed.`;
+    } else if (projectionOk) {
+      els.directBridgeSettingsEvidence.textContent = "Display-only surface · no routing, module execution, memory edit/reset, provider compact, provider transport, or workspace mutation is exposed.";
+    } else {
+      els.directBridgeSettingsEvidence.textContent = "Direct bridge settings are display-only; no authority is exposed before a projection loads.";
+    }
+  }
+}
+
+function directDiagnosticsProjection(status = state.directRuntimeStatus) {
+  const runtimeStatus = directDiagnosticsObject(status);
+  const implementationLane = directDiagnosticsObject(runtimeStatus.directImplementationLane);
+  const contextInput = directDiagnosticsContextInput(runtimeStatus);
+  const contextMaintenance = directContextMaintenanceStatus(runtimeStatus);
+  const statusProjection = directDiagnosticsObject(contextInput.statusProjection);
+  const providerCompact = directDiagnosticsObject(contextInput.providerCompact);
+  const metaSession = directDiagnosticsObject(state.directMetaSessionStatus);
+  const governance = directDiagnosticsFirstObject(
+    runtimeStatus.governance,
+    runtimeStatus.directGovernance,
+    implementationLane.governance,
+    implementationLane.governancePacket,
+    metaSession.governance,
+  );
+  const broker = directDiagnosticsFirstObject(
+    runtimeStatus.semanticBroker,
+    runtimeStatus.directSemanticBroker,
+    implementationLane.semanticBroker,
+    implementationLane.broker,
+    metaSession.semanticBroker,
+    metaSession.routeSummary,
+  );
+  const transitionGraph = directDiagnosticsFirstObject(
+    runtimeStatus.transitionGraph,
+    runtimeStatus.directTransitionGraph,
+    implementationLane.transitionGraph,
+    metaSession.transitionGraph,
+  );
+  const subAgentSource = directDiagnosticsFirstObject(
+    runtimeStatus.directSubAgentObservability,
+    runtimeStatus.subAgentObservability,
+    runtimeStatus.subAgents,
+    implementationLane.subAgentObservability,
+    implementationLane.agentGraph,
+  );
+  const subAgentEntries = directDiagnosticsSubAgentEntries(subAgentSource).filter((agent) => agent && typeof agent === "object");
+  const actionFlags = [
+    contextMaintenance.compactActionAllowed ? "compact" : "",
+    contextMaintenance.maintenanceExecutionAllowed ? "maintenance" : "",
+    contextMaintenance.memoryEditorAllowed ? "memory edit" : "",
+    contextMaintenance.memoryResetAllowed ? "memory reset" : "",
+    contextMaintenance.providerTransportAllowed ? "provider compact" : "",
+  ].filter(Boolean);
+  const blockers = directDiagnosticsArray(contextMaintenance.blockers);
+  const evidenceKeys = directDiagnosticsEvidenceKeys(
+    contextMaintenance.evidenceKeys,
+    contextInput,
+    statusProjection,
+    providerCompact,
+    governance,
+    broker,
+    transitionGraph,
+    subAgentSource,
+  );
+  const routeSummary = directDiagnosticsObject(metaSession.routeSummary);
+  const brokerCandidates = directDiagnosticsArray(broker.candidates || broker.candidateRoutes || broker.routes);
+  const transitions = directDiagnosticsArray(transitionGraph.edges || transitionGraph.transitions || implementationLane.transitions);
+  const activeRuntime = selectedDirectRuntimePath();
+  return {
+    badge: state.directRuntimeLoading
+      ? "loading"
+      : runtimeStatus.status || directRuntimeStatusLabel(runtimeStatus),
+    contextRows: [
+      directDiagnosticsRow("Pressure", contextMaintenance.pressureState, contextMaintenance.pressureState === "unknown" ? "unknown" : "diagnostic"),
+      directDiagnosticsRow("Route", contextMaintenance.routeKind, contextMaintenance.routeBlocked ? "blocked" : "diagnostic"),
+      directDiagnosticsRow("Memory", contextMaintenance.memoryPointerState !== "none" ? contextMaintenance.memoryPointerState : contextMaintenance.memoryState),
+      directDiagnosticsRow("Baton", contextMaintenance.batonState),
+      directDiagnosticsRow("Omission", contextMaintenance.omissionState),
+      directDiagnosticsRow("Provider compact", contextMaintenance.providerCompactState, contextMaintenance.providerCompactEvidenceState === "missing" ? "unknown" : "diagnostic"),
+    ],
+    artifactRows: [
+      directDiagnosticsRow("Status projection", statusProjection.projectionDigest || statusProjection.sourceDigest || "not exposed", statusProjection.projectionDigest || statusProjection.sourceDigest ? "diagnostic" : "missing"),
+      directDiagnosticsRow("Provider compact evidence", providerCompact.evidenceState || contextMaintenance.providerCompactEvidenceState, providerCompact.evidenceState === "missing" ? "missing" : "diagnostic"),
+      directDiagnosticsRow("Evidence keys", evidenceKeys.length, evidenceKeys.length ? "diagnostic" : "missing", evidenceKeys.slice(0, 8).join("\n")),
+      directDiagnosticsRow("Sibling compact rows", contextMaintenance.contextCompactionCount),
+      directDiagnosticsRow("Sibling memory rows", contextMaintenance.memoryCitationCount),
+    ],
+    recoveryRows: [
+      directDiagnosticsRow("Blockers", blockers.length ? formatDirectContextBlockers(blockers) : "none", blockers.length ? "blocked" : "ok"),
+      directDiagnosticsRow("Unexpected actions", actionFlags.length ? actionFlags.join(", ") : "none", actionFlags.length ? "blocked" : "ok"),
+      directDiagnosticsRow("Recovery posture", implementationLane.recoveryState || runtimeStatus.recoveryState || "status only"),
+      directDiagnosticsRow("Provider transport", contextMaintenance.providerTransportAllowed, contextMaintenance.providerTransportAllowed ? "blocked" : "ok"),
+    ],
+    governanceRows: [
+      directDiagnosticsRow("Packet", governance.schema || governance.packetSchema || "not exposed", governance.schema || governance.packetSchema ? "diagnostic" : "missing"),
+      directDiagnosticsRow("Mode", governance.mode || governance.enforcementMode || "shadow only"),
+      directDiagnosticsRow("Layer count", directDiagnosticsArray(governance.layers || governance.rows).length),
+      directDiagnosticsRow("Authority", governance.enforced === true ? "unexpected enforce" : "not enforced", governance.enforced === true ? "blocked" : "ok"),
+      directDiagnosticsRow("Raw payload", "excluded", "ok"),
+    ],
+    brokerRows: [
+      directDiagnosticsRow("Packet", broker.schema || broker.packetSchema || "not exposed", broker.schema || broker.packetSchema ? "diagnostic" : "missing"),
+      directDiagnosticsRow("Selected route", broker.selectedRoute || broker.selectedRouteId || broker.selected || "none"),
+      directDiagnosticsRow("Candidates", brokerCandidates.length || routeSummary.proposed || 0),
+      directDiagnosticsRow("Blocked dispatches", routeSummary.dispatchBlocked || broker.blocked || 0),
+      directDiagnosticsRow("Auto reroute", "disabled", "ok"),
+    ],
+    transitionRows: [
+      directDiagnosticsRow("Current path", activeRuntime),
+      directDiagnosticsRow("Runtime label", directRuntimeStatusLabel(runtimeStatus)),
+      directDiagnosticsRow("Known transitions", transitions.length || "not exposed", transitions.length ? "diagnostic" : "missing"),
+      directDiagnosticsRow("Start turn", activeRuntime === "app-server" ? "legacy bridge" : "gated by direct lane", "diagnostic"),
+      directDiagnosticsRow("Mutation authority", "not granted here", "ok"),
+    ],
+    subAgentRows: [
+      directDiagnosticsRow("Store", subAgentSource.schema || subAgentSource.observabilityId || subAgentSource.agentGraphId ? "available" : "not exposed", subAgentSource.schema || subAgentSource.observabilityId || subAgentSource.agentGraphId ? "diagnostic" : "missing"),
+      directDiagnosticsRow("Agents", subAgentEntries.length),
+      ...subAgentEntries.slice(0, 6).map((agent, index) => directDiagnosticsRow(
+        directDiagnosticsSubAgentLabel(agent, index),
+        agent.lifecycleState || agent.activityState || agent.status || agent.attentionState || "observed",
+        agent.lifecycleState === "failed" || agent.status === "failed" ? "blocked" : "diagnostic",
+      )),
+      directDiagnosticsRow("Controls", "read-only", "ok"),
+    ],
+    evidenceText: evidenceKeys.length
+      ? `Status-only diagnostics · evidence ${evidenceKeys.slice(0, 5).join(", ")}${evidenceKeys.length > 5 ? "…" : ""} · no maintenance, governance, broker, or sub-agent action is exposed.`
+      : "Status-only diagnostics · no evidence keys exposed yet · no maintenance, governance, broker, or sub-agent action is exposed.",
+  };
+}
+
+function renderDirectDiagnosticsStatus(status = state.directRuntimeStatus) {
+  if (!els.directDiagnosticsStatusBadge) return;
+  const projection = directDiagnosticsProjection(status);
+  els.directDiagnosticsStatusBadge.textContent = projection.badge;
+  els.directDiagnosticsStatusBadge.title = "Renderer-safe direct diagnostics; all rows are display-only.";
+  renderDirectDiagnosticsRows(els.directDiagnosticsContextGrid, projection.contextRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsArtifactList, projection.artifactRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsRecoveryList, projection.recoveryRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsGovernanceList, projection.governanceRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsBrokerList, projection.brokerRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsTransitionList, projection.transitionRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsSubAgentList, projection.subAgentRows);
+  if (els.directDiagnosticsEvidence) els.directDiagnosticsEvidence.textContent = projection.evidenceText;
+}
+
+function directImplementationBooleanLabel(value) {
+  if (value === true) return "yes";
+  if (value === false) return "no";
+  return "unknown";
+}
+
+function directImplementationFacetState(facet, fallbackValue = false) {
+  if (facet && typeof facet === "object") return facet.state || (facet.canUse ? "ready" : "blocked");
+  return fallbackValue ? "ready" : "blocked";
+}
+
+function directImplementationUiRows() {
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const lane = directDiagnosticsObject(projection.implementationLane);
+  if (state.directImplementationUiLoading && !projection.schema) return [directDiagnosticsRow("Status", "loading")];
+  if (state.directImplementationUiError) return [directDiagnosticsRow("Status", state.directImplementationUiError, "blocked")];
+  if (!projection.schema) return [directDiagnosticsRow("Status", "not loaded", "missing")];
+  return [
+    directDiagnosticsRow("Active tier", projection.activeRuntimeTier || "unknown", projection.activeRuntimeTier === "direct-implementation-lane" ? "ok" : "diagnostic"),
+    directDiagnosticsRow("Lane", lane.readiness || lane.status || "unknown", lane.readiness === "ready" ? "ok" : lane.readiness === "blocked" ? "blocked" : "diagnostic"),
+    directDiagnosticsRow("Selected", directImplementationBooleanLabel(lane.selected), lane.selected ? "ok" : "unknown"),
+    directDiagnosticsRow("Start turn", directImplementationFacetState(lane.facets?.canStartTurn, lane.canStartFirstTurn), lane.canStartFirstTurn ? "ok" : "blocked"),
+    directDiagnosticsRow("Rollback", lane.canRollbackToAppServer ? "available" : "blocked", lane.canRollbackToAppServer ? "diagnostic" : "blocked"),
+    directDiagnosticsRow("Generation", projection.meta?.uiProjectionGeneration || "missing", projection.meta?.uiProjectionGeneration ? "diagnostic" : "missing"),
+  ];
+}
+
+function directImplementationApprovalRows() {
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const lane = directDiagnosticsObject(projection.implementationLane);
+  const facets = directDiagnosticsObject(lane.facets);
+  if (!projection.schema) return [directDiagnosticsRow("Status", state.directImplementationUiLoading ? "loading" : "not loaded", "missing")];
+  return [
+    directDiagnosticsRow("Cards", directImplementationFacetState(facets.canShowApprovalCards, lane.canShowApprovalCards), lane.canShowApprovalCards ? "ok" : "blocked"),
+    directDiagnosticsRow("Read", directImplementationFacetState(facets.canApproveRead, lane.canApproveReadFile), lane.canApproveReadFile ? "ok" : "blocked"),
+    directDiagnosticsRow("Patch", directImplementationFacetState(facets.canApprovePatch, lane.canApprovePatchApply), lane.canApprovePatchApply ? "ok" : "blocked"),
+    directDiagnosticsRow("Command", directImplementationFacetState(facets.canApproveCommand, lane.canApproveRunCommand), lane.canApproveRunCommand ? "ok" : "blocked"),
+    directDiagnosticsRow("Continuation", directImplementationFacetState(facets.canContinueAfterResult, lane.canSendContinuation), lane.canSendContinuation ? "ok" : "blocked"),
+    directDiagnosticsRow("Blockers", (lane.blockerCodes || []).join(", ") || "none", lane.blockerCodes?.length ? "blocked" : "ok"),
+  ];
+}
+
+function directImplementationActiveTurnRows() {
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const activeTurn = directDiagnosticsObject(projection.activeTurn);
+  const currentSession = directDiagnosticsObject(projection.currentSession);
+  const recovery = directDiagnosticsObject(projection.recovery);
+  if (!projection.schema) return [directDiagnosticsRow("Status", state.directImplementationUiLoading ? "loading" : "not loaded", "missing")];
+  return [
+    directDiagnosticsRow("Turn state", activeTurn.state || "idle", activeTurn.state ? "diagnostic" : "ok"),
+    directDiagnosticsRow("Composer", activeTurn.composerAllowed ? "allowed" : "blocked", activeTurn.composerAllowed ? "ok" : "blocked"),
+    directDiagnosticsRow("Composer reason", activeTurn.composerAllowedReason || "unknown", activeTurn.composerAllowed ? "ok" : "diagnostic"),
+    directDiagnosticsRow("Active turns", currentSession.activeTurnCount ?? "unknown", currentSession.activeTurnCount ? "diagnostic" : "ok"),
+    directDiagnosticsRow("Obligations", currentSession.unresolvedObligationCount ?? "unknown", currentSession.unresolvedObligationCount ? "blocked" : "ok"),
+    directDiagnosticsRow("Recovery", recovery.state || "unknown", recovery.state && recovery.state !== "healthy" ? "diagnostic" : "ok"),
+  ];
+}
+
+function directImplementationToolResultRows() {
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const latest = directDiagnosticsObject(projection.latestToolResult);
+  if (!projection.schema) return [directDiagnosticsRow("Status", state.directImplementationUiLoading ? "loading" : "not loaded", "missing")];
+  if (!latest.schema || latest.status === "none") return [directDiagnosticsRow("Latest result", "none", "missing")];
+  return [
+    directDiagnosticsRow("Tool", latest.tool || "unknown", "diagnostic"),
+    directDiagnosticsRow("Status", latest.status || "unknown", latest.status?.includes("failed") ? "blocked" : "diagnostic"),
+    directDiagnosticsRow("Side effect", directImplementationBooleanLabel(latest.sideEffectExecuted), latest.sideEffectExecuted ? "diagnostic" : "ok"),
+    directDiagnosticsRow("Effect scan", latest.workspaceEffectScanRan ? "ran" : "not run", latest.workspaceEffectScanRan ? "ok" : "missing"),
+    directDiagnosticsRow("Changes", latest.workspaceChangesDetected ? `${latest.changedPathCount || 0}` : "none", latest.workspaceChangesDetected ? "diagnostic" : "ok"),
+    directDiagnosticsRow("Provider saw", latest.providerVisibility || "none", latest.providerSawChangedFileContents ? "blocked" : "ok"),
+  ];
+}
+
+function directImplementationHistoryRows() {
+  const history = directDiagnosticsObject(state.directImplementationOperationHistory);
+  const rows = Array.isArray(history.rows) ? history.rows : [];
+  if (state.directImplementationUiLoading && !rows.length) return [directDiagnosticsRow("Status", "loading")];
+  if (state.directImplementationUiError) return [directDiagnosticsRow("Status", state.directImplementationUiError, "blocked")];
+  if (!history.schema) return [directDiagnosticsRow("Status", "not loaded", "missing")];
+  if (!rows.length) return [directDiagnosticsRow("Rows", "none", "missing")];
+  return rows.slice(0, 6).map((row) => directDiagnosticsRow(
+    row.family || row.eventKind || "operation",
+    `${row.status || "unknown"} · ${row.rendererSafeSummary || row.eventKind || row.rowId || "operation"}`,
+    row.status === "failed" ? "blocked" : "diagnostic",
+  ));
+}
+
+function directImplementationPromotionRows() {
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const queue = directDiagnosticsObject(projection.livePromotionCandidateQueue);
+  const candidates = Array.isArray(queue.candidates) ? queue.candidates : [];
+  if (!projection.schema) return [directDiagnosticsRow("Status", state.directImplementationUiLoading ? "loading" : "not loaded", "missing")];
+  if (!queue.schema) return [directDiagnosticsRow("Queue", "not exposed", "missing")];
+  const rows = [
+    directDiagnosticsRow("Queue", `${queue.readyCount || 0} ready / ${queue.blockedCount || 0} blocked`, queue.readyCount ? "diagnostic" : "blocked"),
+  ];
+  for (const candidate of candidates.slice(0, 8)) {
+    const blockers = Array.isArray(candidate.blockerCodes) ? candidate.blockerCodes : [];
+    const value = `${candidate.gateState || "unknown"} · ${blockers[0] || candidate.promotionState || "candidate"}`;
+    rows.push(directDiagnosticsRow(candidate.label || candidate.capabilityId || "Candidate", value, candidate.gateState === "ready" ? "ok" : "blocked", blockers.join(", ")));
+  }
+  rows.push(directDiagnosticsRow("Authority", "display only", "diagnostic", "No provider transport, workspace mutation, recursive worker, app-server fallback, matrix, or default mutation authority is exposed."));
+  return rows;
+}
+
+function renderDirectImplementationUiStatus() {
+  if (!els.directImplementationStatusBadge) return;
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const history = directDiagnosticsObject(state.directImplementationOperationHistory);
+  const policy = directDiagnosticsObject(state.directImplementationPolicyView);
+  const schemaOk = projection.schema === "direct_implementation_lane_ui_status@1";
+  els.directImplementationStatusBadge.textContent = state.directImplementationUiLoading
+    ? "loading"
+    : schemaOk
+      ? projection.implementationLane?.readiness || projection.activeRuntimeTier || "ready"
+      : "not loaded";
+  els.directImplementationStatusBadge.title = state.directImplementationUiError ||
+    (schemaOk ? projection.meta?.sourceDigest || "Renderer-safe direct implementation-lane status." : "Projection not loaded.");
+  if (els.directImplementationRefreshButton) {
+    els.directImplementationRefreshButton.disabled = state.directImplementationUiLoading || !bridge.getDirectImplementationLaneUiStatus;
+    els.directImplementationRefreshButton.title = "Refresh direct implementation-lane UI readiness, operation history, and policy projection.";
+  }
+  renderDirectDiagnosticsRows(els.directImplementationLaneList, directImplementationUiRows());
+  renderDirectDiagnosticsRows(els.directImplementationApprovalList, directImplementationApprovalRows());
+  renderDirectDiagnosticsRows(els.directImplementationActiveTurnList, directImplementationActiveTurnRows());
+  renderDirectDiagnosticsRows(els.directImplementationToolResultList, directImplementationToolResultRows());
+  renderDirectDiagnosticsRows(els.directImplementationHistoryList, directImplementationHistoryRows());
+  renderDirectDiagnosticsRows(els.directImplementationPromotionList, directImplementationPromotionRows());
+  if (els.directImplementationEvidence) {
+    if (state.directImplementationUiError) {
+      els.directImplementationEvidence.textContent = `Implementation-lane projection unavailable: ${state.directImplementationUiError}`;
+    } else if (schemaOk) {
+      const rowCount = Array.isArray(history.rows) ? history.rows.length : 0;
+      const historyScope = history.scope || "not loaded";
+      const queue = directDiagnosticsObject(projection.livePromotionCandidateQueue);
+      const promotionSummary = queue.schema ? ` · promotion candidates ${queue.readyCount || 0}/${queue.candidateCount || 0} ready` : "";
+      const warning = state.directImplementationUiWarning ? ` · warning: ${state.directImplementationUiWarning}` : "";
+      els.directImplementationEvidence.textContent = `Read-only projection · ${rowCount} ${historyScope} history row${rowCount === 1 ? "" : "s"} · policy ${policy.schema ? "loaded" : "not loaded"}${promotionSummary} · no approval, replay, recovery, promotion, or workspace mutation action is exposed here.${warning}`;
+    } else {
+      els.directImplementationEvidence.textContent = "Direct implementation-lane UI status is read-only and not loaded yet.";
+    }
+  }
+}
+
+function directImplementationHistoryRequest(status) {
+  const projection = directDiagnosticsObject(status);
+  const activeTurnId = projection.activeTurn?.turnId || "";
+  if (activeTurnId) return { scope: "active-turn", targetTurnId: activeTurnId, limit: 24 };
+  const latestTurnId = projection.latestToolResult?.turnId || "";
+  if (latestTurnId) return { scope: "latest-result-turn", targetTurnId: latestTurnId, limit: 24 };
+  return { scope: "project", limit: 24 };
+}
+
+async function optionalDirectImplementationProjection(label, loader) {
+  try {
+    return { value: await loader(), warning: "" };
+  } catch (error) {
+    return { value: null, warning: `${label}: ${error.message || "unavailable"}` };
+  }
+}
+
+function renderDirectRuntimeStatus() {
+  if (!els.directRuntimeModeBadge) return;
+  const status = state.directRuntimeStatus || {};
+  const runtime = status.directRuntime || {};
+  const activation = status.activation || {};
+  const modelSource = status.models?.source || "unknown";
+  const profileId = status.diagnostics?.profileId || "";
+  els.directRuntimeModeBadge.textContent = directRuntimeModeLabel(status);
+  els.directRuntimeModeBadge.title = status.currentCodexLane || directRuntimeModeLabel(status);
+  els.directRuntimeStatusBadge.textContent = state.directRuntimeLoading ? "loading runtime" : directRuntimeStatusLabel(status);
+  els.directRuntimeStatusBadge.title = state.directRuntimeError ||
+    (status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled"
+      ? status.directTextOnly?.labels?.detail
+      : activation.state === "blocked" ? directActivationBlockedDetail(status) : activation.labels?.detail) ||
+    runtime.reason ||
+    directRuntimeStatusLabel(status);
+  els.directModelSourceBadge.textContent = `models: ${modelSource}`;
+  els.directModelSourceBadge.title = profileId ? `Profile: ${profileId}` : "Model source is not available.";
+  if (els.codexRuntimeQuickStatus) {
+    const currentPath = selectedDirectRuntimePath();
+    const label = currentPath === "app-server" ? "App Server" : "Direct";
+    els.codexRuntimeQuickStatus.textContent = state.directRuntimeLoading ? "runtime loading" : label;
+    els.codexRuntimeQuickStatus.title = `${directRuntimeStatusLabel(status)}. Detailed direct diagnostics live in Project settings.`;
+  }
+  const contextMaintenance = directContextMaintenanceStatus(status);
+  if (els.directContextPressureBadge) {
+    els.directContextPressureBadge.textContent = `context ${formatDirectContextState(contextMaintenance.pressureState)}`;
+    els.directContextPressureBadge.title = `Direct context pressure is status-only. Evidence: ${contextMaintenance.evidenceKeys[0] || "none"}.`;
+  }
+  if (els.directContextRouteBadge) {
+    els.directContextRouteBadge.textContent = `route ${formatDirectContextState(contextMaintenance.routeKind)}`;
+    els.directContextRouteBadge.title = contextMaintenance.routeBlocked
+      ? `Route blocked by: ${formatDirectContextBlockers(contextMaintenance.blockers) || "missing/stale required artifact"}.`
+      : "Route status is diagnostic only; no maintenance action is executed from this surface.";
+  }
+  if (els.directContextMemoryBadge) {
+    const memoryDisplayState = contextMaintenance.memoryPointerState !== "none"
+      ? contextMaintenance.memoryPointerState
+      : contextMaintenance.memoryState;
+    els.directContextMemoryBadge.textContent = `memory ${formatDirectContextState(memoryDisplayState)}`;
+    els.directContextMemoryBadge.title = `Direct memory is app-private status. App-server memory citations observed: ${contextMaintenance.memoryCitationCount}; mode control observed: ${contextMaintenance.memoryModeObserved ? "yes" : "no"}.`;
+  }
+  if (els.directContextBatonBadge) {
+    els.directContextBatonBadge.textContent = `baton ${formatDirectContextState(contextMaintenance.batonState)}`;
+    els.directContextBatonBadge.title = `Baton requirement: ${formatDirectContextState(contextMaintenance.batonRequirement)}. Batons do not grant replay, approval, or continuation authority.`;
+  }
+  if (els.directContextOmissionBadge) {
+    els.directContextOmissionBadge.textContent = `omission ${formatDirectContextState(contextMaintenance.omissionState)}`;
+    els.directContextOmissionBadge.title = "Omission ledger status is display-only; missing required omission evidence blocks context rather than trimming silently.";
+  }
+  if (els.directContextProviderCompactBadge) {
+    els.directContextProviderCompactBadge.textContent = `compact ${formatDirectContextState(contextMaintenance.providerCompactState)}`;
+    els.directContextProviderCompactBadge.title = `Provider compact evidence: ${formatDirectContextState(contextMaintenance.providerCompactEvidenceState)}. Provider transport allowed: ${contextMaintenance.providerTransportAllowed ? "yes" : "no"}.`;
+  }
+  syncDirectRuntimePathControl(els.directRuntimePathSelect, els.directRuntimePathApplyButton, status, { persistDefault: true });
+  syncDirectRuntimePathControl(els.codexRuntimeQuickSelect, els.codexRuntimeQuickApplyButton, status, { compact: true, persistDefault: true });
+  if (els.directTextOnlyEnableButton) {
+    const canUseTextOnlyAction = Boolean(activeProject()) && Boolean(bridge.selectDirectTextOnlyRuntime) && !state.directRuntimeLoading;
+    const canEnableTextOnly = (status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled") && canUseTextOnlyAction;
+    els.directTextOnlyEnableButton.disabled = !canEnableTextOnly || status.directTextOnly?.status === "enabled";
+    els.directTextOnlyEnableButton.title = canEnableTextOnly
+      ? "Use Direct text fallback when the tool-capable Direct lane is unavailable."
+      : `Check Direct fallback gates: ${directTextOnlyBlockedDetail(status)}`;
+  }
+  if (els.directExperimentalEnableButton) {
+    const canUseEnableAction = Boolean(activeProject()) && Boolean(bridge.enableDirectExperimentalRuntime) && !state.directRuntimeLoading;
+    const canEnable = (status.directImplementationLane?.canSelect === true || activation.state === "eligible") && canUseEnableAction;
+    els.directExperimentalEnableButton.disabled = !canEnable;
+    els.directExperimentalEnableButton.title = canEnable
+      ? "Enable Direct for this project with tool-capable routing."
+      : `Check Direct tool gates: ${directActivationBlockedDetail(status)}`;
+  }
+  if (els.directExperimentalRollbackButton) {
+    const canRollback = activation.rollbackAvailable === true && !state.directRuntimeLoading;
+    els.directExperimentalRollbackButton.disabled = !canRollback;
+    els.directExperimentalRollbackButton.title = canRollback
+      ? "Rollback this project to its previous Codex binding or legacy app-server."
+      : "Direct experimental rollback is not available.";
+  }
+  if (els.directContextEvidence) {
+    const actionFlags = [
+      contextMaintenance.compactActionAllowed ? "compact action" : "",
+      contextMaintenance.maintenanceExecutionAllowed ? "maintenance execution" : "",
+      contextMaintenance.memoryEditorAllowed ? "memory editor" : "",
+      contextMaintenance.memoryResetAllowed ? "memory reset" : "",
+      contextMaintenance.providerTransportAllowed ? "provider compact transport" : "",
+    ].filter(Boolean);
+    if (actionFlags.length) {
+      els.directContextEvidence.textContent = `WARNING: unexpected Direct context actionability exposed (${actionFlags.join(", ")}).`;
+    } else if (contextMaintenance.contextCompactionCount || contextMaintenance.memoryCitationCount) {
+      els.directContextEvidence.textContent = `Display-only; app-server sibling evidence observed (${contextMaintenance.contextCompactionCount} compaction, ${contextMaintenance.memoryCitationCount} memory).`;
+    } else {
+      els.directContextEvidence.textContent = "Context maintenance is status-only; no compact, memory reset, memory edit, provider compact, or hidden maintenance action is exposed.";
+    }
+  }
+  renderDirectDiagnosticsStatus(status);
+  renderDirectImplementationUiStatus();
+}
+
+function metaSessionHealthLabel(status = {}) {
+  const health = String(status.health || "missing").replace(/_/g, " ");
+  return state.directMetaSessionLoading ? "loading" : health;
+}
+
+function appendMetaSessionMetric(container, label, value, stateLabel = "") {
+  const item = document.createElement("div");
+  const title = document.createElement("span");
+  title.textContent = label;
+  const strong = document.createElement("strong");
+  strong.textContent = value || "0";
+  if (stateLabel) strong.title = stateLabel;
+  item.append(title, strong);
+  container.appendChild(item);
+}
+
+function renderDirectMetaSessionStatus() {
+  if (!els.directMetaSessionHealthBadge) return;
+  const status = state.directMetaSessionStatus || {};
+  const healthLabel = metaSessionHealthLabel(status);
+  els.directMetaSessionHealthBadge.textContent = healthLabel;
+  els.directMetaSessionHealthBadge.title = state.directMetaSessionError || status.sourceDigest || healthLabel;
+  if (els.directMetaSessionRefreshButton) {
+    els.directMetaSessionRefreshButton.disabled = state.directMetaSessionLoading || !bridge.getDirectMetaSessionStatus;
+    els.directMetaSessionRefreshButton.title = "Refresh the renderer-safe meta-session status projection.";
+  }
+  if (els.directMetaSessionSummary) {
+    els.directMetaSessionSummary.textContent = "";
+    const rows = Array.isArray(status.summaryRows) ? status.summaryRows.slice(0, 8) : [];
+    if (!rows.length) {
+      appendMetaSessionMetric(els.directMetaSessionSummary, "Session", "not loaded", "missing");
+      appendMetaSessionMetric(els.directMetaSessionSummary, "Authority", "read-only", "non-authority projection");
+    } else {
+      for (const row of rows) appendMetaSessionMetric(els.directMetaSessionSummary, row.label || "State", row.value || "0", row.state || "");
+    }
+  }
+  if (els.directMetaSessionRoutes) {
+    els.directMetaSessionRoutes.textContent = "";
+    const routes = status.routeSummary || {};
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Recent proposed", String(routes.proposed || 0), "recent route proposal artifacts");
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Recent accepted", String(routes.accepted || 0), "recent human-approved route artifacts");
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Recent dispatched", String(routes.dispatched || 0), "recent dispatch artifacts; no runtime authority");
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Recent blocked", String(routes.dispatchBlocked || 0), "recent stale dispatch blockers");
+  }
+  if (els.directMetaSessionEvidence) {
+    const selected = status.selectedMetaSession?.metaSessionId || "none";
+    const counts = status.counts || {};
+    const blockers = status.attemptFailureSummary?.latestBlockerCodes || [];
+    els.directMetaSessionEvidence.textContent = state.directMetaSessionError
+      ? `Meta-session status unavailable: ${state.directMetaSessionError}`
+      : `Projection ${selected} · ledger events ${counts.ledgerEvents || 0} · attempts ${counts.attemptFailures || 0} · latest blockers ${blockers.length ? blockers.join(", ") : "none"} · actionability=false.`;
+  }
+  renderDirectDiagnosticsStatus(state.directRuntimeStatus);
+}
+
+function renderDirectAuthControls() {
+  if (!els.directAuthState) return;
+  const settings = state.directAuthSettings || {};
+  const status = state.directAuthStatus || settings.authStatus || null;
+  const loading = state.directAuthLoading;
+  const statusLabel = loading ? "loading" : directAuthStatusLabel(status);
+
+  els.directAuthState.textContent = statusLabel;
+  els.directAuthState.title = state.directAuthError || statusLabel;
+  els.directAuthState.className = "status-dot";
+  if (loading) els.directAuthState.classList.add("loading");
+  if (status?.status === "authenticated") els.directAuthState.classList.add("loaded");
+  if (["expired", "refresh_failed"].includes(status?.status) || state.directAuthError) els.directAuthState.classList.add("failed");
+
+  const availableModes = Array.isArray(settings.availableStorageModes) && settings.availableStorageModes.length
+    ? settings.availableStorageModes
+    : ["file", "memory"];
+  const currentMode = settings.storageMode || status?.storageMode || "file";
+  if (els.directAuthStorageModeSelect) {
+    const signature = directAuthModeSignature(availableModes);
+    if (els.directAuthStorageModeSelect.dataset.modeSignature !== signature) {
+      els.directAuthStorageModeSelect.innerHTML = "";
+      for (const mode of availableModes) {
+        const option = document.createElement("option");
+        option.value = mode;
+        option.textContent = mode === "file" ? "Persistent file" : "Memory only";
+        els.directAuthStorageModeSelect.appendChild(option);
+      }
+      els.directAuthStorageModeSelect.dataset.modeSignature = signature;
+    }
+    if (document.activeElement !== els.directAuthStorageModeSelect) {
+      els.directAuthStorageModeSelect.value = currentMode;
+    }
+    els.directAuthStorageModeSelect.disabled = loading;
+  }
+
+  els.directAuthStorageBadge.textContent = currentMode === "memory" ? "memory-only store" : "persistent file store";
+  els.directAuthExpiryBadge.textContent = directAuthExpiryLabel(status);
+  els.directAuthRefreshButton.disabled = loading;
+  els.directAuthLoginButton.disabled = loading || !settings.liveOAuthAvailable;
+  els.directAuthLoginButton.title = settings.liveOAuthAvailable ? "Start direct auth login." : "Live OAuth is not implemented yet.";
+  els.directAuthLogoutButton.disabled = loading || (!status?.hasAccessToken && !status?.hasRefreshToken && status?.status !== "refresh_failed");
+  const codex = activeProject()?.surfaceBinding?.codex || {};
+  const codexLane = state.directRuntimeStatus?.currentCodexLane || (codex.mode === "managed" ? "legacy app-server bridge" : codex.mode || "unbound");
+  els.directAuthEvidence.textContent = state.directAuthError
+    ? "Direct auth status unavailable. No raw tokens or paths exposed to renderer."
+    : `Codex lane: ${codexLane} · renderer sees redacted auth only · tokens exposed: ${status?.rawTokensExposed ? "yes" : "no"} · paths exposed: ${settings.storagePathExposed ? "yes" : "no"}`;
+  renderDirectRuntimeStatus();
+  renderDirectMetaSessionStatus();
+}
+
 function agentStatusLabel(agent = {}) {
   const status = String(agent.status || agent.activityStatus || agent.hydrationStatus || "unknown");
   return status.replace(/_/g, " ");
@@ -2965,6 +4117,7 @@ function renderMiddleTabs() {
     [els.overviewTabButton, els.overviewTabPanel, "overview"],
     [els.projectTabButton, els.projectTabPanel, "project"],
     [els.threadsTabButton, els.threadsTabPanel, "threads"],
+    [els.importsTabButton, els.importsTabPanel, "imports"],
     [els.analyticsTabButton, els.analyticsTabPanel, "analytics"],
     [els.filesTabButton, els.filesTabPanel, "files"],
     [els.webTabButton, els.webTabPanel, "web"],
@@ -3562,6 +4715,7 @@ function renderChatgptThreadSource() {
 function renderThreadsWorkbench() {
   const project = activeProject();
   if (!project) return;
+  renderDirectThreadWorkbench();
   renderLaneBindingList();
   renderCodexThreadBrowser();
   renderChatgptThreadSource();
@@ -3577,6 +4731,869 @@ function renderThreadsWorkbench() {
       ? `Link ${codexThread.title} to ${chatThread.title} for the selected lane.`
       : "Select one Codex thread and one ChatGPT project thread, then create or update a lane binding.";
   }
+}
+
+function selectedDirectWorkbenchThread() {
+  const threads = state.directThreadWorkbench.snapshot?.threads || [];
+  return threads.find((thread) => thread.threadId === state.directThreadWorkbench.selectedThreadId) || null;
+}
+
+function canOpenDirectWorkbenchThreadInCodexPlane(thread = {}) {
+  const sourceClass = String(thread.sourceClass || "direct-native").trim();
+  const lifecycleState = String(thread.lifecycle?.state || thread.lifecycleState || "active").trim();
+  const projection = thread.rendererProjection || {};
+  if (!thread.threadId || lifecycleState === "soft_deleted" || projection.unsafeForRenderer === true) return false;
+  return [
+    "direct",
+    "direct-native",
+    "forked-direct-native",
+    "import-checkpoint-continuation",
+    "direct-import-checkpoint-continuation",
+  ].includes(sourceClass);
+}
+
+function directThreadWorkbenchExpectedInput(extra = {}) {
+  const snapshot = state.directThreadWorkbench.snapshot || {};
+  const projection = state.directThreadWorkbench.evidenceProjection || {};
+  return {
+    expectedWorkbenchRevision: snapshot.workbenchRevision || "",
+    expectedOperationLedgerHeadDigest: snapshot.operationLedgerHeadDigest || "",
+    expectedUiProjectionGeneration: projection.meta?.uiProjectionGeneration || "",
+    expectedUiProjectionSourceDigest: projection.meta?.sourceDigest || "",
+    ...extra,
+  };
+}
+
+function renderDirectThreadWorkbenchList() {
+  if (!els.directThreadWorkbenchList) return;
+  els.directThreadWorkbenchList.textContent = "";
+  const workbench = state.directThreadWorkbench;
+  const threads = workbench.snapshot?.threads || [];
+  if (workbench.status === "loading") {
+    const item = document.createElement("div");
+    item.className = "thread-browser-item";
+    item.textContent = "Loading direct thread controls…";
+    els.directThreadWorkbenchList.appendChild(item);
+    return;
+  }
+  if (!threads.length) {
+    const item = document.createElement("div");
+    item.className = "thread-browser-item";
+    item.textContent = workbench.lastError || "No direct-owned threads indexed for this project.";
+    els.directThreadWorkbenchList.appendChild(item);
+    return;
+  }
+  for (const thread of threads) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `thread-browser-item direct-thread-row${thread.threadId === workbench.selectedThreadId ? " active" : ""}`;
+    row.dataset.threadId = thread.threadId;
+    const title = document.createElement("strong");
+    title.textContent = thread.title || "Untitled direct thread";
+    const meta = document.createElement("span");
+    meta.className = "binding-meta";
+    const projection = thread.rendererProjection;
+    meta.textContent = `${thread.lifecycle?.state || "active"} · ${thread.sourceClass || "direct"} · projection ${projection?.status || "missing"}`;
+    const chips = document.createElement("span");
+    chips.className = "direct-thread-row-chips";
+    for (const label of [thread.activeTurnCount ? `${thread.activeTurnCount} active turn(s)` : "", projection?.projectionId ? "renderer projection" : "projection missing"].filter(Boolean)) {
+      const chip = document.createElement("span");
+      chip.className = "pill subtle";
+      chip.textContent = label;
+      chips.appendChild(chip);
+    }
+    row.append(title, meta, chips);
+    row.addEventListener("click", () => {
+      selectDirectWorkbenchThread(thread.threadId).catch((error) => setLastEvent(`Direct thread read failed: ${error.message}`));
+    });
+    els.directThreadWorkbenchList.appendChild(row);
+  }
+}
+
+function renderDirectWorkThreadOperatorDeckSection() {
+  const snapshot = state.directThreadWorkbench.snapshot;
+  const deck = snapshot?.workThreadOperatorDeck || null;
+  const section = document.createElement("div");
+  section.className = "direct-thread-side-section direct-workthread-deck-section";
+  const heading = document.createElement("div");
+  heading.className = "section-heading compact";
+  const title = document.createElement("div");
+  title.innerHTML = `<p class="eyebrow">WorkThread deck</p><h4>Work identity</h4>`;
+  const count = document.createElement("span");
+  count.className = "counter";
+  count.textContent = deck ? `${deck.rowCount || 0}` : "0";
+  heading.append(title, count);
+  section.appendChild(heading);
+
+  const law = document.createElement("p");
+  law.className = "muted";
+  law.textContent = "WorkThread is the control-plane identity; provider thread ids are runtime identities only.";
+  section.appendChild(law);
+
+  const counts = document.createElement("div");
+  counts.className = "direct-workthread-counts";
+  const deckCounts = deck?.counts || {};
+  for (const key of ["active", "recoverable", "blocked", "candidate", "stale", "archived"]) {
+    const pill = document.createElement("span");
+    pill.className = "pill subtle";
+    pill.textContent = `${key} ${Number(deckCounts[key] || 0)}`;
+    counts.appendChild(pill);
+  }
+  section.appendChild(counts);
+
+  const list = document.createElement("div");
+  list.className = "direct-workthread-list";
+  const rows = deck?.rows || [];
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "No WorkThread rows yet. Draft one below before starting provider work.";
+    list.appendChild(empty);
+  } else {
+    for (const row of rows.slice(0, 12)) {
+      const item = document.createElement("div");
+      item.className = `direct-workthread-row state-${row.operatorState || "unknown"}`;
+      const itemTitle = document.createElement("strong");
+      itemTitle.textContent = row.title || row.workThreadId || "WorkThread";
+      const meta = document.createElement("span");
+      meta.className = "binding-meta";
+      meta.textContent = `${row.operatorState || "unknown"} · ${row.workThreadId || "unscoped"}`;
+      const runtime = document.createElement("span");
+      runtime.className = "binding-meta";
+      runtime.textContent = row.primaryRuntimeThreadId
+        ? `runtime thread ${row.primaryRuntimeThreadId}`
+        : "no runtime thread";
+      item.append(itemTitle, meta, runtime);
+      if (row.primaryRuntimeThreadId) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "ghost small";
+        button.textContent = "Open runtime";
+        button.disabled = state.directThreadWorkbench.status === "working";
+        button.addEventListener("click", () => {
+          selectDirectWorkbenchThread(row.primaryRuntimeThreadId).catch((error) => setLastEvent(`Open WorkThread runtime failed: ${error.message}`));
+        });
+        item.appendChild(button);
+      }
+      list.appendChild(item);
+    }
+  }
+  section.appendChild(list);
+
+  const form = document.createElement("div");
+  form.className = "direct-workthread-draft-form";
+  const titleLabel = document.createElement("label");
+  titleLabel.textContent = "New thread title";
+  const titleInput = document.createElement("input");
+  titleInput.type = "text";
+  titleInput.placeholder = "Direct work thread title";
+  titleInput.value = state.directThreadWorkbench.newThreadDraftTitle || "";
+  titleLabel.appendChild(titleInput);
+
+  const objectiveLabel = document.createElement("label");
+  objectiveLabel.textContent = "Objective / context posture";
+  const objectiveInput = document.createElement("textarea");
+  objectiveInput.rows = 4;
+  objectiveInput.placeholder = "State the work-world objective before creating a local direct thread.";
+  objectiveInput.value = state.directThreadWorkbench.newThreadDraftObjective || "";
+  objectiveLabel.appendChild(objectiveInput);
+
+  const idLabel = document.createElement("label");
+  idLabel.textContent = "WorkThread id (optional)";
+  const idInput = document.createElement("input");
+  idInput.type = "text";
+  idInput.placeholder = "Generated if omitted";
+  idInput.value = state.directThreadWorkbench.newThreadDraftWorkThreadId || "";
+  idLabel.appendChild(idInput);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "primary small";
+  button.textContent = "Create local draft";
+  const updateButton = () => {
+    state.directThreadWorkbench.newThreadDraftTitle = titleInput.value;
+    state.directThreadWorkbench.newThreadDraftObjective = objectiveInput.value;
+    state.directThreadWorkbench.newThreadDraftWorkThreadId = idInput.value;
+    button.disabled = state.directThreadWorkbench.status === "working" ||
+      !bridge.createDirectWorkThreadDraftSession ||
+      !titleInput.value.trim() ||
+      !objectiveInput.value.trim();
+  };
+  titleInput.addEventListener("input", updateButton);
+  objectiveInput.addEventListener("input", updateButton);
+  idInput.addEventListener("input", updateButton);
+  button.addEventListener("click", () => {
+    createDirectWorkThreadDraftSession().catch((error) => setLastEvent(`Create local WorkThread draft failed: ${error.message}`));
+  });
+  updateButton();
+  const note = document.createElement("p");
+  note.className = "muted";
+  note.textContent = "Creates local direct thread evidence only. It does not start a provider turn, worker, app-server fallback, or workspace mutation.";
+  form.append(titleLabel, objectiveLabel, idLabel, button, note);
+  section.appendChild(form);
+  return section;
+}
+
+function renderDirectThreadProjectionDetail() {
+  if (!els.directThreadWorkbenchDetail) return;
+  const workbench = state.directThreadWorkbench;
+  const thread = selectedDirectWorkbenchThread();
+  const projection = workbench.selectedProjection?.projection || null;
+  els.directThreadWorkbenchDetail.textContent = "";
+  if (!thread) {
+    const empty = document.createElement("div");
+    empty.className = "direct-thread-empty";
+    empty.textContent = "Select a direct-owned thread to inspect its renderer-safe projection and controls.";
+    els.directThreadWorkbenchDetail.appendChild(empty);
+    return;
+  }
+
+  const header = document.createElement("div");
+  header.className = "direct-thread-detail-header";
+  const title = document.createElement("div");
+  title.innerHTML = `<p class="eyebrow">Selected direct thread</p><h4></h4>`;
+  title.querySelector("h4").textContent = thread.title || thread.threadId;
+  const actions = document.createElement("div");
+  actions.className = "heading-actions direct-thread-actions";
+  const openButton = document.createElement("button");
+  const canOpenInCodexPlane = canOpenDirectWorkbenchThreadInCodexPlane(thread);
+  openButton.type = "button";
+  openButton.className = "primary small";
+  openButton.textContent = "Open in Codex plane";
+  openButton.disabled = state.directThreadWorkbench.status === "working" || !bridge.selectCodexThread || !canOpenInCodexPlane;
+  openButton.title = canOpenInCodexPlane
+    ? "Open this direct-owned thread in the left Codex plane without promoting derived previews."
+    : "Only direct-native runtime sessions can be opened in the Codex plane; imported or derived evidence remains non-runnable.";
+  openButton.addEventListener("click", () => {
+    openDirectWorkbenchThreadInCodexPlane(thread.threadId).catch((error) => setLastEvent(`Direct thread open failed: ${error.message}`));
+  });
+  actions.appendChild(openButton);
+  const actionSpecs = [
+    ["hide", "Hide"],
+    ["unhide", "Unhide"],
+    ["archive", "Archive"],
+    ["restore", "Restore"],
+    ["restore_soft_deleted", "Restore soft-deleted"],
+    ["soft_delete", "Soft delete"],
+  ];
+  for (const [action, label] of actionSpecs) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `ghost small${action === "soft_delete" ? " danger" : ""}`;
+    button.textContent = label;
+    button.disabled = state.directThreadWorkbench.status === "working";
+    button.addEventListener("click", () => {
+      runDirectThreadLifecycle(action).catch((error) => setLastEvent(`Direct thread ${label.toLowerCase()} failed: ${error.message}`));
+    });
+    actions.appendChild(button);
+  }
+  header.append(title, actions);
+  els.directThreadWorkbenchDetail.appendChild(header);
+
+  const meta = document.createElement("div");
+  meta.className = "direct-thread-meta-grid";
+  const metaEntries = [
+    ["Lifecycle", thread.lifecycle?.state || "active"],
+    ["Source", thread.sourceClass || "direct"],
+    ["Projection", projection?.status || thread.rendererProjection?.status || "missing"],
+    ["Composer", "runtime status is authoritative"],
+  ];
+  for (const [label, value] of metaEntries) {
+    const entry = document.createElement("div");
+    entry.innerHTML = `<span></span><strong></strong>`;
+    entry.querySelector("span").textContent = label;
+    entry.querySelector("strong").textContent = value;
+    meta.appendChild(entry);
+  }
+  els.directThreadWorkbenchDetail.appendChild(meta);
+
+  const previewActions = document.createElement("div");
+  previewActions.className = "threads-action-bar direct-preview-actions";
+  const hint = document.createElement("p");
+  hint.className = "muted";
+  hint.textContent = `Previews are non-runnable information views. Fork preview seed metadata uses the first ${DIRECT_FORK_PREVIEW_ITEM_CAP} loaded projection items only.`;
+  const buttons = document.createElement("div");
+  buttons.className = "heading-actions";
+  for (const [kind, label] of [["merge", "Merge preview"], ["prune", "Prune preview"], ["fork", "Fork preview"]]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost small";
+    button.textContent = label;
+    button.disabled = state.directThreadWorkbench.status === "working" || !thread.rendererProjection?.projectionId;
+    button.addEventListener("click", () => {
+      createDirectThreadPreview(kind).catch((error) => setLastEvent(`${label} failed: ${error.message}`));
+    });
+    buttons.appendChild(button);
+  }
+  previewActions.append(hint, buttons);
+  els.directThreadWorkbenchDetail.appendChild(previewActions);
+
+  const transcript = document.createElement("div");
+  transcript.className = "direct-thread-transcript";
+  const items = projection?.items || [];
+  if (!items.length) {
+    const item = document.createElement("div");
+    item.className = "import-transcript-item";
+    item.textContent = projection?.failureSummary || "Renderer-safe transcript projection is not loaded yet.";
+    transcript.appendChild(item);
+  } else {
+    for (const entry of items.slice(0, 40)) {
+      const item = document.createElement("div");
+      item.className = "import-transcript-item";
+      const role = document.createElement("strong");
+      role.textContent = `${entry.role || entry.itemKind || "item"} · ${entry.status || "evidence"}`;
+      const pre = document.createElement("pre");
+      pre.textContent = entry.text || "";
+      item.append(role, pre);
+      transcript.appendChild(item);
+    }
+  }
+  els.directThreadWorkbenchDetail.appendChild(transcript);
+}
+
+function renderDirectThreadWorkbenchSide() {
+  if (!els.directThreadWorkbenchSide) return;
+  const snapshot = state.directThreadWorkbench.snapshot;
+  const preview = state.directThreadWorkbench.selectedPreview?.projection || null;
+  els.directThreadWorkbenchSide.textContent = "";
+  els.directThreadWorkbenchSide.appendChild(renderDirectWorkThreadOperatorDeckSection());
+
+  const revision = document.createElement("div");
+  revision.className = "direct-thread-side-section";
+  revision.innerHTML = `<p class="eyebrow">Workbench revision</p><p class="mono muted"></p><p class="muted"></p>`;
+  revision.querySelector("p.mono").textContent = snapshot?.workbenchRevision || "not loaded";
+  revision.querySelector("p.muted:last-child").textContent = state.directThreadWorkbench.evidenceProjection
+    ? "Evidence workbench projection is renderer-safe and non-runnable."
+    : "Evidence projection not loaded.";
+  els.directThreadWorkbenchSide.appendChild(revision);
+
+  const graph = document.createElement("div");
+  graph.className = "direct-thread-side-section";
+  const graphItems = snapshot?.graph?.items || [];
+  graph.innerHTML = `<p class="eyebrow">Graph</p><div></div>`;
+  const graphBody = graph.querySelector("div");
+  if (!graphItems.length) {
+    graphBody.textContent = snapshot?.graph?.status ? `Graph ${snapshot.graph.status}` : "No graph projection.";
+  } else {
+    for (const item of graphItems.slice(0, 12)) {
+      const row = document.createElement("div");
+      row.className = "direct-thread-side-row";
+      row.textContent = item.text || item.itemKind || "graph item";
+      graphBody.appendChild(row);
+    }
+  }
+  els.directThreadWorkbenchSide.appendChild(graph);
+
+  const previewSection = document.createElement("div");
+  previewSection.className = "direct-thread-side-section";
+  previewSection.innerHTML = `<p class="eyebrow">Selected preview</p><div></div>`;
+  const previewBody = previewSection.querySelector("div");
+  if (!preview) {
+    previewBody.textContent = "No preview selected.";
+  } else {
+    const badge = document.createElement("p");
+    badge.className = "muted";
+    badge.textContent = `${preview.projectionKind} · ${preview.status} · non-runnable`;
+    previewBody.appendChild(badge);
+    if (["fork_preview", "merge_preview", "prune_preview"].includes(preview.projectionKind) && preview.status === "valid") {
+      const isDerivedPreview = preview.projectionKind === "merge_preview" || preview.projectionKind === "prune_preview";
+      const bridgeReady = isDerivedPreview
+        ? Boolean(bridge.prepareDirectThreadDerivedPreviewForkStart && bridge.startDirectThreadForkFromDerivedPreview)
+        : Boolean(bridge.prepareDirectThreadForkStart && bridge.startDirectThreadForkFromPreview);
+      const forkForm = document.createElement("div");
+      forkForm.className = "direct-fork-start-form";
+      const intentLabel = document.createElement("label");
+      intentLabel.className = "direct-fork-start-label";
+      intentLabel.textContent = "Fresh fork intent";
+      const intentInput = document.createElement("textarea");
+      intentInput.className = "direct-fork-start-input";
+      intentInput.rows = 4;
+      intentInput.placeholder = "Tell the new direct session what to do with this preview evidence...";
+      intentInput.value = state.directThreadWorkbench.forkStartPrompt || "";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "primary small";
+      button.textContent = "Start fresh fork";
+      const updateButtonDisabled = () => {
+        button.disabled = state.directThreadWorkbench.status === "working" || !bridgeReady || !String(intentInput.value || "").trim();
+      };
+      updateButtonDisabled();
+      button.title = bridgeReady
+        ? "Create a fresh direct-native session from quoted preview evidence. This does not resume provider state."
+        : "Fork-start bridge is unavailable for this preview kind.";
+      button.addEventListener("click", () => {
+        startDirectThreadForkFromSelectedPreview().catch((error) => setLastEvent(`Start fresh fork failed: ${error.message}`));
+      });
+      intentInput.addEventListener("input", () => {
+        state.directThreadWorkbench.forkStartPrompt = intentInput.value;
+        updateButtonDisabled();
+      });
+      const note = document.createElement("p");
+      note.className = "muted";
+      note.textContent = isDerivedPreview
+        ? "Starts a fresh direct session from quoted merge/prune preview evidence. Source previews remain non-runnable and no provider continuity is reused."
+        : "Starts a fresh direct session from fork-preview seed metadata. Source thread state is not resumed.";
+      forkForm.append(intentLabel, intentInput, button, note);
+      previewBody.appendChild(forkForm);
+    }
+    for (const item of (preview.items || []).slice(0, 8)) {
+      const row = document.createElement("div");
+      row.className = "direct-thread-side-row";
+      row.textContent = item.text || item.itemKind || "preview item";
+      previewBody.appendChild(row);
+    }
+  }
+  els.directThreadWorkbenchSide.appendChild(previewSection);
+
+  const operations = document.createElement("div");
+  operations.className = "direct-thread-side-section";
+  operations.innerHTML = `<p class="eyebrow">Operations</p><div></div>`;
+  const operationBody = operations.querySelector("div");
+  const entries = snapshot?.operationSummary?.entries || [];
+  if (!entries.length) {
+    operationBody.textContent = "No thread-control operations.";
+  } else {
+    for (const operation of entries.slice(0, 10)) {
+      const row = document.createElement("div");
+      row.className = "direct-thread-side-row";
+      row.textContent = `${operation.operationType} · ${operation.status} · read-only history`;
+      operationBody.appendChild(row);
+    }
+  }
+  els.directThreadWorkbenchSide.appendChild(operations);
+}
+
+function renderDirectThreadWorkbench() {
+  if (!els.directThreadWorkbenchStatus) return;
+  const workbench = state.directThreadWorkbench;
+  const counts = workbench.snapshot?.lifecycle?.counts || {};
+  els.directThreadWorkbenchStatus.textContent = workbench.status || "idle";
+  els.directThreadActiveCount.textContent = String(counts.active || 0);
+  els.directThreadHiddenCount.textContent = String(counts.hidden || 0);
+  els.directThreadArchivedCount.textContent = String(counts.archived || 0);
+  els.directThreadSoftDeletedCount.textContent = String(counts.soft_deleted || 0);
+  if (els.directThreadIncludeHiddenInput) els.directThreadIncludeHiddenInput.checked = Boolean(workbench.filters.includeHidden);
+  if (els.directThreadIncludeArchivedInput) els.directThreadIncludeArchivedInput.checked = Boolean(workbench.filters.includeArchived);
+  if (els.directThreadIncludeSoftDeletedInput) els.directThreadIncludeSoftDeletedInput.checked = Boolean(workbench.filters.includeSoftDeleted);
+  if (els.directThreadTextQueryInput && document.activeElement !== els.directThreadTextQueryInput) {
+    els.directThreadTextQueryInput.value = workbench.filters.textQuery || "";
+  }
+  renderDirectThreadWorkbenchList();
+  renderDirectThreadProjectionDetail();
+  renderDirectThreadWorkbenchSide();
+}
+
+function importStateLabel(stateValue) {
+  const value = String(stateValue || "imported-readonly");
+  if (value === "checkpoint-validated" || value === "checkpointed-runnable") return "Checkpoint validated";
+  if (value === "checkpoint-candidate") return "Checkpoint candidate";
+  if (value === "imported-validation-failed") return "Validation failed";
+  if (value === "import-canceled") return "Canceled";
+  if (value === "imported-unvalidated") return "Unvalidated";
+  return "Imported read-only";
+}
+
+function importComposerReasonLabel(reason) {
+  if (reason === "live-continuation-not-implemented") return "live continuation not implemented";
+  if (reason === "checkpoint-validation-only") return "checkpoint validation only";
+  return "imported read-only";
+}
+
+function resetDirectImportWorkbench(projectId = activeProject()?.id || "") {
+  state.directImportWorkbench = {
+    projectId,
+    requestGeneration: Number(state.directImportWorkbench?.requestGeneration || 0) + 1,
+    status: "idle",
+    sources: [],
+    imports: [],
+    report: null,
+    selectedImportSession: null,
+    selectedHandleId: "",
+    selectedImportId: "",
+    selectedSessionId: "",
+    lastError: "",
+    includeHidden: false,
+  };
+}
+
+function resetDirectThreadWorkbench(projectId = activeProject()?.id || "") {
+  state.directThreadWorkbench = {
+    projectId,
+    requestGeneration: Number(state.directThreadWorkbench?.requestGeneration || 0) + 1,
+    status: "idle",
+    snapshot: null,
+    evidenceProjection: null,
+    selectedThreadId: "",
+    selectedPreviewId: "",
+    selectedProjection: null,
+    selectedPreview: null,
+    forkStartPrompt: "",
+    newThreadDraftTitle: "",
+    newThreadDraftObjective: "",
+    newThreadDraftWorkThreadId: "",
+    lastError: "",
+    filters: {
+      includeHidden: Boolean(state.directThreadWorkbench?.filters?.includeHidden),
+      includeArchived: Boolean(state.directThreadWorkbench?.filters?.includeArchived),
+      includeSoftDeleted: Boolean(state.directThreadWorkbench?.filters?.includeSoftDeleted),
+      textQuery: "",
+    },
+  };
+}
+
+function selectedDirectImportSource() {
+  const handleId = state.directImportWorkbench.selectedHandleId;
+  return (state.directImportWorkbench.sources || []).find((source) => source.handleId === handleId) || null;
+}
+
+function selectedDirectImportEntry() {
+  const importId = state.directImportWorkbench.selectedImportId;
+  return (state.directImportWorkbench.imports || []).find((entry) => entry.importId === importId) || null;
+}
+
+function updateDirectImportHint() {
+  if (!els.directImportHint) return;
+  const workbench = state.directImportWorkbench;
+  const runtimeImports = state.directRuntimeStatus?.imports || {};
+  if (workbench.status === "loading") {
+    els.directImportHint.textContent = "Loading import evidence from the direct session store.";
+    return;
+  }
+  if (workbench.status === "working") {
+    els.directImportHint.textContent = "Import operation is running in the main process; raw source paths remain private.";
+    return;
+  }
+  if (workbench.lastError) {
+    els.directImportHint.textContent = workbench.lastError;
+    return;
+  }
+  const visibleCount = (workbench.imports || []).length || Number(runtimeImports.importedSessionCount || 0);
+  const eligible = Number(runtimeImports.continuationEligibleCount || 0);
+  els.directImportHint.textContent = `${visibleCount} imported evidence session${visibleCount === 1 ? "" : "s"} · ${eligible} checkpoint validated · composer disabled for all imports.`;
+}
+
+function renderDirectImportSourceList() {
+  const list = els.directImportSourceList;
+  if (!list) return;
+  const sources = state.directImportWorkbench.sources || [];
+  els.directImportSourceCount.textContent = String(sources.length);
+  list.innerHTML = "";
+  if (!sources.length) {
+    list.innerHTML = `<div class="empty-state">No source selected. Choose a JSONL file or an explicit source root.</div>`;
+    return;
+  }
+  for (const source of sources) {
+    const row = document.createElement("article");
+    row.className = `thread-browser-item import-source-item${source.handleId === state.directImportWorkbench.selectedHandleId ? " active" : ""}`;
+    row.innerHTML = `
+      <div class="thread-topline">
+        <span class="role-badge"></span>
+        <strong class="truncate"></strong>
+      </div>
+      <span class="thread-meta truncate"></span>
+      <span class="thread-notes truncate"></span>
+      <div class="thread-actions">
+        <button class="ghost small inspect-import-source" type="button">Inspect</button>
+        <button class="primary small materialize-import-source" type="button">Import</button>
+      </div>
+    `;
+    row.querySelector(".role-badge").textContent = source.duplicateMatched ? "Existing source" : "Selected source";
+    row.querySelector("strong").textContent = source.sourceDisplayName || "Codex JSONL";
+    row.querySelector(".thread-meta").textContent = `${source.sourceRootDisplayName || "explicit root"} · ${formatBytes(source.sourceFileSizeBytes || 0)}`;
+    row.querySelector(".thread-notes").textContent = source.recordCount
+      ? `${source.recordCount} records · ${source.threadId || "thread unknown"}`
+      : source.expiresAt
+        ? `Handle expires ${formatTime(source.expiresAt)}`
+        : "Source handle is main-owned.";
+    row.addEventListener("click", () => {
+      state.directImportWorkbench.selectedHandleId = source.handleId || "";
+      state.directImportWorkbench.selectedImportId = "";
+      state.directImportWorkbench.report = null;
+      state.directImportWorkbench.selectedImportSession = null;
+      renderDirectImportWorkbench();
+    });
+    row.querySelector(".inspect-import-source").addEventListener("click", (event) => {
+      event.stopPropagation();
+      inspectDirectImportSource(source.handleId).catch((error) => setLastEvent(`Import inspect failed: ${error.message}`));
+    });
+    row.querySelector(".materialize-import-source").addEventListener("click", (event) => {
+      event.stopPropagation();
+      materializeSelectedDirectImportSource(source.handleId).catch((error) => setLastEvent(`Import failed: ${error.message}`));
+    });
+    list.appendChild(row);
+  }
+}
+
+function renderDirectImportList() {
+  const list = els.directImportList;
+  if (!list) return;
+  const entries = state.directImportWorkbench.imports || [];
+  els.directImportVisibleCount.textContent = String(entries.length);
+  els.directImportCount.textContent = String(entries.length);
+  list.innerHTML = "";
+  if (state.directImportWorkbench.status === "loading") {
+    list.innerHTML = `<div class="empty-state">Loading imported sessions…</div>`;
+    return;
+  }
+  if (!entries.length) {
+    list.innerHTML = `<div class="empty-state">No materialized imports yet. Importing creates read-only local evidence only.</div>`;
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement("article");
+    row.className = `thread-browser-item import-session-item${entry.importId === state.directImportWorkbench.selectedImportId ? " active" : ""}`;
+    row.innerHTML = `
+      <div class="thread-topline">
+        <span class="role-badge"></span>
+        <strong class="truncate"></strong>
+      </div>
+      <span class="thread-meta truncate"></span>
+      <span class="thread-notes truncate"></span>
+      <div class="thread-actions">
+        <button class="ghost small open-import-report" type="button">Report</button>
+        <button class="danger small hide-import-record" type="button">Hide</button>
+      </div>
+    `;
+    row.querySelector(".role-badge").textContent = importStateLabel(entry.state);
+    row.querySelector("strong").textContent = entry.title || entry.sourceDisplayName || entry.source?.sourceDisplayName || "Imported Codex session";
+    row.querySelector(".thread-meta").textContent = `${entry.threadId || "thread unknown"} · ${entry.recoveryState || "healthy"}`;
+    const composer = entry.composer || { enabled: false, reason: "imported-readonly" };
+    row.querySelector(".thread-notes").textContent = `Composer ${composer.enabled ? "enabled" : "disabled"} · ${importComposerReasonLabel(composer.reason)}`;
+    row.addEventListener("click", () => selectDirectImport(entry.importId).catch((error) => setLastEvent(`Import report load failed: ${error.message}`)));
+    row.querySelector(".open-import-report").addEventListener("click", (event) => {
+      event.stopPropagation();
+      selectDirectImport(entry.importId).catch((error) => setLastEvent(`Import report load failed: ${error.message}`));
+    });
+    row.querySelector(".hide-import-record").addEventListener("click", (event) => {
+      event.stopPropagation();
+      hideDirectImport(entry.importId).catch((error) => setLastEvent(`Hide import failed: ${error.message}`));
+    });
+    list.appendChild(row);
+  }
+}
+
+function renderImportGateList(container, gates = {}) {
+  const rows = Object.entries(gates || {});
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No gate data recorded.";
+    container.appendChild(empty);
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "import-gate-list";
+  for (const [key, value] of rows) {
+    const row = document.createElement("div");
+    row.className = "import-gate-row";
+    const name = document.createElement("span");
+    name.textContent = key.replace(/([A-Z])/g, " $1").toLowerCase();
+    const stateNode = document.createElement("span");
+    stateNode.className = `pill ${value ? "" : "subtle"}`;
+    stateNode.textContent = value ? "pass" : "blocked";
+    row.append(name, stateNode);
+    list.appendChild(row);
+  }
+  container.appendChild(list);
+}
+
+function renderProblemList(container, title, entries = []) {
+  const section = document.createElement("section");
+  section.className = "import-problem-section";
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  section.appendChild(heading);
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "None recorded.";
+    section.appendChild(empty);
+  } else {
+    for (const entry of entries) {
+      const item = document.createElement("div");
+      item.className = "import-problem-item";
+      const code = document.createElement("span");
+      code.className = "role-badge";
+      code.textContent = entry.code || "unknown";
+      const message = document.createElement("span");
+      message.textContent = entry.message || entry.code || "Import issue";
+      item.append(code, message);
+      section.appendChild(item);
+    }
+  }
+  container.appendChild(section);
+}
+
+function rendererTextFromImportItem(item = {}) {
+  if (typeof item.text === "string") return item.text;
+  if (Array.isArray(item.content)) {
+    return item.content
+      .map((entry) => (typeof entry?.text === "string" ? entry.text : ""))
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
+}
+
+function renderImportTranscript(container, session = {}) {
+  const items = Array.isArray(session.transcriptItems) ? session.transcriptItems : [];
+  const transcript = document.createElement("div");
+  transcript.className = "import-transcript";
+  if (!items.length) {
+    transcript.innerHTML = `<div class="empty-state">No renderer-safe transcript items were materialized.</div>`;
+    container.appendChild(transcript);
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement("article");
+    row.className = "import-transcript-item";
+    const role = item.type === "agentMessage" ? "assistant" : item.type === "userMessage" ? "user" : (item.role || "evidence");
+    const heading = document.createElement("div");
+    heading.className = "thread-topline";
+    const badge = document.createElement("span");
+    badge.className = "role-badge";
+    badge.textContent = role;
+    const timestamp = document.createElement("strong");
+    timestamp.className = "truncate";
+    timestamp.textContent = item.sourceTimestamp ? formatTime(item.sourceTimestamp) : `seq ${Number(item.sourceSeq ?? 0)}`;
+    heading.append(badge, timestamp);
+    const body = document.createElement("pre");
+    body.textContent = rendererTextFromImportItem(item) || "[no display text]";
+    row.append(heading, body);
+    transcript.appendChild(row);
+  }
+  container.appendChild(transcript);
+}
+
+function renderDirectImportDetail() {
+  const detail = els.directImportDetail;
+  if (!detail) return;
+  detail.innerHTML = "";
+  const selectedSource = selectedDirectImportSource();
+  const selectedEntry = selectedDirectImportEntry();
+  const report = state.directImportWorkbench.report;
+
+  if (selectedSource && !selectedEntry) {
+    const header = document.createElement("section");
+    header.className = "import-detail-header";
+    header.innerHTML = `
+      <p class="eyebrow">Selected source</p>
+      <h3></h3>
+      <p class="muted"></p>
+      <div class="direct-auth-status">
+        <span class="pill subtle">raw path hidden</span>
+        <span class="pill subtle">raw records hidden</span>
+        <span class="pill subtle">source hash hidden</span>
+      </div>
+    `;
+    header.querySelector("h3").textContent = selectedSource.sourceDisplayName || "Codex JSONL";
+    header.querySelector(".muted").textContent = selectedSource.recordCount
+      ? `${selectedSource.recordCount} records · ${selectedSource.threadId || "thread unknown"}`
+      : `${selectedSource.sourceRootDisplayName || "explicit root"} · inspect before materialization if you need counts.`;
+    const actions = document.createElement("div");
+    actions.className = "heading-actions";
+    const inspectButton = document.createElement("button");
+    inspectButton.className = "ghost small";
+    inspectButton.type = "button";
+    inspectButton.textContent = "Inspect";
+    inspectButton.addEventListener("click", () => inspectDirectImportSource(selectedSource.handleId).catch((error) => setLastEvent(`Import inspect failed: ${error.message}`)));
+    const importButton = document.createElement("button");
+    importButton.className = "primary small";
+    importButton.type = "button";
+    importButton.textContent = "Import read-only";
+    importButton.addEventListener("click", () => materializeSelectedDirectImportSource(selectedSource.handleId).catch((error) => setLastEvent(`Import failed: ${error.message}`)));
+    actions.append(inspectButton, importButton);
+    header.appendChild(actions);
+    detail.appendChild(header);
+    return;
+  }
+
+  if (!selectedEntry) {
+    detail.innerHTML = `<div class="empty-state">Select a source or imported session. This workbench never starts direct continuation requests.</div>`;
+    return;
+  }
+
+  const session = state.directImportWorkbench.selectedImportSession || {};
+  const header = document.createElement("section");
+  header.className = "import-detail-header";
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = importStateLabel(selectedEntry.state);
+  const title = document.createElement("h3");
+  title.textContent = session.title || selectedEntry.sourceDisplayName || "Imported Codex session";
+  const meta = document.createElement("p");
+  meta.className = "muted";
+  const composer = selectedEntry.composer || session.composer || { enabled: false, reason: "imported-readonly" };
+  const continuation = selectedEntry.continuation || session.continuation || {};
+  meta.textContent = `Composer disabled · ${importComposerReasonLabel(composer.reason)} · checkpoint action: ${continuation.runnableNow ? "available" : (continuation.reason || "blocked")}`;
+  const badges = document.createElement("div");
+  badges.className = "direct-auth-status";
+  for (const label of session.labels || ["Imported read-only", "Continuation not started", "Composer disabled"]) {
+    const badge = document.createElement("span");
+    badge.className = "pill subtle";
+    badge.textContent = label;
+    badges.appendChild(badge);
+  }
+  header.append(eyebrow, title, meta, badges);
+  const actions = document.createElement("div");
+  actions.className = "heading-actions";
+  const checkpointButton = document.createElement("button");
+  checkpointButton.className = "primary small";
+  checkpointButton.type = "button";
+  checkpointButton.textContent = "Continue in Direct";
+  checkpointButton.disabled = !continuation.runnableNow || !bridge.startDirectImportCheckpointContinuation;
+  checkpointButton.title = continuation.runnableNow
+    ? "Start a fresh direct-native text session from this checkpoint."
+    : (continuation.reason || "Checkpoint continuation is not runnable yet.");
+  checkpointButton.addEventListener("click", () => startDirectImportCheckpointContinuation(selectedEntry.importId).catch((error) => {
+    setLastEvent(`Checkpoint continuation failed: ${error.message}`);
+  }));
+  actions.appendChild(checkpointButton);
+  header.appendChild(actions);
+  detail.appendChild(header);
+
+  if (report) {
+    const summary = document.createElement("section");
+    summary.className = "import-report-summary";
+    const counts = report.counts || {};
+    summary.innerHTML = `
+      <div class="analytics-summary-strip">
+        <div class="analytics-metric-card"><span class="metric-key">Records</span><span class="metric-value"></span><span class="metric-evidence">source evidence</span></div>
+        <div class="analytics-metric-card"><span class="metric-key">Blockers</span><span class="metric-value"></span><span class="metric-evidence">validation report</span></div>
+        <div class="analytics-metric-card"><span class="metric-key">Warnings</span><span class="metric-value"></span><span class="metric-evidence">validation report</span></div>
+      </div>
+    `;
+    const values = summary.querySelectorAll(".metric-value");
+    values[0].textContent = String(counts.records || selectedEntry.recordCount || 0);
+    values[1].textContent = String((report.blockers || []).length);
+    values[2].textContent = String((report.warnings || []).length);
+    detail.appendChild(summary);
+
+    const gates = document.createElement("section");
+    gates.className = "import-report-section";
+    const gatesHeading = document.createElement("h4");
+    gatesHeading.textContent = "Validation gates";
+    gates.appendChild(gatesHeading);
+    renderImportGateList(gates, report.gates || {});
+    detail.appendChild(gates);
+
+    renderProblemList(detail, "Blockers", report.blockers || []);
+    renderProblemList(detail, "Warnings", report.warnings || []);
+  }
+
+  renderImportTranscript(detail, session);
+}
+
+function renderDirectImportWorkbench() {
+  if (!els.directImportDetail) return;
+  updateDirectImportHint();
+  const working = ["loading", "working"].includes(state.directImportWorkbench.status);
+  if (els.refreshDirectImportsButton) els.refreshDirectImportsButton.disabled = working;
+  if (els.chooseDirectImportFileButton) els.chooseDirectImportFileButton.disabled = working;
+  if (els.chooseDirectImportRootButton) els.chooseDirectImportRootButton.disabled = working;
+  renderDirectImportSourceList();
+  renderDirectImportList();
+  renderDirectImportDetail();
 }
 
 function renderHandoffTargetSelect() {
@@ -4099,13 +6116,17 @@ function render() {
   renderSelectedProject();
   renderThreadDeck();
   renderProjectStash();
+  renderDirectBridgeSettingsStatus();
   renderThreadsWorkbench();
+  renderDirectImportWorkbench();
   renderAnalyticsPanel();
   renderHandoffTargetSelect();
   renderPromptPreview();
   renderHandoffQueue();
   renderCodexRequests();
   renderWatchedArtifacts();
+  renderDirectAuthControls();
+  renderDirectMetaSessionStatus();
   renderStatus();
   renderRightPlaneTabs();
   scheduleResizeBurst();
@@ -4348,6 +6369,975 @@ async function selectAnalyticsThread(threadKey) {
   renderAnalyticsPanel();
 }
 
+async function loadDirectImports(options = {}) {
+  const project = activeProject();
+  if (!project || !bridge.listDirectImports) return;
+  const requestVersion = nextRequestVersion("directImports");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = options?.refresh || state.directImportWorkbench.status === "idle"
+    ? "loading"
+    : state.directImportWorkbench.status || "loading";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const result = await bridge.listDirectImports(project.id, { includeHidden: Boolean(state.directImportWorkbench.includeHidden) });
+    if (isRequestStale("directImports", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.projectId = project.id;
+    state.directImportWorkbench.imports = Array.isArray(result?.entries) ? result.entries : [];
+    state.directImportWorkbench.status = "loaded";
+    if (state.directImportWorkbench.selectedImportId &&
+      !state.directImportWorkbench.imports.find((entry) => entry.importId === state.directImportWorkbench.selectedImportId)) {
+      state.directImportWorkbench.selectedImportId = "";
+      state.directImportWorkbench.selectedSessionId = "";
+      state.directImportWorkbench.report = null;
+      state.directImportWorkbench.selectedImportSession = null;
+    }
+  } catch (error) {
+    if (isRequestStale("directImports", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Import list failed: ${error.message}`;
+  }
+  if (isRequestStale("directImports", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  renderDirectImportWorkbench();
+  await refreshDirectRuntimeStatus(project.id);
+}
+
+async function loadDirectThreadWorkbench(options = {}) {
+  const project = activeProject();
+  if (!project || !bridge.getDirectThreadWorkbenchSnapshot) return;
+  const requestVersion = nextRequestVersion("directThreadWorkbench");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directThreadWorkbench.status = options?.refresh || state.directThreadWorkbench.status === "idle"
+    ? "loading"
+    : state.directThreadWorkbench.status || "loading";
+  state.directThreadWorkbench.lastError = "";
+  renderDirectThreadWorkbench();
+  try {
+    const result = await bridge.getDirectThreadWorkbenchSnapshot(project.id, {
+      refresh: Boolean(options?.refresh),
+      filters: state.directThreadWorkbench.filters,
+      page: {
+        threads: { offset: 0, limit: 80 },
+        operations: { offset: 0, limit: 20 },
+      },
+    });
+    if (isRequestStale("directThreadWorkbench", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.projectId = project.id;
+    state.directThreadWorkbench.snapshot = result || null;
+    if (bridge.getDirectThreadEvidenceWorkbenchProjection) {
+      try {
+        state.directThreadWorkbench.evidenceProjection = await bridge.getDirectThreadEvidenceWorkbenchProjection(project.id, {
+          refresh: false,
+          filters: state.directThreadWorkbench.filters,
+          page: {
+            threads: { offset: 0, limit: 80 },
+            operations: { offset: 0, limit: 20 },
+          },
+        });
+      } catch (projectionError) {
+        state.directThreadWorkbench.evidenceProjection = result?.evidenceWorkbench || null;
+      }
+    } else {
+      state.directThreadWorkbench.evidenceProjection = result?.evidenceWorkbench || null;
+    }
+    state.directThreadWorkbench.status = "loaded";
+    const threads = result?.threads || [];
+    if (state.directThreadWorkbench.selectedThreadId && !threads.find((thread) => thread.threadId === state.directThreadWorkbench.selectedThreadId)) {
+      state.directThreadWorkbench.selectedThreadId = "";
+      state.directThreadWorkbench.selectedProjection = null;
+      state.directThreadWorkbench.selectedPreviewId = "";
+      state.directThreadWorkbench.selectedPreview = null;
+      state.directThreadWorkbench.forkStartPrompt = "";
+    }
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbench", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Direct thread workbench failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+  }
+  if (isRequestStale("directThreadWorkbench", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  renderDirectThreadWorkbench();
+}
+
+async function selectDirectWorkbenchThread(threadId) {
+  const project = activeProject();
+  const id = String(threadId || "").trim();
+  if (!project || !id || !bridge.readDirectThreadWorkbenchThreadProjection) return;
+  const threadChanged = state.directThreadWorkbench.selectedThreadId !== id;
+  state.directThreadWorkbench.selectedThreadId = id;
+  state.directThreadWorkbench.selectedProjection = null;
+  if (threadChanged) {
+    state.directThreadWorkbench.selectedPreviewId = "";
+    state.directThreadWorkbench.selectedPreview = null;
+    state.directThreadWorkbench.forkStartPrompt = "";
+  }
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    const result = await bridge.readDirectThreadWorkbenchThreadProjection(project.id, id, {
+      offset: 0,
+      limit: 80,
+    });
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.selectedProjection = result || null;
+    state.directThreadWorkbench.status = "loaded";
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Direct thread projection failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+  }
+  if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  renderDirectThreadWorkbench();
+}
+
+async function openDirectWorkbenchThreadInCodexPlane(threadId) {
+  const project = activeProject();
+  const id = String(threadId || "").trim();
+  if (!project || !id || !bridge.selectCodexThread) return;
+  const thread = selectedDirectWorkbenchThread();
+  if (!thread || thread.threadId !== id || !canOpenDirectWorkbenchThreadInCodexPlane(thread)) {
+    setLastEvent("Direct thread open skipped: selected workbench item is not a runnable direct session.");
+    renderDirectThreadWorkbench();
+    return;
+  }
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  try {
+    const result = await bridge.selectCodexThread(project.id, id, "", "");
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "loaded";
+    if (!result?.ok) {
+      setLastEvent(`Direct thread open skipped: ${result?.error || "unknown reason"}`);
+      renderDirectThreadWorkbench();
+      return;
+    }
+    state.selectedCodexThreadId = id;
+    if (result.warning) {
+      setLastEvent(`Requested direct thread in Codex plane with warning: ${result.warning}`);
+    } else {
+      setLastEvent(`Requested direct thread in Codex plane: ${thread?.title || id}.`);
+    }
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Direct thread open failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+  }
+  if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  renderSelectedProject();
+  renderDirectThreadWorkbench();
+}
+
+async function runDirectThreadLifecycle(action) {
+  const project = activeProject();
+  const thread = selectedDirectWorkbenchThread();
+  if (!project || !thread || !bridge.runDirectThreadLifecycleAction) return;
+  let confirmationId = "";
+  if (action === "soft_delete") {
+    const prepared = await bridge.prepareDirectThreadSoftDelete(project.id, thread.threadId, directThreadWorkbenchExpectedInput({
+      expectedLifecycleState: thread.lifecycle?.state || "active",
+    }));
+    const confirmed = confirm(`Soft delete "${prepared.rendererSafeThreadLabel}"? This is reversible and does not purge artifacts.`);
+    if (!confirmed) return;
+    confirmationId = prepared.confirmationId || "";
+  }
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    const result = await bridge.runDirectThreadLifecycleAction(project.id, directThreadWorkbenchExpectedInput({
+      clientOperationId: createId(`direct_${action}`),
+      threadId: thread.threadId,
+      action,
+      confirmationId,
+      expectedLifecycleState: thread.lifecycle?.state || "active",
+      expectedRendererProjectionId: thread.rendererProjection?.projectionId || "",
+      expectedRendererProjectionDigest: thread.rendererProjection?.projectionDigest || "",
+    }));
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    setLastEvent(`Direct thread operation ${result.status}: ${action}.`);
+    await loadDirectThreadWorkbench({ refresh: true });
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Direct thread operation failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+    renderDirectThreadWorkbench();
+  }
+}
+
+async function createDirectThreadPreview(kind) {
+  const project = activeProject();
+  const thread = selectedDirectWorkbenchThread();
+  if (!project || !thread) return;
+  const expected = directThreadWorkbenchExpectedInput({
+    clientOperationId: createId(`direct_${kind}_preview`),
+    threadId: thread.threadId,
+    expectedLifecycleState: thread.lifecycle?.state || "active",
+    expectedRendererProjectionId: thread.rendererProjection?.projectionId || "",
+    expectedRendererProjectionDigest: thread.rendererProjection?.projectionDigest || "",
+  });
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    let result = null;
+    if (kind === "merge") {
+      result = await bridge.createDirectThreadMergePreview(project.id, {
+        ...directThreadWorkbenchExpectedInput({ clientOperationId: expected.clientOperationId }),
+        sources: [{
+          threadId: thread.threadId,
+          expectedLifecycleState: thread.lifecycle?.state || "active",
+          expectedRendererProjectionId: thread.rendererProjection?.projectionId || "",
+          expectedRendererProjectionDigest: thread.rendererProjection?.projectionDigest || "",
+        }],
+      });
+    } else if (kind === "prune") {
+      const firstKey = state.directThreadWorkbench.selectedProjection?.projection?.items?.[0]?.stableSourceItemKey;
+      result = await bridge.createDirectThreadPrunePreview(project.id, {
+        ...expected,
+        excludedStableSourceItemKeys: firstKey ? [firstKey] : [],
+      });
+    } else if (kind === "fork") {
+      result = await bridge.createDirectThreadForkPreview(project.id, {
+        ...expected,
+        selectedStableSourceItemKeys: (state.directThreadWorkbench.selectedProjection?.projection?.items || [])
+          .slice(0, DIRECT_FORK_PREVIEW_ITEM_CAP)
+          .map((item) => item.stableSourceItemKey)
+          .filter(Boolean),
+      });
+    }
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (kind === "fork") {
+      const loadedCount = state.directThreadWorkbench.selectedProjection?.projection?.items?.length || 0;
+      if (loadedCount > DIRECT_FORK_PREVIEW_ITEM_CAP) {
+        setLastEvent(`Fork preview seed metadata used first ${DIRECT_FORK_PREVIEW_ITEM_CAP} loaded projection items out of ${loadedCount}.`);
+      } else {
+        setLastEvent(`Created fork preview (${result?.projectionId || "projection"}).`);
+      }
+    }
+    state.directThreadWorkbench.selectedPreviewId = result?.projectionId || "";
+    if (state.directThreadWorkbench.selectedPreviewId && bridge.readDirectThreadWorkbenchPreviewProjection) {
+      state.directThreadWorkbench.selectedPreview = await bridge.readDirectThreadWorkbenchPreviewProjection(project.id, state.directThreadWorkbench.selectedPreviewId, {
+        offset: 0,
+        limit: 60,
+        includeSourceRefs: false,
+      });
+    }
+    state.directThreadWorkbench.status = "loaded";
+    if (kind !== "fork") setLastEvent(`Created ${kind} preview (${result?.projectionId || "projection"}).`);
+    await loadDirectThreadWorkbench({ refresh: true });
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `${kind} preview failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+    renderDirectThreadWorkbench();
+  }
+}
+
+async function startDirectThreadForkFromSelectedPreview() {
+  const project = activeProject();
+  const preview = state.directThreadWorkbench.selectedPreview?.projection || null;
+  const currentUserPrompt = String(state.directThreadWorkbench.forkStartPrompt || "").trim();
+  if (!project || !preview || !["fork_preview", "merge_preview", "prune_preview"].includes(preview.projectionKind)) return;
+  const isDerivedPreview = preview.projectionKind === "merge_preview" || preview.projectionKind === "prune_preview";
+  if (isDerivedPreview) {
+    if (!bridge.prepareDirectThreadDerivedPreviewForkStart || !bridge.startDirectThreadForkFromDerivedPreview) return;
+  } else if (!bridge.prepareDirectThreadForkStart || !bridge.startDirectThreadForkFromPreview) return;
+  if (!currentUserPrompt) {
+    setLastEvent("Start fresh fork needs current user intent.");
+    return;
+  }
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    const expected = directThreadWorkbenchExpectedInput({
+      sourcePreviewId: preview.projectionId,
+      sourcePreviewKind: preview.projectionKind,
+      expectedSourcePreviewDigest: preview.projectionDigest || "",
+    });
+    const prepared = isDerivedPreview
+      ? await bridge.prepareDirectThreadDerivedPreviewForkStart(project.id, expected)
+      : await bridge.prepareDirectThreadForkStart(project.id, expected);
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    const confirmed = confirm(`Start fresh fork from this preview using ${prepared.selectedModel || "the selected direct model"}? This does not resume provider state.`);
+    if (!confirmed) {
+      state.directThreadWorkbench.status = "loaded";
+      renderDirectThreadWorkbench();
+      return;
+    }
+    const startPayload = directThreadWorkbenchExpectedInput({
+      clientForkStartId: createId(isDerivedPreview ? "direct_derived_fork_start" : "direct_fork_start"),
+      clientDerivedForkStartId: createId("direct_derived_fork_start"),
+      clientOperationId: createId("direct_fork_start_op"),
+      confirmationId: prepared.confirmationId,
+      sourcePreviewId: prepared.sourcePreviewId,
+      sourcePreviewKind: prepared.sourcePreviewKind || preview.projectionKind,
+      expectedSourcePreviewDigest: prepared.sourcePreviewDigest,
+      expectedSourcePreviewOperationId: prepared.sourcePreviewOperationId || "",
+      currentUserPrompt,
+      selectedModel: prepared.selectedModel || "",
+    });
+    const result = isDerivedPreview
+      ? await bridge.startDirectThreadForkFromDerivedPreview(project.id, startPayload)
+      : await bridge.startDirectThreadForkFromPreview(project.id, startPayload);
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.forkStartPrompt = "";
+    state.directThreadWorkbench.selectedThreadId = result?.threadId || state.directThreadWorkbench.selectedThreadId;
+    setLastEvent(`Fresh fork ${result?.status || "started"} (${result?.threadId || "new thread"}).`);
+    await loadDirectThreadWorkbench({ refresh: true });
+    if (result?.threadId) await selectDirectWorkbenchThread(result.threadId);
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Start fresh fork failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+    renderDirectThreadWorkbench();
+  }
+}
+
+async function createDirectWorkThreadDraftSession() {
+  const project = activeProject();
+  if (!project || !bridge.createDirectWorkThreadDraftSession) return;
+  const title = String(state.directThreadWorkbench.newThreadDraftTitle || "").trim();
+  const objectiveSummary = String(state.directThreadWorkbench.newThreadDraftObjective || "").trim();
+  const workThreadId = String(state.directThreadWorkbench.newThreadDraftWorkThreadId || "").trim();
+  if (!title || !objectiveSummary) {
+    setLastEvent("Local WorkThread draft needs both title and objective.");
+    renderDirectThreadWorkbench();
+    return;
+  }
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    const result = await bridge.createDirectWorkThreadDraftSession(project.id, directThreadWorkbenchExpectedInput({
+      clientDraftId: createId("direct_workthread_draft"),
+      title,
+      objectiveSummary,
+      workThreadId,
+      contextPosture: "explicit_operator_draft",
+    }));
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (result?.status !== "created") {
+      state.directThreadWorkbench.status = "loaded";
+      setLastEvent(`Local WorkThread draft blocked: ${(result?.draft?.blockerCodes || []).join(", ") || "unknown blocker"}.`);
+      renderDirectThreadWorkbench();
+      return;
+    }
+    state.directThreadWorkbench.newThreadDraftTitle = "";
+    state.directThreadWorkbench.newThreadDraftObjective = "";
+    state.directThreadWorkbench.newThreadDraftWorkThreadId = "";
+    state.directThreadWorkbench.selectedThreadId = result.thread?.threadId || result.thread?.id || "";
+    setLastEvent(`Created local WorkThread draft: ${result.thread?.title || result.draft?.title || "direct thread"}.`);
+    await loadDirectThreadWorkbench({ refresh: true });
+    if (state.directThreadWorkbench.selectedThreadId) await selectDirectWorkbenchThread(state.directThreadWorkbench.selectedThreadId);
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Create local WorkThread draft failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+    renderDirectThreadWorkbench();
+  }
+}
+
+async function chooseDirectImportFile() {
+  const project = activeProject();
+  if (!project || !bridge.chooseDirectImportSourceFile) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const result = await bridge.chooseDirectImportSourceFile(project.id);
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (!result?.ok || result.canceled) {
+      state.directImportWorkbench.status = "loaded";
+      renderDirectImportWorkbench();
+      return;
+    }
+    const source = result.source;
+    state.directImportWorkbench.sources = source ? [source, ...state.directImportWorkbench.sources.filter((entry) => entry.handleId !== source.handleId)] : state.directImportWorkbench.sources;
+    state.directImportWorkbench.selectedHandleId = source?.handleId || "";
+    state.directImportWorkbench.selectedImportId = "";
+    state.directImportWorkbench.report = null;
+    state.directImportWorkbench.selectedImportSession = null;
+    state.directImportWorkbench.status = "loaded";
+    setLastEvent(`Selected import source: ${source?.sourceDisplayName || "Codex JSONL"}.`);
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Choose source failed: ${error.message}`;
+  }
+  renderDirectImportWorkbench();
+}
+
+async function chooseDirectImportRoot() {
+  const project = activeProject();
+  if (!project || !bridge.chooseDirectImportSourceRoot) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const result = await bridge.chooseDirectImportSourceRoot(project.id);
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (!result?.ok || result.canceled) {
+      state.directImportWorkbench.status = "loaded";
+      renderDirectImportWorkbench();
+      return;
+    }
+    state.directImportWorkbench.sources = Array.isArray(result.sources) ? result.sources : [];
+    state.directImportWorkbench.selectedHandleId = state.directImportWorkbench.sources[0]?.handleId || "";
+    state.directImportWorkbench.selectedImportId = "";
+    state.directImportWorkbench.report = null;
+    state.directImportWorkbench.selectedImportSession = null;
+    state.directImportWorkbench.status = "loaded";
+    setLastEvent(`Import source root loaded: ${state.directImportWorkbench.sources.length} JSONL source(s).`);
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Choose root failed: ${error.message}`;
+  }
+  renderDirectImportWorkbench();
+}
+
+async function inspectDirectImportSource(handleId) {
+  const project = activeProject();
+  const sourceHandleId = String(handleId || state.directImportWorkbench.selectedHandleId || "").trim();
+  if (!project || !sourceHandleId || !bridge.inspectDirectImportSource) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const result = await bridge.inspectDirectImportSource(project.id, { handleId: sourceHandleId });
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (result?.source) {
+      state.directImportWorkbench.sources = state.directImportWorkbench.sources.map((source) =>
+        source.handleId === sourceHandleId ? { ...source, ...result.source } : source
+      );
+      state.directImportWorkbench.selectedHandleId = sourceHandleId;
+    }
+    state.directImportWorkbench.status = "loaded";
+    setLastEvent(`Inspected import source: ${result?.source?.recordCount || 0} record(s).`);
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Inspect failed: ${error.message}`;
+  }
+  renderDirectImportWorkbench();
+}
+
+async function materializeSelectedDirectImportSource(handleId) {
+  const project = activeProject();
+  const sourceHandleId = String(handleId || state.directImportWorkbench.selectedHandleId || "").trim();
+  if (!project || !sourceHandleId || !bridge.materializeDirectImport) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const result = await bridge.materializeDirectImport(project.id, {
+      handleId: sourceHandleId,
+      userConfirmedWorkspace: Boolean(els.directImportWorkspaceConfirmInput?.checked),
+    });
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    const safeSession = result?.rendererSafeSession || {};
+    state.directImportWorkbench.selectedImportId = safeSession.importId || result?.session?.importLineage?.importId || "";
+    state.directImportWorkbench.selectedSessionId = safeSession.sessionId || result?.sessionId || "";
+    state.directImportWorkbench.selectedHandleId = "";
+    state.directImportWorkbench.report = null;
+    state.directImportWorkbench.selectedImportSession = safeSession.sessionId ? safeSession : null;
+    state.directImportWorkbench.status = "loaded";
+    setLastEvent(`Materialized read-only import: ${safeSession.title || result?.importState || "Codex JSONL"}.`);
+    await loadDirectImports({ refresh: true });
+    if (state.directImportWorkbench.selectedImportId) {
+      await selectDirectImport(state.directImportWorkbench.selectedImportId);
+    }
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Import failed: ${error.message}`;
+    renderDirectImportWorkbench();
+  }
+}
+
+async function selectDirectImport(importId) {
+  const project = activeProject();
+  const id = String(importId || "").trim();
+  if (!project || !id) return;
+  state.directImportWorkbench.selectedImportId = id;
+  state.directImportWorkbench.selectedHandleId = "";
+  const entry = selectedDirectImportEntry();
+  state.directImportWorkbench.selectedSessionId = entry?.materializedSessionId || "";
+  state.directImportWorkbench.report = null;
+  state.directImportWorkbench.selectedImportSession = null;
+  renderDirectImportWorkbench();
+  if (!bridge.readDirectImportReport && !bridge.readDirectImportSession) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    const [reportResult, sessionResult] = await Promise.all([
+      bridge.readDirectImportReport ? bridge.readDirectImportReport(project.id, id) : Promise.resolve(null),
+      bridge.readDirectImportSession ? bridge.readDirectImportSession(project.id, id) : Promise.resolve(null),
+    ]);
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.report = reportResult?.report || null;
+    state.directImportWorkbench.selectedImportSession = sessionResult?.rendererSafeSession || null;
+    state.directImportWorkbench.selectedSessionId = sessionResult?.rendererSafeSession?.sessionId || entry?.materializedSessionId || "";
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.lastError = `Report load failed: ${error.message}`;
+  }
+  renderDirectImportWorkbench();
+}
+
+async function hideDirectImport(importId) {
+  const project = activeProject();
+  const id = String(importId || "").trim();
+  if (!project || !id || !bridge.hideDirectImport) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  renderDirectImportWorkbench();
+  try {
+    await bridge.hideDirectImport(project.id, id);
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (state.directImportWorkbench.selectedImportId === id) {
+      state.directImportWorkbench.selectedImportId = "";
+      state.directImportWorkbench.selectedSessionId = "";
+      state.directImportWorkbench.report = null;
+      state.directImportWorkbench.selectedImportSession = null;
+    }
+    state.directImportWorkbench.status = "loaded";
+    await loadDirectImports({ refresh: true });
+    setLastEvent("Import hidden. Source JSONL was not modified.");
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Hide failed: ${error.message}`;
+    renderDirectImportWorkbench();
+  }
+}
+
+async function startDirectImportCheckpointContinuation(importId) {
+  const project = activeProject();
+  const id = String(importId || state.directImportWorkbench.selectedImportId || "").trim();
+  if (!project || !id || !bridge.startDirectImportCheckpointContinuation) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const clientCheckpointContinuationId = `checkpoint_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const result = await bridge.startDirectImportCheckpointContinuation(project.id, {
+      importId: id,
+      clientCheckpointContinuationId,
+    });
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "loaded";
+    await loadDirectImports({ refresh: true });
+    await selectDirectImport(id);
+    await refreshDirectRuntimeStatus(project.id);
+    setLastEvent(result?.ok
+      ? `Started checkpoint continuation session: ${result.sessionId || "direct session"}.`
+      : `Checkpoint continuation finished with ${result?.continuation?.state || "unknown"} state.`);
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Checkpoint continuation failed: ${error.message}`;
+    renderDirectImportWorkbench();
+  }
+}
+
+async function loadDirectAuthSettings() {
+  if (!bridge?.getDirectAuthSettings) return;
+  state.directAuthLoading = true;
+  state.directAuthError = "";
+  renderDirectAuthControls();
+  try {
+    const settings = await bridge.getDirectAuthSettings();
+    state.directAuthSettings = settings;
+    state.directAuthStatus = settings?.authStatus || null;
+  } catch (error) {
+    state.directAuthError = sanitizedDirectAuthError("Direct auth settings failed.");
+  } finally {
+    state.directAuthLoading = false;
+    renderDirectAuthControls();
+  }
+}
+
+async function refreshDirectAuthStatus() {
+  if (!bridge?.getDirectAuthStatus) return;
+  state.directAuthLoading = true;
+  state.directAuthError = "";
+  renderDirectAuthControls();
+  try {
+    state.directAuthStatus = await bridge.getDirectAuthStatus();
+    if (state.directAuthSettings) {
+      state.directAuthSettings = { ...state.directAuthSettings, authStatus: state.directAuthStatus };
+    }
+    await refreshDirectRuntimeStatus();
+    setLastEvent(`Direct auth ${directAuthStatusLabel(state.directAuthStatus)}.`);
+  } catch (error) {
+    state.directAuthError = sanitizedDirectAuthError("Direct auth status failed.");
+    setLastEvent(`Direct auth status failed: ${state.directAuthError}`);
+  } finally {
+    state.directAuthLoading = false;
+    renderDirectAuthControls();
+  }
+}
+
+async function refreshDirectRuntimeStatus(projectId = activeProject()?.id || "") {
+  if (!bridge.getDirectRuntimeStatus || !projectId) return;
+  state.directRuntimeLoading = true;
+  state.directRuntimeError = "";
+  renderDirectRuntimeStatus();
+  try {
+    state.directRuntimeStatus = await bridge.getDirectRuntimeStatus(projectId);
+    await refreshDirectImplementationUiStatus(projectId, { renderBefore: false });
+  } catch (error) {
+    state.directRuntimeError = error.message || "Direct runtime status failed.";
+  } finally {
+    state.directRuntimeLoading = false;
+    renderDirectRuntimeStatus();
+  }
+}
+
+async function refreshDirectImplementationUiStatus(projectId = activeProject()?.id || "", options = {}) {
+  if (!bridge.getDirectImplementationLaneUiStatus || !projectId) return;
+  const requestVersion = nextRequestVersion("directImplementationUiStatus");
+  const snapshot = projectRequestSnapshot(projectId);
+  state.directImplementationUiLoading = true;
+  state.directImplementationUiError = "";
+  state.directImplementationUiWarning = "";
+  if (options.renderBefore !== false) renderDirectImplementationUiStatus();
+  try {
+    const status = await bridge.getDirectImplementationLaneUiStatus(projectId);
+    const historyRequest = directImplementationHistoryRequest(status);
+    const [historyResult, policyResult] = await Promise.all([
+      bridge.readDirectImplementationOperationHistory
+        ? optionalDirectImplementationProjection("operation history", () => bridge.readDirectImplementationOperationHistory(projectId, historyRequest))
+        : Promise.resolve({ value: null, warning: "" }),
+      bridge.getDirectImplementationPolicyView
+        ? optionalDirectImplementationProjection("policy", () => bridge.getDirectImplementationPolicyView(projectId))
+        : Promise.resolve({ value: null, warning: "" }),
+    ]);
+    if (isRequestStale("directImplementationUiStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImplementationUiStatus = status || null;
+    state.directImplementationOperationHistory = historyResult.value || null;
+    state.directImplementationPolicyView = policyResult.value || null;
+    state.directImplementationUiWarning = [historyResult.warning, policyResult.warning].filter(Boolean).join("; ");
+  } catch (error) {
+    if (isRequestStale("directImplementationUiStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImplementationUiStatus = null;
+    state.directImplementationOperationHistory = null;
+    state.directImplementationPolicyView = null;
+    state.directImplementationUiWarning = "";
+    state.directImplementationUiError = error.message || "Direct implementation-lane UI status failed.";
+  } finally {
+    if (!isRequestStale("directImplementationUiStatus", requestVersion)) {
+      state.directImplementationUiLoading = false;
+      renderDirectImplementationUiStatus();
+    }
+  }
+}
+
+async function refreshDirectMetaSessionStatus(projectId = activeProject()?.id || "") {
+  if (!bridge.getDirectMetaSessionStatus || !projectId) return;
+  const requestVersion = nextRequestVersion("directMetaSessionStatus");
+  const snapshot = { projectId, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directMetaSessionLoading = true;
+  state.directMetaSessionError = "";
+  renderDirectMetaSessionStatus();
+  try {
+    const status = await bridge.getDirectMetaSessionStatus(projectId);
+    if (isRequestStale("directMetaSessionStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directMetaSessionStatus = status;
+  } catch (error) {
+    if (isRequestStale("directMetaSessionStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directMetaSessionError = error.message || "Meta-session status failed.";
+  } finally {
+    if (!isRequestStale("directMetaSessionStatus", requestVersion)) {
+      state.directMetaSessionLoading = false;
+      renderDirectMetaSessionStatus();
+    }
+  }
+}
+
+async function refreshDirectBridgeSettingsStatus(projectId = activeProject()?.id || "") {
+  if (!bridge.getDirectBridgeSettingsStatus || !projectId) return;
+  const requestVersion = nextRequestVersion("directBridgeSettingsStatus");
+  const snapshot = projectRequestSnapshot(projectId);
+  state.directBridgeSettingsLoading = true;
+  state.directBridgeSettingsError = "";
+  renderDirectBridgeSettingsStatus();
+  try {
+    const status = await bridge.getDirectBridgeSettingsStatus(projectId);
+    if (isRequestStale("directBridgeSettingsStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directBridgeSettingsStatus = status;
+  } catch (error) {
+    if (isRequestStale("directBridgeSettingsStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directBridgeSettingsError = error.message || "Direct bridge settings status failed.";
+  } finally {
+    if (!isRequestStale("directBridgeSettingsStatus", requestVersion)) {
+      state.directBridgeSettingsLoading = false;
+      renderDirectBridgeSettingsStatus();
+    }
+  }
+}
+
+function directActivationClientId(prefix) {
+  const random = Math.random().toString(36).slice(2, 10);
+  return `${prefix}_${Date.now().toString(36)}_${random}`;
+}
+
+async function enableDirectExperimentalRuntime() {
+  const project = activeProject();
+  if (!project || !bridge.enableDirectExperimentalRuntime) return;
+  await refreshDirectAuthStatus();
+  await refreshDirectRuntimeStatus(project.id);
+  const activation = state.directRuntimeStatus?.activation || {};
+  if (activation.state !== "eligible") {
+    setLastEvent(`Direct experimental activation blocked: ${directActivationBlockedDetail(state.directRuntimeStatus)}`);
+    return;
+  }
+  const confirmed = window.confirm("Enable direct experimental live-text for this project? This changes only the left Codex lane and keeps rollback available.");
+  if (!confirmed) return;
+  state.directRuntimeLoading = true;
+  renderDirectRuntimeStatus();
+  try {
+    const result = await bridge.enableDirectExperimentalRuntime(project.id, {
+      clientActivationId: directActivationClientId("client_activation"),
+      expectedGateId: activation.gateId,
+      expectedGateDigest: activation.gateDigest,
+      expectedRuntimeMode: "direct-experimental",
+      expectedDirectTransport: "live-text",
+    });
+    if (result?.config) {
+      state.config = result.config;
+      render();
+    }
+    state.directRuntimeStatus = result?.status ? { ...state.directRuntimeStatus, activation: result.status } : state.directRuntimeStatus;
+    await refreshDirectRuntimeStatus(project.id);
+    setLastEvent(result?.duplicate ? "Direct experimental already enabled for this project." : "Direct experimental enabled for this project.");
+  } catch (error) {
+    state.directRuntimeError = error.message || "Direct experimental activation failed.";
+    setLastEvent(`Direct experimental activation failed: ${state.directRuntimeError}`);
+  } finally {
+    state.directRuntimeLoading = false;
+    renderDirectRuntimeStatus();
+  }
+}
+
+async function selectDirectTextOnlyRuntime() {
+  const project = activeProject();
+  if (!project || !bridge.selectDirectTextOnlyRuntime) return;
+  await refreshDirectAuthStatus();
+  await refreshDirectRuntimeStatus(project.id);
+  const textOnly = state.directRuntimeStatus?.directTextOnly || {};
+  if (textOnly.state !== "eligible" && textOnly.status !== "eligible" && textOnly.status !== "enabled") {
+    setLastEvent(`Direct text fallback blocked: ${directTextOnlyBlockedDetail(state.directRuntimeStatus)}`);
+    return;
+  }
+  if (textOnly.status !== "enabled") {
+    const confirmed = window.confirm("Use Direct text fallback for this project? This is only intended when tool-capable Direct is unavailable.");
+    if (!confirmed) return;
+  }
+  state.directRuntimeLoading = true;
+  renderDirectRuntimeStatus();
+  try {
+    const result = await bridge.selectDirectTextOnlyRuntime(project.id, {
+      clientOperationId: directActivationClientId("client_direct_text_only"),
+      expectedGateId: textOnly.gateId,
+      expectedGateDigest: textOnly.gateDigest,
+    });
+    if (result?.config) {
+      state.config = result.config;
+      render();
+    }
+    await refreshDirectRuntimeStatus(project.id);
+    setLastEvent(result?.duplicate ? "Direct text fallback was already selected for this project." : "Direct text fallback selected for this project.");
+  } catch (error) {
+    state.directRuntimeError = error.message || "Direct text fallback selection failed.";
+    setLastEvent(`Direct text fallback selection failed: ${state.directRuntimeError}`);
+  } finally {
+    state.directRuntimeLoading = false;
+    renderDirectRuntimeStatus();
+  }
+}
+
+async function setDirectRuntimePathFromControl(selectEl = els.directRuntimePathSelect) {
+  const project = activeProject();
+  if (!project || !bridge.setDirectRuntimePath || !selectEl) return;
+  const persistDefault = true;
+  const runtimePath = selectEl.value || "app-server";
+  const currentPath = selectedDirectRuntimePath({ scope: persistDefault ? "default" : "active" });
+  if (runtimePath === currentPath) return;
+  let requestRuntimePath = runtimePath;
+  const isDirectPath = runtimePath === "direct-text" || runtimePath === "direct-implementation";
+  const options = {
+    clientOperationId: directActivationClientId(isDirectPath ? "client_direct_embark" : "client_runtime_path"),
+    persistDefault,
+  };
+  const label = runtimePath === "app-server" ? "App Server" : "Direct";
+  state.directRuntimeLoading = true;
+  renderDirectRuntimeStatus();
+  try {
+    let result;
+    if (isDirectPath && bridge.embarkDirectRuntime) {
+      result = await embarkDirectRuntimeFromControl(project, {
+        ...options,
+        clientEmbarkId: options.clientOperationId,
+        requestedFrom: selectEl?.id || "runtime-selector",
+      });
+      if (!result?.ok) throw new Error(directEmbarkFailureMessage(result));
+      requestRuntimePath = result.runtimePath || runtimePath;
+    } else {
+      result = await bridge.setDirectRuntimePath(project.id, requestRuntimePath, options);
+    }
+    if (result?.config) {
+      state.config = result.config;
+      render();
+    }
+    if (result?.project?.id) {
+      state.activeCodexRuntimePathByProject[result.project.id] = requestRuntimePath;
+    }
+    await refreshDirectRuntimeStatus(project.id);
+    if (persistDefault) {
+      setLastEvent(result?.duplicate ? `${label} is already the default Codex backend.` : `Default Codex backend set to ${label}.`);
+    } else {
+      setLastEvent(result?.duplicate ? `${label} is already the active Codex backend.` : `Active Codex backend switched to ${label}.`);
+    }
+  } catch (error) {
+    state.directRuntimeError = error.message || "Codex backend switch failed.";
+    setLastEvent(`Codex backend switch failed: ${state.directRuntimeError}`);
+  } finally {
+    state.directRuntimeLoading = false;
+    renderDirectRuntimeStatus();
+  }
+}
+
+async function rollbackDirectExperimentalRuntime() {
+  const project = activeProject();
+  const activation = state.directRuntimeStatus?.activation || {};
+  if (!project || !bridge.rollbackDirectExperimentalRuntime) return;
+  if (!activation.rollbackAvailable) {
+    setLastEvent("Direct experimental rollback is not available.");
+    return;
+  }
+  const confirmed = window.confirm("Rollback this project Codex lane to legacy app-server or the previous binding? Direct sessions and imports are preserved.");
+  if (!confirmed) return;
+  state.directRuntimeLoading = true;
+  renderDirectRuntimeStatus();
+  try {
+    const result = await bridge.rollbackDirectExperimentalRuntime(project.id, {
+      clientRollbackId: directActivationClientId("client_rollback"),
+      activationId: activation.activationId,
+      reason: "user_requested",
+    });
+    if (result?.config) {
+      state.config = result.config;
+      render();
+    }
+    state.directRuntimeStatus = result?.status ? { ...state.directRuntimeStatus, activation: result.status } : state.directRuntimeStatus;
+    await refreshDirectRuntimeStatus(project.id);
+    setLastEvent(result?.duplicate ? "Direct experimental rollback was already applied." : "Rolled back Codex lane from direct experimental.");
+  } catch (error) {
+    state.directRuntimeError = error.message || "Direct experimental rollback failed.";
+    setLastEvent(`Direct experimental rollback failed: ${state.directRuntimeError}`);
+  } finally {
+    state.directRuntimeLoading = false;
+    renderDirectRuntimeStatus();
+  }
+}
+
+async function setDirectAuthStorageMode(mode) {
+  if (!bridge?.setDirectAuthStorageMode) return;
+  state.directAuthLoading = true;
+  state.directAuthError = "";
+  renderDirectAuthControls();
+  try {
+    const result = await bridge.setDirectAuthStorageMode(mode);
+    state.directAuthSettings = result.settings || state.directAuthSettings;
+    state.directAuthStatus = result.authStatus || result.settings?.authStatus || state.directAuthStatus;
+    setLastEvent(`Direct auth storage: ${state.directAuthSettings?.storageMode || mode}.`);
+  } catch (error) {
+    state.directAuthError = sanitizedDirectAuthError("Direct auth storage switch failed.");
+    setLastEvent(`Direct auth storage failed: ${state.directAuthError}`);
+  } finally {
+    state.directAuthLoading = false;
+    renderDirectAuthControls();
+  }
+}
+
+async function beginDirectAuthLogin() {
+  if (!bridge?.beginDirectAuthLogin) return;
+  state.directAuthLoading = true;
+  state.directAuthError = "";
+  renderDirectAuthControls();
+  let result = null;
+  try {
+    result = await bridge.beginDirectAuthLogin();
+    if (result?.manualCodeRequired && result.loginId && bridge.completeDirectAuthLogin) {
+      const pasted = window.prompt("Paste the authorization code or full localhost redirect URL.");
+      if (pasted && pasted.trim()) {
+        result = await bridge.completeDirectAuthLogin(result.loginId, pasted.trim());
+      }
+    }
+    state.directAuthStatus = result.authStatus || state.directAuthStatus;
+    setLastEvent(result.ok ? "Direct auth login completed." : `Direct auth login unavailable: ${result.reason || result.status}.`);
+  } catch (error) {
+    state.directAuthError = sanitizedDirectAuthError("Direct auth login failed.");
+    setLastEvent(`Direct auth login failed: ${state.directAuthError}`);
+    result = {
+      ok: false,
+      status: "failed",
+      reason: state.directAuthError,
+    };
+  } finally {
+    state.directAuthLoading = false;
+    renderDirectAuthControls();
+  }
+  return result;
+}
+
+async function logoutDirectAuth() {
+  if (!bridge?.logoutDirectAuth) return;
+  state.directAuthLoading = true;
+  state.directAuthError = "";
+  renderDirectAuthControls();
+  try {
+    const result = await bridge.logoutDirectAuth();
+    state.directAuthSettings = result.settings || state.directAuthSettings;
+    state.directAuthStatus = result.authStatus || result.settings?.authStatus || state.directAuthStatus;
+    setLastEvent("Direct auth credentials cleared.");
+  } catch (error) {
+    state.directAuthError = sanitizedDirectAuthError("Direct auth logout failed.");
+    setLastEvent(`Direct auth logout failed: ${state.directAuthError}`);
+  } finally {
+    state.directAuthLoading = false;
+    renderDirectAuthControls();
+  }
+}
+
 async function updateAnalytics() {
   const project = activeProject();
   if (!project || !bridge.updateThreadAnalytics) return;
@@ -4383,6 +7373,12 @@ async function selectProject(projectId) {
   nextRequestVersion("thread");
   nextRequestVersion("codexThreads");
   nextRequestVersion("recentThreads");
+  nextRequestVersion("directImports");
+  nextRequestVersion("directImportOperation");
+  nextRequestVersion("directThreadWorkbench");
+  nextRequestVersion("directThreadWorkbenchOperation");
+  nextRequestVersion("directMetaSessionStatus");
+  nextRequestVersion("directBridgeSettingsStatus");
   nextRequestVersion("analyticsThreads");
   nextRequestVersion("analyticsDetail");
   nextRequestVersion("workTree");
@@ -4414,6 +7410,14 @@ async function selectProject(projectId) {
   state.analyticsStatus = "idle";
   state.analyticsDashboard = null;
   state.analyticsDashboardStatus = "idle";
+  resetDirectImportWorkbench(projectId);
+  resetDirectThreadWorkbench(projectId);
+  state.directMetaSessionStatus = null;
+  state.directMetaSessionError = "";
+  state.directMetaSessionLoading = false;
+  state.directBridgeSettingsStatus = null;
+  state.directBridgeSettingsError = "";
+  state.directBridgeSettingsLoading = false;
   state.activeChatgptThreadBrowserTab = "project";
   state.subAgentGraph = null;
   state.selectedSubAgentThreadId = "";
@@ -4423,6 +7427,15 @@ async function selectProject(projectId) {
   render();
   const project = activeProject();
   if (!project || project.id !== projectId || isRequestStale("project", projectVersion)) return;
+  await refreshDirectRuntimeStatus(project.id);
+  await refreshDirectMetaSessionStatus(project.id);
+  await refreshDirectBridgeSettingsStatus(project.id);
+  if (state.activeMiddleTab === "imports") {
+    await loadDirectImports({ refresh: false });
+  }
+  if (state.activeMiddleTab === "threads") {
+    await loadDirectThreadWorkbench({ refresh: false });
+  }
   if (project?.lastActiveBindingId) {
     const binding = laneBindingById(project, project.lastActiveBindingId);
     if (binding) populateBindingEditor(binding);
@@ -4531,6 +7544,8 @@ async function selectCodexThread(threadId, sourceHome = "", sessionFilePath = ""
   const thread = codexThreadById(threadId);
   if (result.warning) {
     setLastEvent(`Requested ${thread?.title || threadId} (read-only fallback): ${result.warning}`);
+  } else if (result.runtimeRoute?.autoSwitch && result.runtimeRoute?.selectedRuntimePath === "app-server") {
+    setLastEvent(`Opened ${thread?.title || threadId} through its native App Server backend. Continue in Direct remains available as a checkpoint continuation.`);
   } else {
     setLastEvent(`Requested Codex thread open: ${thread?.title || threadId}.`);
   }
@@ -4647,15 +7662,20 @@ function openDrawer(mode) {
     surfaceBinding: {
       codex: {
         mode: "managed",
+        bindingProvider: "codex-compatible",
+        runtimeMode: "legacy-app-server",
+        directTransport: "fixture",
         provider: {
           kind: "codex_executable",
           flavor: "vanilla",
         },
         runtime: state.defaultCodexRuntime || "auto",
+        profileId: "",
         binaryPath: "codex",
         target: "",
         model: "",
         reasoningEffort: "",
+        spawnAgentModelOverrides: false,
         label: "Managed Codex lane",
       },
       chatgpt: {
@@ -4713,12 +7733,21 @@ function openDrawer(mode) {
   updateWorkspaceFieldVisibility();
   els.codexModeInput.value = draft.surfaceBinding.codex.mode;
   els.codexLabelInput.value = draft.surfaceBinding.codex.label;
+  if (els.codexDefaultPathInput) {
+    els.codexDefaultPathInput.value = directRuntimePathFromCodex(draft.surfaceBinding.codex);
+  }
+  els.codexRuntimeModeInput.value = draft.surfaceBinding.codex.runtimeMode || "legacy-app-server";
+  els.codexDirectTransportInput.value = draft.surfaceBinding.codex.directTransport || "fixture";
+  syncProjectRuntimeFieldsFromDefaultPath();
   els.codexProviderKindInput.value = draft.surfaceBinding.codex.provider?.kind || draft.surfaceBinding.codex.providerKind || "codex_executable";
   els.codexProviderFlavorInput.value = draft.surfaceBinding.codex.provider?.flavor || draft.surfaceBinding.codex.providerFlavor || "vanilla";
   els.codexRuntimeInput.value = draft.surfaceBinding.codex.runtime || "auto";
+  els.codexProfileIdInput.value = draft.surfaceBinding.codex.profileId || "";
   els.codexBinaryPathInput.value = draft.surfaceBinding.codex.binaryPath || "codex";
   els.codexModelInput.value = draft.surfaceBinding.codex.model || "";
   els.codexReasoningEffortInput.value = draft.surfaceBinding.codex.reasoningEffort || "";
+  els.codexSpawnAgentModelOverridesInput.checked = draft.surfaceBinding.codex.spawnAgentModelOverrides === true;
+  updateCodexSpawnAgentControlAvailability();
   els.codexTargetInput.value = draft.surfaceBinding.codex.target;
   els.chatgptUrlInput.value = primary?.url || draft.surfaceBinding.chatgpt.reviewThreadUrl || "https://chatgpt.com/";
   populateProjectThreadSelectors(draft);
@@ -4798,6 +7827,10 @@ function projectFromForm() {
   const fallbackThreadId = currentPrimary?.id || threads[0]?.id || "";
   const activeChatThreadId = preservedThreadId(threads, existing?.activeChatThreadId, fallbackThreadId);
   const lastActiveThreadId = preservedThreadId(threads, existing?.lastActiveThreadId, activeChatThreadId);
+  const runtimePathFields = directRuntimeBindingFieldsForPath(
+    els.codexDefaultPathInput?.value || "app-server",
+    existing?.surfaceBinding?.codex || null,
+  );
 
   return {
     id: els.projectIdInput.value || createId("project"),
@@ -4807,15 +7840,21 @@ function projectFromForm() {
     surfaceBinding: {
       codex: {
         mode: els.codexModeInput.value,
+        bindingProvider: runtimePathFields.bindingProvider,
+        runtimeMode: runtimePathFields.runtimeMode,
+        directTransport: runtimePathFields.directTransport,
+        directTier: runtimePathFields.directTier,
         provider: {
           kind: els.codexProviderKindInput.value || "codex_executable",
           flavor: els.codexProviderFlavorInput.value || "vanilla",
         },
         runtime: els.codexRuntimeInput.value,
+        profileId: els.codexProfileIdInput.value.trim(),
         binaryPath: els.codexBinaryPathInput.value.trim() || "codex",
         target: els.codexTargetInput.value.trim(),
         model: els.codexModelInput.value.trim(),
         reasoningEffort: els.codexReasoningEffortInput.value,
+        spawnAgentModelOverrides: els.codexSpawnAgentModelOverridesInput.checked,
         label:
           els.codexLabelInput.value.trim() ||
           (els.codexModeInput.value === "managed" ? "Managed Codex lane" : els.codexModeInput.value === "fallback" ? "Fallback Codex lane" : "Codex target"),
@@ -4860,12 +7899,17 @@ async function handleProjectFormSubmit(event) {
     return;
   }
   const existingIndex = state.config.projects.findIndex((item) => item.id === project.id);
+  const existingProject = existingIndex >= 0 ? state.config.projects[existingIndex] : null;
+  const requestedRuntimePath = directRuntimePathFromCodex(project.surfaceBinding?.codex || {});
+  const currentRuntimePath = directRuntimePathFromCodex(existingProject?.surfaceBinding?.codex || {});
+  const runtimePathChanged = requestedRuntimePath !== currentRuntimePath;
+  const projectForConfig = runtimePathChanged ? projectWithRuntimePath(project, currentRuntimePath) : project;
   const projects = [...state.config.projects];
-  if (existingIndex >= 0) projects[existingIndex] = project;
-  else projects.push(project);
+  if (existingIndex >= 0) projects[existingIndex] = projectForConfig;
+  else projects.push(projectForConfig);
   await saveConfig({
     ...state.config,
-    selectedProjectId: project.id,
+    selectedProjectId: projectForConfig.id,
     chatgptDownloads: {
       ...(state.config.chatgptDownloads || {}),
       enabled: state.config.chatgptDownloads?.enabled !== false,
@@ -4874,7 +7918,29 @@ async function handleProjectFormSubmit(event) {
     projects,
   });
   closeDrawer();
-  await selectProject(project.id);
+  await selectProject(projectForConfig.id);
+  if (runtimePathChanged && bridge.setDirectRuntimePath) {
+    state.directRuntimeLoading = true;
+    renderDirectRuntimeStatus();
+    try {
+      const result = await bridge.setDirectRuntimePath(project.id, requestedRuntimePath, {
+        clientOperationId: directActivationClientId("client_project_runtime_path"),
+      });
+      if (result?.config) {
+        state.config = result.config;
+        render();
+      }
+      await refreshDirectRuntimeStatus(project.id);
+      setLastEvent(`Saved project binding for ${project.name}; default Codex backend updated.`);
+    } catch (error) {
+      state.directRuntimeError = error.message || "Codex backend switch failed.";
+      setLastEvent(`Saved project binding for ${project.name}; Codex backend change blocked: ${state.directRuntimeError}`);
+    } finally {
+      state.directRuntimeLoading = false;
+      renderDirectRuntimeStatus();
+    }
+    return;
+  }
   setLastEvent(`Saved project binding for ${project.name}.`);
 }
 
@@ -5034,6 +8100,7 @@ async function deleteThreadFromDrawer() {
 function setMiddleTab(tab) {
   if (tab === "project") state.activeMiddleTab = "project";
   else if (tab === "threads") state.activeMiddleTab = "threads";
+  else if (tab === "imports") state.activeMiddleTab = "imports";
   else if (tab === "analytics") state.activeMiddleTab = "analytics";
   else if (tab === "files") state.activeMiddleTab = "files";
   else if (tab === "web") state.activeMiddleTab = "web";
@@ -5043,6 +8110,21 @@ function setMiddleTab(tab) {
   if (state.activeMiddleTab === "analytics" && state.analyticsStatus === "idle") {
     loadAnalyticsThreads({ refresh: false }).catch((error) => {
       setLastEvent(`Analytics list load failed: ${error.message}`);
+    });
+  }
+  if (state.activeMiddleTab === "project" && !state.directBridgeSettingsStatus && !state.directBridgeSettingsLoading) {
+    refreshDirectBridgeSettingsStatus().catch((error) => {
+      setLastEvent(`Bridge settings status load failed: ${error.message}`);
+    });
+  }
+  if (state.activeMiddleTab === "imports" && state.directImportWorkbench.status === "idle") {
+    loadDirectImports({ refresh: false }).catch((error) => {
+      setLastEvent(`Import list load failed: ${error.message}`);
+    });
+  }
+  if (state.activeMiddleTab === "threads" && state.directThreadWorkbench.status === "idle") {
+    loadDirectThreadWorkbench({ refresh: false }).catch((error) => {
+      setLastEvent(`Direct thread workbench load failed: ${error.message}`);
     });
   }
   scheduleResizeBurst();
@@ -5568,6 +8650,7 @@ function bindEvents() {
   els.overviewTabButton.addEventListener("click", () => setMiddleTab("overview"));
   els.projectTabButton.addEventListener("click", () => setMiddleTab("project"));
   els.threadsTabButton.addEventListener("click", () => setMiddleTab("threads"));
+  els.importsTabButton.addEventListener("click", () => setMiddleTab("imports"));
   els.analyticsTabButton.addEventListener("click", () => setMiddleTab("analytics"));
   els.filesTabButton.addEventListener("click", () => setMiddleTab("files"));
   els.webTabButton.addEventListener("click", () => setMiddleTab("web"));
@@ -5601,7 +8684,42 @@ function bindEvents() {
     const selected = await bridge.chooseDirectory();
     if (selected) els.repoPathInput.value = selected;
   });
+  els.refreshDirectImportsButton?.addEventListener("click", () => {
+    loadDirectImports({ refresh: true }).catch((error) => setLastEvent(`Import refresh failed: ${error.message}`));
+  });
+  els.refreshDirectThreadWorkbenchButton?.addEventListener("click", () => {
+    loadDirectThreadWorkbench({ refresh: true }).catch((error) => setLastEvent(`Direct thread workbench refresh failed: ${error.message}`));
+  });
+  els.directThreadIncludeHiddenInput?.addEventListener("change", () => {
+    state.directThreadWorkbench.filters.includeHidden = Boolean(els.directThreadIncludeHiddenInput.checked);
+    loadDirectThreadWorkbench({ refresh: true }).catch((error) => setLastEvent(`Direct thread filter failed: ${error.message}`));
+  });
+  els.directThreadIncludeArchivedInput?.addEventListener("change", () => {
+    state.directThreadWorkbench.filters.includeArchived = Boolean(els.directThreadIncludeArchivedInput.checked);
+    loadDirectThreadWorkbench({ refresh: true }).catch((error) => setLastEvent(`Direct thread filter failed: ${error.message}`));
+  });
+  els.directThreadIncludeSoftDeletedInput?.addEventListener("change", () => {
+    state.directThreadWorkbench.filters.includeSoftDeleted = Boolean(els.directThreadIncludeSoftDeletedInput.checked);
+    loadDirectThreadWorkbench({ refresh: true }).catch((error) => setLastEvent(`Direct thread filter failed: ${error.message}`));
+  });
+  els.directThreadTextQueryInput?.addEventListener("input", () => {
+    state.directThreadWorkbench.filters.textQuery = els.directThreadTextQueryInput.value || "";
+    loadDirectThreadWorkbench({ refresh: false }).catch((error) => setLastEvent(`Direct thread search failed: ${error.message}`));
+  });
+  els.chooseDirectImportFileButton?.addEventListener("click", () => {
+    chooseDirectImportFile().catch((error) => setLastEvent(`Choose import source failed: ${error.message}`));
+  });
+  els.chooseDirectImportRootButton?.addEventListener("click", () => {
+    chooseDirectImportRoot().catch((error) => setLastEvent(`Choose import root failed: ${error.message}`));
+  });
   els.workspaceKindInput.addEventListener("change", updateWorkspaceFieldVisibility);
+  els.codexDefaultPathInput?.addEventListener("change", () => {
+    syncProjectRuntimeFieldsFromDefaultPath();
+    updateCodexSpawnAgentControlAvailability();
+  });
+  els.codexModeInput?.addEventListener("change", updateCodexSpawnAgentControlAvailability);
+  els.codexProviderKindInput?.addEventListener("change", updateCodexSpawnAgentControlAvailability);
+  els.codexRuntimeModeInput?.addEventListener("change", updateCodexSpawnAgentControlAvailability);
   els.projectChatgptThreadSelect.addEventListener("change", syncProjectChatgptUrlFromSelection);
   els.addThreadButton.addEventListener("click", () => openThreadDrawer("new"));
   els.threadForm.addEventListener("submit", handleThreadFormSubmit);
@@ -5660,6 +8778,24 @@ function bindEvents() {
     const result = await bridge.openChatgptSettings();
     setLastEvent(result.ok ? `Requested ChatGPT settings (${result.method}).` : `ChatGPT settings failed (${result.method}).`);
   });
+  els.directAuthRefreshButton.addEventListener("click", refreshDirectAuthStatus);
+  els.directAuthStorageModeSelect.addEventListener("change", () => setDirectAuthStorageMode(els.directAuthStorageModeSelect.value));
+  els.directAuthLoginButton.addEventListener("click", beginDirectAuthLogin);
+  els.directAuthLogoutButton.addEventListener("click", logoutDirectAuth);
+  els.directRuntimePathSelect?.addEventListener("change", renderDirectRuntimeStatus);
+  els.directRuntimePathApplyButton?.addEventListener("click", () => setDirectRuntimePathFromControl(els.directRuntimePathSelect));
+  els.codexRuntimeQuickSelect?.addEventListener("change", renderDirectRuntimeStatus);
+  els.codexRuntimeQuickApplyButton?.addEventListener("click", () => setDirectRuntimePathFromControl(els.codexRuntimeQuickSelect));
+  els.codexRuntimeSettingsButton?.addEventListener("click", () => {
+    setMiddleTab("project");
+    setLastEvent("Opened Project settings for direct runtime details.");
+  });
+  els.directImplementationRefreshButton?.addEventListener("click", () => refreshDirectImplementationUiStatus().catch((error) => setLastEvent(`Direct implementation UI refresh failed: ${error.message}`)));
+  els.directMetaSessionRefreshButton?.addEventListener("click", () => refreshDirectMetaSessionStatus().catch((error) => setLastEvent(`Meta-session status refresh failed: ${error.message}`)));
+  els.directBridgeSettingsRefreshButton?.addEventListener("click", () => refreshDirectBridgeSettingsStatus().catch((error) => setLastEvent(`Bridge settings status refresh failed: ${error.message}`)));
+  els.directTextOnlyEnableButton?.addEventListener("click", selectDirectTextOnlyRuntime);
+  els.directExperimentalEnableButton?.addEventListener("click", enableDirectExperimentalRuntime);
+  els.directExperimentalRollbackButton?.addEventListener("click", rollbackDirectExperimentalRuntime);
   els.refreshWorkTreeButton.addEventListener("click", loadWorkTreeRoot);
   els.refreshWatchedButton.addEventListener("click", loadWatchedArtifacts);
   els.webBackButton.addEventListener("click", () => {
@@ -5819,6 +8955,25 @@ function bindEvents() {
       const details = event.reason ? `: ${event.reason}` : "";
       setLastEvent(`Codex approval requested via ${event.method}${details}`);
     }
+    if (event.type === "direct-auth-status") {
+      state.directAuthStatus = event.status || state.directAuthStatus;
+      state.directAuthSettings = event.settings || state.directAuthSettings;
+      renderDirectAuthControls();
+      setLastEvent(`Direct auth ${event.action}: ${directAuthStatusLabel(state.directAuthStatus)}.`);
+    }
+    if (event.type === "direct-auth-bridge-status") {
+      setLastEvent(`Direct auth bridge ${event.status || "unknown"}: ${event.reason || "no details"}`);
+    }
+    if (event.type === "direct-runtime-status") {
+      state.directRuntimeStatus = event.status || state.directRuntimeStatus;
+      renderDirectAuthControls();
+      refreshDirectImplementationUiStatus(activeProject()?.id || "", { renderBefore: false }).catch(() => {});
+      setLastEvent(`Direct runtime ${directRuntimeModeLabel(state.directRuntimeStatus)}: ${directRuntimeStatusLabel(state.directRuntimeStatus)}.`);
+    }
+    if (event.type === "codex-runtime-auto-routed" && event.projectId && event.toRuntimePath) {
+      state.activeCodexRuntimePathByProject[event.projectId] = event.toRuntimePath;
+      renderDirectRuntimeStatus();
+    }
     if (event.type === "codex-request-updated" && event.request?.key) {
       const request = event.request;
       if (["resolved", "declined", "canceled", "connection-closed"].includes(request.status)) {
@@ -5848,8 +9003,11 @@ async function init() {
   state.platform = result.platform || "";
   state.defaultWorkspace = result.defaultWorkspace || null;
   state.defaultCodexRuntime = result.defaultCodexRuntime || "auto";
+  state.directRuntimeStatus = result.directRuntimeStatus || null;
+  state.directMetaSessionStatus = result.directMetaSessionStatus || null;
   state.allowNonChatgptUrls = Boolean(result.allowNonChatgptUrls);
   render();
+  await loadDirectAuthSettings();
   await loadMiddleWebHistory();
   await selectProject(state.config.selectedProjectId);
   await loadChatgptRecentThreads({ refresh: false });

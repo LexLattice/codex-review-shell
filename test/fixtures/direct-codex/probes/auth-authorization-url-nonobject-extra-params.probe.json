@@ -1,0 +1,25 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.authorization_url_nonobject_extra_params",
+  "name": "OAuth Authorization URL Nonobject Extra Params Shape",
+  "hypothesis": "A malformed extraParams value is ignored instead of being expanded into query parameters.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/authorization-url-nonobject-extra-params"
+  },
+  "authShape": {
+    "operation": "authorization_url"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "pkceChallenge",
+      "url"
+    ]
+  },
+  "blockedLiveGates": [
+    "No browser launch.",
+    "No localhost callback server.",
+    "No live OAuth authorization request."
+  ]
+}

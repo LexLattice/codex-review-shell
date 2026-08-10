@@ -1,0 +1,60 @@
+{
+  "events": [
+    {
+      "type": "session_started",
+      "sequence": 0,
+      "source": {
+        "rawIndex": 0,
+        "rawType": "response.created"
+      },
+      "responseId": "resp_fixture_reasoning",
+      "model": "gpt-5.4"
+    },
+    {
+      "type": "reasoning_delta",
+      "sequence": 1,
+      "source": {
+        "rawIndex": 1,
+        "rawType": "response.reasoning_summary_text.delta"
+      },
+      "itemId": "rs_fixture",
+      "text": "Need inspect the fixture contract.",
+      "visibility": "summary"
+    },
+    {
+      "type": "message_delta",
+      "sequence": 2,
+      "source": {
+        "rawIndex": 2,
+        "rawType": "response.output_text.delta"
+      },
+      "itemId": "msg_reasoning",
+      "text": "Fixture contract is stable."
+    },
+    {
+      "type": "usage_delta",
+      "sequence": 3,
+      "source": {
+        "rawIndex": 3,
+        "rawType": "response.completed"
+      },
+      "usage": {
+        "inputTokens": 20,
+        "outputTokens": 7,
+        "totalTokens": 27,
+        "cachedInputTokens": 5,
+        "reasoningTokens": 3
+      }
+    },
+    {
+      "type": "response_completed",
+      "sequence": 3,
+      "source": {
+        "rawIndex": 3,
+        "rawType": "response.completed"
+      },
+      "responseId": "resp_fixture_reasoning",
+      "stopReason": "completed"
+    }
+  ]
+}

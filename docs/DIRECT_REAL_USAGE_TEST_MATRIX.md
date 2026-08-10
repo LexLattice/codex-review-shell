@@ -1,0 +1,90 @@
+# Direct Real Usage Test Matrix
+
+Status: live/regression planning matrix for `codex/direct-chatgpt-harness`.
+
+This matrix defines the real usage scenarios we should run when validating the
+direct harness with actual app-server/direct provider traffic. Fixture and
+preflight cases remain in the matrix because they prove safety boundaries that
+must hold before and after live calls.
+
+Current evidence ledger:
+
+- [2026-05-16 round-2 evidence ledger](./audits/DIRECT_REAL_USAGE_EVIDENCE_LEDGER_2026-05-16.md)
+
+## Run Levels
+
+| Level | Provider calls | Purpose |
+| --- | --- | --- |
+| `preflight` | No | Proves disposable workspace setup, opt-in guards, local authority blockers, report redaction, and script health. |
+| `live-text` | Yes | Proves app-server baseline and direct text-only first/follow-up turns against current credentials. |
+| `live-implementation` | Yes | Proves real provider tool-call intent plus local read/patch/command authority in a disposable workspace. |
+| `fixture-ui` | No | Proves user-facing runtime path switching and persisted defaults without live transport. |
+| `electron-ui` | No provider model call | Proves visible Electron controls, restart persistence, and settings preservation. |
+
+## Matrix
+
+| Scenario | Level | Runner | Expected Behavior | Main Evidence |
+| --- | --- | --- | --- | --- |
+| `RU-PRE-001` | `preflight` | `node scripts/direct-real-usage-regression.mjs --mode=preflight --run-fixture-smoke` | Creates an isolated disposable workspace and records no provider transport. | `preflight_workspace.providerRequestStarted=false` |
+| `RU-LIVE-001` | `live-text` | `node scripts/direct-real-usage-regression.mjs --mode=live --allow-live-provider-call --run-live-probe` | Records exact-scope runtime-probed direct text evidence. | `liveProbe.status=runtime_probed` or a precise failure reason |
+| `RU-APP-001` | `live-text` | same live text run | App-server baseline returns a completed assistant answer. | `appserver_baseline.status=passed` |
+| `RU-DIR-001` | `live-text` | same live text run | Direct empty-context first turn completes with provider bytes observed. | `direct_strict_first_turn.status=passed` |
+| `RU-DIR-002` | `live-text` | same live text run | Direct recent-dialogue follow-up completes from local context refs, not provider continuity. | `direct_strict_followup.status=passed` |
+| `RU-GUARD-001` | `live-text` | same live text run | Direct turn without opt-in is blocked before provider transport. | `direct_opt_in_guard.providerRequestStarted=false` |
+| `RU-IDEM-001` | `live-text` | same live text run | Repeating a completed `client-run-id` returns existing status without rewrite/resend. | `direct_client_run_id_idempotency.status=passed` |
+| `RU-IMP-001` | `live-implementation` | `node scripts/direct-implementation-proof-regression.mjs --mode=live --allow-live-provider-call --scenarios=read --include-negative-safety` | Provider emits `read_file`, local authority reads one file, continuation completes. | `real_provider_read.countsAsRealProviderProof=true` |
+| `RU-IMP-002` | `live-implementation` | `node scripts/direct-implementation-proof-regression.mjs --mode=live --allow-live-provider-call --scenarios=read_loop --include-negative-safety` | Provider can continue through a bounded sequential read if it requests a second file. | `real_provider_read_loop.countsAsRealProviderProof=true` |
+| `RU-IMP-003` | `live-implementation` | `node scripts/direct-implementation-proof-regression.mjs --mode=live --allow-live-provider-call --scenarios=patch --include-negative-safety` | Provider emits `apply_patch`, local authority applies patch in disposable workspace, continuation completes. | `real_provider_patch.countsAsRealProviderProof=true` |
+| `RU-IMP-004` | `live-implementation` | `node scripts/direct-implementation-proof-regression.mjs --mode=live --allow-live-provider-call --scenarios=command --include-negative-safety` | Provider emits `run_command`, local authority runs package script, workspace-effect scan runs, continuation completes. | `real_provider_command.countsAsRealProviderProof=true` |
+| `RU-NEG-001` | `preflight` | `node scripts/direct-implementation-proof-regression.mjs --mode=preflight --include-negative-safety` | Patch delete is blocked by local authority. | `negative_patch_delete_deferred.status=blocked` |
+| `RU-NEG-002` | `preflight` | same preflight implementation run | Network/helper command is blocked by local authority. | `negative_command_network_helper_blocked.status=blocked` |
+| `RU-PATH-001` | `fixture-ui` | `npm run direct:runtime-path` | User-facing app-server/direct-text/direct-implementation switch persists and preserves existing model/reasoning settings. | runtime path regression passes |
+| `RU-LEDGER-001` | `preflight` | `npm run direct:evidence-ledger -- --matrix-report ... --live-text-report ... --implementation-reports ... --ui-report ... --context-report ...` | Aggregates selected live, fixture, and UI reports into one row-level evidence ledger without starting provider/app-server/tool authority. | `rug001Closed=true`, raw exposure passes, sentinels are zero |
+| `RU-PATH-002` | `electron-ui` | `npm run direct:runtime-path:electron` | Visible Electron path selector reads a persisted Direct Text default, switches back to App Server, recognizes copied real live-probe evidence, switches App Server -> Direct Text, survives restart, and preserves model/reasoning/permission settings. | `directTextSelectionExercised=true`; Direct Tools remains blocked unless implementation-lane gate evidence is present |
+| `RU-UI-001` | `electron-ui` + live provider | `npm run direct:electron-read-approval -- --scenario read --allow-live-provider-call`; repeat with `--scenario patch` and `--scenario command` | Visible App Server -> Direct Text -> Direct Tools route shows approval cards for read/patch/command, accepts user approval, records renderer-safe status/history rows, and completes provider continuation. | Read passed `14/14`; patch and command passed `16/16`; patch shows `summary_only` workspace visibility and command shows clean workspace scan |
+| `RU-CTX-001` | `preflight` | `npm run direct:long-context-pressure` | Builds a real long Direct thread in the session/thread stores, detects context pressure, records deterministic trim/omission artifacts, and builds the next context pack/request manifest without provider/app-server/tool authority. | `rug005Closed=true`; provider transport and provider compact sentinels are zero; omission parity passes |
+| `RU-CTX-002` | `preflight` | `npm run direct:appserver-sibling-context` | Normalizes app-server-shaped context compaction and memory events as sibling-only evidence, projects them into display-only status, then switches to a Direct thread and proves no Direct context/memory/compaction authority bleeds through. | `rug006Closed=true`; app-server spawn/mutation and Direct context-from-sibling sentinels are zero |
+| `RU-CTX-003` | `preflight` | `npm run direct:provider-compact-gate` | Requests provider compaction through the route selector without exact compact primitive evidence and proves the route blocks rather than invoking provider/app-server/workspace authority or promoting `A12`. | `providerCompactPrimitive.supportState=live_gated_unproved`; `A12_providerCompaction=false`; provider compact and transport sentinels are zero |
+| `RU-FORK-001` | `fixture-provider-shaped` / `live-text` | `npm run direct:fresh-fork-start -- --mode fixture`; live promotion: `npm run direct:fresh-fork-start -- --mode live --allow-live-provider-call` | Builds a valid fork preview, prepares a confirmed fresh fork start, creates a fresh direct-native session, persists seed/context/manifest artifacts, sends exactly one first-turn provider-shaped request, and proves no source provider continuity. | Fixture mode: `coverageSource=fixture_provider_shaped`, `matrixPromotionCandidate=false`; live run `rug007_fresh_fork_start_live_20260518` passed `10/10` with `coverageSource=real_provider`, `matrixPromotionCandidate=true`, and `rug007Closed=true` |
+| `RU-IMPORT-001` | `fixture-provider-shaped` / `live-text` | `npm run direct:import-checkpoint-continuation -- --mode fixture`; live promotion: `npm run direct:import-checkpoint-continuation -- --mode live --allow-live-provider-call` | Materializes a validated imported checkpoint as read-only, starts a fresh Direct checkpoint continuation, persists seed/context/request-shape artifacts, sends exactly one provider-shaped request, and proves no imported provider continuity or tool replay. | Fixture mode: `coverageSource=fixture_provider_shaped`, `matrixPromotionCandidate=false`; live run `rug008_import_checkpoint_continuation_live_20260518` passed `13/13` with `coverageSource=real_provider`, `matrixPromotionCandidate=true`, and `rug008Closed=true` |
+| `RU-STATUS-001` | `fixture-provider-shaped` / `live-readonly` | `npm run direct:model-quota-usage-status`; live-readonly promotion: `npm run direct:model-quota-usage-status -- --mode live-readonly --allow-live-status-read` | Projects model catalog, usage ledger, quota/rate snapshot, runtime evidence facets, drift/status chips, and disabled cost/control state from fixture or existing live-probe evidence without starting provider transport or app-server/tool authority. | Fixture mode: `coverageSource=fixture_provider_shaped`, `matrixPromotionCandidate=false`; live-readonly mode: `coverageSource=live_readonly_status`, `rug009Closed=true` when usable runtime-probed evidence exists |
+| `RU-GOV-001` | `live-text` | `npm run direct:governance-live-non-authority -- --allow-live-provider-call` | Sends a real Direct text turn with governance shadow refs present and proves `wouldBlockInFutureEnforceMode` cannot block, route, enable tools, or mutate provider input. | Live run `rug011_governance_live_non_authority_20260518` passed `5/5` with `coverageSource=real_provider`, `matrixPromotionCandidate=true`, and `rug011Closed=true` |
+| `RU-AGENT-001` | `live-readonly` | `npm run direct:appserver-sub-agent-source`; optional captured source: `--source-file <app-server-event.json>` or `--source-root <safe-json-root>` | Reads captured app-server sub-agent/collab evidence without starting app-server, mutating app-server, spawning/waiting/sending/closing agents, building context, or granting Direct provider authority. | No-source mode records `rug012Closed=false` and zero sentinels; captured-source mode records `coverageSource=live_readonly_app_server_source`, renderer-safe graph/progress projection ids, `rug012Closed=true`, and zero authority sentinels |
+
+## Default Execution Order
+
+1. `RU-PRE-001`, `RU-NEG-001`, `RU-NEG-002`, and `RU-PATH-001`.
+2. `RU-LIVE-001` through `RU-IDEM-001`.
+3. `RU-IMP-001`.
+4. `RU-IMP-002`.
+5. `RU-IMP-003`.
+6. `RU-IMP-004`.
+7. `RU-LEDGER-001` after all selected reports exist.
+8. `RU-PATH-002` for visible Electron persistence coverage.
+9. `RU-UI-001` for visible read/patch/command approval-card coverage.
+10. `RU-CTX-001` after context/status fixture coverage is green.
+11. `RU-CTX-002` after `RU-CTX-001`.
+12. `RU-CTX-003` after context route/status fixture coverage is green.
+13. `RU-FORK-001` fixture mode before any live fresh-fork promotion run.
+14. `RU-IMPORT-001` fixture mode before any live import-checkpoint promotion run.
+15. `RU-STATUS-001` fixture mode before any live-readonly status promotion run.
+16. `RU-GOV-001` after governance fixture diagnostics are green and live text evidence exists.
+17. `RU-AGENT-001` only when captured app-server sub-agent/collab source evidence is available; default no-source mode remains a safe availability check.
+
+Stop and cluster failures by theory before continuing to a higher-risk level.
+For example, an evidence-scope failure in `RU-LIVE-001` should be fixed before
+running implementation-lane tool scenarios.
+
+After the stepped escalation is green, a consolidated implementation run may use
+`--scenarios=read,read_loop,patch,command` to produce one final proof report.
+
+## Safety Rules
+
+- Live provider calls require `--allow-live-provider-call` or
+  `CODEX_DIRECT_REAL_TURN=1`.
+- CI live calls require `CODEX_DIRECT_REAL_TURN_ALLOW_CI=1`.
+- Implementation scenarios use disposable workspaces.
+- Reports must not include raw credentials, raw provider bodies, absolute
+  workspace paths, raw ChatGPT URLs, or raw backend frames.
+- App-server and direct results are compared as separate runtime families, not
+  merged as one authority source.

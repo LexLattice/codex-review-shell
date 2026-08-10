@@ -1,0 +1,77 @@
+{
+  "schema": "direct_codex_profile_delta@1",
+  "source": "fixture",
+  "fixtureId": "raw/failure-cases",
+  "normalizedEventCounts": {
+    "response_incomplete": 1,
+    "response_failed": 1,
+    "auth_error": 1,
+    "quota_error": 1,
+    "transport_error": 1,
+    "aborted": 1
+  },
+  "rawEventTypes": [
+    "aborted",
+    "error",
+    "response.failed",
+    "response.incomplete"
+  ],
+  "unknownRawTypes": [],
+  "proposedCapabilities": [
+    {
+      "capabilityId": "event.normalized.aborted",
+      "eventType": "aborted",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/failure-cases",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.auth_error",
+      "eventType": "auth_error",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/failure-cases",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.quota_error",
+      "eventType": "quota_error",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/failure-cases",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.response_failed",
+      "eventType": "response_failed",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/failure-cases",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.response_incomplete",
+      "eventType": "response_incomplete",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/failure-cases",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.transport_error",
+      "eventType": "transport_error",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/failure-cases",
+        "eventCount": 1
+      }
+    }
+  ],
+  "acceptance": "candidate"
+}

@@ -13,6 +13,21 @@ function decodePayload() {
   }
 }
 
+function createClientTurnRequestId() {
+  if (window.crypto?.randomUUID) return `client_turn_${window.crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  return `client_turn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function stringDigest(value) {
+  const text = String(value ?? "");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 const bridge = window.codexSurfaceBridge;
 const payload = decodePayload() || {};
 const project = payload.project || null;
@@ -22,7 +37,7 @@ const USER_MESSAGE_PAGE_SIZE = 10;
 const USER_MESSAGE_PREVIEW_LINES = 10;
 const MAX_COMMAND_OUTPUT_CHARS = 1200;
 const EMPTY_TURN_AUTO_RETRY_LIMIT = 1;
-const DEFAULT_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+const DEFAULT_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const APPROVAL_POLICY_OPTIONS = ["", "untrusted", "on-failure", "on-request", "never"];
 const SANDBOX_MODE_OPTIONS = ["", "read-only", "workspace-write", "danger-full-access"];
 const MODEL_LIST_PAGE_LIMIT = 100;
@@ -44,6 +59,9 @@ const TOOL_LIKE_THOUGHT_TYPES = new Set([
   "dynamicToolCall",
   "webSearch",
 ]);
+const DIRECT_FIXTURE_TRANSPORT = "direct-fixture";
+const DIRECT_LIVE_TEXT_TRANSPORT = "direct-live-text";
+const DIRECT_TRANSPORTS = new Set([DIRECT_FIXTURE_TRANSPORT, DIRECT_LIVE_TEXT_TRANSPORT]);
 const ACTIVE_TURN_STATUS_SET = new Set([
   "inprogress",
   "in_progress",
@@ -59,6 +77,54 @@ const THOUGHT_ASSISTANT_PHASES = new Set([
   // Canonical Codex phase for interim assistant preamble/progress text.
   "commentary",
 ]);
+
+function localStorageGet(key, fallback = "") {
+  try {
+    return window.localStorage?.getItem(key) ?? fallback;
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function localStorageSet(key, value) {
+  try {
+    window.localStorage?.setItem(key, String(value));
+  } catch (_error) {
+    // Local storage can be unavailable in hardened or test contexts.
+  }
+}
+
+function projectSpawnAgentOrchestrationInstructions() {
+  if (project?.codex?.spawnAgentModelOverrides !== true) return "";
+  return [
+    "Project-scoped orchestration intent:",
+    "- You may use the canonical V2 model/reasoning-effort override fields for bounded specialist workers when parallel delegation materially helps the task.",
+    "- Prefer fork_turns=\"none\", reasoning_effort=\"low\", and omit model for a lower-cost worker unless the user or project profile explicitly requires another active-backend-compatible model.",
+    "- Full-history forks inherit the parent model and effort; do not send model or reasoning_effort overrides with fork_turns=\"all\" or an omitted fork_turns value.",
+    "- This orchestration profile does not broaden worker tool, filesystem, network, or authorization scope.",
+  ].join("\n");
+}
+
+function mergeDeveloperInstructions(configuredInstructions, scopedInstructions) {
+  return [configuredInstructions, scopedInstructions]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+async function configuredDeveloperInstructionsForCwd(cwd) {
+  try {
+    const response = await rpc("config/read", {
+      includeLayers: false,
+      cwd: cwd || null,
+    });
+    return String(response?.config?.developer_instructions || "").trim();
+  } catch (_error) {
+    // developerInstructions replaces the configured value. If the effective
+    // config cannot be read, preserve it by omitting the scoped override.
+    return null;
+  }
+}
 
 const state = {
   threadId: "",
@@ -107,6 +173,19 @@ const state = {
   runtimeConstitution: null,
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
+  analyticsPanelOpen: localStorageGet("codex.threadAnalyticsPanel.open", "false") === "true",
+  analyticsPanelDock: localStorageGet("codex.threadAnalyticsPanel.dock", "right"),
+  directSurfaceProjection: payload.directSurfaceProjection || connection?.directSurfaceProjection || null,
+  directUiStatus: null,
+  directUiStatusState: "idle",
+  directUiStatusError: "",
+  directUiOperationHistory: null,
+  directUiPolicyView: null,
+  directThreadList: [],
+  directThreadDeck: null,
+  directThreadListStatus: "idle",
+  directThreadListError: "",
+  directThreadOpenRequestId: 0,
   composerMenu: "",
   composerAttachments: [],
   composerAttachmentGeneration: 0,
@@ -135,6 +214,7 @@ const state = {
   turnRetryCountMap: new Map(),
   emptyTurnRetrying: new Set(),
   serverRequests: new Map(),
+  contextManagementEvidenceKeys: new Set(),
   connected: false,
   readyForThreadOpen: false,
   pendingOpenThreadEvent: null,
@@ -166,7 +246,7 @@ function capabilityArea(area) {
 }
 
 function connectionAvailable() {
-  return Boolean(connection?.available || connection?.wsUrl);
+  return Boolean(connection?.available || connection?.wsUrl || DIRECT_TRANSPORTS.has(connection?.transport));
 }
 
 function hasCapability(area, name) {
@@ -242,6 +322,73 @@ async function reportAgentGraph() {
   } catch {
     // Agent graph reporting is advisory and must not block transcript rendering.
   }
+}
+
+function contextManagementEvidenceKey(kind, id) {
+  return [state.threadId || "", kind, id || ""].map((value) => String(value || "")).join(":");
+}
+
+function contextThreadItemEvidenceKey(item = {}) {
+  const id = String(item.itemId || item.id || "").trim();
+  if (!id) return "";
+  const type = String(item.type || "item").trim();
+  const memoryKey = String(item.memoryCitation?.evidenceKey || item.memoryCitation?.memoryId || "").trim();
+  return contextManagementEvidenceKey("item", [type, id, memoryKey].filter(Boolean).join(":"));
+}
+
+function contextControlEvidenceKey(control = {}) {
+  const method = String(control.method || "").trim();
+  const evidenceKey = String(control.evidenceKey || "").trim();
+  if (!method || !evidenceKey) return "";
+  return contextManagementEvidenceKey("control", `${method}:${evidenceKey}`);
+}
+
+async function reportContextManagementEvidence(input = {}) {
+  if (!bridge?.reportContextManagementEvidence) return;
+  const threadId = String(input.threadId || state.threadId || "");
+  if (!threadId) return;
+  const threadItems = Array.isArray(input.threadItems) ? input.threadItems : [];
+  const controlsObserved = Array.isArray(input.controlsObserved) ? input.controlsObserved : [];
+  const pendingKeys = [];
+  const newThreadItems = threadItems.filter((item) => {
+    const key = contextThreadItemEvidenceKey(item);
+    if (!key || state.contextManagementEvidenceKeys.has(key)) return false;
+    pendingKeys.push(key);
+    return true;
+  });
+  const newControlsObserved = controlsObserved.filter((control) => {
+    const key = contextControlEvidenceKey(control);
+    if (!key || state.contextManagementEvidenceKeys.has(key)) return false;
+    pendingKeys.push(key);
+    return true;
+  });
+  if (!newThreadItems.length && !newControlsObserved.length) return;
+  try {
+    await bridge.reportContextManagementEvidence({
+      projectId: project?.id || payload.codexConnection?.projectId || "",
+      threadId,
+      activationEpoch: Number(payload.activationEpoch) || 0,
+      threadItems: newThreadItems,
+      controlsObserved: newControlsObserved,
+    });
+    for (const key of pendingKeys) state.contextManagementEvidenceKeys.add(key);
+    if (state.runtimeDrawerOpen && state.runtimeDrawerTab === "implementation") {
+      refreshDirectImplementationUi({ force: true }).catch(() => {});
+    }
+  } catch {
+    // Context evidence reporting is status-only and must never block rendering.
+  }
+}
+
+function maybeReportContextManagementControl(request = {}) {
+  const method = String(request.method || "");
+  if (!["thread/compact/start", "thread/memoryMode/set", "memory/reset"].includes(method)) return;
+  reportContextManagementEvidence({
+    controlsObserved: [{
+      method,
+      evidenceKey: String(request.key || request.requestId || method),
+    }],
+  }).catch(() => {});
 }
 
 function shortAgentThreadId(threadId) {
@@ -361,6 +508,18 @@ function resetAgentGraph(threadId = state.threadId) {
 }
 
 const els = {
+  codexShell: document.getElementById("codexShell"),
+  morphicCockpitBar: document.getElementById("morphicCockpitBar"),
+  morphicThreadTitle: document.getElementById("morphicThreadTitle"),
+  morphicThreadMeta: document.getElementById("morphicThreadMeta"),
+  morphicRuntimePathChip: document.getElementById("morphicRuntimePathChip"),
+  morphicTurnChip: document.getElementById("morphicTurnChip"),
+  morphicNewThreadButton: document.getElementById("morphicNewThreadButton"),
+  morphicAnalyticsButton: document.getElementById("morphicAnalyticsButton"),
+  morphicSettingsButton: document.getElementById("morphicSettingsButton"),
+  morphicThreadRail: document.getElementById("morphicThreadRail"),
+  morphicThreadRailList: document.getElementById("morphicThreadRailList"),
+  morphicThreadDirectoryButton: document.getElementById("morphicThreadDirectoryButton"),
   projectName: document.getElementById("projectName"),
   repoPath: document.getElementById("repoPath"),
   connectionBadge: document.getElementById("connectionBadge"),
@@ -369,6 +528,7 @@ const els = {
   reasoningBadge: document.getElementById("reasoningBadge"),
   accessBadge: document.getElementById("accessBadge"),
   usageBadge: document.getElementById("usageBadge"),
+  analyticsPanelButton: document.getElementById("analyticsPanelButton"),
   runtimeDrawerButton: document.getElementById("runtimeDrawerButton"),
   environmentChipCluster: document.getElementById("environmentChipCluster"),
   controlChipCluster: document.getElementById("controlChipCluster"),
@@ -378,6 +538,17 @@ const els = {
   runtimeDrawerClose: document.getElementById("runtimeDrawerClose"),
   runtimeDrawerTabs: document.getElementById("runtimeDrawerTabs"),
   runtimeDrawerBody: document.getElementById("runtimeDrawerBody"),
+  threadAnalyticsPanel: document.getElementById("threadAnalyticsPanel"),
+  threadAnalyticsPanelClose: document.getElementById("threadAnalyticsPanelClose"),
+  threadAnalyticsPanelTitle: document.getElementById("threadAnalyticsPanelTitle"),
+  threadAnalyticsPanelMeta: document.getElementById("threadAnalyticsPanelMeta"),
+  threadAnalyticsPanelBody: document.getElementById("threadAnalyticsPanelBody"),
+  threadAnalyticsDockButtons: document.getElementById("threadAnalyticsDockButtons"),
+  directThreadStrip: document.getElementById("directThreadStrip"),
+  directThreadStatus: document.getElementById("directThreadStatus"),
+  directThreadList: document.getElementById("directThreadList"),
+  directThreadRefreshButton: document.getElementById("directThreadRefreshButton"),
+  directThreadNewButton: document.getElementById("directThreadNewButton"),
   transcript: document.getElementById("transcript"),
   composerForm: document.getElementById("composerForm"),
   composerInput: document.getElementById("composerInput"),
@@ -412,11 +583,93 @@ function workspaceText() {
 function updateSurfaceHeader(title = "", detail = "") {
   const cleanTitle = String(title || "").trim();
   state.threadTitle = cleanTitle || state.threadTitle || "";
-  els.projectName.textContent = state.threadTitle || project?.name || "Codex session";
-  els.projectName.title = state.threadTitle || project?.name || "";
-  els.repoPath.textContent = detail || workspaceText();
-  els.repoPath.title = detail || workspaceText();
+  if (els.projectName) {
+    els.projectName.textContent = state.threadTitle || project?.name || "Codex session";
+    els.projectName.title = state.threadTitle || project?.name || "";
+  }
+  if (els.repoPath) {
+    els.repoPath.textContent = detail || workspaceText();
+    els.repoPath.title = detail || workspaceText();
+  }
   renderRuntimeConstitution();
+}
+
+function runtimePathLabel() {
+  if (isDirectLiveTextSurface()) return "Direct";
+  if (connectionAvailable()) return "Appserver";
+  if (payload.runtimeStartupPending) return "Starting";
+  return "Offline";
+}
+
+function canStartThreadFromCompactBar() {
+  if (state.turnPending || turnIsActive()) return false;
+  if (isDirectLiveTextSurface()) {
+    const startAction = state.directThreadDeck?.actions?.start || null;
+    if (startAction && startAction.enabled === false) return false;
+    return typeof bridge?.createDirectWorkThreadDraftSession === "function" && Boolean(project?.id);
+  }
+  return hasCapability("threads", "canStart");
+}
+
+function renderMorphicCockpit() {
+  const title = state.threadTitle || project?.name || "Codex session";
+  const meta = [
+    state.threadId ? `thread ${state.threadId}` : "no thread selected",
+    workspaceText(),
+  ].filter(Boolean).join(" · ");
+  if (els.morphicThreadTitle) {
+    els.morphicThreadTitle.textContent = title;
+    els.morphicThreadTitle.title = title;
+  }
+  if (els.morphicThreadMeta) {
+    els.morphicThreadMeta.textContent = meta;
+    els.morphicThreadMeta.title = meta;
+  }
+  if (els.morphicRuntimePathChip) {
+    const runtimeText = runtimePathLabel();
+    const ready = isDirectLiveTextSurface() || connectionAvailable();
+    els.morphicRuntimePathChip.textContent = runtimeText;
+    els.morphicRuntimePathChip.className = `compact-thread-chip runtime ${ready ? "active" : "warning"}`;
+    els.morphicRuntimePathChip.title = `Runtime path: ${runtimeText}. Open runtime/settings details.`;
+  }
+  if (els.morphicTurnChip) {
+    const active = turnIsActive();
+    const queuedCount = currentQueuedComposerMessages().length;
+    const elapsedLabel = activeTurnElapsedLabel();
+    const text = state.turnStopping
+      ? `Stopping${elapsedLabel ? ` ${elapsedLabel}` : ""}`
+      : state.turnPending
+        ? "Starting"
+        : state.queuedPromptDrainInProgress
+          ? "Sending queued"
+          : active
+            ? `Working${elapsedLabel ? ` ${elapsedLabel}` : ""}${queuedCount ? ` · Q${queuedCount}` : ""}`
+            : queuedCount
+              ? `Queued ${queuedCount}`
+              : "Idle";
+    const statusClass = active
+      ? "active"
+      : state.turnPending || state.queuedPromptDrainInProgress || queuedCount
+        ? "warning"
+        : "";
+    els.morphicTurnChip.textContent = text;
+    els.morphicTurnChip.className = `compact-thread-chip status${statusClass ? ` ${statusClass}` : ""}`;
+    els.morphicTurnChip.title = active
+      ? `Codex turn is active${elapsedLabel ? ` for ${elapsedLabel}` : ""}.`
+      : queuedCount
+        ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`
+        : "Codex thread is idle.";
+  }
+  if (els.morphicNewThreadButton) {
+    const canStart = canStartThreadFromCompactBar();
+    els.morphicNewThreadButton.disabled = !canStart;
+    els.morphicNewThreadButton.title = canStart
+      ? "Start a fresh Codex thread in the current project."
+      : state.turnPending || turnIsActive()
+        ? "New thread is unavailable while the current Codex turn is active."
+        : "Current runtime has not exposed thread start capability.";
+  }
+  renderMorphicThreadRail();
 }
 
 function setBadge(element, text, className = "") {
@@ -482,16 +735,58 @@ function attachmentReferenceBlock() {
   return ["", "Attachments staged as workspace references:", ...lines].join("\n");
 }
 
+function composerAttachmentDraftsForSubmit() {
+  return state.composerAttachments
+    .filter((attachment) => attachment && attachment.status === "ready")
+    .map((attachment) => ({
+      id: attachment.id || "",
+      projectId: attachment.projectId || "",
+      surfaceId: attachment.surfaceId || "codex",
+      status: attachment.status || "",
+      kind: attachment.kind || "file",
+      displayName: attachment.displayName || attachment.originalName || "attachment",
+      originalName: attachment.originalName || "",
+      mimeType: attachment.mimeType || "application/octet-stream",
+      sizeBytes: Number(attachment.sizeBytes || 0),
+      workspaceRelPath: attachment.workspaceRelPath || "",
+      stagedRelPath: attachment.stagedRelPath || "",
+      sourcePathEvidenceKey: attachment.sourcePathEvidenceKey || "",
+      stagedPathEvidenceKey: attachment.stagedPathEvidenceKey || "",
+      workspaceEvidenceKey: attachment.workspaceEvidenceKey || "",
+      provider: {
+        disposition: attachment.provider?.disposition || "",
+        reason: attachment.provider?.reason || "",
+        capabilityEvidenceState: attachment.provider?.capabilityEvidenceState || "",
+        unsupportedReason: attachment.provider?.unsupportedReason || "",
+      },
+      typeEvidence: {
+        risk: attachment.typeEvidence?.risk || "",
+        finalMime: attachment.typeEvidence?.finalMime || attachment.mimeType || "",
+      },
+    }));
+}
+
+function composerAttachmentDraftSetDigest(attachments = []) {
+  try {
+    return `draftset:${stringDigest(JSON.stringify(attachments))}`;
+  } catch {
+    return `draftset:${Date.now().toString(36)}`;
+  }
+}
+
 function composerDraftProjection() {
   const text = String(els.composerInput?.value || "").trim();
   const attachmentBlock = attachmentReferenceBlock();
   const blockers = attachmentSubmitBlockers();
+  const attachments = composerAttachmentDraftsForSubmit();
   if (blockers.length) {
     return {
       ok: false,
       reason: "unsupported_attachments",
       message: "Remove or fix unsupported attachments before sending.",
       text: "",
+      attachments,
+      attachmentDraftSetDigest: composerAttachmentDraftSetDigest(attachments),
       hasContent: Boolean(text || attachmentBlock),
     };
   }
@@ -501,6 +796,8 @@ function composerDraftProjection() {
       reason: "empty",
       message: "",
       text: "",
+      attachments,
+      attachmentDraftSetDigest: composerAttachmentDraftSetDigest(attachments),
       hasContent: false,
     };
   }
@@ -509,6 +806,8 @@ function composerDraftProjection() {
     reason: "",
     message: "",
     text: `${text || "Review the attached files/images."}${attachmentBlock}`,
+    attachments,
+    attachmentDraftSetDigest: composerAttachmentDraftSetDigest(attachments),
     hasContent: true,
   };
 }
@@ -557,6 +856,8 @@ async function removeComposerAttachment(draftId) {
 }
 
 function renderComposerAttachments() {
+  const visible = Boolean(state.composerAttachments.length || state.composerAttachmentError || state.composerDragDepth);
+  if (els.composerForm) els.composerForm.dataset.attachmentVisible = visible ? "true" : "false";
   if (!els.composerAttachmentList) return;
   els.composerAttachmentList.innerHTML = "";
   for (const attachment of state.composerAttachments) {
@@ -594,6 +895,9 @@ const RUNTIME_DRAWER_TABS = [
   ["model", "Model"],
   ["access", "Access"],
   ["usage", "Usage"],
+  ["implementation", "Implementation"],
+  ["history", "History"],
+  ["policy", "Policy"],
   ["capabilities", "Capabilities"],
   ["environment", "Environment"],
   ["advanced", "Advanced"],
@@ -655,6 +959,86 @@ function providerSettingsProjection() {
   return providerProfile()?.settingsProjection || {};
 }
 
+function directSurfaceProjection() {
+  const projection = state.directSurfaceProjection || connection?.directSurfaceProjection || null;
+  return projection?.schema === "direct_codex_surface_projection@1" ? projection : null;
+}
+
+function directComposerWitness() {
+  const witness = directSurfaceProjection()?.composerRuntimeWitness || null;
+  return witness?.schema === "direct_composer_runtime_witness@1" ? witness : null;
+}
+
+function directRuntimeWitnessChip(kind) {
+  const chips = directSurfaceProjection()?.runtimeWitnessProjection?.chips;
+  return Array.isArray(chips) ? chips.find((chip) => String(chip?.kind || "") === kind) || null : null;
+}
+
+function directProviderMetadataProfile() {
+  const profile = directSurfaceProjection()?.providerMetadataProfile || null;
+  return profile?.schema === "direct_provider_metadata_profile@1" ? profile : null;
+}
+
+function directMetadataModels() {
+  const items = directProviderMetadataProfile()?.modelCatalog?.items;
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((model) => {
+      const id = String(model?.id || model?.model || "").trim();
+      const modelId = String(model?.model || model?.id || "").trim();
+      if (!id && !modelId) return null;
+      return {
+        ...model,
+        id: id || modelId,
+        model: modelId || id,
+        displayName: String(model?.displayName || model?.display_name || modelId || id).trim(),
+        hidden: Boolean(model?.hidden),
+        isDefault: Boolean(model?.isDefault || model?.is_default),
+        supportedReasoningEfforts: Array.isArray(model?.supportedReasoningEfforts)
+          ? model.supportedReasoningEfforts
+          : [],
+        serviceTiers: Array.isArray(model?.serviceTiers)
+          ? model.serviceTiers
+          : [],
+      };
+    })
+    .filter(Boolean);
+}
+
+function effectiveModels() {
+  const directModels = isDirectLiveTextSurface() ? directMetadataModels() : [];
+  return directModels.length ? directModels : state.models;
+}
+
+function applyDirectMetadataModels(projection = directSurfaceProjection()) {
+  if (!projection || !isDirectLiveTextSurface()) return;
+  const profile = projection.providerMetadataProfile;
+  const models = profile?.schema === "direct_provider_metadata_profile@1"
+    ? directMetadataModels()
+    : [];
+  if (!models.length) {
+    state.modelListStatus = projection.metadataCacheState === "missing" ? "unavailable" : state.modelListStatus;
+    return;
+  }
+  state.models = models;
+  state.modelListStatus = projection.metadataCacheState === "stale" ? "stale" : "ready";
+  state.modelListError = "";
+}
+
+function directModelLabel() {
+  const witness = directComposerWitness();
+  const label = String(witness?.modelLabel || "").trim();
+  if (!label || label === "model unknown") return "";
+  return label;
+}
+
+function directReasoningLabel() {
+  const witness = directComposerWitness();
+  const label = String(witness?.reasoningLabel || "").trim();
+  if (!label || label === "reasoning unknown") return "";
+  return label;
+}
+
 function settingScopeEnabled(scope) {
   return Boolean(scope?.nextTurn || scope?.sessionDefault || scope?.projectDefault || scope?.liveThread);
 }
@@ -683,14 +1067,15 @@ function selectedModel() {
 }
 
 function defaultModelId() {
-  const defaultModel = state.models.find((model) => model?.isDefault) || null;
+  const models = effectiveModels();
+  const defaultModel = models.find((model) => model?.isDefault) || null;
   return defaultModel?.model || defaultModel?.id || "";
 }
 
 function modelById(value) {
   const id = String(value || "").trim();
   if (!id) return null;
-  return state.models.find((model) => model?.id === id || model?.model === id) || null;
+  return effectiveModels().find((model) => model?.id === id || model?.model === id) || null;
 }
 
 function supportedReasoningOptions() {
@@ -700,15 +1085,26 @@ function supportedReasoningOptions() {
       .map((item) => String(item?.reasoningEffort || item?.reasoning_effort || "").trim())
       .filter(Boolean)
     : [];
+  if (isDirectLiveTextSurface()) return options;
   return options.length ? options : DEFAULT_REASONING_EFFORTS;
 }
 
 function reasoningLabel() {
+  if (isDirectLiveTextSurface()) {
+    return state.runtimeOverrides.reasoningEffort ||
+      directReasoningLabel() ||
+      project?.codex?.reasoningEffort ||
+      defaultReasoningEffort() ||
+      "unknown";
+  }
   return state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort || selectedModel()?.defaultReasoningEffort || "unknown";
 }
 
 function requestedReasoningEffort() {
-  return state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort || null;
+  if (state.runtimeOverrides.reasoningEffort) return state.runtimeOverrides.reasoningEffort;
+  if (project?.codex?.reasoningEffort) return project.codex.reasoningEffort;
+  if (isDirectLiveTextSurface()) return defaultReasoningEffort() || null;
+  return null;
 }
 
 function approvalPolicyLabel() {
@@ -736,6 +1132,9 @@ function clearedReasoningEffort() {
 }
 
 function defaultServiceTier() {
+  if (isDirectLiveTextSurface()) {
+    return String(selectedModel()?.defaultServiceTier || "").trim();
+  }
   const settingsProjection = providerSettingsProjection();
   return String(
     settingsProjection.serviceTier?.defaultTier ||
@@ -891,6 +1290,15 @@ function formatQuotaHeader() {
 }
 
 function composerQuotaLabel() {
+  if (isDirectLiveTextSurface()) {
+    const witness = directComposerWitness();
+    const quota = String(witness?.quotaLabel || "").trim();
+    const usage = String(witness?.usageLabel || "").trim();
+    const quotaState = String(witness?.quotaState || "").trim();
+    if (usage && usage !== "usage unknown" && (!quota || quota === "quota unknown" || quotaState === "unknown")) return usage;
+    if (quota && usage && usage !== "usage unknown") return `${quota} / ${usage}`;
+    if (quota) return quota;
+  }
   const snapshot = selectRateLimitSnapshot();
   if (!snapshot) return state.rateLimitsStatus === "failed" ? "quota unavailable" : "quota unknown";
   const windows = quotaWindows(snapshot).sort((a, b) =>
@@ -950,7 +1358,110 @@ function remainingContextPercent(tokensInWindow, contextWindow) {
   return Math.round(Math.max(0, Math.min(100, (remaining / effectiveWindow) * 100)));
 }
 
+function directContextWindowFromProjection(projection = directSurfaceProjection()) {
+  const profile = projection?.providerMetadataProfile || null;
+  const activeId = state.runtimeOverrides.model || profile?.runtimeSettings?.active?.model || profile?.modelCatalog?.defaultModel || "";
+  const models = Array.isArray(profile?.modelCatalog?.items) ? profile.modelCatalog.items : [];
+  const selected = models.find((model) => (
+    String(model?.id || "") === String(activeId || "") ||
+    String(model?.model || "") === String(activeId || "")
+  )) || models.find((model) => model?.isDefault) || models[0] || null;
+  return Number(profile?.usage?.context?.modelContextWindow || selected?.contextWindow || selected?.maxContextWindow || 0);
+}
+
+function directLatestUsageForCurrentThread(projection = directSurfaceProjection()) {
+  const currentThreadId = String(state.threadId || "").trim();
+  const byThread = Array.isArray(projection?.agentUsageStatus?.latestUsageByThread)
+    ? projection.agentUsageStatus.latestUsageByThread
+    : [];
+  if (currentThreadId) {
+    const scoped = byThread.find((usage) => String(usage?.threadId || usage?.sessionId || "").trim() === currentThreadId);
+    if (scoped) return scoped;
+    const latest = projection?.agentUsageStatus?.latestUsage || null;
+    const latestThreadId = String(latest?.threadId || latest?.sessionId || "").trim();
+    return latestThreadId && latestThreadId === currentThreadId ? latest : null;
+  }
+  return projection?.agentUsageStatus?.latestUsage || null;
+}
+
+function directContextUsageProjection() {
+  const witness = directComposerWitness();
+  const projection = directSurfaceProjection();
+  const contextState = String(witness?.contextState || "unknown").trim();
+  const preview = projection?.contextPreview || {};
+  const summary = preview.rendererSafeSummary || {};
+  const blockerCount = Number(summary.blockerCount || 0);
+  const latestUsage = directLatestUsageForCurrentThread(projection) || {};
+  const window = directContextWindowFromProjection(projection);
+  const tokens = Number(latestUsage.inputTokensKnown ?? projection?.providerMetadataProfile?.usage?.context?.usedTokens ?? projection?.providerMetadataProfile?.usage?.context?.tokensInWindow ?? 0);
+  if (Number.isFinite(window) && window > 0 && Number.isFinite(tokens) && tokens > 0) {
+    const remaining = remainingContextPercent(tokens, window);
+    const usedPercent = remaining == null ? null : Math.max(0, Math.min(100, 100 - remaining));
+    const tokenLabel = formatCompactTokens(tokens);
+    const windowLabel = formatCompactTokens(window);
+    const compactLabel = usedPercent == null ? `context ${tokenLabel}` : `context ${usedPercent}%`;
+    const detail = usedPercent == null ? `context: ${tokenLabel} tokens used` : `context: ${usedPercent}% used`;
+    const label = windowLabel ? `${detail} · ${tokenLabel} / ${windowLabel} window` : detail;
+    return {
+      label: [label, blockerCount ? `${blockerCount} blocker${blockerCount === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · "),
+      compactLabel,
+      status: blockerCount ? "blocked" : "available",
+      percentUsed: usedPercent,
+      percentRemaining: remaining,
+      tokensInContext: tokens,
+      totalTokens: numericField(latestUsage, "totalTokensKnown") ?? null,
+      modelContextWindow: window,
+      observedAt: latestUsage.observedAt || projection?.generatedAt || "",
+      tokenUsage: {
+        threadId: latestUsage.threadId || "",
+        turnId: latestUsage.turnId || "",
+        total: {
+          totalTokens: Number(latestUsage.totalTokensKnown ?? tokens),
+          inputTokens: tokens,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        last: {
+          totalTokens: tokens,
+          inputTokens: tokens,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        modelContextWindow: window,
+      },
+      evidenceRefs: [evidenceRef("direct_agent_usage", "Direct provider usage rows supplied latest input tokens and model metadata supplied context window", {
+        confidence: "declared",
+        status: "fresh",
+      })],
+      directContextPreview: preview,
+    };
+  }
+  const contextLabel = String(witness?.contextLabel || "").trim();
+  const scopedContextLabel = state.threadId ? "" : contextLabel;
+  const label = [
+    scopedContextLabel || (window ? `context fill unknown · ${formatCompactTokens(window)} window` : "context preview unknown"),
+    blockerCount ? `${blockerCount} blocker${blockerCount === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(" · ");
+  return {
+    label,
+    compactLabel: window ? "context unknown" : scopedContextLabel || "context unknown",
+    status: blockerCount ? "blocked" : contextState === "diagnostic" ? "not_exposed" : contextState || "unknown",
+    modelContextWindow: window || null,
+    observedAt: projection?.generatedAt || "",
+    evidenceRefs: [evidenceRef("direct_context_packet_preview", label, {
+      status: blockerCount ? "blocked" : window ? "unavailable" : "fresh",
+      confidence: preview.previewDigest ? "declared" : "unknown",
+    })],
+    directContextPreview: preview,
+  };
+}
+
 function contextUsageProjection() {
+  if (isDirectLiveTextSurface()) {
+    return directContextUsageProjection();
+  }
   const usage = state.tokenUsage;
   if (!usage) {
     const status = state.tokenUsageStatus === "failed" ? "failed" : "not_exposed";
@@ -994,6 +1505,504 @@ function contextUsageProjection() {
       confidence: "proven",
     })],
   };
+}
+
+function analyticsNumber(value, fallback = "—") {
+  if (value === null || value === undefined || value === "") return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  if (Math.abs(number) >= 1_000_000) return `${(number / 1_000_000).toFixed(Math.abs(number) >= 10_000_000 ? 0 : 1)}M`;
+  if (Math.abs(number) >= 1000) return `${(number / 1000).toFixed(Math.abs(number) >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(number));
+}
+
+function analyticsPercent(value, fallback = "—") {
+  if (value === null || value === undefined || value === "") return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return `${Math.max(0, Math.min(100, Math.round(number)))}%`;
+}
+
+function analyticsNullableNumber(value) {
+  if (value === null || value === undefined || value === "") return NaN;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : NaN;
+}
+
+function analyticsDuration(valueMs) {
+  const number = Number(valueMs);
+  if (!Number.isFinite(number) || number < 0) return "—";
+  return formatElapsedDuration(number / 1000);
+}
+
+function analyticsSectionAvailable(section) {
+  return section && !["unavailable", "unknown", "not_exposed", "failed"].includes(String(section.status || ""));
+}
+
+function analyticsSourceLabel(projection) {
+  const posture = projection?.sourcePosture || {};
+  const source = String(posture.primarySource || projection?.tokens?.source || projection?.context?.source || "unknown").replace(/_/g, " ");
+  const confidence = String(posture.confidence || projection?.tokens?.confidence || projection?.context?.confidence || "unknown").replace(/_/g, " ");
+  return `${source} · ${confidence}`;
+}
+
+function liveRuntimeAnalyticsProjection() {
+  const context = contextUsageProjection();
+  const quotaSnapshot = selectRateLimitSnapshot();
+  const tokenUsage = state.tokenUsage || {};
+  const total = tokenUsage.total || {};
+  const last = tokenUsage.last || {};
+  const turns = Array.from(state.turnActivityMap.values());
+  const completedTurns = turns.filter((activity) => activity?.completedAt || String(activity?.status || "").includes("completed")).length;
+  const activeTurns = turnIsActive() ? 1 : 0;
+  const commandCount = countCodexItems(new Set(["commandExecution"]));
+  const patchCount = countCodexItems(new Set(["fileChange"]));
+  const subagentCount = countCodexItems(new Set(["collabAgentToolCall"]));
+  const otherToolCount = countCodexItems(new Set(["mcpToolCall", "dynamicToolCall", "webSearch", "imageGeneration"]));
+  const requestRows = Array.from(state.serverRequests.values());
+  const requestCount = requestRows.length;
+  const pendingRequests = requestRows.filter((request) => String(request?.status || "").toLowerCase().includes("pending")).length;
+  const observedAt = nowIso();
+  const hasTokens = Boolean(state.tokenUsage);
+  const quotaEntries = quotaSnapshot ? quotaWindows(quotaSnapshot).map((entry, index) => ({
+    windowKind: entry.label === "W" ? "weekly" : entry.label,
+    windowId: entry.label || `window-${index + 1}`,
+    name: entry.label,
+    remainingPercent: entry.available,
+    usedPercent: Number.isFinite(Number(entry.available)) ? 100 - Number(entry.available) : null,
+    resetsAt: entry.window?.resetsAt || entry.window?.resets_at || entry.window?.resetAt || entry.window?.reset_at || "",
+    windowDurationMins: entry.window?.windowDurationMins || entry.window?.window_duration_mins || null,
+    source: "appserver_native",
+    confidence: "provider_exact",
+  })) : [];
+  const toolTotal = commandCount + patchCount + subagentCount + otherToolCount;
+  const projection = {
+    schema: "runtime_analytics_projection@1",
+    adapterVersion: "renderer-live-analytics@1",
+    projectId: project?.id || "",
+    threadId: state.threadId || "",
+    runtimePath: isDirectLiveTextSurface() ? "direct-implementation" : "app-server",
+    status: hasTokens || analyticsSectionAvailable(context) || quotaEntries.length || turns.length || toolTotal || requestCount ? "available" : "unavailable",
+    generatedAt: observedAt,
+    sourcePosture: {
+      adapterKind: isDirectLiveTextSurface() ? "direct" : "appserver",
+      primarySource: hasTokens ? "appserver_native" : "renderer_observation",
+      confidence: hasTokens ? "runtime_exact" : "observed",
+      freshness: "live",
+      observedAt,
+    },
+    tokens: hasTokens ? {
+      status: "available",
+      source: "appserver_native",
+      confidence: "runtime_exact",
+      observedAt: state.tokenUsageObservedAt ? new Date(state.tokenUsageObservedAt).toISOString() : observedAt,
+      inputTokens: numericField(total, "inputTokens"),
+      cachedInputTokens: numericField(total, "cachedInputTokens"),
+      nonCachedInputTokens: numericField(total, "inputTokens") === null
+        ? null
+        : Math.max(0, Number(total.inputTokens || 0) - Number(total.cachedInputTokens || 0)),
+      outputTokens: numericField(total, "outputTokens"),
+      reasoningTokens: numericField(total, "reasoningOutputTokens"),
+      totalTokens: numericField(total, "totalTokens"),
+      usageScope: "thread_total",
+      billingGrade: false,
+      evidenceRefs: [evidenceRef("app_server_probe", "thread/tokenUsage/updated supplied live token usage", { confidence: "proven" })],
+      blockers: [],
+    } : {
+      status: "unavailable",
+      source: "unavailable",
+      confidence: "unavailable",
+      observedAt: "",
+      inputTokens: null,
+      cachedInputTokens: null,
+      nonCachedInputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      totalTokens: null,
+      usageScope: "",
+      billingGrade: false,
+      evidenceRefs: [],
+      blockers: ["token_usage_unavailable"],
+    },
+    context: {
+      status: context.status || "unknown",
+      source: context.status === "available" ? "appserver_native" : "renderer_observation",
+      confidence: context.status === "available" ? "runtime_exact" : "observed",
+      observedAt: context.observedAt || "",
+      modelContextWindow: context.modelContextWindow || tokenUsage.modelContextWindow || null,
+      inputTokens: last.inputTokens || last.totalTokens || context.tokensInContext || null,
+      usedPercent: context.percentUsed ?? null,
+      evidenceRefs: context.evidenceRefs || [],
+      blockers: context.status === "available" ? [] : ["context_usage_unavailable"],
+    },
+    turns: {
+      status: turns.length || activeTurns ? "available" : "unavailable",
+      source: "renderer_observation",
+      confidence: "observed",
+      observedAt,
+      started: turns.length,
+      completed: completedTurns,
+      active: activeTurns,
+      durationMs: sessionDurationMs() || null,
+      timeToFirstTokenMs: null,
+      evidenceRefs: [evidenceRef("renderer_observation", "Renderer turn activity map supplied active thread timing", { confidence: "observed" })],
+      blockers: [],
+    },
+    tools: {
+      status: toolTotal ? "available" : "unavailable",
+      source: "renderer_observation",
+      confidence: "observed",
+      observedAt,
+      total: toolTotal,
+      completed: toolTotal,
+      failed: 0,
+      commands: commandCount,
+      patches: patchCount,
+      subagents: subagentCount,
+      byKind: [
+        { xValue: "commands", yValue: commandCount },
+        { xValue: "patches", yValue: patchCount },
+        { xValue: "subagents", yValue: subagentCount },
+        { xValue: "other tools", yValue: otherToolCount },
+      ].filter((point) => point.yValue > 0),
+      evidenceRefs: [evidenceRef("renderer_observation", "Renderer item map supplied tool activity counts", { confidence: "observed" })],
+      blockers: [],
+    },
+    requests: {
+      status: requestCount ? "available" : "unavailable",
+      source: "renderer_observation",
+      confidence: "observed",
+      observedAt,
+      total: requestCount,
+      pending: pendingRequests,
+      resolved: Math.max(0, requestCount - pendingRequests),
+      failed: 0,
+      byKind: [],
+      evidenceRefs: [evidenceRef("renderer_observation", "Renderer server request map supplied request counts", { confidence: "observed" })],
+      blockers: [],
+    },
+    quota: {
+      status: quotaEntries.length ? "available" : "unavailable",
+      source: quotaEntries.length ? "appserver_native" : "unavailable",
+      confidence: quotaEntries.length ? "provider_exact" : "unavailable",
+      observedAt: state.rateLimitsObservedAt ? new Date(state.rateLimitsObservedAt).toISOString() : "",
+      planType: state.rateLimits?.planType || state.rateLimits?.plan_type || "",
+      windows: quotaEntries,
+      evidenceRefs: quotaEntries.length ? [evidenceRef("provider_quota", "account/rateLimits/read supplied quota windows", { confidence: "proven" })] : [],
+      blockers: quotaEntries.length ? [] : ["quota_unavailable"],
+    },
+    series: {
+      token_mix: [
+        { xValue: "input", yValue: Number(total.inputTokens || 0) },
+        { xValue: "cached", yValue: Number(total.cachedInputTokens || 0) },
+        { xValue: "output", yValue: Number(total.outputTokens || 0) },
+        { xValue: "reasoning", yValue: Number(total.reasoningOutputTokens || 0) },
+      ].filter((point) => point.yValue > 0),
+      tool_kind_mix: [
+        { xValue: "commands", yValue: commandCount },
+        { xValue: "patches", yValue: patchCount },
+        { xValue: "subagents", yValue: subagentCount },
+        { xValue: "other tools", yValue: otherToolCount },
+      ].filter((point) => point.yValue > 0),
+      request_kind_mix: [],
+      turn_status_mix: [
+        { xValue: "completed", yValue: completedTurns },
+        { xValue: "active", yValue: activeTurns },
+      ].filter((point) => point.yValue > 0),
+    },
+    blockers: [],
+    evidenceRefs: [evidenceRef("renderer_observation", "Floating analytics panel live fallback projection", { confidence: "observed" })],
+    privacy: {
+      rawPromptIncluded: false,
+      rawResponseIncluded: false,
+      rawProviderFrameIncluded: false,
+      rawTokenDetailsIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+      billingGrade: false,
+      costComputed: false,
+    },
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  return projection;
+}
+
+function activeThreadAnalyticsProjection() {
+  const direct = directSurfaceProjection()?.runtimeAnalyticsProjection;
+  if (direct?.schema === "runtime_analytics_projection@1") return direct;
+  return liveRuntimeAnalyticsProjection();
+}
+
+function analyticsResetTimestampMs(window) {
+  const numeric = resetTimestampMs(window);
+  if (numeric) return numeric;
+  const raw = String(window?.resetsAt || window?.resetAt || "").trim();
+  if (!raw) return 0;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function analyticsQuotaWindowLabel(window) {
+  const duration = Number(window?.windowDurationMins || 0);
+  const rawKind = String(window?.windowKind || window?.name || window?.windowId || "").toLowerCase();
+  if (duration === 300 || rawKind.includes("5h") || rawKind.includes("five")) return "5h";
+  if (duration === 10080 || rawKind.includes("week") || rawKind === "w") return "W";
+  if (duration > 0 && duration < 60) return `${duration}m`;
+  if (duration > 0 && duration % 1440 === 0) return `${duration / 1440}d`;
+  if (duration > 0 && duration % 60 === 0) return `${duration / 60}h`;
+  return window?.name || window?.windowKind || "quota";
+}
+
+function analyticsQuotaResetLabel(window) {
+  const timestamp = analyticsResetTimestampMs(window);
+  if (!timestamp) return "--:--";
+  const date = new Date(timestamp);
+  const label = analyticsQuotaWindowLabel(window);
+  const options = label === "W"
+    ? { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }
+    : { hour: "2-digit", minute: "2-digit", hour12: false };
+  return new Intl.DateTimeFormat(undefined, options).format(date);
+}
+
+function analyticsQuotaLabel(projection) {
+  const windows = Array.isArray(projection?.quota?.windows) ? projection.quota.windows : [];
+  if (!windows.length) return "quota unavailable";
+  return windows.slice(0, 2).map((window) => {
+    const remaining = Number.isFinite(Number(window.remainingPercent))
+      ? Number(window.remainingPercent)
+      : Number.isFinite(Number(window.usedPercent))
+        ? 100 - Number(window.usedPercent)
+        : null;
+    return `${analyticsQuotaWindowLabel(window)} ${analyticsPercent(remaining)} ${analyticsQuotaResetLabel(window)}`;
+  }).join(" / ");
+}
+
+function analyticsEl(tag, className = "", text = "") {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== "") node.textContent = text;
+  return node;
+}
+
+function analyticsMetricCard(label, value, note = "", accent = "") {
+  const card = analyticsEl("div", `thread-analytics-card${accent ? ` ${accent}` : ""}`);
+  card.appendChild(analyticsEl("span", "thread-analytics-card-label", label));
+  card.appendChild(analyticsEl("strong", "thread-analytics-card-value", value));
+  if (note) card.appendChild(analyticsEl("span", "thread-analytics-card-note", note));
+  return card;
+}
+
+function analyticsGauge(label, percent, detail) {
+  const wrapper = analyticsEl("div", "thread-analytics-gauge-card");
+  const gauge = analyticsEl("div", "thread-analytics-gauge");
+  const value = Number(percent);
+  const safe = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+  gauge.style.setProperty("--analytics-gauge", `${safe}%`);
+  gauge.appendChild(analyticsEl("span", "", Number.isFinite(value) ? `${Math.round(safe)}%` : "—"));
+  const copy = analyticsEl("div", "thread-analytics-gauge-copy");
+  copy.appendChild(analyticsEl("span", "thread-analytics-card-label", label));
+  copy.appendChild(analyticsEl("strong", "thread-analytics-card-value", detail || (Number.isFinite(value) ? `${Math.round(safe)}%` : "unknown")));
+  wrapper.append(gauge, copy);
+  return wrapper;
+}
+
+function analyticsBarChart(title, rows, valueFormatter = analyticsNumber) {
+  const section = analyticsEl("section", "thread-analytics-chart");
+  section.appendChild(analyticsEl("h3", "", title));
+  const validRows = rows.filter((row) => Number(row?.value ?? row?.yValue) > 0);
+  if (!validRows.length) {
+    section.appendChild(analyticsEl("p", "thread-analytics-empty", "No evidence yet."));
+    return section;
+  }
+  const max = Math.max(...validRows.map((row) => Number(row.value ?? row.yValue) || 0), 1);
+  const list = analyticsEl("div", "thread-analytics-bars");
+  for (const row of validRows.slice(0, 7)) {
+    const value = Number(row.value ?? row.yValue) || 0;
+    const item = analyticsEl("div", "thread-analytics-bar-row");
+    item.appendChild(analyticsEl("span", "thread-analytics-bar-label", String(row.label ?? row.xValue ?? "unknown")));
+    const rail = analyticsEl("span", "thread-analytics-bar");
+    const fill = analyticsEl("span", "thread-analytics-bar-fill");
+    fill.style.width = `${Math.max(2, Math.round((value / max) * 100))}%`;
+    rail.appendChild(fill);
+    item.appendChild(rail);
+    item.appendChild(analyticsEl("span", "thread-analytics-bar-value", valueFormatter(value)));
+    list.appendChild(item);
+  }
+  section.appendChild(list);
+  return section;
+}
+
+function analyticsShortId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "unknown";
+  if (text.length <= 18) return text;
+  return `${text.slice(0, 8)}…${text.slice(-6)}`;
+}
+
+function analyticsModelEffortLabel(row = {}) {
+  return [
+    row.model || "model unknown",
+    row.reasoningEffort ? `${row.reasoningEffort}` : "effort default/unknown",
+    row.serviceTier ? `${row.serviceTier}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function analyticsTokenSplitLabel(row = {}) {
+  return [
+    `in ${analyticsNumber(row.inputTokens)}`,
+    `uncached ${analyticsNumber(row.nonCachedInputTokens)}`,
+    `cached ${analyticsNumber(row.cachedInputTokens)}`,
+    `out ${analyticsNumber(row.outputTokens)}`,
+    `reason ${analyticsNumber(row.reasoningTokens)}`,
+    `total ${analyticsNumber(row.totalTokens)}`,
+  ].join(" · ");
+}
+
+function analyticsDetailSection(title, rows, rowRenderer, emptyText = "No detail evidence yet.") {
+  const section = analyticsEl("section", "thread-analytics-detail");
+  section.appendChild(analyticsEl("h3", "", title));
+  const list = analyticsEl("div", "thread-analytics-detail-list");
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (!safeRows.length) {
+    list.appendChild(analyticsEl("p", "thread-analytics-empty", emptyText));
+  } else {
+    for (const row of safeRows) {
+      const rendered = rowRenderer(row);
+      if (rendered) list.appendChild(rendered);
+    }
+  }
+  section.appendChild(list);
+  return section;
+}
+
+function analyticsDetailRow(primary, secondary = "", meta = "") {
+  const row = analyticsEl("div", "thread-analytics-detail-row");
+  row.appendChild(analyticsEl("strong", "thread-analytics-detail-primary", primary));
+  if (secondary) row.appendChild(analyticsEl("span", "thread-analytics-detail-secondary", secondary));
+  if (meta) row.appendChild(analyticsEl("span", "thread-analytics-detail-meta", meta));
+  return row;
+}
+
+function renderThreadAnalyticsPanel() {
+  if (!els.threadAnalyticsPanel || !els.threadAnalyticsPanelBody) return;
+  const dock = ["float", "left", "right", "bottom"].includes(state.analyticsPanelDock) ? state.analyticsPanelDock : "right";
+  els.threadAnalyticsPanel.hidden = !state.analyticsPanelOpen;
+  els.threadAnalyticsPanel.className = `thread-analytics-panel dock-${dock}`;
+  const analyticsButton = els.analyticsPanelButton || els.morphicAnalyticsButton;
+  analyticsButton?.setAttribute("aria-expanded", state.analyticsPanelOpen ? "true" : "false");
+  analyticsButton?.classList.toggle("active", state.analyticsPanelOpen);
+  analyticsButton?.classList.toggle("warning", !state.analyticsPanelOpen);
+  for (const button of els.threadAnalyticsDockButtons?.querySelectorAll?.("[data-analytics-dock]") || []) {
+    button.classList.toggle("active", button.dataset.analyticsDock === dock);
+  }
+  if (!state.analyticsPanelOpen) return;
+
+  const projection = activeThreadAnalyticsProjection();
+  const title = state.threadTitle || state.threadId || "Thread analytics";
+  if (els.threadAnalyticsPanelTitle) els.threadAnalyticsPanelTitle.textContent = title;
+  if (els.threadAnalyticsPanelMeta) {
+    const freshness = projection?.sourcePosture?.freshness || "live";
+    els.threadAnalyticsPanelMeta.textContent = `${projection?.runtimePath || "runtime"} · ${analyticsSourceLabel(projection)} · ${freshness}`;
+  }
+
+  const tokens = projection.tokens || {};
+  const context = projection.context || {};
+  const turns = projection.turns || {};
+  const tools = projection.tools || {};
+  const requests = projection.requests || {};
+  const activeLabel = turnIsActive()
+    ? `Active ${activeTurnElapsedLabel() || "now"}`
+    : "Idle";
+  const tokenTotal = analyticsNullableNumber(tokens.totalTokens);
+  const inputTokens = analyticsNullableNumber(tokens.inputTokens);
+  const cachedTokens = analyticsNullableNumber(tokens.cachedInputTokens);
+  const nonCachedTokens = analyticsNullableNumber(tokens.nonCachedInputTokens);
+  const outputTokens = analyticsNullableNumber(tokens.outputTokens);
+  const reasoningTokens = analyticsNullableNumber(tokens.reasoningTokens);
+  const contextUsed = analyticsNullableNumber(context.usedPercent);
+  const contextDetail = Number.isFinite(contextUsed)
+    ? `${analyticsNumber(context.inputTokens)} / ${analyticsNumber(context.modelContextWindow)}`
+    : context.modelContextWindow
+      ? `${analyticsNumber(context.modelContextWindow)} window`
+      : "context unknown";
+
+  els.threadAnalyticsPanelBody.innerHTML = "";
+  if (projection.status === "unavailable") {
+    const empty = analyticsEl("div", "thread-analytics-empty-state");
+    empty.appendChild(analyticsEl("strong", "", "No analytics evidence for this thread yet."));
+    empty.appendChild(analyticsEl("p", "", "Send a turn or refresh runtime metadata; this panel will fill from direct runtime facts or live app-server observations."));
+    els.threadAnalyticsPanelBody.appendChild(empty);
+    return;
+  }
+
+  const hero = analyticsEl("section", "thread-analytics-hero");
+  hero.appendChild(analyticsMetricCard("Thread state", activeLabel, `${analyticsNumber(turns.completed || 0)} completed · ${analyticsNumber(turns.active || 0)} active`, turnIsActive() ? "live" : ""));
+  hero.appendChild(analyticsGauge("Context used", contextUsed, contextDetail));
+  hero.appendChild(analyticsMetricCard("Quota", analyticsQuotaLabel(projection), projection.quota?.status === "available" ? "provider window" : "not exposed", "quota"));
+  els.threadAnalyticsPanelBody.appendChild(hero);
+
+  const metrics = analyticsEl("section", "thread-analytics-grid");
+  metrics.appendChild(analyticsMetricCard("Total tokens", analyticsNumber(tokenTotal), tokens.status === "available" ? tokens.usageScope || "known" : "not exposed", "tokens"));
+  metrics.appendChild(analyticsMetricCard("Input", analyticsNumber(inputTokens), [
+    Number.isFinite(cachedTokens) ? `${analyticsNumber(cachedTokens)} cached` : "cache unknown",
+    Number.isFinite(nonCachedTokens) ? `${analyticsNumber(nonCachedTokens)} uncached` : "uncached unknown",
+  ].join(" · ")));
+  metrics.appendChild(analyticsMetricCard("Output", analyticsNumber(outputTokens), Number.isFinite(reasoningTokens) ? `${analyticsNumber(reasoningTokens)} reasoning` : "reasoning unknown"));
+  metrics.appendChild(analyticsMetricCard("Turns", `${analyticsNumber(turns.started || 0)} started`, turns.durationMs ? `${analyticsDuration(turns.durationMs)} wall span` : "duration unknown"));
+  metrics.appendChild(analyticsMetricCard("Tools", analyticsNumber(tools.total || 0), `${analyticsNumber(tools.commands || 0)} cmd · ${analyticsNumber(tools.patches || 0)} patch`));
+  metrics.appendChild(analyticsMetricCard("Requests", analyticsNumber(requests.total || 0), `${analyticsNumber(requests.pending || 0)} pending`));
+  els.threadAnalyticsPanelBody.appendChild(metrics);
+
+  const charts = analyticsEl("section", "thread-analytics-chart-grid");
+  charts.appendChild(analyticsBarChart("Token mix", [
+    { label: "uncached", value: nonCachedTokens },
+    { label: "cached", value: cachedTokens },
+    { label: "output", value: outputTokens },
+    { label: "reasoning", value: reasoningTokens },
+  ].filter((row) => Number.isFinite(row.value) && row.value > 0), analyticsNumber));
+  charts.appendChild(analyticsBarChart("Tool mix", [
+    ...(Array.isArray(projection.series?.tool_kind_mix) ? projection.series.tool_kind_mix : []),
+    ...(!projection.series?.tool_kind_mix?.length ? [
+      { xValue: "commands", yValue: tools.commands || 0 },
+      { xValue: "patches", yValue: tools.patches || 0 },
+      { xValue: "subagents", yValue: tools.subagents || 0 },
+    ] : []),
+  ], analyticsNumber));
+  els.threadAnalyticsPanelBody.appendChild(charts);
+
+  const turnRows = Array.isArray(projection.turnUsageRows) ? projection.turnUsageRows.slice(0, 8) : [];
+  const agentRows = Array.isArray(projection.agentUsageRows) ? projection.agentUsageRows.slice(0, 8) : [];
+  const edgeRows = Array.isArray(projection.parentTurnAgentEdges) ? projection.parentTurnAgentEdges.slice(0, 6) : [];
+  const detailGrid = analyticsEl("section", "thread-analytics-detail-grid");
+  detailGrid.appendChild(analyticsDetailSection("Turn usage", turnRows, (row) => analyticsDetailRow(
+    `${analyticsShortId(row.turnId)} · ${row.agentKind || "agent"}`,
+    analyticsModelEffortLabel(row),
+    analyticsTokenSplitLabel(row),
+  )));
+  detailGrid.appendChild(analyticsDetailSection("Agent usage", agentRows, (row) => analyticsDetailRow(
+    `${analyticsShortId(row.agentThreadId)} · ${row.agentKind || "agent"}`,
+    analyticsModelEffortLabel(row),
+    `${analyticsNumber(row.turnCount)} turn(s) · ${analyticsTokenSplitLabel(row)}`,
+  )));
+  if (edgeRows.length) {
+    detailGrid.appendChild(analyticsDetailSection("Sub-agent links", edgeRows, (row) => analyticsDetailRow(
+      `${analyticsShortId(row.parentThreadId)} → ${analyticsShortId(row.childThreadId)}`,
+      analyticsModelEffortLabel(row),
+      `${row.parentTurnResolved ? "parent turn resolved" : "parent thread only"} · ${analyticsTokenSplitLabel(row)}`,
+    )));
+  }
+  els.threadAnalyticsPanelBody.appendChild(detailGrid);
+
+  const evidence = analyticsEl("section", "thread-analytics-evidence");
+  const observedAt = projection.sourcePosture?.observedAt || tokens.observedAt || context.observedAt || projection.generatedAt || "";
+  evidence.appendChild(analyticsEl("span", "", `source: ${analyticsSourceLabel(projection)}`));
+  evidence.appendChild(analyticsEl("span", "", `observed: ${observedAt ? new Date(observedAt).toLocaleString() : "unknown"}`));
+  if (Array.isArray(projection.blockers) && projection.blockers.length) {
+    evidence.appendChild(analyticsEl("span", "", `blockers: ${projection.blockers.slice(0, 3).join(", ")}`));
+  }
+  els.threadAnalyticsPanelBody.appendChild(evidence);
 }
 
 function applyThreadTokenUsageUpdate(params) {
@@ -1186,8 +2195,26 @@ function buildRuntimeConstitution() {
       "thread/tokenUsage/updated",
     ...projectedContextUsage,
   };
-  const usageLabel = providerQuota.status === "available"
-    ? providerQuota.label
+  const directWitness = isDirectLiveTextSurface() ? directComposerWitness() : null;
+  const directQuotaChip = isDirectLiveTextSurface() ? directRuntimeWitnessChip("quota") : null;
+  const directModelDisplay = isDirectLiveTextSurface() ? directModelLabel() : "";
+  const directReasoningDisplay = isDirectLiveTextSurface() ? directReasoningLabel() : "";
+  const effectiveProviderQuota = directWitness ? {
+    canRead: false,
+    readMethod: "",
+    eventName: "",
+    label: directWitness.quotaLabel || "quota unknown",
+    status: directWitness.quotaState === "blocked" ? "blocked" : "not_exposed",
+    error: "",
+    evidenceRefs: [evidenceRef("direct_runtime_witness", directQuotaChip?.label || "Direct quota/rate witness", {
+      status: directWitness.quotaState || "unknown",
+      confidence: directWitness.runtimeWitnessDigest ? "declared" : "unknown",
+    })],
+  } : providerQuota;
+  const usageLabel = directWitness?.usageLabel && directWitness.usageLabel !== "usage unknown"
+    ? directWitness.usageLabel
+    : effectiveProviderQuota.status === "available"
+      ? effectiveProviderQuota.label
     : contextPressure.status === "available"
       ? contextPressure.label
       : turnCount || commandCount || approvalCount || toolCallCount
@@ -1221,8 +2248,8 @@ function buildRuntimeConstitution() {
     },
     account,
     model: {
-      label: modelLabel(),
-      source: state.runtimeOverrides.model ? "operator_requested" : state.activeModel ? "runtime_reported" : project?.codex?.model ? "project_config" : defaultModelId() ? "runtime_default" : "unknown",
+      label: directModelDisplay || modelLabel(),
+      source: directModelDisplay ? "direct_runtime_witness" : state.runtimeOverrides.model ? "operator_requested" : state.activeModel ? "runtime_reported" : project?.codex?.model ? "project_config" : defaultModelId() ? "runtime_default" : "unknown",
       selection: {
         canList: settingsProjection.model?.canList === true && state.modelListStatus === "ready",
         canSetNextTurn: canOverrideModel,
@@ -1233,17 +2260,17 @@ function buildRuntimeConstitution() {
         unsupportedReason: canOverrideModel ? "" : "Provider profile does not expose next-turn model override.",
       },
       models: state.models,
-      selectedId: activeModelId(),
-      truth: state.runtimeOverrides.model ? "operator_requested" : state.activeModel ? "runtime_declared" : project?.codex?.model ? "project_configured" : defaultModelId() ? "runtime_declared" : "unknown",
+      selectedId: activeModelId() || directModelDisplay,
+      truth: directModelDisplay ? "runtime_declared" : state.runtimeOverrides.model ? "operator_requested" : state.activeModel ? "runtime_declared" : project?.codex?.model ? "project_configured" : defaultModelId() ? "runtime_declared" : "unknown",
       evidenceRefs: [
-        evidenceRef(state.runtimeOverrides.model ? "operator_action" : state.activeModel || defaultModelId() ? "app_server_probe" : "project_config", state.runtimeOverrides.model ? "Operator selected model for subsequent turns" : state.activeModel ? "Thread/model response" : defaultModelId() ? "model/list default model" : "Project model setting", {
-          confidence: state.runtimeOverrides.model ? "configured" : state.activeModel || defaultModelId() ? "declared" : project?.codex?.model ? "configured" : "unknown",
+        evidenceRef(directModelDisplay ? "direct_runtime_witness" : state.runtimeOverrides.model ? "operator_action" : state.activeModel || defaultModelId() ? "app_server_probe" : "project_config", directModelDisplay ? directRuntimeWitnessChip("model")?.label || "Direct runtime model witness" : state.runtimeOverrides.model ? "Operator selected model for subsequent turns" : state.activeModel ? "Thread/model response" : defaultModelId() ? "model/list default model" : "Project model setting", {
+          confidence: directModelDisplay ? "declared" : state.runtimeOverrides.model ? "configured" : state.activeModel || defaultModelId() ? "declared" : project?.codex?.model ? "configured" : "unknown",
         }),
       ],
     },
     reasoning: {
-      label: `reasoning: ${reasoningLabel()}`,
-      selected: reasoningLabel(),
+      label: `reasoning: ${directReasoningDisplay || reasoningLabel()}`,
+      selected: directReasoningDisplay || reasoningLabel(),
       supported: supportedReasoningOptions(),
       selection: {
         canSetNextTurn: canOverrideReasoning,
@@ -1253,10 +2280,10 @@ function buildRuntimeConstitution() {
         enabledScopes: canOverrideReasoning ? ["next_turn"] : [],
         unsupportedReason: canOverrideReasoning ? "" : "Provider profile does not expose next-turn reasoning override.",
       },
-      truth: state.runtimeOverrides.reasoningEffort ? "operator_requested" : project?.codex?.reasoningEffort ? "project_configured" : selectedModel()?.defaultReasoningEffort ? "runtime_declared" : "unknown",
+      truth: directReasoningDisplay ? "runtime_declared" : state.runtimeOverrides.reasoningEffort ? "operator_requested" : project?.codex?.reasoningEffort ? "project_configured" : selectedModel()?.defaultReasoningEffort ? "runtime_declared" : "unknown",
       evidenceRefs: [
-        evidenceRef(state.runtimeOverrides.reasoningEffort ? "operator_action" : "project_config", state.runtimeOverrides.reasoningEffort ? "Operator selected reasoning effort for subsequent turns" : project?.codex?.reasoningEffort ? "Project reasoning effort setting" : "Model default reasoning effort", {
-          confidence: state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort ? "configured" : selectedModel()?.defaultReasoningEffort ? "declared" : "unknown",
+        evidenceRef(directReasoningDisplay ? "direct_runtime_witness" : state.runtimeOverrides.reasoningEffort ? "operator_action" : "project_config", directReasoningDisplay ? directRuntimeWitnessChip("reasoning")?.label || "Direct runtime reasoning witness" : state.runtimeOverrides.reasoningEffort ? "Operator selected reasoning effort for subsequent turns" : project?.codex?.reasoningEffort ? "Project reasoning effort setting" : "Model default reasoning effort", {
+          confidence: directReasoningDisplay ? "declared" : state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort ? "configured" : selectedModel()?.defaultReasoningEffort ? "declared" : "unknown",
         }),
       ],
     },
@@ -1291,8 +2318,8 @@ function buildRuntimeConstitution() {
     },
     usage: {
       label: usageLabel,
-      status: providerQuota.status === "available" || contextPressure.status === "available" || turnCount || commandCount || approvalCount || toolCallCount ? "available" : "unknown",
-      providerQuota,
+      status: effectiveProviderQuota.status === "available" || contextPressure.status === "available" || directWitness?.usageState === "fresh" || turnCount || commandCount || approvalCount || toolCallCount ? "available" : "unknown",
+      providerQuota: effectiveProviderQuota,
       contextPressure,
       activity: {
         turnCount,
@@ -1481,6 +2508,8 @@ function renderRuntimeConstitution() {
   }
   renderRuntimeDrawer();
   renderComposerRuntimeBand();
+  renderThreadAnalyticsPanel();
+  renderMorphicCockpit();
 }
 
 function createRuntimeChip(chip) {
@@ -1495,11 +2524,64 @@ function createRuntimeChip(chip) {
   return button;
 }
 
+async function refreshDirectImplementationUi({ force = false } = {}) {
+  if (!project?.id || !bridge?.getDirectImplementationLaneUiStatus) return;
+  if (state.directUiStatusState === "loading" && !force) return;
+  state.directUiStatusState = "loading";
+  state.directUiStatusError = "";
+  try {
+    const [status, history, policy] = await Promise.all([
+      bridge.getDirectImplementationLaneUiStatus(project.id),
+      bridge.readDirectImplementationOperationHistory
+        ? bridge.readDirectImplementationOperationHistory(project.id, { scope: "active-turn", limit: 24 })
+        : Promise.resolve(null),
+      bridge.getDirectImplementationPolicyView
+        ? bridge.getDirectImplementationPolicyView(project.id)
+        : Promise.resolve(null),
+    ]);
+    state.directUiStatus = status || null;
+    state.directUiOperationHistory = history || null;
+    state.directUiPolicyView = policy || null;
+    state.directUiStatusState = "ready";
+  } catch (error) {
+    state.directUiStatusState = "failed";
+    state.directUiStatusError = error?.message || "Direct implementation UI status unavailable.";
+  }
+  renderRuntimeConstitution();
+}
+
+async function refreshDirectSurfaceProjection(options = {}) {
+  if (!project?.id || !isDirectLiveTextSurface() || typeof bridge?.getDirectCodexSurfaceProjection !== "function") return null;
+  try {
+    const projection = await bridge.getDirectCodexSurfaceProjection(project.id, {
+      refreshMetadata: options.refreshMetadata === true,
+      threadId: state.threadId || "",
+    });
+    if (projection?.schema === "direct_codex_surface_projection@1") {
+      state.directSurfaceProjection = projection;
+      if (connection) connection = { ...connection, directSurfaceProjection: projection };
+      applyDirectMetadataModels(projection);
+      if (options.render !== false) {
+        renderRuntimeConstitution();
+        renderComposerRuntimeBand();
+        renderDirectThreadList();
+      }
+      return projection;
+    }
+  } catch (error) {
+    if (options.showErrors) addSystemMessage(`Direct surface projection refresh failed: ${error.message}`);
+  }
+  return null;
+}
+
 function openRuntimeDrawer(tab = "runtime") {
   dismissComposerOverlay("runtime-drawer-open");
   state.runtimeDrawerOpen = true;
   state.runtimeDrawerTab = RUNTIME_DRAWER_TABS.some(([id]) => id === tab) ? tab : "runtime";
   renderRuntimeConstitution();
+  if (["implementation", "history", "policy"].includes(state.runtimeDrawerTab)) {
+    refreshDirectImplementationUi();
+  }
 }
 
 function closeRuntimeDrawer() {
@@ -1563,6 +2645,7 @@ function renderRuntimeDrawer() {
     button.addEventListener("click", () => {
       state.runtimeDrawerTab = id;
       renderRuntimeDrawer();
+      if (["implementation", "history", "policy"].includes(id)) refreshDirectImplementationUi();
     });
     els.runtimeDrawerTabs.appendChild(button);
   }
@@ -1745,6 +2828,7 @@ function updateComposerGeometry() {
   els.composerForm.style.setProperty("--composer-control-height", `${controlHeight}px`);
   els.composerForm.style.setProperty("--composer-action-width", `${actionWidth}px`);
   els.composerForm.dataset.composerSize = safeWidth < 390 ? "narrow" : safeWidth < 760 ? "medium" : "wide";
+  document.documentElement.style.setProperty("--composer-shell-height", `${Math.round(shellRect.height || 150)}px`);
 }
 
 function installComposerGeometryObserver() {
@@ -1770,7 +2854,6 @@ function renderComposerAccessMenu() {
 function composerSelectedOverride(name) {
   const value = String(state.runtimeOverrides[name] || "");
   if (name === "model" && value === clearedModelId()) return "";
-  if (name === "reasoningEffort" && value === clearedReasoningEffort()) return "";
   if (name === "serviceTier" && value === defaultServiceTier()) return "";
   return value;
 }
@@ -1792,7 +2875,10 @@ function renderComposerModelMenu() {
 function updateComposerStatusTicker(active) {
   const shouldTick = Boolean(active && currentActiveTurnActivity()?.startedAt);
   if (shouldTick && !state.composerStatusInterval) {
-    state.composerStatusInterval = window.setInterval(() => renderComposerRuntimeBand(), 1000);
+    state.composerStatusInterval = window.setInterval(() => {
+      renderComposerRuntimeBand();
+      renderThreadAnalyticsPanel();
+    }, 1000);
   } else if (!shouldTick && state.composerStatusInterval) {
     window.clearInterval(state.composerStatusInterval);
     state.composerStatusInterval = null;
@@ -1915,6 +3001,7 @@ function renderComposerRuntimeBand() {
   if (state.composerMenu === "model") renderComposerModelMenu();
   updateComposerStatusTicker(active);
   updateComposerGeometry();
+  renderMorphicCockpit();
 }
 
 function refreshButton(label, onClick) {
@@ -1927,8 +3014,9 @@ function refreshButton(label, onClick) {
 }
 
 function modelOptions() {
-  const visible = state.models.filter((model) => !model?.hidden);
-  const rows = visible.length ? visible : state.models;
+  const models = effectiveModels();
+  const visible = models.filter((model) => !model?.hidden);
+  const rows = visible.length ? visible : models;
   const providerDefaultId = defaultModelId();
   const clearDefaultId = clearedModelId();
   const options = rows
@@ -1964,10 +3052,9 @@ function reasoningOptions() {
   return [
     { value: "", label: defaultOptionLabel(clearDefault) },
     ...supportedReasoningOptions()
-      .filter((effort) => effort !== clearDefault)
       .map((effort) => ({
         value: effort,
-        label: `${effort}${effort === modelDefault ? " · model default" : ""}`,
+        label: `${effort}${effort === "ultra" ? " · proactive orchestration" : ""}${effort === modelDefault ? " · model default" : ""}`,
       })),
   ];
 }
@@ -1989,7 +3076,7 @@ function normalizeRuntimeOverrideValue(name, value) {
   if (!candidate) return "";
   if (name === "approvalPolicy") return APPROVAL_POLICY_OPTIONS.includes(candidate) ? candidate : "";
   if (name === "sandboxMode") return SANDBOX_MODE_OPTIONS.includes(candidate) ? candidate : "";
-  if (name === "reasoningEffort") return DEFAULT_REASONING_EFFORTS.includes(candidate) ? candidate : "";
+  if (name === "reasoningEffort") return supportedReasoningOptions().includes(candidate) ? candidate : "";
   if (name === "model") return candidate;
   return candidate;
 }
@@ -2026,8 +3113,10 @@ async function loadRuntimePreferences(options = {}) {
   const applyGlobal = options.applyGlobal !== false;
   const applyThread = options.applyThread !== false && Boolean(state.threadId);
   const guardThreadId = String(options.guardThreadId || options.threadId || "");
-  const guardSourceHome = String(options.guardSourceHome ?? "");
-  const guardSessionFilePath = String(options.guardSessionFilePath ?? "");
+  const hasGuardSourceHome = Object.prototype.hasOwnProperty.call(options, "guardSourceHome");
+  const guardSourceHome = hasGuardSourceHome ? String(options.guardSourceHome ?? "") : "";
+  const hasGuardSessionFilePath = Object.prototype.hasOwnProperty.call(options, "guardSessionFilePath");
+  const guardSessionFilePath = hasGuardSessionFilePath ? String(options.guardSessionFilePath ?? "") : "";
   state.runtimePreferencesStatus = "loading";
   state.runtimePreferencesError = "";
   try {
@@ -2037,8 +3126,8 @@ async function loadRuntimePreferences(options = {}) {
       const stillCurrentThread =
         !guardThreadId ||
         (state.threadId === guardThreadId &&
-          (!guardSourceHome || state.sourceHome === guardSourceHome) &&
-          (!guardSessionFilePath || state.sessionFilePath === guardSessionFilePath));
+          (!hasGuardSourceHome || state.sourceHome === guardSourceHome) &&
+          (!hasGuardSessionFilePath || state.sessionFilePath === guardSessionFilePath));
       if (applyThread && stillCurrentThread) applyThreadRuntimePreferences(response.threadDefaults || {});
     }
     state.runtimePreferencesStatus = "ready";
@@ -2076,6 +3165,14 @@ async function persistRuntimePreferences(scope) {
 }
 
 function serviceTierOptions() {
+  if (isDirectLiveTextSurface()) {
+    const model = selectedModel();
+    const tiers = Array.isArray(model?.serviceTiers) ? model.serviceTiers : [];
+    const values = tiers
+      .map((tier) => String(tier?.id || tier?.serviceTier || tier?.service_tier || tier?.name || tier || "").trim())
+      .filter(Boolean);
+    return ["", ...values].map((value) => ({ value, label: value || defaultOptionLabel(defaultServiceTier()) }));
+  }
   const settingsProjection = providerSettingsProjection();
   const configured = settingsProjection.serviceTier?.availableTiers || settingsProjection.speed?.availableTiers || null;
   const values = Array.isArray(configured) && configured.length
@@ -2085,6 +3182,10 @@ function serviceTierOptions() {
 }
 
 function compactModelLabel() {
+  if (isDirectLiveTextSurface()) {
+    const directLabel = directModelLabel();
+    if (directLabel) return directLabel.replace(/^GPT-/i, "GPT-");
+  }
   const model = selectedModel();
   const label = model?.displayName || model?.model || activeModelId() || "default";
   return label.replace(/^GPT-/i, "GPT-");
@@ -2153,6 +3254,98 @@ function quotaWindowRows(snapshot) {
   }
   if (snapshot.rateLimitReachedType) rows.push(["limit reached", snapshot.rateLimitReachedType]);
   return rows;
+}
+
+function directUiProjectionRows() {
+  const status = state.directUiStatus;
+  if (state.directUiStatusState === "loading" && !status) return [["status", "loading"]];
+  if (state.directUiStatusState === "failed") return [["status", "failed"], ["blocker", state.directUiStatusError || "direct_ui_projection_unavailable"]];
+  if (!status) return [["status", "not loaded"]];
+  return [
+    ["schema", status.schema],
+    ["generation", status.meta?.uiProjectionGeneration],
+    ["active tier", status.activeRuntimeTier],
+    ["source digest", status.meta?.sourceDigest],
+    ["ledger digest", status.meta?.operationLedgerHeadDigest],
+  ];
+}
+
+function readinessRows(readiness = {}) {
+  const facets = readiness.facets || {};
+  return [
+    ["status", readiness.readiness],
+    ["selected", readiness.selected ? "yes" : "no"],
+    ["start turn", facets.canStartTurn?.state || (readiness.canStartFirstTurn ? "ready" : "blocked")],
+    ["show cards", facets.canShowApprovalCards?.state || (readiness.canShowApprovalCards ? "ready" : "blocked")],
+    ["approve read", facets.canApproveRead?.state || (readiness.canApproveReadFile ? "ready" : "blocked")],
+    ["approve patch", facets.canApprovePatch?.state || (readiness.canApprovePatchApply ? "ready" : "blocked")],
+    ["approve command", facets.canApproveCommand?.state || (readiness.canApproveRunCommand ? "ready" : "blocked")],
+    ["continue result", facets.canContinueAfterResult?.state || (readiness.canSendContinuation ? "ready" : "blocked")],
+    ["workspace truth", facets.workspaceMutationTruth?.state || "unknown"],
+    ["policy", facets.policyUsable?.state || "unknown"],
+    ["degraded read-only", readiness.degradedToReadOnly ? "yes" : "no"],
+    ["blockers", (readiness.blockerCodes || []).join(", ") || "none"],
+  ];
+}
+
+function witnessRows(status = {}) {
+  return (status.witnesses || []).map((chip) => [
+    chip.label || chip.kind || "witness",
+    [chip.state, chip.freshness, chip.summary].filter(Boolean).join(" · "),
+  ]);
+}
+
+function contextMaintenanceRows(status = {}) {
+  const context = status.contextMaintenance || {};
+  const route = context.route || {};
+  const memory = context.memory || {};
+  const baton = context.baton || {};
+  const omission = context.omission || {};
+  const providerCompact = context.providerCompact || {};
+  const appServerSibling = context.appServerSibling || {};
+  if (!context.schema) return [["status", "not loaded"]];
+  return [
+    ["display", context.displayOnly ? "status only" : "unknown"],
+    ["pressure", context.pressureState || "unknown"],
+    ["route", [route.routeClass, route.routeKind, route.reasonCode].filter(Boolean).join(" · ") || "unknown"],
+    ["memory", [memory.state, memory.pointerState].filter(Boolean).join(" · ") || "unknown"],
+    ["baton", [baton.requirement, baton.state].filter(Boolean).join(" · ") || "unknown"],
+    ["omissions", omission.state || "none"],
+    ["provider compact", `${providerCompact.state || "not_proven"} · transport disabled`],
+    ["vanilla sibling", appServerSibling.contextCompactionObserved ? "context compaction observed" : "no context compaction observed"],
+    ["sibling memory", [
+      appServerSibling.memoryModeObserved ? "memory mode observed" : "",
+      appServerSibling.memoryResetObserved ? "memory reset observed" : "",
+      appServerSibling.memoryCitationCount ? `${appServerSibling.memoryCitationCount} citation${appServerSibling.memoryCitationCount === 1 ? "" : "s"}` : "",
+    ].filter(Boolean).join(" · ") || "none"],
+    ["actions", context.actionability?.actionable ? "actionable" : context.actionability?.reason || "read-only"],
+    ["compact action", context.compactActionAllowed ? "enabled" : "disabled"],
+    ["memory editor", context.memoryEditorAllowed ? "enabled" : "disabled"],
+    ["memory reset", context.memoryResetAllowed ? "enabled" : "disabled"],
+    ["blockers", (context.blockers || []).join(", ") || "none"],
+  ];
+}
+
+function operationHistoryRows(history = {}) {
+  if (!history?.rows?.length) return [["status", state.directUiStatusState === "loading" ? "loading" : "no rows"]];
+  return history.rows.slice(0, 12).map((row) => [
+    `${row.family || "operation"} · ${row.status || "unknown"}`,
+    `${row.rendererSafeSummary || row.eventKind || row.rowId} · ${row.actionability?.reason || "history_is_read_only"}`,
+  ]);
+}
+
+function policyRows(policy = {}) {
+  if (!policy) return [["status", state.directUiStatusState === "loading" ? "loading" : "not loaded"]];
+  return [
+    ["editable", policy.editable ? "yes" : "no"],
+    ["effective source", policy.effectiveSource || "unknown"],
+    ["command classes", policy.commandClasses?.summary || "unknown"],
+    ["sensitive paths", policy.sensitivePathPolicy?.summary || "unknown"],
+    ["generated/vendor/lock", policy.generatedVendorLockPolicy?.summary || "unknown"],
+    ["caps", policy.caps?.summary || "unknown"],
+    ["network risk", policy.networkRisk?.summary || "unknown"],
+    ["private config", policy.privateConfigIncluded ? "included" : "excluded"],
+  ];
 }
 
 function runtimeDrawerSections(c, tab) {
@@ -2255,6 +3448,47 @@ function runtimeDrawerSections(c, tab) {
       ], c.usage.ledger?.evidenceRefs || []),
     ];
   }
+  if (tab === "implementation") {
+    const status = state.directUiStatus || {};
+    const readiness = status.implementationLane || {};
+    return [
+      drawerSection("Direct Implementation Projection", directUiProjectionRows()),
+      drawerSection("Readiness", readinessRows(readiness)),
+      drawerSection("Witness Chips", witnessRows(status)),
+      drawerSection("Context Maintenance", contextMaintenanceRows(status)),
+      drawerSection("Active Turn", [
+        ["state", status.activeTurn?.state || "unknown"],
+        ["composer", status.activeTurn?.composerAllowed ? "allowed" : "blocked"],
+        ["reason", status.activeTurn?.composerAllowedReason || "unknown"],
+        ["unresolved obligations", status.currentSession?.unresolvedObligationCount ?? "unknown"],
+      ]),
+    ];
+  }
+  if (tab === "history") {
+    const history = state.directUiOperationHistory;
+    return [
+      drawerSection("Operation History", [
+        ["schema", history?.schema || "direct_operation_history_projection@1"],
+        ["scope", history?.scope || "active-turn"],
+        ["rows", history?.rows?.length ?? 0],
+        ["actionable", "false"],
+        ["page digest", history?.pageDigest || "not loaded"],
+      ]),
+      drawerSection("Recent Rows", operationHistoryRows(history)),
+    ];
+  }
+  if (tab === "policy") {
+    return [
+      drawerSection("Policy Snapshot", policyRows(state.directUiPolicyView)),
+      drawerSection("Boundary", [
+        ["view", "read-only"],
+        ["policy editor", "not enabled"],
+        ["runtime authority", "main-process revalidation only"],
+        ["right-pane ChatGPT", "separate"],
+        ["handoff queue", "unchanged"],
+      ]),
+    ];
+  }
   if (tab === "capabilities") {
     const caps = c.capabilities?.profile || {};
     return [
@@ -2267,6 +3501,23 @@ function runtimeDrawerSections(c, tab) {
       drawerSection("Turn Operations", Object.entries(caps.turns || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
       drawerSection("Model Scope", Object.entries(caps.model || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
       drawerSection("Reasoning Scope", Object.entries(caps.reasoning || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
+      drawerSection("Orchestration", [
+        ["binary selection", caps.agents?.binarySelection || "unknown"],
+        ["requested contract", caps.agents?.spawnProviderContract || "unknown"],
+        ["contract status", caps.agents?.spawnContractStatus || "unknown"],
+        ["provider acceptance", caps.agents?.spawnProviderAcceptanceStatus || "unknown"],
+        ["profile requested", caps.agents?.projectProfileRequestedStatus || "not requested"],
+        ["profile configured", caps.agents?.projectProfileConfiguredStatus || "not configured"],
+        ["profile provider accepted", caps.agents?.projectProfileProviderAcceptedStatus || "not yet observed"],
+        ["profile runtime verified", caps.agents?.projectProfileRuntimeVerifiedStatus || "not yet observed"],
+        ["profile authority", caps.agents?.projectProfileAuthorityGranted ? "granted" : "not granted"],
+        ["visible spawn inputs", (caps.agents?.spawnVisibleInputFields || []).join(", ") || "none"],
+        ["hidden spawn inputs", (caps.agents?.spawnHiddenInputFields || []).join(", ") || "none"],
+        ["requested runtime selection", caps.agents?.perSpawnRuntimeSelection || "unknown"],
+        ["effective model/effort controls", caps.agents?.effectiveModelVisibleSpawnControls || "unknown"],
+        ["override fork contexts", (caps.agents?.perSpawnOverrideForkTurns || []).join(", ") || "none"],
+        ["full-history override", caps.agents?.fullHistoryOverrideAllowed ? "allowed" : "blocked"],
+      ]),
       drawerSection("Authority", Object.entries(caps.authority || {}).map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") || "none" : value ? "yes" : "no"])),
       drawerSection("Provider Profile", [
         ["kind", caps.provider?.kind || "unknown"],
@@ -3358,6 +4609,7 @@ function clearRenderedDomState() {
   els.transcript.innerHTML = "";
   state.itemMap.clear();
   state.codexItemMap.clear();
+  state.contextManagementEvidenceKeys.clear();
   state.thoughtItemMap.clear();
   state.thoughtTurnByItemId.clear();
   state.subagentActivityByTurn.clear();
@@ -3611,6 +4863,10 @@ function rememberPromptTurn(turnId, text, retryCount = 0) {
 async function retryEmptyTurn(turnId) {
   const id = String(turnId || "").trim();
   if (!id || state.emptyTurnRetrying.has(id)) return;
+  if (!hasCapability("threads", "canRollback")) {
+    addSystemMessage("Codex completed without output, but this runtime does not expose rollback/retry capability.");
+    return;
+  }
   const prompt = state.turnPromptMap.get(id);
   const retryCount = state.turnRetryCountMap.get(id) || 0;
   if (!prompt || retryCount >= EMPTY_TURN_AUTO_RETRY_LIMIT) return;
@@ -3661,7 +4917,13 @@ function renderTurnCompletionNotice(turnId, turn) {
   }
   const prompt = state.turnPromptMap.get(id);
   const retryCount = state.turnRetryCountMap.get(id) || 0;
-  if (prompt && retryCount < EMPTY_TURN_AUTO_RETRY_LIMIT && state.threadId && state.connected) {
+  if (
+    prompt &&
+    retryCount < EMPTY_TURN_AUTO_RETRY_LIMIT &&
+    state.threadId &&
+    state.connected &&
+    hasCapability("threads", "canRollback")
+  ) {
     addSystemMessage(
       `Codex accepted the prompt but completed${duration} without assistant, tool, or reasoning output. This empty turn will be rolled back and retried once.`,
     );
@@ -3743,7 +5005,327 @@ function rpc(method, params = {}) {
   return bridge.request(method, params);
 }
 
+function isDirectLiveTextSurface() {
+  return connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT;
+}
+
+function directLiveTextReadinessStatus() {
+  return directSurfaceProjection()?.liveTextStatus || connection?.directLiveText || null;
+}
+
+function directLiveTextReady() {
+  const status = directLiveTextReadinessStatus();
+  return status?.status === "ready" || status?.turnRunnable === true;
+}
+
+function directLiveTextBlockedMessage() {
+  const status = directLiveTextReadinessStatus();
+  const authStatus = status?.auth?.status || directSurfaceProjection()?.directAuthPreflight?.authStatus?.status || "";
+  if (authStatus && authStatus !== "authenticated") {
+    return authStatus === "expired" || authStatus === "refresh_failed"
+      ? "Direct auth is expired. Sign in again before starting a direct Codex turn."
+      : "Direct auth is not ready. Sign in before starting a direct Codex turn.";
+  }
+  return status?.reason || status?.status || "Direct runtime is not ready for turns.";
+}
+
+function enforceDirectLiveTextStartupReadiness() {
+  if (!isDirectLiveTextSurface()) return;
+  if (directLiveTextReady()) return;
+  const message = directLiveTextBlockedMessage();
+  setComposerEnabled(false, message);
+  addSystemMessage(`Direct runtime blocked: ${message}`);
+}
+
+function directThreadTimeLabel(value) {
+  const parsed = Date.parse(String(value || ""));
+  if (!Number.isFinite(parsed)) return "time unknown";
+  const date = new Date(parsed);
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  if (sameDay) return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function shortThreadId(value) {
+  const text = String(value || "").trim();
+  if (text.length <= 12) return text || "thread";
+  return `${text.slice(0, 8)}...${text.slice(-4)}`;
+}
+
+function directThreadStateLabel(entry = {}) {
+  if (!entry) return "unknown";
+  const displayState = String(entry.displayState || "").trim();
+  if (displayState) return displayState.replace(/_/g, " ");
+  if (Number(entry.activeTurnCount || 0) > 0) return "running";
+  const lastTurnState = String(entry.lastTurnState || "").trim();
+  if (lastTurnState) return lastTurnState.replace(/_/g, " ");
+  return String(entry.status || "created").replace(/_/g, " ");
+}
+
+function directThreadActionEnabled(entry = {}, actionName = "") {
+  const action = entry.actions?.[actionName];
+  if (!action || typeof action.enabled !== "boolean") return true;
+  return action.enabled === true;
+}
+
+function activeDirectThreadRow() {
+  const threadId = String(state.threadId || "");
+  if (!threadId) return null;
+  const rows = Array.isArray(state.directThreadDeck?.rows) ? state.directThreadDeck.rows : state.directThreadList;
+  return (Array.isArray(rows) ? rows : []).find((entry) => {
+    const id = String(entry?.threadId || entry?.id || entry?.sessionId || "");
+    return id && id === threadId;
+  }) || null;
+}
+
+function morphicRailRows() {
+  const rows = Array.isArray(state.directThreadDeck?.rows)
+    ? state.directThreadDeck.rows
+    : Array.isArray(state.directThreadList) ? state.directThreadList : [];
+  const selectedWorkThreadId = state.directSurfaceProjection?.operatorBroker?.selectedWorkThreadId ||
+    state.directSurfaceProjection?.workThreads?.resolutionReport?.selectedWorkThreadId ||
+    "";
+  const now = Date.now();
+  const recentWindowMs = 14 * 24 * 60 * 60 * 1000;
+  return rows
+    .filter(Boolean)
+    .filter((entry) => {
+      const id = String(entry.threadId || entry.id || "").trim();
+      if (!id) return false;
+      const isActive = id === String(state.threadId || "");
+      const isRunning = Number(entry.activeTurnCount || 0) > 0 || entry.displayState === "running";
+      const updated = Date.parse(entry.updatedAt || entry.createdAt || "");
+      const isRecent = Number.isFinite(updated) && now - updated <= recentWindowMs;
+      const workThreadLinked = Boolean(entry.workThreadId && selectedWorkThreadId === entry.workThreadId);
+      return isActive || isRunning || isRecent || workThreadLinked;
+    })
+    .slice(0, 12);
+}
+
+function renderMorphicThreadRail() {
+  if (!els.morphicThreadRail || !els.morphicThreadRailList) return;
+  const enabled = isDirectLiveTextSurface();
+  els.morphicThreadRail.hidden = !enabled;
+  if (!enabled) {
+    els.morphicThreadRailList.replaceChildren();
+    return;
+  }
+  const rows = morphicRailRows();
+  els.morphicThreadRailList.replaceChildren();
+  if (!rows.length) {
+    const empty = document.createElement("span");
+    empty.className = "morphic-thread-empty";
+    empty.textContent = state.directThreadListStatus === "loading"
+      ? "Refreshing direct threads..."
+      : state.directThreadListStatus === "error"
+        ? `Thread list unavailable: ${state.directThreadListError || "unknown error"}`
+        : "No recent direct threads.";
+    els.morphicThreadRailList.appendChild(empty);
+  } else {
+    for (const entry of rows) {
+      const threadId = String(entry.threadId || entry.id || "").trim();
+      if (!threadId) continue;
+      const isActive = threadId === String(state.threadId || "");
+      const isRunning = Number(entry.activeTurnCount || 0) > 0 || entry.displayState === "running";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `morphic-thread-tab${isActive ? " active" : ""}${isRunning ? " running" : ""}`;
+      button.dataset.threadId = threadId;
+      button.disabled = !directThreadActionEnabled(entry, "focus");
+      button.title = [
+        entry.title || threadId,
+        threadId,
+        entry.workThreadId ? `WorkThread ${entry.workThreadId}` : "WorkThread unresolved",
+        entry.actions?.focus?.disabledReason || entry.actions?.focus?.effect || "",
+      ].filter(Boolean).join("\n");
+      const title = document.createElement("span");
+      title.className = "morphic-thread-tab-title";
+      title.textContent = entry.title || shortThreadId(threadId);
+      const stateLabel = document.createElement("span");
+      stateLabel.className = "morphic-thread-tab-state";
+      stateLabel.textContent = isRunning ? "●" : directThreadTimeLabel(entry.updatedAt || entry.createdAt);
+      button.append(title, stateLabel);
+      button.addEventListener("click", () => {
+        openDirectThread(threadId).catch((openError) => addSystemMessage(`Unable to open direct thread: ${openError.message}`));
+      });
+      els.morphicThreadRailList.appendChild(button);
+    }
+  }
+  const loading = state.directThreadListStatus === "loading";
+  if (els.morphicThreadDirectoryButton) {
+    els.morphicThreadDirectoryButton.disabled = loading;
+    els.morphicThreadDirectoryButton.title = loading ? "Refreshing direct thread directory." : "Refresh direct thread directory.";
+  }
+}
+
+function renderDirectThreadList() {
+  renderMorphicThreadRail();
+  if (!els.directThreadStrip || !els.directThreadList || !els.directThreadStatus) return;
+  const enabled = isDirectLiveTextSurface();
+  els.directThreadStrip.hidden = !enabled;
+  if (!enabled) return;
+
+  const loading = state.directThreadListStatus === "loading";
+  const error = state.directThreadListStatus === "error";
+  if (els.directThreadRefreshButton) els.directThreadRefreshButton.disabled = loading;
+  const startAction = state.directThreadDeck?.actions?.start || null;
+  if (els.directThreadNewButton) {
+    const canCreateDirectDraft = isDirectLiveTextSurface() &&
+      typeof bridge?.createDirectWorkThreadDraftSession === "function" &&
+      Boolean(project?.id);
+    els.directThreadNewButton.disabled = !canCreateDirectDraft ||
+      (startAction && startAction.enabled === false);
+    els.directThreadNewButton.title = startAction?.disabledReason || startAction?.effect || "Start a fresh direct-native thread";
+  }
+
+  const threads = Array.isArray(state.directThreadDeck?.rows)
+    ? state.directThreadDeck.rows
+    : Array.isArray(state.directThreadList) ? state.directThreadList : [];
+  if (loading) {
+    els.directThreadStatus.textContent = "Refreshing direct sessions…";
+  } else if (error) {
+    els.directThreadStatus.textContent = `Thread list unavailable: ${state.directThreadListError || "unknown error"}`;
+  } else if (!threads.length) {
+    els.directThreadStatus.textContent = "No direct sessions for this project yet.";
+  } else {
+    const activeCount = Number(state.directThreadDeck?.counts?.running ?? threads.filter((entry) => entry && Number(entry.activeTurnCount || 0) > 0).length);
+    const recoverableCount = Number(state.directThreadDeck?.counts?.recoverableInterrupted || 0);
+    const projection = directSurfaceProjection();
+    const workThreadCount = Number(projection?.workThreads?.status?.workThreadCount || state.directThreadDeck?.counts?.workThreadScoped || 0);
+    const broker = projection?.operatorBroker || {};
+    const brokerSuffix = broker.clarificationRequired
+      ? " · target clarification needed"
+      : broker.selectedWorkThreadId
+        ? " · target resolved"
+        : "";
+    els.directThreadStatus.textContent = [
+      `${threads.length} direct session${threads.length === 1 ? "" : "s"}`,
+      `${workThreadCount} WorkThread${workThreadCount === 1 ? "" : "s"}`,
+      activeCount ? `${activeCount} running` : "",
+      recoverableCount ? `${recoverableCount} recoverable` : "",
+    ].filter(Boolean).join(" · ") + brokerSuffix;
+  }
+
+  els.directThreadList.replaceChildren();
+  for (const entry of threads) {
+    if (!entry) continue;
+    const threadId = String(entry.threadId || entry.id || "").trim();
+    if (!threadId) continue;
+    const isActive = threadId === String(state.threadId || "");
+    const isRunning = Number(entry.activeTurnCount || 0) > 0 || entry.displayState === "running";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `direct-thread-pill${isActive ? " active" : ""}${isRunning ? " running" : ""}`;
+    button.dataset.threadId = threadId;
+    button.disabled = !directThreadActionEnabled(entry, "focus");
+    button.title = [
+      entry.title || threadId,
+      threadId,
+      entry.workThreadId ? `WorkThread ${entry.workThreadId}` : "WorkThread unresolved",
+      entry.actions?.focus?.disabledReason || entry.actions?.focus?.effect || "",
+    ].filter(Boolean).join("\n");
+    const title = document.createElement("span");
+    title.className = "direct-thread-pill-title";
+    title.textContent = entry.title || threadId;
+    const status = document.createElement("span");
+    status.className = "direct-thread-pill-state";
+    status.textContent = directThreadStateLabel(entry);
+    const meta = document.createElement("span");
+    meta.className = "direct-thread-pill-meta";
+    const model = String(entry.model || state.activeModel || "").trim();
+    meta.textContent = [
+      model || "model unknown",
+      entry.reasoningEffort || "",
+      entry.workThreadId ? "WorkThread scoped" : "project scoped",
+      `${Number(entry.turnCount || 0)} turn${Number(entry.turnCount || 0) === 1 ? "" : "s"}`,
+      directThreadTimeLabel(entry.updatedAt || entry.createdAt),
+    ].filter(Boolean).join(" · ");
+    button.append(title, status, meta);
+    button.addEventListener("click", () => {
+      openDirectThread(threadId).catch((openError) => addSystemMessage(`Unable to open direct thread: ${openError.message}`));
+    });
+    els.directThreadList.appendChild(button);
+  }
+}
+
+async function refreshDirectThreadList(options = {}) {
+  if (!isDirectLiveTextSurface() || !state.connected || !hasCapability("threads", "canList")) {
+    state.directThreadList = [];
+    state.directThreadDeck = null;
+    state.directThreadListStatus = isDirectLiveTextSurface() ? "unavailable" : "hidden";
+    state.directThreadListError = "";
+    renderDirectThreadList();
+    return;
+  }
+  state.directThreadListStatus = "loading";
+  state.directThreadListError = "";
+  renderDirectThreadList();
+  try {
+    const result = await rpc("thread/list", {
+      limit: options.limit || 40,
+      defaultModel: activeModelId() || null,
+      defaultReasoningEffort: requestedReasoningEffort() || null,
+    });
+    state.directThreadList = Array.isArray(result?.threads) ? result.threads.filter(Boolean) : [];
+    state.directThreadDeck = result?.deck && result.deck.schema === "direct_thread_deck_projection@1" ? result.deck : null;
+    state.directThreadListStatus = "ready";
+    state.directThreadListError = "";
+  } catch (error) {
+    state.directThreadListStatus = "error";
+    state.directThreadListError = error.message || "unknown error";
+    state.directThreadDeck = null;
+    if (options.showErrors !== false) addSystemMessage(`Direct thread list failed: ${state.directThreadListError}`);
+  }
+  renderDirectThreadList();
+}
+
+async function openDirectThread(threadId) {
+  const requestedThreadId = String(threadId || "").trim();
+  if (!requestedThreadId) throw new Error("Missing direct thread id.");
+  if (requestedThreadId === String(state.threadId || "") && state.liveAttached) return;
+  const openRequestId = state.directThreadOpenRequestId + 1;
+  state.directThreadOpenRequestId = openRequestId;
+  const result = await readThreadById(requestedThreadId);
+  if (state.directThreadOpenRequestId !== openRequestId) return;
+  clearRenderedThreadState();
+  state.sourceHome = "";
+  state.sessionFilePath = "";
+  applyLiveThreadResult(result);
+  await loadRuntimePreferences({
+    applyThread: true,
+    threadId: requestedThreadId,
+    guardThreadId: requestedThreadId,
+    guardSourceHome: state.sourceHome,
+    guardSessionFilePath: state.sessionFilePath,
+  });
+  if (state.directThreadOpenRequestId !== openRequestId || state.threadId !== requestedThreadId) return;
+  await reportThreadState("attached_live", {
+    threadId: requestedThreadId,
+    title: result?.thread?.title || requestedThreadId,
+    evidence: "direct-thread-strip-open",
+  });
+  renderDirectThreadList();
+}
+
+async function createDirectThreadFromStrip() {
+  await startNewThread();
+  await refreshDirectThreadList({ showErrors: false });
+}
+
 async function refreshModelList(showErrors = false) {
+  if (isDirectLiveTextSurface()) {
+    state.modelListStatus = "loading";
+    renderRuntimeConstitution();
+    const projection = await refreshDirectSurfaceProjection({ render: false, showErrors, refreshMetadata: true });
+    applyDirectMetadataModels(projection || directSurfaceProjection());
+    if (!effectiveModels().length) {
+      state.modelListStatus = "unavailable";
+      state.modelListError = "Direct provider metadata did not expose model choices.";
+    }
+    renderRuntimeConstitution();
+    return;
+  }
   const settingsProjection = providerSettingsProjection();
   if (settingsProjection.model?.canList !== true && !hasCapabilityForMutation("model", "canList")) {
     state.modelListStatus = "unavailable";
@@ -4187,6 +5769,101 @@ function renderPermissionRequestDetails(request, details, actions) {
   actions.appendChild(createRequestButton("Deny", "secondary", (event) => submitRequestResponse(request, { permissions: {}, scope: "turn" }, event.currentTarget)));
 }
 
+function renderDirectReadOnlyToolRequestDetails(request, details, actions) {
+  const params = request.params || {};
+  appendRequestLine(details, "tool", params.tool || "read_file", { mono: true });
+  appendRequestLine(details, "path", params.relPath || "unknown", { mono: true });
+  appendRequestLine(details, "call type", params.providerCallType || "unknown", { mono: true });
+  if (params.namespace) appendRequestLine(details, "namespace", params.namespace, { mono: true });
+  appendRequestLine(details, "source", params.toolCallSource || "provider-native-implicit");
+  appendRequestLine(details, "limits", `${params.maxReadFileBytes || 0} bytes read · ${params.maxProviderOutputChars || 0} chars provider output`);
+  appendRequestLine(details, "policy", params.sensitivePathPolicy || "deny-by-default");
+  if (params.argumentsError) appendRequestLine(details, "arguments", params.argumentsError);
+  if (!params.hasContinuityHandle) appendRequestLine(details, "continuation", "Missing provider continuity handle.");
+  if (params.approvalAvailable === false) appendRequestLine(details, "approval", "Unavailable for this tool-call shape.");
+  const decisionId = (decision) => `${request.key}:${decision}`;
+  actions.appendChild(createRequestButton("Approve read", "", (event) => submitRequestResponse(request, {
+    decision: "approve",
+    clientToolDecisionId: decisionId("approve"),
+    actionTokenId: params.actionTokens?.approve || "",
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, {
+    decision: "decline",
+    clientToolDecisionId: decisionId("decline"),
+    actionTokenId: params.actionTokens?.decline || "",
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Cancel turn", "secondary", (event) => submitRequestResponse(request, {
+    decision: "cancel",
+    clientToolDecisionId: decisionId("cancel"),
+    actionTokenId: params.actionTokens?.cancel || "",
+  }, event.currentTarget)));
+}
+
+function renderDirectPatchApplyRequestDetails(request, details, actions) {
+  const params = request.params || {};
+  appendRequestLine(details, "tool", params.tool || "apply_patch", { mono: true });
+  appendRequestLine(details, "call type", params.providerCallType || "unknown", { mono: true });
+  appendRequestLine(details, "source", params.toolCallSource || "provider-native-implicit");
+  appendRequestLine(details, "files", Array.isArray(params.files) && params.files.length
+    ? params.files.map((file) => `${file.operation || "update"} ${file.path || "unknown"}`).join("\n")
+    : "none", { mono: true, pre: true });
+  const totals = params.totals || {};
+  appendRequestLine(details, "summary", `${totals.fileCount || params.files?.length || 0} files · +${totals.addedLineCount || 0} -${totals.removedLineCount || 0}`);
+  appendRequestLine(details, "preview", params.preview?.text || "Patch preview unavailable.", { mono: true, pre: true });
+  if (!params.hasContinuityHandle) appendRequestLine(details, "continuation", "Missing provider continuity handle.");
+  if (params.approvalAvailable === false) appendRequestLine(details, "approval", "Unavailable for this patch shape.");
+  const decisionId = (decision) => `${request.key}:${decision}`;
+  actions.appendChild(createRequestButton("Approve patch", "", (event) => submitRequestResponse(request, {
+    decision: "approve",
+    clientPatchDecisionId: decisionId("approve"),
+    actionTokenId: params.actionTokens?.approve || "",
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, {
+    decision: "decline",
+    clientPatchDecisionId: decisionId("decline"),
+    actionTokenId: params.actionTokens?.decline || "",
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Cancel turn", "secondary", (event) => submitRequestResponse(request, {
+    decision: "cancel",
+    clientPatchDecisionId: decisionId("cancel"),
+    actionTokenId: params.actionTokens?.cancel || "",
+  }, event.currentTarget)));
+}
+
+function renderDirectCommandExecutionRequestDetails(request, details, actions) {
+  const params = request.params || {};
+  appendRequestLine(details, "tool", params.tool || "run_command", { mono: true });
+  appendRequestLine(details, "call type", params.providerCallType || "unknown", { mono: true });
+  appendRequestLine(details, "command", params.displayCommand || commandText(params), { mono: true, pre: true });
+  appendRequestLine(details, "cwd", params.cwdRelPath || ".", { mono: true });
+  appendRequestLine(details, "timeout", params.timeoutMs ? `${params.timeoutMs} ms` : "default");
+  appendRequestLine(details, "class", params.commandClass || "package_script");
+  appendRequestLine(details, "workspace writes", params.workspaceWritePolicy || "writes_possible_with_warning");
+  const scriptEvidence = params.packageScriptEvidence || {};
+  if (scriptEvidence.scriptName) {
+    appendRequestLine(details, "package script", `${scriptEvidence.packageManager || "npm"} ${scriptEvidence.scriptName}`, { mono: true });
+    appendRequestLine(details, "script preview", scriptEvidence.scriptCommandPreview || "not available", { mono: true, pre: true });
+  }
+  if (!params.hasContinuityHandle) appendRequestLine(details, "continuation", "Missing provider continuity handle.");
+  if (params.approvalAvailable === false) appendRequestLine(details, "approval", "Unavailable for this command shape.");
+  const decisionId = (decision) => `${request.key}:${decision}`;
+  actions.appendChild(createRequestButton("Approve command", "", (event) => submitRequestResponse(request, {
+    decision: "approve",
+    clientCommandDecisionId: decisionId("approve"),
+    actionTokenId: params.actionTokens?.approve || "",
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, {
+    decision: "decline",
+    clientCommandDecisionId: decisionId("decline"),
+    actionTokenId: params.actionTokens?.decline || "",
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Cancel turn", "secondary", (event) => submitRequestResponse(request, {
+    decision: "cancel",
+    clientCommandDecisionId: decisionId("cancel"),
+    actionTokenId: params.actionTokens?.cancel || "",
+  }, event.currentTarget)));
+}
+
 function renderGenericRequestDetails(request, details) {
   appendRequestLine(details, "method", request.method || "", { mono: true });
   appendRequestLine(details, "params", request.params || "", { mono: true, pre: true });
@@ -4195,6 +5872,7 @@ function renderGenericRequestDetails(request, details) {
 
 function renderServerRequest(request) {
   if (!request?.key) return;
+  maybeReportContextManagementControl(request);
   state.serverRequests.set(request.key, request);
   renderRuntimeConstitution();
   const node = ensureMessage(requestMessageId(request), "system", request.title || "Codex request");
@@ -4231,6 +5909,9 @@ function renderServerRequest(request) {
   else if (request.method === "item/tool/requestUserInput") renderUserInputRequestDetails(request, details, isPending ? actions : document.createElement("div"));
   else if (request.method === "mcpServer/elicitation/request") renderMcpRequestDetails(request, details, isPending ? actions : document.createElement("div"));
   else if (request.method === "item/permissions/requestApproval") renderPermissionRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else if (request.method === "direct/tool/readOnly/requestApproval") renderDirectReadOnlyToolRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else if (request.method === "direct/tool/patchApply/requestApproval") renderDirectPatchApplyRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else if (request.method === "direct/tool/command/requestApproval") renderDirectCommandExecutionRequestDetails(request, details, isPending ? actions : document.createElement("div"));
   else renderGenericRequestDetails(request, details);
 
   if (!isPending) {
@@ -4662,6 +6343,23 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
 }
 
 async function loadExistingThreadOrStartNew() {
+  if (isDirectLiveTextSurface() && hasCapability("threads", "canList")) {
+    await refreshDirectThreadList({ showErrors: false });
+    let lastOpenError = null;
+    for (const entry of state.directThreadList) {
+      const threadId = String(entry?.threadId || entry?.id || "").trim();
+      if (!threadId) continue;
+      try {
+        await openDirectThread(threadId);
+        return;
+      } catch (error) {
+        lastOpenError = error;
+      }
+    }
+    if (lastOpenError) {
+      addSystemMessage(`Unable to restore existing direct thread: ${lastOpenError.message}. Starting a new thread instead.`);
+    }
+  }
   setNotice("Preparing Codex session…", "Starting a fresh Codex thread for this workspace.", { showNewThread: true });
   await startNewThread();
 }
@@ -4733,12 +6431,26 @@ async function attachLiveThread(threadId, sessionFilePath = "", options = {}) {
     throw new Error("Active Codex runtime does not expose live thread read/resume capability.");
   }
   let result = null;
-  try {
-    result = await resumeThreadById(requestedThreadId, sessionFilePath, options);
-  } catch (error) {
-    if (options.skipReadFallback) throw error;
-    result = await readThreadById(requestedThreadId);
+  let resumeError = null;
+  if (hasCapability("threads", "canResume")) {
+    try {
+      result = await resumeThreadById(requestedThreadId, sessionFilePath, options);
+    } catch (error) {
+      resumeError = error;
+      if (options.skipReadFallback) throw error;
+    }
   }
+  if (!result && options.skipReadFallback) {
+    throw resumeError || new Error("Active Codex runtime does not expose live thread resume capability.");
+  }
+  if (!result && hasCapability("threads", "canRead")) {
+    try {
+      result = await readThreadById(requestedThreadId);
+    } catch (error) {
+      throw resumeError || error;
+    }
+  }
+  if (!result) throw resumeError || new Error("Unable to attach live Codex thread.");
   return result;
 }
 
@@ -4881,14 +6593,21 @@ function bindThread(thread, modelName = "", options = {}) {
   state.liveAttached = options.liveAttached !== false;
   state.activeModel = String(modelName || state.activeModel || project?.codex?.model || "");
   const title = thread?.title || thread?.name || thread?.preview || state.threadTitle || payload.initialThreadTitle || state.threadId;
+  const isDirectFixture = connection?.transport === DIRECT_FIXTURE_TRANSPORT;
+  const isDirectLiveText = connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT;
   updateSurfaceHeader(title, workspaceText());
   setComposerEnabled(state.liveAttached, state.liveAttached ? "" : "Read-only mode");
   setNotice(
-    "Codex session ready",
-    thread?.preview ? `Resumed thread: ${thread.preview}` : "Managed local Codex app-server is connected.",
+    isDirectLiveText ? "Direct live text session ready" : isDirectFixture ? "Direct fixture session ready" : "Codex session ready",
+    isDirectFixture
+      ? "Fixture-only direct controller is connected."
+      : isDirectLiveText
+        ? "Live text direct controller is connected. Tools are detection-only."
+      : thread?.preview ? `Resumed thread: ${thread.preview}` : "Managed local Codex app-server is connected.",
     { success: true, showNewThread: true },
   );
   reconcileTurnStateFromLiveThread(thread);
+  renderDirectThreadList();
 }
 
 function isThoughtItem(item) {
@@ -5937,6 +7656,17 @@ function appendThoughtAssistantDelta(itemId, delta, phaseHint = "") {
 function renderItem(item, authorContext = currentAuthorContext()) {
   if (!item || !item.id) return;
   rememberCodexItem({ threadId: state.threadId, turnId: item.turnId || state.turnId, itemId: item.id }, item);
+  if (item.memoryCitation && typeof item.memoryCitation === "object") {
+    reportContextManagementEvidence({
+      threadItems: [{
+        id: String(item.id),
+        type: String(item.type || "memoryCitation"),
+        memoryCitation: {
+          evidenceKey: String(item.memoryCitation.evidenceKey || item.memoryCitation.memoryId || item.id),
+        },
+      }],
+    }).catch(() => {});
+  }
   if (item.type === "userMessage") {
     const text = (item.content || []).map(userInputToText).filter(Boolean).join("\n\n");
     const notification = subagentNotificationFromText(text);
@@ -5996,6 +7726,13 @@ function renderItem(item, authorContext = currentAuthorContext()) {
     return;
   }
   if (item.type === "contextCompaction") {
+    reportContextManagementEvidence({
+      threadItems: [{
+        id: String(item.id),
+        type: "contextCompaction",
+        lifecycle: String(item.lifecycle || item.status || "observed"),
+      }],
+    }).catch(() => {});
     setMessageText(item.id, "system", "Context compacted for this thread.", "System");
     return;
   }
@@ -6105,16 +7842,55 @@ function renderThreadHistory(thread, options = {}) {
 }
 
 async function startNewThread() {
+  if (isDirectLiveTextSurface() && typeof bridge?.createDirectWorkThreadDraftSession === "function" && project?.id) {
+    state.directThreadOpenRequestId += 1;
+    const result = await bridge.createDirectWorkThreadDraftSession(project.id, {
+      clientDraftId: `codex_surface_new_thread_${Date.now()}`,
+      title: `${project?.name || "Direct"} direct session`,
+      objectiveSummary: "Operator-created direct Codex session from the Codex plane.",
+      contextPosture: "fresh_session_only",
+      model: activeModelId() || null,
+      reasoningEffort: requestedReasoningEffort() || null,
+    });
+    if (result?.status === "created" && result.thread) {
+      clearRenderedThreadState();
+      state.sourceHome = "";
+      state.sessionFilePath = "";
+      bindThread(result.thread, result.thread.model || activeModelId() || null);
+      addSystemMessage(`Created WorkThread-backed direct session${result.workThread?.workThreadId ? ` (${result.workThread.workThreadId})` : ""}.`);
+      await persistRuntimePreferences("thread-model");
+      await refreshDirectSurfaceProjection({ render: false });
+      await refreshDirectThreadList({ showErrors: false });
+      renderRuntimeConstitution();
+      return;
+    }
+    const blockers = Array.isArray(result?.draft?.blockerCodes) ? result.draft.blockerCodes.filter(Boolean).join(", ") : "";
+    addSystemMessage(`Direct WorkThread draft did not create a session${blockers ? `: ${blockers}` : "."}`);
+    return;
+  }
   if (!hasCapability("threads", "canStart")) {
     throw new Error("Active Codex runtime does not expose thread/start capability.");
   }
+  if (isDirectLiveTextSurface()) state.directThreadOpenRequestId += 1;
   const cwd = workspaceRootText();
+  const reasoningEffort = requestedReasoningEffort();
   const params = {
     cwd,
     model: activeModelId() || null,
     experimentalRawEvents: false,
     persistExtendedHistory: true,
   };
+  const orchestrationInstructions = projectSpawnAgentOrchestrationInstructions();
+  if (orchestrationInstructions) {
+    const configuredInstructions = await configuredDeveloperInstructionsForCwd(cwd);
+    if (configuredInstructions !== null) {
+      params.developerInstructions = mergeDeveloperInstructions(
+        configuredInstructions,
+        orchestrationInstructions,
+      );
+    }
+  }
+  if (reasoningEffort) params.config = { model_reasoning_effort: reasoningEffort };
   if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
   if (state.runtimeOverrides.sandboxMode) params.sandbox = state.runtimeOverrides.sandboxMode;
   if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
@@ -6124,9 +7900,17 @@ async function startNewThread() {
   state.sessionFilePath = "";
   bindThread(result.thread, result.model);
   await persistRuntimePreferences("thread-model");
+  await refreshDirectSurfaceProjection({ render: false });
+  await refreshDirectThreadList({ showErrors: false });
 }
 
 async function startCodexTurn(text, options = {}) {
+  if (isDirectLiveTextSurface()) {
+    await refreshDirectSurfaceProjection({ render: false }).catch(() => {});
+    if (!directLiveTextReady()) {
+      throw new Error(directLiveTextBlockedMessage());
+    }
+  }
   if (!hasCapability("turns", "canStart")) {
     throw new Error("Active Codex runtime does not expose turn/start capability.");
   }
@@ -6136,6 +7920,33 @@ async function startCodexTurn(text, options = {}) {
     model: activeModelId() || null,
     effort: requestedReasoningEffort(),
   };
+  if (connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT || String(connection?.transport || "").startsWith("direct-")) {
+    if (connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT) {
+      params.clientTurnRequestId = options.clientTurnRequestId || createClientTurnRequestId();
+      params.promptText = text;
+      const directProjection = directSurfaceProjection();
+      const activeRow = activeDirectThreadRow();
+      const selectedWorkThreadId = activeRow?.workThreadId ||
+        directProjection?.operatorBroker?.selectedWorkThreadId ||
+        directProjection?.workThreads?.resolutionReport?.selectedWorkThreadId ||
+        "";
+      if (selectedWorkThreadId) {
+        params.workThreadId = selectedWorkThreadId;
+        params.requireControlledRouting = true;
+      }
+      if (directProjection?.contextPreview?.previewDigest) {
+        params.contextPreviewDigest = directProjection.contextPreview.previewDigest;
+      }
+      if (directProjection?.operatorBroker?.projectionDigest || directProjection?.operatorBroker?.brokerResolutionDigest) {
+        params.operatorBrokerResolutionDigest = directProjection.operatorBroker.projectionDigest || directProjection.operatorBroker.brokerResolutionDigest;
+      }
+      if (directProjection?.workThreads?.resolutionReport?.reportDigest) {
+        params.workTargetResolutionReportDigest = directProjection.workThreads.resolutionReport.reportDigest;
+      }
+    }
+    params.attachmentDrafts = Array.isArray(options.attachments) ? options.attachments : [];
+    params.attachmentDraftSetDigest = options.attachmentDraftSetDigest || "";
+  }
   if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
   if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
   const sandboxPolicy = sandboxPolicyForMode(state.runtimeOverrides.sandboxMode);
@@ -6153,6 +7964,7 @@ async function startCodexTurn(text, options = {}) {
       activity.durationMs = null;
     }
     rememberPromptTurn(turnId, text, options.retryCount || 0);
+    refreshDirectSurfaceProjection({ render: false }).catch(() => {});
     renderRuntimeConstitution();
   }
   return result;
@@ -6198,7 +8010,7 @@ async function steerCurrentTurn(text) {
   return result;
 }
 
-function queueComposerMessage(text) {
+function queueComposerMessage(text, options = {}) {
   const threadId = String(state.threadId || "").trim();
   if (!threadId) throw new Error("No active Codex thread is available for queueing.");
   const item = {
@@ -6206,6 +8018,8 @@ function queueComposerMessage(text) {
     threadId,
     projectId: String(project?.id || ""),
     text,
+    attachments: Array.isArray(options.attachments) ? options.attachments : [],
+    attachmentDraftSetDigest: options.attachmentDraftSetDigest || "",
     createdAt: new Date().toISOString(),
   };
   state.queuedComposerMessages.push(item);
@@ -6241,7 +8055,12 @@ async function drainQueuedComposerMessages(reason = "turn-completed") {
   state.queuedPromptDrainInProgress = true;
   renderRuntimeConstitution();
   try {
-    await sendPrompt(next.text, { clearComposer: false, queuedReason: reason });
+    await sendPrompt(next.text, {
+      clearComposer: false,
+      queuedReason: reason,
+      attachments: Array.isArray(next.attachments) ? next.attachments : [],
+      attachmentDraftSetDigest: next.attachmentDraftSetDigest || "",
+    });
   } catch (error) {
     state.queuedComposerMessages.splice(nextIndex, 0, next);
     throw error;
@@ -6264,7 +8083,10 @@ async function submitIdleComposerDraft() {
     reportComposerDraftBlock(draft);
     return;
   }
-  await sendPrompt(draft.text);
+  await sendPrompt(draft.text, {
+    attachments: draft.attachments,
+    attachmentDraftSetDigest: draft.attachmentDraftSetDigest,
+  });
 }
 
 async function submitActiveComposerDraft(disposition) {
@@ -6278,7 +8100,10 @@ async function submitActiveComposerDraft(disposition) {
     return;
   }
   if (disposition === "queue") {
-    queueComposerMessage(draft.text);
+    queueComposerMessage(draft.text, {
+      attachments: draft.attachments,
+      attachmentDraftSetDigest: draft.attachmentDraftSetDigest,
+    });
     return;
   }
   throw new Error(`Unsupported active-turn composer disposition: ${disposition}`);
@@ -6498,6 +8323,8 @@ function handleNotification(method, params) {
       collapseThoughtProcess(completedTurnId);
       finalizeTurnMessages(completedTurnId);
       renderTurnCompletionNotice(completedTurnId, params?.turn || {});
+      refreshDirectSurfaceProjection({ render: false }).catch(() => {});
+      refreshDirectThreadList({ showErrors: false }).catch(() => {});
       scheduleQueuedPromptDrain("turn-completed");
     }
     return;
@@ -6534,11 +8361,18 @@ function handleBridgeEvent(event) {
     return;
   }
   if (event.type === "connection-status") {
-    if (event.connection) connection = { ...connection, ...event.connection };
+    if (event.connection) {
+      connection = { ...connection, ...event.connection };
+      if (event.connection.directSurfaceProjection?.schema === "direct_codex_surface_projection@1") {
+        state.directSurfaceProjection = event.connection.directSurfaceProjection;
+        applyDirectMetadataModels(event.connection.directSurfaceProjection);
+      }
+    }
     if (event.status === "connected") {
       state.connected = true;
       state.connectionStatus = "connected";
       renderRuntimeConstitution();
+      renderDirectThreadList();
       if (state.threadId && !state.liveAttached) {
         const expectedThreadId = state.threadId;
         const expectedSourceHome = state.sourceHome;
@@ -6568,6 +8402,7 @@ function handleBridgeEvent(event) {
       state.connectionStatus = "connecting";
       setComposerEnabled(false, "Connecting Codex app-server…");
       renderRuntimeConstitution();
+      renderDirectThreadList();
       return;
     }
     if (event.status === "error") {
@@ -6576,6 +8411,7 @@ function handleBridgeEvent(event) {
       state.connectionStatus = "error";
       setComposerEnabled(false, "Codex connection error.");
       renderRuntimeConstitution();
+      renderDirectThreadList();
       if (event.error) addSystemMessage(`Codex connection failed: ${event.error}`);
       return;
     }
@@ -6585,6 +8421,7 @@ function handleBridgeEvent(event) {
       state.connectionStatus = "disconnected";
       setComposerEnabled(false, "Codex disconnected.");
       renderRuntimeConstitution();
+      renderDirectThreadList();
       if (event.error && !String(event.error).toLowerCase().includes("renderer requested disconnect")) {
         addSystemMessage(`Codex disconnected: ${event.error}`);
       }
@@ -6601,6 +8438,18 @@ function handleBridgeEvent(event) {
       ...state.usageLedgerStatus,
       ...(event.status || {}),
     };
+    renderRuntimeConstitution();
+    return;
+  }
+  if (event.type === "project-profile-runtime-status") {
+    const agents = connection?.capabilities?.agents;
+    if (agents) {
+      agents.projectProfileRequestedStatus = event.requestedStatus || agents.projectProfileRequestedStatus;
+      agents.projectProfileConfiguredStatus = event.configuredStatus || agents.projectProfileConfiguredStatus;
+      agents.projectProfileProviderAcceptedStatus = event.providerAcceptedStatus || agents.projectProfileProviderAcceptedStatus;
+      agents.projectProfileRuntimeVerifiedStatus = event.runtimeVerifiedStatus || agents.projectProfileRuntimeVerifiedStatus;
+      agents.projectProfileAuthorityGranted = false;
+    }
     renderRuntimeConstitution();
     return;
   }
@@ -6719,14 +8568,24 @@ async function connect() {
     return;
   }
 
-  setComposerEnabled(false, "Connecting Codex app-server…");
+  const isDirectFixture = connection?.transport === DIRECT_FIXTURE_TRANSPORT;
+  const isDirectLiveText = connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT;
+  setComposerEnabled(false, isDirectLiveText ? "Connecting direct live text controller…" : isDirectFixture ? "Connecting direct fixture controller…" : "Connecting Codex app-server…");
+  setBadge(els.connectionBadge, "connecting", "warning");
   state.connectionStatus = "connecting";
   renderRuntimeConstitution();
+  renderDirectThreadList();
   const connectedSession = await bridge.connect(connection);
   if (connectedSession?.connection) connection = { ...connection, ...connectedSession.connection };
+  if (connection?.directSurfaceProjection?.schema === "direct_codex_surface_projection@1") {
+    state.directSurfaceProjection = connection.directSurfaceProjection;
+    applyDirectMetadataModels(connection.directSurfaceProjection);
+  }
   state.connected = true;
   state.connectionStatus = "connected";
+  await refreshDirectSurfaceProjection({ render: false });
   renderRuntimeConstitution();
+  renderDirectThreadList();
   try {
     await initializeBridgeSession();
     state.readyForThreadOpen = true;
@@ -6748,8 +8607,10 @@ async function connect() {
     } else {
       await loadExistingThreadOrStartNew();
     }
+    enforceDirectLiveTextStartupReadiness();
   } catch (error) {
     addSystemMessage(`Codex initialization failed: ${error.message}`);
+    enforceDirectLiveTextStartupReadiness();
   }
 }
 
@@ -6801,6 +8662,19 @@ els.composerInput?.addEventListener("input", () => {
 
 els.composerAccessButton?.addEventListener("click", () => toggleComposerMenu("access"));
 els.composerModelButton?.addEventListener("click", () => toggleComposerMenu("model"));
+els.directThreadRefreshButton?.addEventListener("click", () => {
+  refreshDirectThreadList({ showErrors: true }).catch((error) => addSystemMessage(`Direct thread refresh failed: ${error.message}`));
+});
+els.directThreadNewButton?.addEventListener("click", () => {
+  createDirectThreadFromStrip().catch((error) => addSystemMessage(`New direct thread failed: ${error.message}`));
+});
+els.morphicNewThreadButton?.addEventListener("click", () => {
+  const starter = isDirectLiveTextSurface() ? createDirectThreadFromStrip : startNewThread;
+  starter().catch((error) => addSystemMessage(`New thread failed: ${error.message}`));
+});
+els.morphicThreadDirectoryButton?.addEventListener("click", () => {
+  refreshDirectThreadList({ showErrors: true }).catch((error) => addSystemMessage(`Direct thread refresh failed: ${error.message}`));
+});
 els.chooseAttachmentButton?.addEventListener("click", async () => {
   if (!bridge?.chooseAttachmentFiles || !project?.id) {
     addSystemMessage("Attachment picker is unavailable.");
@@ -7003,7 +8877,16 @@ document.addEventListener("focusin", (event) => {
 }, true);
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") dismissComposerOverlay("escape");
+  if (event.key === "Escape") {
+    dismissComposerOverlay("escape");
+    const target = event.target;
+    const editableTarget = target?.closest?.("input, textarea, [contenteditable='true']");
+    if (state.analyticsPanelOpen && !editableTarget) {
+      state.analyticsPanelOpen = false;
+      localStorageSet("codex.threadAnalyticsPanel.open", "false");
+      renderThreadAnalyticsPanel();
+    }
+  }
 });
 
 window.addEventListener("blur", () => dismissComposerOverlay("window-blur"));
@@ -7016,9 +8899,36 @@ document.addEventListener("click", (event) => {
   openRuntimeDrawer(tab);
 });
 
+function toggleThreadAnalyticsPanel() {
+  dismissComposerOverlay("thread-analytics-open");
+  state.analyticsPanelOpen = !state.analyticsPanelOpen;
+  localStorageSet("codex.threadAnalyticsPanel.open", state.analyticsPanelOpen ? "true" : "false");
+  renderThreadAnalyticsPanel();
+}
+
+els.analyticsPanelButton?.addEventListener("click", () => toggleThreadAnalyticsPanel());
+els.morphicAnalyticsButton?.addEventListener("click", () => toggleThreadAnalyticsPanel());
+els.morphicSettingsButton?.addEventListener("click", () => openRuntimeDrawer("runtime"));
+
+els.threadAnalyticsPanelClose?.addEventListener("click", () => {
+  state.analyticsPanelOpen = false;
+  localStorageSet("codex.threadAnalyticsPanel.open", "false");
+  renderThreadAnalyticsPanel();
+});
+
+els.threadAnalyticsDockButtons?.addEventListener("click", (event) => {
+  const button = event.target?.closest?.("[data-analytics-dock]");
+  const dock = button?.dataset?.analyticsDock || "";
+  if (!["float", "left", "right", "bottom"].includes(dock)) return;
+  state.analyticsPanelDock = dock;
+  localStorageSet("codex.threadAnalyticsPanel.dock", dock);
+  renderThreadAnalyticsPanel();
+});
+
 els.runtimeDrawerClose?.addEventListener("click", () => closeRuntimeDrawer());
 
 installComposerGeometryObserver();
+renderMorphicCockpit();
 
 connect().catch((error) => {
   addSystemMessage(`Codex setup failed: ${error.message}`);

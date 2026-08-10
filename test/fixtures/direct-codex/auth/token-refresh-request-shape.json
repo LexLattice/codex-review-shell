@@ -1,0 +1,20 @@
+{
+  "operation": "token_refresh_request_shape",
+  "input": {
+    "clientId": "codex-desktop-fixture",
+    "refreshToken": "[REDACTED:token]"
+  },
+  "expected": {
+    "url": "https://auth.openai.com/oauth/token",
+    "method": "POST",
+    "contentType": "application/x-www-form-urlencoded",
+    "grantType": "refresh_token",
+    "clientId": "codex-desktop-fixture",
+    "hasRefreshToken": true,
+    "bodyFieldOrder": [
+      "grant_type",
+      "refresh_token",
+      "client_id"
+    ]
+  }
+}

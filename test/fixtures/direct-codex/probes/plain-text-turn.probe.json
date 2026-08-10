@@ -1,0 +1,31 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.fixture.plain_text_turn",
+  "name": "Plain Text Fixture Turn",
+  "hypothesis": "A committed Responses-style plain text stream fixture normalizes to session, message, usage, and completion events.",
+  "fixture": {
+    "source": "committed-fixture",
+    "rawFixtureId": "raw/plain-text-turn"
+  },
+  "normalization": {
+    "expectedFixtureId": "normalized/plain-text-turn",
+    "failOnUnknown": true
+  },
+  "profileDelta": {
+    "expectedFixtureId": "profile-deltas/plain-text-turn"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredEventTypes": [
+      "session_started",
+      "message_delta",
+      "usage_delta",
+      "response_completed"
+    ]
+  },
+  "blockedLiveGates": [
+    "No live OAuth token exchange.",
+    "No direct backend request.",
+    "No account-visible model discovery."
+  ]
+}
