@@ -72,6 +72,23 @@ fs.writeFileSync(path.join(userDataRoot, "workspace-config.json"), `${JSON.strin
       },
     },
     chatThreads: [],
+    laneBindings: [{
+      id: "binding_direct_workbench_startup",
+      lane: "implementation",
+      label: "Bound Direct thread",
+      codexThreadRef: {
+        threadId: "thread_direct_workbench_bound",
+        originator: "codex",
+        titleSnapshot: "Bound startup thread",
+        cwdSnapshot: repoRoot,
+        sourceHome: "/tmp/direct-workbench-bound-home",
+        sessionFilePath: path.join(testRoot, "sessions", "bound-thread.jsonl"),
+      },
+      chatThreadId: "",
+      isDefaultForLane: true,
+      openOnProjectActivate: true,
+      status: "resolved",
+    }],
     promptTemplates: {},
     flowProfile: {},
   }],
@@ -105,6 +122,18 @@ try {
   assert.match(page.url(), /\/t3-direct-surface\.html/);
   assert.equal(await page.locator(".t3-utility-rail button:disabled").count(), 4);
   assert.match(await page.locator(".t3-sidebar-footer").innerText(), /Direct thread control plane/);
+
+  const bootstrapPayload = JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8"));
+  assert.equal(bootstrapPayload.initialThreadId, "thread_direct_workbench_bound");
+  assert.equal(bootstrapPayload.initialThreadSourceHome, "/tmp/direct-workbench-bound-home");
+  assert.equal(
+    bootstrapPayload.initialThreadSessionFilePath,
+    path.join(testRoot, "sessions", "bound-thread.jsonl"),
+  );
+  assert.equal(bootstrapPayload.initialThreadTitle, "Bound startup thread");
+  const persistedConfig = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
+  assert.equal(persistedConfig.projects[0].lastActiveBindingId, "binding_direct_workbench_startup");
+  assert.match(persistedConfig.projects[0].laneBindings[0].lastActivatedAt, /^\d{4}-\d{2}-\d{2}T/);
 
   const worldManagerAuthorityExposed = await page.evaluate(
     () => typeof window.codexSurfaceBridge.getWorldManagerSnapshot === "function",

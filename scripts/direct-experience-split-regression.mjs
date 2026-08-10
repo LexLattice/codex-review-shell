@@ -47,6 +47,10 @@ assert.match(mainSource, /const APP_EXPERIENCE = resolveAppExperience\(process\.
 assert.match(mainSource, /appExperience: publicAppExperience\(APP_EXPERIENCE\)/);
 assert.match(mainSource, /async function createDirectWorkbenchWindow/);
 assert.match(mainSource, /if \(DIRECT_WORKBENCH_MODE\)/);
+assert.match(
+  mainSource,
+  /const activation = applyProjectActivationBinding\(selectedProject\);[\s\S]*\.\.\.codexSurfaceOptionsForBinding\(activationBinding\)/,
+);
 assert.match(directHtml, /data-app-experience="direct-workbench"/);
 assert.match(directHtml, /Direct thread control plane/);
 assert.match(directRenderer, /experience\.controlPlane === "direct-thread"/);

@@ -5078,6 +5078,7 @@ async function loadCodexSurface(project, options = {}) {
   const codex = project.surfaceBinding.codex;
   const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+  const threadExtras = codexSurfaceThreadExtras(options);
   const runtimeMode = normalizeDirectRuntimeModeForStatus(codex.runtimeMode);
   if (runtimeMode !== "legacy-app-server") {
     await disposeCodexAppServerManager();
@@ -5118,7 +5119,7 @@ async function loadCodexSurface(project, options = {}) {
     const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
       codexConnection: directConnection,
       directSurfaceProjection,
-      activationEpoch: Number(options.activationEpoch) || 0,
+      ...threadExtras,
       error: [
         `Direct runtime selected: ${runtimeStatus.runtimeModeLabel}.`,
         `Direct tier: ${runtimeStatus.directTier || "none"}.`,
@@ -5153,7 +5154,6 @@ async function loadCodexSurface(project, options = {}) {
     }
   }
   if (codex.mode === "managed") {
-    const threadExtras = codexSurfaceThreadExtras(options);
     const workspaceStatus = workspaceBackends?.statusForProject(project) || null;
     try {
       const requestedCodexHome = normalizeString(options.codexHome, "");
@@ -5210,7 +5210,7 @@ async function loadCodexSurface(project, options = {}) {
   }
   await disposeCodexAppServerManager();
   activeCodexSurfaceConnection = null;
-  const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, { activationEpoch: Number(options.activationEpoch) || 0 });
+  const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, threadExtras);
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
   setManagedCodexSurfaceAuthority(project, localUrl, "fallback-local-surface");
   await codexView.webContents.loadURL(localUrl);
@@ -8540,9 +8540,19 @@ async function createDirectWorkbenchWindow() {
   });
 
   const config = await loadConfig();
-  currentProject = getSelectedProject(config);
-  if (!currentProject) throw new Error("Direct Workbench requires at least one configured project.");
+  const selectedProject = getSelectedProject(config);
+  if (!selectedProject) throw new Error("Direct Workbench requires at least one configured project.");
+  const activation = applyProjectActivationBinding(selectedProject);
+  const projects = activation.project
+    ? config.projects.map((project) => (project.id === activation.project.id ? activation.project : project))
+    : config.projects;
+  const saved = await saveConfig({ ...config, projects });
+  currentProject = getSelectedProject(saved);
+  const activationBinding = activation.binding?.id
+    ? currentProject?.laneBindings?.find((item) => item.id === activation.binding.id) || activation.binding
+    : null;
   await loadCodexSurface(currentProject, {
+    ...codexSurfaceOptionsForBinding(activationBinding),
     activationEpoch: nextSurfaceActivationEpoch(),
   });
 }
