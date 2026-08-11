@@ -60,6 +60,17 @@ function normalizeLinuxPath(value, fallback = "/home") {
   return text.startsWith("/") ? text : `/${text}`;
 }
 
+function workspaceRootIsAbsolute(value, workspaceKind = "local", hostPlatform = process.platform) {
+  const root = normalizeString(value, "");
+  if (!root) return false;
+  const kind = normalizeString(workspaceKind, "local");
+  if (kind === "windows") return path.win32.isAbsolute(root);
+  if (kind === "wsl") return path.posix.isAbsolute(root);
+  return hostPlatform === "win32"
+    ? path.win32.isAbsolute(root)
+    : path.posix.isAbsolute(root);
+}
+
 function shellSingleQuote(value) {
   return `'${String(value ?? "").replace(/'/g, `'\"'\"'`)}'`;
 }
@@ -541,5 +552,6 @@ module.exports = {
   normalizeWorkspace,
   workspaceLabel,
   workspaceRoot,
+  workspaceRootIsAbsolute,
   workspaceSessionKey,
 };

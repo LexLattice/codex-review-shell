@@ -17,7 +17,12 @@ const { CodexAppServerManager } = require("./main/codex-app-server");
 const { LocalSurfaceServer } = require("./main/local-surface-server");
 const { CodexSurfaceSession } = require("./main/codex-surface-session");
 const { MiddleWebHost } = require("./main/middle-web-host");
-const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
+const {
+  WorkspaceBackendManager,
+  workspaceLabel,
+  workspaceRoot,
+  workspaceRootIsAbsolute,
+} = require("./main/workspace-backend");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 const {
   createDirectAuthIpcController,
@@ -3831,9 +3836,11 @@ async function provisionDirectWorkspaceWorker(input = {}) {
   try {
     const nativeRoot = normalizeString(provisioned?.worktreePath, "");
     const parentWorkspaceKind = normalizeString(parentProject.workspace?.kind, "local");
-    const nativeRootIsAbsolute = parentWorkspaceKind === "windows"
-      ? path.win32.isAbsolute(nativeRoot)
-      : path.posix.isAbsolute(nativeRoot);
+    const nativeRootIsAbsolute = workspaceRootIsAbsolute(
+      nativeRoot,
+      parentWorkspaceKind,
+      process.platform,
+    );
     if (!nativeRoot || !nativeRootIsAbsolute) {
       const error = new Error("Resident backend did not return a native workspace-worker realization.");
       error.code = "direct_workspace_worker_native_root_missing";
