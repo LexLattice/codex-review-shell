@@ -341,6 +341,18 @@ if (directWorkbenchPreload) {
       ipcRenderer.invoke("direct-workbench:mutate-project-lifecycle", payload),
     activateDirectWorkbenchProject: (payload = {}) =>
       ipcRenderer.invoke("direct-workbench:activate-project", payload),
+    readDirectEpistemicSnapshot: (payload = {}) =>
+      ipcRenderer.invoke("direct-epistemic:snapshot", payload),
+    initializeDirectEpistemicRepository: () =>
+      ipcRenderer.invoke("direct-epistemic:initialize-repository"),
+    refreshDirectEpistemicRepository: () =>
+      ipcRenderer.invoke("direct-epistemic:refresh-repository"),
+    syncDirectEpistemicThread: (payload = {}) =>
+      ipcRenderer.invoke("direct-epistemic:sync-thread", payload),
+    transcribeDirectEpistemicThread: (payload = {}) =>
+      ipcRenderer.invoke("direct-epistemic:transcribe-thread", payload),
+    importDirectEpistemicContext: (payload = {}) =>
+      ipcRenderer.invoke("direct-epistemic:import-context", payload),
     onDirectWorkbenchProjectDirectoryEvent: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("direct-workbench:project-directory-event", listener);

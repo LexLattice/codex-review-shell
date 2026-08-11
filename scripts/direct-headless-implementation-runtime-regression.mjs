@@ -285,7 +285,16 @@ try {
 
   const persistedTurn = sessionStore.readTurn("direct_session_headless_impl", terminal.turnId);
   assert.equal(persistedTurn.state, "completed");
-  const expectedInitialToolNames = ["get_context_remaining", "inspect_agent", "list_agents", "read_file", "request_user_input", "update_plan"];
+  const expectedInitialToolNames = [
+    "get_context_remaining",
+    "inspect_agent",
+    "list_agents",
+    "read_file",
+    "request_user_input",
+    "spawn_agent",
+    "update_plan",
+    "wait_agent",
+  ];
   assert.deepEqual(capturedProviderBodies[0].tools.map((tool) => tool.name), expectedInitialToolNames);
   assert.equal(capturedProviderBodies[0].parallel_tool_calls, false);
   assert.equal(capturedProviderBodies[0].tool_choice, "auto");

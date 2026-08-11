@@ -48,6 +48,11 @@ const REPOSITORY_SEMANTIC_EVIDENCE_LIMIT = 18;
 const REPOSITORY_SEMANTIC_EXCERPT_BYTES = 6000;
 const REPOSITORY_SEMANTIC_TOTAL_EXCERPT_BYTES = 72 * 1024;
 const REPOSITORY_SEMANTIC_MAX_EVIDENCE_FILE_BYTES = 2 * 1024 * 1024;
+const DIRECT_EPISTEMIC_CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024;
+const DIRECT_EPISTEMIC_UNTRACKED_FILE_LIMIT = 2000;
+const DIRECT_EPISTEMIC_UNTRACKED_FILE_BYTES = 16 * 1024 * 1024;
+const DIRECT_EPISTEMIC_UNTRACKED_TOTAL_BYTES = 128 * 1024 * 1024;
+const DIRECT_EPISTEMIC_PROFILE_SOURCE_BYTES = 8 * 1024 * 1024;
 const ARO_REALIZATION_CONTEXT_FILE_LIMIT = 12;
 const ARO_REALIZATION_CONTEXT_EXCERPT_BYTES = 12 * 1024;
 const ARO_REALIZATION_CONTEXT_TOTAL_BYTES = 96 * 1024;
@@ -281,6 +286,16 @@ function sha256Digest(value) {
     .createHash("sha256")
     .update(value)
     .digest("hex")}`;
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (!value || typeof value !== "object") return JSON.stringify(value);
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+}
+
+function canonicalDigest(value) {
+  return crypto.createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
 function splitLinesWithEndings(text) {
@@ -1151,6 +1166,308 @@ async function repositorySemanticSnapshot() {
   };
 }
 
+function directEpistemicProfileRequest(params = {}) {
+  const profile = params.profile && typeof params.profile === "object" ? params.profile : {};
+  const rawMarkers = Array.isArray(profile.markers) ? profile.markers : [];
+  const rawSources = Array.isArray(profile.sources) ? profile.sources : [];
+  if (rawMarkers.length > 64 || rawSources.length > 64) {
+    throw new Error("direct_epistemic_profile_bounds_exceeded");
+  }
+  const markers = rawMarkers
+    .slice(0, 64)
+    .map((entry) => displayRelPath(normalizeRelPath(entry)))
+    .filter(Boolean);
+  const sources = rawSources
+    .slice(0, 64)
+    .map((entry) => ({
+      id: String(entry?.id || "").trim(),
+      relativePath: displayRelPath(normalizeRelPath(entry?.path || "")),
+      facet: String(entry?.facet || "").trim(),
+      expectedContentDigest: String(entry?.contentDigest || entry?.expectedContentDigest || "").trim().toLowerCase(),
+    }))
+    .filter((entry) => entry.id && entry.relativePath);
+  return {
+    profileId: String(profile.profileId || "").trim(),
+    revision: Number(profile.revision || 1),
+    markers,
+    sources,
+  };
+}
+
+async function directEpistemicFileDigest(relativePath, maxBytes) {
+  const resolved = await resolveFileWithinRoot(relativePath);
+  if (path.resolve(resolved.realRoot) !== path.resolve(root) ||
+      path.resolve(resolved.fullPath) !== path.resolve(resolved.requestedFullPath)) {
+    throw new Error("direct_epistemic_physical_path_rejected");
+  }
+  const requestedStat = await fs.lstat(resolved.requestedFullPath);
+  if (requestedStat.isSymbolicLink()) throw new Error("direct_epistemic_symlink_rejected");
+  const noFollow = Number(fsSync.constants.O_NOFOLLOW || 0);
+  let file;
+  try {
+    file = await fs.open(resolved.requestedFullPath, fsSync.constants.O_RDONLY | noFollow);
+  } catch {
+    throw new Error("direct_epistemic_source_open_rejected");
+  }
+  const sameStat = (left, right) => Boolean(left && right) &&
+    left.dev === right.dev && left.ino === right.ino && left.size === right.size &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+  const hash = crypto.createHash("sha256");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  let totalBytes = 0;
+  let before;
+  let after;
+  try {
+    before = await file.stat();
+    if (!before.isFile()) throw new Error("direct_epistemic_source_not_file");
+    if (before.size > maxBytes) throw new Error("direct_epistemic_source_too_large");
+    let bytesRead = 0;
+    do {
+      const result = await file.read(buffer, 0, buffer.length, null);
+      bytesRead = result.bytesRead;
+      totalBytes += bytesRead;
+      if (totalBytes > maxBytes) throw new Error("direct_epistemic_source_too_large");
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+    after = await file.stat();
+  } finally {
+    await file.close();
+  }
+  let finalPathStat = null;
+  try { finalPathStat = await fs.lstat(resolved.requestedFullPath); } catch {}
+  if (!sameStat(before, after) || totalBytes !== after.size ||
+      !sameStat(requestedStat, after) || !sameStat(finalPathStat, after) || finalPathStat?.isSymbolicLink()) {
+    throw new Error("direct_epistemic_source_changed_during_read");
+  }
+  return {
+    sizeBytes: after.size,
+    contentDigest: hash.digest("hex"),
+  };
+}
+
+async function directEpistemicUntrackedState(paths) {
+  const omissions = [];
+  const files = [];
+  let totalBytes = 0;
+  if (paths.length > DIRECT_EPISTEMIC_UNTRACKED_FILE_LIMIT) {
+    omissions.push("untracked_file_count_limit_exceeded");
+  }
+  for (const relativePath of paths.slice(0, DIRECT_EPISTEMIC_UNTRACKED_FILE_LIMIT)) {
+    try {
+      const resolved = await resolveFileWithinRoot(relativePath);
+      const requestedStat = await fs.lstat(resolved.requestedFullPath);
+      if (requestedStat.isSymbolicLink()) {
+        omissions.push(`untracked_symlink_rejected:${relativePath}`);
+        continue;
+      }
+      const stat = await fs.lstat(resolved.fullPath);
+      if (!stat.isFile()) continue;
+      if (stat.size > DIRECT_EPISTEMIC_UNTRACKED_FILE_BYTES || totalBytes + stat.size > DIRECT_EPISTEMIC_UNTRACKED_TOTAL_BYTES) {
+        omissions.push(`untracked_content_limit_exceeded:${relativePath}`);
+        continue;
+      }
+      const digest = await directEpistemicFileDigest(relativePath, DIRECT_EPISTEMIC_UNTRACKED_FILE_BYTES);
+      totalBytes += digest.sizeBytes;
+      files.push({ relativePath, ...digest });
+    } catch (error) {
+      omissions.push(`untracked_unavailable:${relativePath}:${String(error?.message || "unknown")}`);
+    }
+  }
+  files.sort((left, right) => left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0);
+  return { files, omissions, digest: canonicalDigest(files), totalBytes };
+}
+
+async function directEpistemicGitCapture() {
+  const identity = await captureDigestProcess("git", ["rev-parse", "--show-toplevel", "HEAD", "--abbrev-ref", "HEAD"], {
+    cwd: root,
+    timeoutMs: 10_000,
+  });
+  if (identity.exitCode !== 0 || identity.stdoutTruncated) throw new Error("direct_epistemic_git_identity_failed");
+  const lines = identity.stdout.toString("utf8").split(/\r?\n/).filter(Boolean);
+  const realRoot = await fs.realpath(root);
+  const realGitRoot = await fs.realpath(lines[0] || root);
+  if (path.resolve(realRoot) !== path.resolve(realGitRoot)) throw new Error("direct_epistemic_repository_root_mismatch");
+  const [status, diff, untracked] = await Promise.all([
+    captureDigestProcess("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: root, timeoutMs: 20_000 }),
+    captureDigestProcess("git", ["diff", "--no-ext-diff", "--binary", "HEAD", "--"], { cwd: root, timeoutMs: 60_000, captureLimit: 0 }),
+    captureDigestProcess("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd: root, timeoutMs: 20_000 }),
+  ]);
+  if ([status, diff, untracked].some((entry) => entry.exitCode !== 0)) throw new Error("direct_epistemic_git_observation_failed");
+  const untrackedPaths = untracked.stdout.toString("utf8").split("\0").filter(Boolean).sort();
+  return {
+    gitHead: lines[1] || "",
+    branch: lines[2] || "",
+    statusDigest: status.stdoutDigest,
+    statusText: status.stdout.toString("utf8"),
+    statusTruncated: status.stdoutTruncated,
+    trackedDiffDigest: diff.stdoutDigest,
+    trackedDiffBytes: diff.stdoutBytes,
+    untrackedPaths,
+    untrackedListDigest: untracked.stdoutDigest,
+    untrackedListTruncated: untracked.stdoutTruncated,
+  };
+}
+
+async function directEpistemicProfileSourceState(requestedProfile) {
+  const sources = [];
+  const omissions = [];
+  for (const source of requestedProfile.sources) {
+    try {
+      const observed = await directEpistemicFileDigest(source.relativePath, DIRECT_EPISTEMIC_PROFILE_SOURCE_BYTES);
+      const validationPosture = Boolean(source.expectedContentDigest) &&
+        source.expectedContentDigest === observed.contentDigest
+        ? "exact"
+        : "digest_mismatch";
+      if (validationPosture !== "exact") omissions.push(`profile_source_digest_mismatch:${source.id}`);
+      sources.push({
+        id: source.id,
+        relativePath: source.relativePath,
+        facet: source.facet,
+        ...observed,
+        expectedContentDigest: source.expectedContentDigest,
+        validationPosture,
+      });
+    } catch (error) {
+      omissions.push(`profile_source_unavailable:${source.id}:${String(error?.message || "unknown")}`);
+    }
+  }
+  const digest = canonicalDigest(sources.map((source) => ({
+    id: source.id,
+    relativePath: source.relativePath,
+    facet: source.facet,
+    sizeBytes: source.sizeBytes,
+    contentDigest: source.contentDigest,
+    expectedContentDigest: source.expectedContentDigest,
+    validationPosture: source.validationPosture,
+  })));
+  return { sources, omissions: [...new Set(omissions)].sort(), digest };
+}
+
+async function directEpistemicProfileMarkerState(requestedProfile) {
+  const markers = [];
+  const omissions = [];
+  for (const marker of requestedProfile.markers) {
+    let present = false;
+    try {
+      const resolved = await resolveFileWithinRoot(marker);
+      const requestedStat = await fs.lstat(resolved.requestedFullPath);
+      present = !requestedStat.isSymbolicLink();
+    } catch {}
+    markers.push({ marker, present });
+    if (!present) omissions.push(`profile_marker_missing:${marker}`);
+  }
+  return {
+    markers,
+    omissions: [...new Set(omissions)].sort(),
+    digest: canonicalDigest(markers),
+  };
+}
+
+async function directEpistemicRepositoryObservation(params = {}) {
+  const requestedProfile = directEpistemicProfileRequest(params);
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const before = await directEpistemicGitCapture();
+    const markerState = await directEpistemicProfileMarkerState(requestedProfile);
+    const sourceState = await directEpistemicProfileSourceState(requestedProfile);
+    const untracked = await directEpistemicUntrackedState(before.untrackedPaths);
+    const substrateOmissions = [...untracked.omissions];
+    const after = await directEpistemicGitCapture();
+    const untrackedAfter = await directEpistemicUntrackedState(after.untrackedPaths);
+    const markerStateAfter = await directEpistemicProfileMarkerState(requestedProfile);
+    const sourceStateAfter = await directEpistemicProfileSourceState(requestedProfile);
+    const substrateCoherent = before.gitHead === after.gitHead &&
+      before.branch === after.branch &&
+      before.statusDigest === after.statusDigest &&
+      before.trackedDiffDigest === after.trackedDiffDigest &&
+      before.untrackedListDigest === after.untrackedListDigest &&
+      untracked.digest === untrackedAfter.digest;
+    const profileCoherent = markerState.digest === markerStateAfter.digest &&
+      canonicalDigest(markerState.omissions) === canonicalDigest(markerStateAfter.omissions) &&
+      sourceState.digest === sourceStateAfter.digest &&
+      canonicalDigest(sourceState.omissions) === canonicalDigest(sourceStateAfter.omissions);
+    const coherent = substrateCoherent && profileCoherent;
+    if (!coherent && attempt < 2) continue;
+    if (!substrateCoherent) substrateOmissions.push("repository_changed_during_observation");
+    const profileValidationOmissions = [
+      ...markerStateAfter.omissions,
+      ...sourceStateAfter.omissions,
+    ];
+    if (!profileCoherent) profileValidationOmissions.push("profile_sources_changed_during_observation");
+    if (before.statusTruncated || before.untrackedListTruncated || after.statusTruncated || after.untrackedListTruncated) {
+      substrateOmissions.push("git_observation_capture_truncated");
+    }
+    const sources = sourceStateAfter.sources;
+    const sourceSetDigest = sourceStateAfter.digest;
+    const untrackedDigest = untracked.digest;
+    const normalizedSubstrateOmissions = [...new Set(substrateOmissions)].sort();
+    const normalizedProfileOmissions = [...new Set(profileValidationOmissions)].sort();
+    const validationOmissions = [...new Set([...normalizedSubstrateOmissions, ...normalizedProfileOmissions])].sort();
+    const substrateObservationComplete = substrateCoherent && normalizedSubstrateOmissions.length === 0;
+    const profileValidationComplete = profileCoherent && normalizedProfileOmissions.length === 0;
+    const worktreeDigest = canonicalDigest({
+      gitHead: before.gitHead,
+      branch: before.branch,
+      trackedDiffDigest: before.trackedDiffDigest,
+      untrackedDigest,
+      statusDigest: before.statusDigest,
+      untrackedSetDigest: before.untrackedListDigest,
+      substrateCoherent,
+      substrateOmissionsDigest: canonicalDigest(normalizedSubstrateOmissions),
+    });
+    const gitWitnessBeforeDigest = canonicalDigest({
+      gitHead: before.gitHead,
+      branch: before.branch,
+      statusDigest: before.statusDigest,
+      trackedDiffDigest: before.trackedDiffDigest,
+      untrackedSetDigest: before.untrackedListDigest,
+    });
+    const gitWitnessAfterDigest = canonicalDigest({
+      gitHead: after.gitHead,
+      branch: after.branch,
+      statusDigest: after.statusDigest,
+      trackedDiffDigest: after.trackedDiffDigest,
+      untrackedSetDigest: after.untrackedListDigest,
+    });
+    return {
+      schema: "direct_epistemic_repository_observation@1",
+      profile: {
+        profileId: requestedProfile.profileId,
+        revision: requestedProfile.revision,
+      },
+      gitHead: before.gitHead,
+      branch: before.branch,
+      dirty: before.statusText.split("\0").filter(Boolean).length > 0,
+      statusEntryCount: before.statusText.split("\0").filter(Boolean).length,
+      trackedDiffBytes: before.trackedDiffBytes,
+      untrackedFileCount: untracked.files.length,
+      untrackedFiles: untracked.files,
+      trackedDiffDigest: before.trackedDiffDigest,
+      untrackedDigest,
+      statusDigest: before.statusDigest,
+      sourceSetDigest,
+      worktreeDigest,
+      sources,
+      omissions: validationOmissions,
+      validationOmissions,
+      substrateOmissions: normalizedSubstrateOmissions,
+      profileValidationOmissions: normalizedProfileOmissions,
+      observationComplete: substrateObservationComplete && profileValidationComplete,
+      substrateObservationComplete,
+      profileValidationComplete,
+      captureCoherent: coherent,
+      substrateCoherent,
+      profileCoherent,
+      captureAttempts: attempt,
+      gitWitnessBeforeDigest,
+      gitWitnessAfterDigest,
+      rawWorkspacePathIncluded: false,
+      rawFileContentIncluded: false,
+      attempt,
+    };
+  }
+  throw new Error("direct_epistemic_repository_observation_failed");
+}
+
 function sourceLanguageForPath(relPath) {
   const extension = path.extname(
     String(relPath || ""),
@@ -1668,6 +1985,63 @@ function appendLimited(chunks, chunk, limitBytes) {
   }
   chunks.push(buffer.subarray(0, limitBytes - current));
   return true;
+}
+
+async function captureDigestProcess(command, args, options = {}) {
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
+  const captureLimit = Number.isFinite(Number(options.captureLimit))
+    ? Math.max(0, Number(options.captureLimit))
+    : DIRECT_EPISTEMIC_CAPTURE_LIMIT_BYTES;
+  return new Promise((resolve, reject) => {
+    const child = trackChildProcess(spawn(command, args, {
+      cwd: options.cwd || root,
+      env: options.env || minimalCommandEnv(),
+      shell: false,
+      windowsHide: true,
+    }));
+    const stdoutHash = crypto.createHash("sha256");
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let stdoutBytes = 0;
+    let stdoutCapturedBytes = 0;
+    let stderrTruncated = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) terminateChild(child);
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => {
+      const buffer = Buffer.from(chunk);
+      stdoutHash.update(buffer);
+      stdoutBytes += buffer.length;
+      if (stdoutCapturedBytes < captureLimit) {
+        const slice = buffer.subarray(0, Math.max(0, captureLimit - stdoutCapturedBytes));
+        if (slice.length) stdoutChunks.push(slice);
+        stdoutCapturedBytes += slice.length;
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderrTruncated = appendLimited(stderrChunks, chunk, 32 * 1024) || stderrTruncated;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      settled = true;
+      reject(error);
+    });
+    child.on("close", (exitCode, signal) => {
+      clearTimeout(timer);
+      settled = true;
+      resolve({
+        exitCode,
+        signal,
+        stdout: Buffer.concat(stdoutChunks),
+        stdoutBytes,
+        stdoutDigest: stdoutHash.digest("hex"),
+        stdoutTruncated: stdoutBytes > stdoutCapturedBytes,
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        stderrTruncated,
+      });
+    });
+  });
 }
 
 async function runCommand(params = {}) {
@@ -3736,6 +4110,7 @@ async function handleRequest(method, params = {}) {
         applyPatch: true,
         readFileTransfer: true,
         repositorySemanticSnapshot: true,
+        directEpistemicRepositoryObservation: true,
         repositoryRealizationContext: true,
         runCommand: true,
         runDirectCommand: true,
@@ -3758,6 +4133,9 @@ async function handleRequest(method, params = {}) {
   if (method === "readFileTransfer") return readFileTransfer(params);
   if (method === "repositorySemanticSnapshot") {
     return repositorySemanticSnapshot(params);
+  }
+  if (method === "directEpistemicRepositoryObservation") {
+    return directEpistemicRepositoryObservation(params);
   }
   if (
     method ===

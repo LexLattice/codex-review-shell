@@ -1,0 +1,193 @@
+{
+  "schema": "direct_epistemic_repository_profile@1",
+  "profileId": "arcagi3-odeu-local",
+  "revision": 2,
+  "label": "ARC-AGI-3 ODEU local solver",
+  "markers": [
+    "AGENTS.md",
+    "scripts/arcagi3",
+    "tests/current_robot_tests.txt",
+    "environment_files"
+  ],
+  "sources": [
+    { "id": "constitution", "path": "AGENTS.md", "facet": "constitution", "contentDigest": "124ff9b42bada8408a117096f1d8c7545510804c08c487c55b7ccf2917ea7716" },
+    { "id": "build_gates", "path": "Makefile", "facet": "test_evidence", "contentDigest": "5023a210ef6b5a2450a26a7f606a5b9217aa8543bea0a34560b556d06022f22f" },
+    { "id": "aro_contracts", "path": "scripts/arcagi3/aro/contracts.py", "facet": "architecture", "contentDigest": "1e2b035299d3640592299028c3ae141a1bdc9efc26dac99c3af72f66780ec2a4" },
+    { "id": "aro_registry", "path": "scripts/arcagi3/aro/registry.py", "facet": "architecture", "contentDigest": "051e0c2ee4ed195bd9440e7aa8e926b9365c98df89de5d6013dde61f3087fcd4" },
+    { "id": "aro_epistemics", "path": "scripts/arcagi3/aro/epistemic.py", "facet": "architecture", "contentDigest": "c224d7820d3f8e859e23a0b583e1b6d39feda0a11a24f5f29fa44f8d38134048" },
+    { "id": "semantic_world", "path": "scripts/arcagi3/executive_odeu_semantic_world.py", "facet": "architecture", "contentDigest": "0df62aa866193532e2f5a8b22c3055c94fb9eccdc767b320031d171e643de54b" },
+    { "id": "structural_registry", "path": "scripts/arcagi3/universal_semantic_contract_registry.py", "facet": "audit", "contentDigest": "548282732bc1abd6fc8f6c09255d5efb8a252fc73a78c2d1bbf1bbea872304f1" },
+    { "id": "turn_checkpoint", "path": "scripts/arcagi3/executive_odeu_turn_checkpoint.py", "facet": "persistence", "contentDigest": "6a859c11b5ab26924bdb82441fa8e999b6cd0e89ceaddb2a933470b9b9b453ff" },
+    { "id": "recursive_audit", "path": "docs/support/arcagi3_recursive_odeu_development_audit_procedure_v0.md", "facet": "audit", "contentDigest": "8440eb77760d36dab450bdff7946c24a836bede5467e3c47294e6390081d6fe8" },
+    { "id": "current_tests", "path": "tests/current_robot_tests.txt", "facet": "test_evidence", "contentDigest": "e3e4f03d662776e4f577589cb607838a3c6ed5ef17679fed08869d8c8f4d8073" },
+    { "id": "acceptance_tests", "path": "tests/current_robot_acceptance_tests.txt", "facet": "test_evidence", "contentDigest": "ec2c8dc28053c0db163899ca7dc2559dd502467e45969072ad7ddcfe118d0ed0" },
+    { "id": "audit_tests", "path": "tests/current_robot_audit_tests.txt", "facet": "test_evidence", "contentDigest": "72c63871ad2efa1b7e8505405cd74f810543ae232a5ad3ecf4536d2ad09b5d26" },
+    { "id": "quarantined_tests", "path": "tests/quarantined_tests.txt", "facet": "test_evidence", "contentDigest": "54f473b9f640b57b239e46ca68af13571af6d6c277e9c852ee0635494dd6aaca" }
+  ],
+  "records": [
+    {
+      "recordType": "ProjectConstitution",
+      "semanticKey": "arcagi3.project.local_only",
+      "facet": "constitution",
+      "sourceIds": ["constitution"],
+      "payload": {
+        "statement": "The solver repository is local-only unless a remote is explicitly added; normal work uses local commits and never infers remote mutation authority.",
+        "deonticForce": "binding"
+      }
+    },
+    {
+      "recordType": "ArchitectureInvariant",
+      "semanticKey": "arcagi3.public_observation_action_authority",
+      "facet": "architecture",
+      "sourceIds": ["constitution", "aro_contracts"],
+      "payload": {
+        "statement": "Solver behavior must depend on public observations, public state, and legal actions rather than private SDK internals or named-game runtime dispatch.",
+        "scope": "runtime"
+      }
+    },
+    {
+      "recordType": "ArchitectureInvariant",
+      "semanticKey": "arcagi3.raster_perception_boundary",
+      "facet": "architecture",
+      "sourceIds": ["constitution", "aro_contracts", "semantic_world"],
+      "payload": {
+        "statement": "Raster evidence remains below the perception boundary; higher layers consume typed semantic objects, relations, and tagged abstract coordinates.",
+        "scope": "perception_to_reasoning_boundary"
+      }
+    },
+    {
+      "recordType": "ArchitectureInvariant",
+      "semanticKey": "arcagi3.semantic_action_grounding",
+      "facet": "architecture",
+      "sourceIds": ["constitution", "aro_contracts"],
+      "payload": {
+        "statement": "Semantic intent and concrete action grounding are separate; only the designated actuation boundary lowers authorized semantic targets into public actions.",
+        "scope": "planning_to_actuation_boundary"
+      }
+    },
+    {
+      "recordType": "ArchitectureInvariant",
+      "semanticKey": "arcagi3.structural_orchestration",
+      "facet": "architecture",
+      "sourceIds": ["constitution", "aro_registry", "semantic_world"],
+      "payload": {
+        "statement": "Orchestration orders typed module calls and passes reports without reinterpreting module-private raster fields or arbitrary serialization.",
+        "scope": "orchestration"
+      }
+    },
+    {
+      "recordType": "ArchitectureInvariant",
+      "semanticKey": "arcagi3.action_conditioned_world_updates",
+      "facet": "architecture",
+      "sourceIds": ["constitution", "aro_epistemics", "semantic_world"],
+      "payload": {
+        "statement": "After t0 bootstrap, world understanding evolves through action-conditioned event groups rather than independent reparsing of each frame.",
+        "scope": "epistemic_update"
+      }
+    },
+    {
+      "recordType": "FailureDiagnosisLaw",
+      "semanticKey": "arcagi3.earliest_invalid_odeu_boundary",
+      "facet": "failure_diagnosis",
+      "sourceIds": ["constitution", "recursive_audit"],
+      "payload": {
+        "statement": "Diagnose divergences by comparing golden and actual O/E/U/D causal prefixes and repair the earliest invalid producer/consumer boundary rather than a downstream symptom.",
+        "classification": ["structural", "content"]
+      }
+    },
+    {
+      "recordType": "GameGeneralizationLaw",
+      "semanticKey": "arcagi3.game_instance_as_evidence",
+      "facet": "game_instance",
+      "sourceIds": ["constitution", "aro_contracts"],
+      "payload": {
+        "statement": "A public game instance is evidence for typed invariants and operator contracts, never authority for game-ID dispatch or an untyped coordinate/color rule.",
+        "scope": "all_25_public_games"
+      }
+    },
+    {
+      "recordType": "PersistenceBoundary",
+      "semanticKey": "arcagi3.aro_registry_and_checkpoint_roles",
+      "facet": "persistence",
+      "sourceIds": ["aro_registry", "turn_checkpoint"],
+      "payload": {
+        "statement": "ARO registry revisions and turn checkpoints are typed runtime/persistence structures; they are evidence surfaces, not a complete repository-wide epistemic ledger.",
+        "scope": "runtime_state"
+      }
+    },
+    {
+      "recordType": "AuditBoundary",
+      "semanticKey": "arcagi3.structural_registry_audit_only",
+      "facet": "audit",
+      "sourceIds": ["structural_registry", "constitution"],
+      "payload": {
+        "statement": "The universal semantic contract registry is structural audit evidence and must not be promoted into runtime policy merely because it is machine-readable.",
+        "scope": "audit_only"
+      }
+    },
+    {
+      "recordType": "TestTierContract",
+      "semanticKey": "arcagi3.test_tier_separation",
+      "facet": "test_evidence",
+      "sourceIds": ["constitution", "build_gates", "current_tests", "acceptance_tests", "audit_tests", "quarantined_tests"],
+      "payload": {
+        "statement": "Current, acceptance, audit, and quarantined tests have distinct standing; focused or partial evidence never substitutes for an owning closure gate.",
+        "tiers": ["current", "acceptance", "audit", "quarantined"]
+      }
+    },
+    {
+      "recordType": "RepositorySurfaceMap",
+      "semanticKey": "arcagi3.maintained_surfaces",
+      "facet": "impact",
+      "sourceIds": ["constitution", "aro_contracts", "aro_registry", "aro_epistemics", "semantic_world", "turn_checkpoint"],
+      "payload": {
+        "statement": "Maintained solver, semantic-world, ARO, checkpoint, test, web, and game-evidence surfaces have explicit producer/consumer roles and must be traversed by purpose.",
+        "coverage": "bounded_seed"
+      }
+    }
+  ],
+  "ports": [
+    {
+      "name": "repo.architecture_mutation",
+      "label": "Architecture mutation",
+      "purpose": "Settle governing invariants and affected semantic boundaries before descending into implementation.",
+      "facets": ["constitution", "architecture", "impact", "persistence"],
+      "traversal": ["constitution", "architecture", "impact", "persistence"]
+    },
+    {
+      "name": "repo.failure_diagnosis",
+      "label": "Failure diagnosis",
+      "purpose": "Locate the earliest invalid O/E/U/D boundary and distinguish structural from content failure.",
+      "facets": ["failure_diagnosis", "architecture", "audit", "test_evidence"],
+      "traversal": ["failure_diagnosis", "architecture", "audit", "test_evidence"]
+    },
+    {
+      "name": "repo.game_instance_diagnosis",
+      "label": "Game-instance diagnosis",
+      "purpose": "Use one game as typed evidence without allowing named-game or raw-raster generalization.",
+      "facets": ["game_instance", "architecture", "failure_diagnosis", "test_evidence"],
+      "traversal": ["game_instance", "architecture", "failure_diagnosis", "test_evidence"]
+    },
+    {
+      "name": "repo.impact_analysis",
+      "label": "Impact analysis",
+      "purpose": "Traverse semantic producers, consumers, persistence boundaries, and owned verification surfaces.",
+      "facets": ["impact", "architecture", "persistence", "test_evidence"],
+      "traversal": ["impact", "architecture", "persistence", "test_evidence"]
+    },
+    {
+      "name": "repo.patch_audit",
+      "label": "Patch audit",
+      "purpose": "Evaluate a candidate patch against standing architecture, failure-localization, and closure laws.",
+      "facets": ["constitution", "architecture", "audit", "failure_diagnosis", "test_evidence"],
+      "traversal": ["constitution", "architecture", "failure_diagnosis", "audit", "test_evidence"]
+    },
+    {
+      "name": "repo.test_evidence",
+      "label": "Test evidence",
+      "purpose": "Resolve which test tiers and gates have standing for the claimed change.",
+      "facets": ["test_evidence", "audit", "impact"],
+      "traversal": ["impact", "test_evidence", "audit"]
+    }
+  ]
+}

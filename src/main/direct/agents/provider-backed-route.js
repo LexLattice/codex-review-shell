@@ -20,6 +20,7 @@ const SUB_AGENT_RESULT_REDUCER_POLICY_SCHEMA = "sub_agent_result_reducer_policy@
 const SUB_AGENT_RESULT_ADMISSION_ENVELOPE_SCHEMA = "sub_agent_result_admission_envelope@1";
 const SUB_AGENT_USAGE_ATTRIBUTION_ROW_SCHEMA = "sub_agent_usage_attribution_row@1";
 const SUB_AGENT_USAGE_UNAVAILABLE_ROW_SCHEMA = "sub_agent_usage_unavailable_row@1";
+const SUB_AGENT_EPISTEMIC_CAPTURE_OMISSION_SCHEMA = "sub_agent_epistemic_capture_omission@1";
 
 const EXACT_TERMINAL_STATES = Object.freeze(["completed", "failed", "timeout", "cancelled"]);
 const TERMINAL_STATES = Object.freeze([...EXACT_TERMINAL_STATES, "handoff_unknown"]);
@@ -32,6 +33,45 @@ function isPlainObject(value) {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function normalizeEpistemicCapture(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const capture = {
+    status: normalizeString(source.status, "unavailable"),
+    errorCode: normalizeString(source.errorCode, ""),
+    receiptDigest: normalizeString(source.receiptDigest, ""),
+    sessionId: normalizeString(source.sessionId, ""),
+    turnId: normalizeString(source.turnId, ""),
+  };
+  const complete = capture.status === "captured" &&
+    !capture.errorCode &&
+    Boolean(capture.receiptDigest) &&
+    Boolean(capture.sessionId) &&
+    Boolean(capture.turnId);
+  if (complete) return { ...capture, complete: true, omission: null };
+  const omissionBase = {
+    schema: SUB_AGENT_EPISTEMIC_CAPTURE_OMISSION_SCHEMA,
+    omissionKind: "native_child_epistemic_capture",
+    captureStatus: capture.status,
+    code: capture.errorCode || (capture.status === "captured"
+      ? capture.receiptDigest ? "capture_identity_missing" : "capture_receipt_missing"
+      : `epistemic_capture_${capture.status}`),
+    evidencePosture: "provider_result_without_complete_local_capture",
+    rawProviderPayloadIncluded: false,
+    rawTranscriptIncluded: false,
+    rawSecretIncluded: false,
+  };
+  const omissionDigest = digestFor("sub-agent-epistemic-capture-omission@1", omissionBase);
+  return {
+    ...capture,
+    complete: false,
+    omission: {
+      ...omissionBase,
+      omissionId: `sub_agent_capture_omission_${omissionDigest.slice(7, 23)}`,
+      omissionDigest,
+    },
+  };
 }
 
 function boundedString(value, maxLength = 420) {
@@ -220,6 +260,7 @@ function buildResultAdmissionArtifacts(route, input = {}) {
     reasoningEffort: input.reasoningEffort,
     tokenUsage: input.tokenUsage,
   });
+  const epistemicCapture = normalizeEpistemicCapture(input.epistemicCapture);
   const familyExtension = {
     childAgentId,
     childThreadId,
@@ -234,6 +275,11 @@ function buildResultAdmissionArtifacts(route, input = {}) {
     rawChildPromptIncluded: false,
     rawChildTranscriptIncluded: false,
     rawProviderPayloadIncluded: false,
+    epistemicCaptureStatus: epistemicCapture.status,
+    epistemicCaptureComplete: epistemicCapture.complete,
+    epistemicCaptureReceiptDigest: epistemicCapture.receiptDigest,
+    epistemicCaptureErrorCode: epistemicCapture.errorCode,
+    epistemicCaptureOmission: epistemicCapture.omission,
   };
   const resultEnvelope = buildOdeuResultEnvelope({
     resultEnvelopeId: `sub_agent_result_envelope_${digestFor("sub-agent-result-envelope-id@1", { routeId: route.routeId, callId, childAgentId }).slice(7, 23)}`,
@@ -263,7 +309,7 @@ function buildResultAdmissionArtifacts(route, input = {}) {
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawProviderPayloadIncluded: false,
-    confidence: terminalExact ? "exact" : "partial",
+    confidence: terminalExact && epistemicCapture.complete ? "exact" : "partial",
   }, { now: route.nowMs });
   const admission = buildOdeuContextAdmissionRecord({
     admissionId: `sub_agent_result_admission_${digestFor("sub-agent-result-admission-id@1", { resultEnvelopeId: resultEnvelope.resultEnvelopeId }).slice(7, 23)}`,
@@ -273,10 +319,12 @@ function buildResultAdmissionArtifacts(route, input = {}) {
     admissionDecision: terminalExact ? "admit" : "do_not_admit",
     admittedAs: terminalExact ? "agent_result_summary" : "not_admitted",
     providerSawResult: terminalExact ? "summary_only" : "not_seen",
-    omissionLedgerRefs: [],
+    omissionLedgerRefs: epistemicCapture.omission ? [epistemicCapture.omission.omissionId] : [],
     admissionPolicyDigest: buildOdeuDigest({
       digestOf: "metadata",
-      unavailableReason: terminalExact ? "not_applicable" : "source_unavailable",
+      unavailableReason: epistemicCapture.omission
+        ? epistemicCapture.omission.code
+        : terminalExact ? "not_applicable" : "source_unavailable",
     }),
     sourceRefs: [sourceRef],
   }, { now: route.nowMs });
@@ -297,6 +345,15 @@ function buildResultAdmissionArtifacts(route, input = {}) {
     rawChildPromptIncluded: false,
     rawChildTranscriptIncluded: false,
     rawProviderPayloadIncluded: false,
+    epistemicCapture: {
+      status: epistemicCapture.status,
+      errorCode: epistemicCapture.errorCode,
+      receiptDigest: epistemicCapture.receiptDigest,
+      sessionId: epistemicCapture.sessionId,
+      turnId: epistemicCapture.turnId,
+    },
+    epistemicCaptureComplete: epistemicCapture.complete,
+    epistemicCaptureOmission: epistemicCapture.omission,
     summary,
     usageAttributionRef: usageAttributionRow?.usageAttributionId || usageUnavailableRow?.usageUnavailableId || "",
     observedAt: nowIso(route.nowMs),
@@ -312,6 +369,9 @@ function buildResultAdmissionArtifacts(route, input = {}) {
     resultAdmissionEnvelope,
     usageAttributionRow,
     usageUnavailableRow,
+    epistemicCapture: resultAdmissionEnvelope.epistemicCapture,
+    epistemicCaptureComplete: epistemicCapture.complete,
+    epistemicCaptureOmission: epistemicCapture.omission,
   };
 }
 
@@ -450,6 +510,7 @@ function resultFor(route, patch = {}) {
 function normalizeProviderOutcome(outcome = {}) {
   const source = isPlainObject(outcome) ? outcome : {};
   const ok = source.ok !== false;
+  const epistemicCapture = normalizeEpistemicCapture(source.epistemicCapture);
   return {
     ok,
     responseId: normalizeString(source.responseId || source.response_id, ""),
@@ -458,6 +519,7 @@ function normalizeProviderOutcome(outcome = {}) {
     terminalState: normalizeTerminalState(source.terminalState || source.state, ok),
     tokenUsage: safeTokenUsage(source.tokenUsage || source.usage),
     errorCode: normalizeString(source.errorCode || source.error?.code, ""),
+    epistemicCapture,
   };
 }
 
@@ -522,6 +584,14 @@ class DirectProviderBackedSubAgentRoute {
         providerRequestStarted: false,
       });
     }
+    if (input.signal?.aborted) {
+      return resultFor(this, {
+        status: "cancelled",
+        blockerCode: "provider_child_turn_aborted",
+        requestShape: request.requestShape,
+        providerRequestStarted: false,
+      });
+    }
     if (!this.providerTurnRunner) {
       return resultFor(this, {
         status: "blocked",
@@ -549,12 +619,17 @@ class DirectProviderBackedSubAgentRoute {
     try {
       const providerOutcome = normalizeProviderOutcome(await this.providerTurnRunner({
         agent,
+        projectId: this.projectId,
+        workThreadId: this.workThreadId,
+        primaryThreadId: this.primaryThreadId,
         requestBody: request.requestBody,
         requestShape: request.requestShape,
         promptDigest: request.promptDigest,
         contextDigest: request.contextDigest,
         contextMessageCount: request.contextMessageCount,
         promptChars: request.promptChars,
+        attemptId: normalizeString(input.callId, `call_provider_backed_${agent.agentThreadId}`),
+        signal: input.signal,
       }));
       const terminalStatus = providerOutcome.terminalState;
       const terminalExact = EXACT_TERMINAL_STATES.includes(terminalStatus);
@@ -581,6 +656,8 @@ class DirectProviderBackedSubAgentRoute {
         model: request.requestShape.model,
         reasoningEffort: request.requestShape.reasoningEffort,
         tokenUsage: providerOutcome.tokenUsage,
+        epistemicCapture: providerOutcome.epistemicCapture,
+        epistemicCaptureComplete: providerOutcome.epistemicCapture.complete,
       });
       return resultFor(this, {
         status: terminalStatus,
@@ -595,6 +672,8 @@ class DirectProviderBackedSubAgentRoute {
         responseId: providerOutcome.responseId,
         upstreamRequestId: providerOutcome.upstreamRequestId,
         tokenUsage: providerOutcome.tokenUsage,
+        epistemicCapture: providerOutcome.epistemicCapture,
+        epistemicCaptureComplete: providerOutcome.epistemicCapture.complete,
         childResultDigest: childResult.resultDigest,
         childResultPreview: terminalExact ? admissionArtifacts.reducedSummary.summaryText : "",
         ...admissionArtifacts,
@@ -604,14 +683,17 @@ class DirectProviderBackedSubAgentRoute {
         primaryTranscriptMutationStarted: false,
       });
     } catch (error) {
-      const errorCode = normalizeString(error?.code, "provider_child_turn_exception");
+      const aborted = input.signal?.aborted || error?.name === "AbortError";
+      const errorCode = aborted
+        ? "provider_child_turn_aborted"
+        : normalizeString(error?.code, "provider_child_turn_exception");
       const childResult = this.surface.recordChildResult({
         targetAgentId: agent.agentThreadId,
-        status: "failed",
+        status: aborted ? "cancelled" : "failed",
         resultText: errorCode,
       });
       return resultFor(this, {
-        status: "failed",
+        status: aborted ? "cancelled" : "failed",
         blockerCode: errorCode,
         providerRequestStarted: true,
         providerCompleted: false,
@@ -629,7 +711,7 @@ class DirectProviderBackedSubAgentRoute {
           waitPlanId: normalizeString(input.waitPlanId, ""),
           contextPackId: normalizeString(input.contextPackId, ""),
           requestManifestId: normalizeString(input.requestManifestId, ""),
-          terminalState: "failed",
+          terminalState: aborted ? "cancelled" : "failed",
           ok: false,
           outputText: "",
           errorCode,
@@ -688,6 +770,28 @@ function assertDirectProviderBackedSubAgentRouteSafe(route = {}, result = null) 
         throw new Error(`direct_provider_backed_sub_agent_result_authority_or_raw_leak:${flag}`);
       }
     }
+    if (result.epistemicCapture) {
+      const capture = normalizeEpistemicCapture(result.epistemicCapture);
+      if (result.epistemicCaptureComplete !== capture.complete) {
+        throw new Error("direct_provider_backed_sub_agent_capture_completeness_mismatch");
+      }
+      if (capture.omission) {
+        if (result.epistemicCaptureOmission?.omissionId !== capture.omission.omissionId) {
+          throw new Error("direct_provider_backed_sub_agent_capture_omission_missing");
+        }
+        if (!result.contextAdmission?.omissionLedgerRefs?.includes(capture.omission.omissionId)) {
+          throw new Error("direct_provider_backed_sub_agent_capture_omission_unreferenced");
+        }
+        for (const flag of ["rawProviderPayloadIncluded", "rawTranscriptIncluded", "rawSecretIncluded"]) {
+          if (result.epistemicCaptureOmission[flag] !== false) {
+            throw new Error(`direct_provider_backed_sub_agent_capture_omission_raw_leak:${flag}`);
+          }
+        }
+        if (result.resultEnvelope?.confidence === "exact") {
+          throw new Error("direct_provider_backed_sub_agent_capture_omission_exact_confidence");
+        }
+      }
+    }
     if (result.resultEnvelope) validateOdeuResultEnvelope(result.resultEnvelope);
     if (result.contextAdmission) validateOdeuContextAdmissionRecord(result.contextAdmission);
     if (result.resultAdmissionEnvelope) {
@@ -705,6 +809,7 @@ module.exports = {
   DIRECT_PROVIDER_BACKED_SUB_AGENT_RESULT_SCHEMA,
   DIRECT_PROVIDER_BACKED_SUB_AGENT_ROUTE_SCHEMA,
   SUB_AGENT_RESULT_ADMISSION_ENVELOPE_SCHEMA,
+  SUB_AGENT_EPISTEMIC_CAPTURE_OMISSION_SCHEMA,
   SUB_AGENT_RESULT_REDUCER_POLICY_SCHEMA,
   SUB_AGENT_USAGE_ATTRIBUTION_ROW_SCHEMA,
   SUB_AGENT_USAGE_UNAVAILABLE_ROW_SCHEMA,
@@ -713,4 +818,5 @@ module.exports = {
   buildProviderBackedSubAgentRequest,
   buildSubAgentResultReducerPolicy,
   createDirectProviderBackedSubAgentRoute,
+  normalizeEpistemicCapture,
 };

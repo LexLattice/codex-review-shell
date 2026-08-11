@@ -40,6 +40,7 @@ const projectBindingEditorScreenshotPath = screenshotPath.replace(/\.png$/i, "-p
 const projectLifecycleScreenshotPath = screenshotPath.replace(/\.png$/i, "-project-lifecycle.png");
 const threadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-directory.png");
 const narrowThreadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-directory-narrow.png");
+const epistemicScreenshotPath = screenshotPath.replace(/\.png$/i, "-epistemic.png");
 const localProjectRoot = path.join(testRoot, "local-fixture");
 const localProjectSentinel = path.join(localProjectRoot, "workspace-preserved.txt");
 fs.mkdirSync(userDataRoot, { recursive: true, mode: 0o700 });
@@ -240,6 +241,35 @@ try {
     await page.locator('.t3-utility-rail [data-runtime-tab="runtime"]').getAttribute("aria-pressed"),
     "true",
   );
+
+  await page.locator('.t3-utility-rail [data-runtime-tab="epistemic"]').click();
+  await page.waitForFunction(() => document.querySelector("#runtimeDrawerTitle")?.textContent === "Epistemic");
+  await page.waitForFunction(() => /Information plane|not loaded|failed/.test(document.querySelector("#runtimeDrawerBody")?.textContent || ""));
+  const epistemicBody = page.locator("#runtimeDrawerBody");
+  assert.match(await epistemicBody.innerText(), /Information plane/);
+  assert.match(await epistemicBody.innerText(), /top_down_only/);
+  assert.match(await epistemicBody.innerText(), /Materializing it does not add context to a Direct turn, and no provider receives it\./);
+  assert.equal(await page.getByRole("button", { name: "Import selected context" }).count(), 0);
+  const localPreviewButton = page.locator('[data-epistemic-action^="context-preview:thread:"]').first();
+  await localPreviewButton.waitFor({ state: "visible" });
+  assert.equal(await localPreviewButton.innerText(), "Materialize local preview");
+  const duplicateActionDisabled = await page.evaluate(() => {
+    const button = document.querySelector('[data-epistemic-action^="context-preview:thread:"]');
+    button?.click();
+    return document.querySelector('[data-epistemic-action^="context-preview:thread:"]')?.disabled === true;
+  });
+  assert.equal(duplicateActionDisabled, true);
+  await page.waitForFunction(() => /Latest materialized context preview/.test(document.querySelector("#runtimeDrawerBody")?.textContent || ""));
+  assert.match(await epistemicBody.innerText(), /subject\s+thread\s+·/i);
+  assert.match(await epistemicBody.innerText(), /port\s+thread\./i);
+  assert.match(await epistemicBody.innerText(), /provider delivery\s+none/i);
+  assert.match(await epistemicBody.innerText(), /Direct turn admission\s+none/i);
+  assert.equal(await localPreviewButton.isDisabled(), false);
+  assert.equal(
+    await page.locator('.t3-utility-rail [data-runtime-tab="epistemic"]').getAttribute("aria-pressed"),
+    "true",
+  );
+  await page.screenshot({ path: epistemicScreenshotPath, fullPage: true });
 
   await page.locator('.t3-utility-rail [data-t3-action="analytics"]').click();
   await page.locator("#threadAnalyticsPanel:not([hidden])").waitFor({ state: "visible" });
@@ -495,6 +525,7 @@ try {
     screenshotPath,
     threadDirectoryScreenshotPath,
     narrowThreadDirectoryScreenshotPath,
+    epistemicScreenshotPath,
     intakeScreenshotPath,
     projectDirectoryScreenshotPath,
     projectBindingEditorScreenshotPath,

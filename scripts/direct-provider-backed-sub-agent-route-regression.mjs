@@ -8,6 +8,7 @@ const require = createRequire(import.meta.url);
 const {
   DIRECT_PROVIDER_BACKED_SUB_AGENT_RESULT_SCHEMA,
   DIRECT_PROVIDER_BACKED_SUB_AGENT_ROUTE_SCHEMA,
+  SUB_AGENT_EPISTEMIC_CAPTURE_OMISSION_SCHEMA,
   SUB_AGENT_RESULT_ADMISSION_ENVELOPE_SCHEMA,
   SUB_AGENT_RESULT_REDUCER_POLICY_SCHEMA,
   SUB_AGENT_USAGE_ATTRIBUTION_ROW_SCHEMA,
@@ -79,6 +80,13 @@ const liveRoute = createDirectProviderBackedSubAgentRoute({
         reasoning_output_tokens: 3,
         total_tokens: 51,
       },
+      epistemicCapture: {
+        status: "captured",
+        errorCode: "",
+        receiptDigest: "sha256:capture_receipt_fixture",
+        sessionId: "direct_child_session_fixture",
+        turnId: "direct_child_turn_fixture",
+      },
     };
   },
 });
@@ -134,6 +142,11 @@ assert.equal(completed.usageAttributionRow.schema, SUB_AGENT_USAGE_ATTRIBUTION_R
 assert.equal(completed.usageAttributionRow.childAgentId, "provider_child", "usage attribution should target child agent");
 assert.equal(completed.usageAttributionRow.tokenUsage.totalTokens, 51, "usage attribution should preserve provider total tokens");
 assert.equal(completed.usageUnavailableRow, null, "usage unavailable should be absent when provider usage exists");
+assert.equal(completed.epistemicCapture.status, "captured", "capture status must survive provider normalization");
+assert.equal(completed.epistemicCaptureComplete, true, "receipt-backed capture must be complete");
+assert.equal(completed.epistemicCaptureOmission, null, "complete capture must not create an omission");
+assert.equal(completed.resultEnvelope.confidence, "exact", "terminal evidence with a capture receipt should remain exact");
+assert.deepEqual(completed.contextAdmission.omissionLedgerRefs, [], "complete capture must not cite an omission");
 assert.equal(completed.childOutputPromotedToPrimaryTranscript, false, "child output must not be promoted as primary answer");
 assert.equal(completed.primaryTranscriptMutationStarted, false, "route must not mutate primary transcript");
 assert.equal(runnerCalls.length, 1, "provider runner should be called once");
@@ -205,6 +218,81 @@ assert.equal(unavailableUsage.status, "completed", "usage-unavailable child shou
 assert.equal(unavailableUsage.usageAttributionRow, null, "missing token usage must not produce attribution row");
 assert.equal(unavailableUsage.usageUnavailableRow.schema, SUB_AGENT_USAGE_UNAVAILABLE_ROW_SCHEMA, "missing token usage should produce unavailable row");
 assert.equal(unavailableUsage.usageUnavailableRow.reason, "provider_usage_not_exposed", "usage unavailable reason mismatch");
+assert.equal(unavailableUsage.epistemicCapture.status, "unavailable");
+assert.equal(unavailableUsage.epistemicCaptureComplete, false);
+assert.equal(unavailableUsage.epistemicCaptureOmission.schema, SUB_AGENT_EPISTEMIC_CAPTURE_OMISSION_SCHEMA);
+assert.equal(unavailableUsage.resultEnvelope.confidence, "partial", "missing capture receipt must degrade evidence confidence");
+assert.deepEqual(
+  unavailableUsage.contextAdmission.omissionLedgerRefs,
+  [unavailableUsage.epistemicCaptureOmission.omissionId],
+  "missing capture must be referenced by context admission",
+);
+
+const failedCaptureRoute = createDirectProviderBackedSubAgentRoute({
+  projectId: "project_provider_child_fixture",
+  workThreadId: "work_thread_provider_child_fixture",
+  primaryThreadId: "primary_provider_child_fixture",
+  nowMs: 0,
+  providerTurnRunner: async () => ({
+    ok: true,
+    terminalState: "completed",
+    outputText: "Provider completed but local capture failed.",
+    epistemicCapture: {
+      status: "failed",
+      errorCode: "fixture_capture_write_failed",
+      receiptDigest: "",
+      sessionId: "",
+      turnId: "",
+    },
+  }),
+});
+const failedCapture = await failedCaptureRoute.spawnAndRun({
+  childAgentId: "capture_failed_child",
+  prompt: "Capture failure propagation fixture",
+});
+assert.equal(failedCapture.status, "completed", "capture failure must not rewrite the provider terminal state");
+assert.equal(failedCapture.providerCompleted, true);
+assert.equal(failedCapture.epistemicCapture.status, "failed");
+assert.equal(failedCapture.epistemicCapture.errorCode, "fixture_capture_write_failed");
+assert.equal(failedCapture.epistemicCaptureComplete, false);
+assert.equal(failedCapture.epistemicCaptureOmission.schema, SUB_AGENT_EPISTEMIC_CAPTURE_OMISSION_SCHEMA);
+assert.equal(failedCapture.epistemicCaptureOmission.code, "fixture_capture_write_failed");
+assert.equal(failedCapture.resultEnvelope.confidence, "partial");
+assert.deepEqual(failedCapture.contextAdmission.omissionLedgerRefs, [failedCapture.epistemicCaptureOmission.omissionId]);
+assert.equal(failedCapture.resultAdmissionEnvelope.epistemicCaptureOmission.omissionId, failedCapture.epistemicCaptureOmission.omissionId);
+assertDirectProviderBackedSubAgentRouteSafe(failedCaptureRoute.descriptor(), failedCapture);
+
+const abortController = new AbortController();
+let forwardedAbortSignal = null;
+const abortRoute = createDirectProviderBackedSubAgentRoute({
+  projectId: "project_provider_child_fixture",
+  workThreadId: "work_thread_provider_child_fixture",
+  primaryThreadId: "primary_provider_child_fixture",
+  nowMs: 0,
+  providerTurnRunner: ({ signal }) => new Promise((_resolve, reject) => {
+    forwardedAbortSignal = signal;
+    signal.addEventListener("abort", () => {
+      const error = new Error("aborted fixture provider turn");
+      error.name = "AbortError";
+      reject(error);
+    }, { once: true });
+  }),
+});
+const abortedRun = abortRoute.spawnAndRun({
+  childAgentId: "aborted_child",
+  prompt: "Abort propagation fixture",
+  signal: abortController.signal,
+});
+await Promise.resolve();
+assert.equal(forwardedAbortSignal, abortController.signal, "route must pass the caller abort signal to its provider runner");
+abortController.abort("fixture_close");
+const aborted = await abortedRun;
+assert.equal(aborted.status, "cancelled");
+assert.equal(aborted.blockerCode, "provider_child_turn_aborted");
+assert.equal(aborted.providerRequestStarted, true);
+assert.equal(aborted.providerCompleted, false);
+assert.equal(aborted.epistemicCaptureComplete, false);
+assert.equal(aborted.resultEnvelope.confidence, "partial");
 
 const duplicate = await liveRoute.spawnAndRun({
   childAgentId: "provider_child",

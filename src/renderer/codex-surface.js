@@ -183,6 +183,17 @@ const state = {
   directUiStatusError: "",
   directUiOperationHistory: null,
   directUiPolicyView: null,
+  directEpistemicProjection: null,
+  directEpistemicStatus: "idle",
+  directEpistemicError: "",
+  directEpistemicPurpose: "",
+  directEpistemicPortSelection: { repository: "", thread: "" },
+  directEpistemicThreadSelection: "",
+  directEpistemicLastPreview: null,
+  directEpistemicProjectId: project?.id || "",
+  directEpistemicRequestGeneration: 0,
+  directEpistemicActionGeneration: 0,
+  directEpistemicActiveActions: new Set(),
   directThreadList: [],
   directThreadDeck: null,
   directThreadDirectory: null,
@@ -923,6 +934,7 @@ const RUNTIME_DRAWER_TABS = [
   ["access", "Access"],
   ["usage", "Usage"],
   ["implementation", "Implementation"],
+  ["epistemic", "Epistemic"],
   ["history", "History"],
   ["policy", "Policy"],
   ["capabilities", "Capabilities"],
@@ -2646,6 +2658,128 @@ async function refreshDirectSurfaceProjection(options = {}) {
   return null;
 }
 
+async function refreshDirectEpistemicProjection(options = {}) {
+  if (typeof bridge?.readDirectEpistemicSnapshot !== "function") return null;
+  const requestProjectId = project?.id || "";
+  if (state.directEpistemicProjectId !== requestProjectId) {
+    state.directEpistemicProjectId = requestProjectId;
+    state.directEpistemicProjection = null;
+    state.directEpistemicStatus = "idle";
+    state.directEpistemicThreadSelection = "";
+    state.directEpistemicLastPreview = null;
+    state.directEpistemicPortSelection = { repository: "", thread: "" };
+  }
+  if (state.directEpistemicStatus === "loading" && options.force !== true) return state.directEpistemicProjection;
+  const requestGeneration = ++state.directEpistemicRequestGeneration;
+  state.directEpistemicStatus = "loading";
+  state.directEpistemicError = "";
+  renderRuntimeDrawer();
+  try {
+    const projection = await bridge.readDirectEpistemicSnapshot({
+      sessionId: options.sessionId || state.directEpistemicThreadSelection || "",
+    });
+    if (requestGeneration !== state.directEpistemicRequestGeneration) return state.directEpistemicProjection;
+    if ((project?.id || "") !== requestProjectId) {
+      state.directEpistemicStatus = "idle";
+      state.directEpistemicProjection = null;
+      renderRuntimeDrawer();
+      return null;
+    }
+    state.directEpistemicProjection = projection || null;
+    const availableThreadIds = new Set((projection?.threads || []).map((entry) => entry.subject?.externalId).filter(Boolean));
+    if (
+      (!state.directEpistemicThreadSelection || !availableThreadIds.has(state.directEpistemicThreadSelection)) &&
+      projection?.thread?.subject?.externalId
+    ) {
+      state.directEpistemicThreadSelection = projection.thread.subject.externalId;
+    }
+    state.directEpistemicStatus = "ready";
+    renderRuntimeDrawer();
+    return projection;
+  } catch (error) {
+    if (requestGeneration !== state.directEpistemicRequestGeneration) return state.directEpistemicProjection;
+    state.directEpistemicStatus = "failed";
+    state.directEpistemicError = error?.message || "Direct epistemic projection unavailable.";
+    renderRuntimeDrawer();
+    return null;
+  }
+}
+
+function directEpistemicBusy() {
+  return state.directEpistemicStatus === "loading" || state.directEpistemicActiveActions.size > 0;
+}
+
+async function runDirectEpistemicAction(actionKey, action, onResult = null) {
+  if (!actionKey || directEpistemicBusy() || state.directEpistemicActiveActions.has(actionKey)) return null;
+  const actionGeneration = ++state.directEpistemicActionGeneration;
+  const actionProjectId = project?.id || "";
+  state.directEpistemicActiveActions.add(actionKey);
+  state.directEpistemicStatus = "working";
+  state.directEpistemicError = "";
+  renderRuntimeDrawer();
+  try {
+    const result = await action();
+    if (actionGeneration !== state.directEpistemicActionGeneration) return null;
+    if ((project?.id || "") !== actionProjectId) return null;
+    if (typeof onResult === "function") onResult(result);
+    await refreshDirectEpistemicProjection({ force: true });
+    return result;
+  } catch (error) {
+    if (actionGeneration !== state.directEpistemicActionGeneration) return null;
+    state.directEpistemicStatus = "failed";
+    state.directEpistemicError = error?.message || "Direct epistemic action failed.";
+    renderRuntimeDrawer();
+    return null;
+  } finally {
+    state.directEpistemicActiveActions.delete(actionKey);
+    renderRuntimeDrawer();
+  }
+}
+
+function initializeDirectEpistemicRepository() {
+  if (typeof bridge?.initializeDirectEpistemicRepository !== "function") return Promise.resolve(null);
+  return runDirectEpistemicAction("repository-initialize", () => bridge.initializeDirectEpistemicRepository());
+}
+
+function refreshDirectEpistemicRepository() {
+  if (typeof bridge?.refreshDirectEpistemicRepository !== "function") return Promise.resolve(null);
+  return runDirectEpistemicAction("repository-refresh", () => bridge.refreshDirectEpistemicRepository());
+}
+
+function syncDirectEpistemicThread() {
+  const sessionId = state.directEpistemicProjection?.thread?.subject?.externalId || "";
+  if (!sessionId || typeof bridge?.syncDirectEpistemicThread !== "function") return Promise.resolve(null);
+  return runDirectEpistemicAction(`thread-sync:${sessionId}`, () => bridge.syncDirectEpistemicThread({ sessionId }));
+}
+
+function transcribeDirectEpistemicThread() {
+  const sessionId = state.directEpistemicProjection?.thread?.subject?.externalId || "";
+  if (!sessionId || typeof bridge?.transcribeDirectEpistemicThread !== "function") return Promise.resolve(null);
+  return runDirectEpistemicAction(`thread-transcribe:${sessionId}`, () => bridge.transcribeDirectEpistemicThread({
+    sessionId,
+    model: state.directEpistemicProjection?.transcriber?.model || "gpt-5.6-luna",
+    reasoningEffort: state.directEpistemicProjection?.transcriber?.reasoningEffort || "low",
+  }));
+}
+
+async function materializeDirectEpistemicPreview(subjectKind, port) {
+  if (!port?.name || typeof bridge?.importDirectEpistemicContext !== "function") return null;
+  const summary = subjectKind === "thread"
+    ? state.directEpistemicProjection?.thread
+    : state.directEpistemicProjection?.repository;
+  const sessionId = subjectKind === "thread" ? summary?.subject?.externalId || "" : "";
+  const actionKey = `context-preview:${subjectKind}:${summary?.subject?.externalId || "repository"}:${port.name}`;
+  return runDirectEpistemicAction(actionKey, () => bridge.importDirectEpistemicContext({
+      subjectKind,
+      sessionId,
+      portName: port.name,
+      purpose: state.directEpistemicPurpose.trim() || port.purpose,
+      facets: port.selector?.facets || [],
+      oRevisionId: summary?.oRevision?.oRevisionId || "",
+      eRevisionId: summary?.eRevision?.eRevisionId || "",
+    }), (result) => { state.directEpistemicLastPreview = result || null; });
+}
+
 function openRuntimeDrawer(tab = "runtime") {
   dismissComposerOverlay("runtime-drawer-open");
   state.runtimeDrawerOpen = true;
@@ -2654,6 +2788,7 @@ function openRuntimeDrawer(tab = "runtime") {
   if (["implementation", "history", "policy"].includes(state.runtimeDrawerTab)) {
     refreshDirectImplementationUi();
   }
+  if (state.runtimeDrawerTab === "epistemic") refreshDirectEpistemicProjection();
 }
 
 function closeRuntimeDrawer() {
@@ -2718,6 +2853,7 @@ function renderRuntimeDrawer() {
       state.runtimeDrawerTab = id;
       renderRuntimeDrawer();
       if (["implementation", "history", "policy"].includes(id)) refreshDirectImplementationUi();
+      if (id === "epistemic") refreshDirectEpistemicProjection();
     });
     els.runtimeDrawerTabs.appendChild(button);
   }
@@ -2754,6 +2890,29 @@ function selectField(label, value, options, onChange, config = {}) {
   select.value = value || "";
   select.addEventListener("change", () => onChange(select.value));
   wrapper.append(labelNode, select);
+  if (config.description) {
+    const description = document.createElement("span");
+    description.className = "runtime-control-description";
+    description.textContent = config.description;
+    wrapper.appendChild(description);
+  }
+  return wrapper;
+}
+
+function textField(label, value, onInput, config = {}) {
+  const wrapper = document.createElement("label");
+  wrapper.className = "runtime-control";
+  const labelNode = document.createElement("span");
+  labelNode.className = "runtime-control-label";
+  labelNode.textContent = label;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = value || "";
+  input.placeholder = config.placeholder || "";
+  input.maxLength = Number(config.maxLength || 800);
+  input.disabled = Boolean(config.disabled);
+  input.addEventListener("input", () => onInput(input.value));
+  wrapper.append(labelNode, input);
   if (config.description) {
     const description = document.createElement("span");
     description.className = "runtime-control-description";
@@ -3076,11 +3235,15 @@ function renderComposerRuntimeBand() {
   renderMorphicCockpit();
 }
 
-function refreshButton(label, onClick) {
+function refreshButton(label, onClick, config = {}) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "runtime-action";
-  button.textContent = label;
+  button.textContent = config.busy ? `${label}…` : label;
+  button.disabled = Boolean(config.disabled);
+  if (config.busy) button.setAttribute("aria-busy", "true");
+  if (config.description) button.title = config.description;
+  if (config.actionKey) button.dataset.epistemicAction = config.actionKey;
   button.addEventListener("click", () => onClick());
   return button;
 }
@@ -3434,7 +3597,278 @@ function appEvidenceRows(snapshot = {}) {
   ]);
 }
 
+function shortEpistemicId(value) {
+  const string = String(value || "");
+  if (string.length <= 20) return string || "—";
+  return `${string.slice(0, 12)}…${string.slice(-6)}`;
+}
+
+function latestDirectEpistemicPreview(repository, thread) {
+  const local = state.directEpistemicLastPreview;
+  const repositorySubjectId = repository?.subject?.ref?.id || repository?.subject?.subjectId || "";
+  const threadSubjectId = thread?.subject?.ref?.id || thread?.subject?.subjectId || "";
+  const localSubjectId = local?.subjectRef?.id || "";
+  const localKind = localSubjectId && localSubjectId === repositorySubjectId
+    ? "repository"
+    : localSubjectId && localSubjectId === threadSubjectId
+      ? "thread"
+      : "local";
+  const candidates = [
+    local ? { preview: local, subjectKind: localKind, priority: 3 } : null,
+    repository?.latestImport
+      ? { preview: repository.latestImport, subjectKind: "repository", priority: 1 }
+      : null,
+    thread?.latestImport
+      ? { preview: thread.latestImport, subjectKind: "thread", priority: 2 }
+      : null,
+  ].filter(Boolean);
+  candidates.sort((left, right) => {
+    const time = Date.parse(right.preview?.createdAt || 0) - Date.parse(left.preview?.createdAt || 0);
+    return time || right.priority - left.priority;
+  });
+  const selected = candidates[0] || null;
+  if (!selected) return null;
+  const summary = selected.subjectKind === "repository"
+    ? repository
+    : selected.subjectKind === "thread"
+      ? thread
+      : null;
+  return {
+    ...selected,
+    subjectLabel: summary?.subject?.label || (selected.subjectKind === "local" ? "Local materialization" : selected.subjectKind),
+    subjectExternalId: summary?.subject?.externalId || "",
+  };
+}
+
+function appendEpistemicPortActions(sections, subjectKind, summary, config = {}) {
+  const ports = Array.isArray(summary?.ports) ? summary.ports : [];
+  if (!ports.length) return;
+  const options = ports.map((port) => ({
+    value: `${subjectKind}:${port.name}`,
+    label: `${port.label || port.name} · ${(port.selector?.facets || []).join(", ") || "all facets"}`,
+  }));
+  const available = new Set(options.map((option) => option.value));
+  if (!available.has(state.directEpistemicPortSelection[subjectKind])) {
+    state.directEpistemicPortSelection[subjectKind] = options[0].value;
+  }
+  const section = drawerSection(`${subjectKind === "repository" ? "Repository" : "Thread"} context previews`, ports.map((port) => [
+    port.label || port.name,
+    port.purpose,
+  ]));
+  section.appendChild(selectField(
+    "Revisioned view",
+    state.directEpistemicPortSelection[subjectKind],
+    options,
+    (value) => {
+      state.directEpistemicPortSelection[subjectKind] = value;
+      renderRuntimeDrawer();
+    },
+    {
+      disabled: directEpistemicBusy(),
+      description: "A port selects records for a local preview. Materializing it does not add context to a Direct turn, and no provider receives it.",
+    },
+  ));
+  const selectedName = state.directEpistemicPortSelection[subjectKind].slice(`${subjectKind}:`.length);
+  const selectedPort = ports.find((port) => port.name === selectedName) || ports[0];
+  const actionKey = `context-preview:${subjectKind}:${summary?.subject?.externalId || "repository"}:${selectedPort.name}`;
+  section.appendChild(refreshButton("Materialize local preview", () => {
+    return materializeDirectEpistemicPreview(subjectKind, selectedPort);
+  }, {
+    actionKey,
+    busy: state.directEpistemicActiveActions.has(actionKey),
+    disabled: directEpistemicBusy() || config.materializationAllowed === false,
+    description: config.disabledReason || "Materialize records locally for inspection; no provider receives them.",
+  }));
+  if (config.disabledReason) section.appendChild(fieldRow("preview availability", config.disabledReason));
+  sections.push(section);
+}
+
+function directEpistemicDrawerSections() {
+  const projection = state.directEpistemicProjection;
+  if (state.directEpistemicStatus === "loading" && !projection) {
+    return [drawerSection("Epistemic context", [["status", "loading"]])];
+  }
+  if (state.directEpistemicStatus === "failed" && !projection) {
+    const section = drawerSection("Epistemic context", [
+      ["status", "failed"],
+      ["error", state.directEpistemicError || "projection unavailable"],
+    ]);
+    section.appendChild(refreshButton("Retry", () => refreshDirectEpistemicProjection({ force: true })));
+    return [section];
+  }
+  if (!projection) {
+    const section = drawerSection("Epistemic context", [["status", "not loaded"]]);
+    section.appendChild(refreshButton("Load projection", () => refreshDirectEpistemicProjection({ force: true })));
+    return [section];
+  }
+
+  const sections = [];
+  const overview = drawerSection("Information plane", [
+    ["status", state.directEpistemicStatus],
+    ["profile candidate", projection.profileCandidate || "unknown"],
+    ["active control", projection.invariants?.activeControlDirection || "unknown"],
+    ["passive evidence", projection.invariants?.passiveEvidenceDirection || "unknown"],
+    ["WorldManager standing", projection.invariants?.worldManagerCanonicalStanding ? "canonical" : "separate Direct E"],
+    ["error", state.directEpistemicError || "—"],
+  ]);
+  overview.appendChild(textField(
+    "Preview purpose",
+    state.directEpistemicPurpose,
+    (value) => { state.directEpistemicPurpose = value; },
+    {
+      placeholder: "Optional local preview purpose",
+      disabled: directEpistemicBusy(),
+      description: "If empty, the port purpose is used. This labels an immutable local preview; it is not sent to a provider.",
+    },
+  ));
+  overview.appendChild(refreshButton("Refresh projection", () => refreshDirectEpistemicProjection({ force: true }), {
+    actionKey: "projection-refresh",
+    busy: state.directEpistemicStatus === "loading",
+    disabled: directEpistemicBusy(),
+  }));
+  sections.push(overview);
+
+  const repository = projection.repository;
+  if (!repository) {
+    const section = drawerSection("Repository O / E", [
+      ["status", "not initialized"],
+      ["effect", "read-only observation plus local Direct E seed"],
+      ["repository mutation", "none"],
+    ]);
+    section.appendChild(refreshButton("Initialize ArcAGI3 profile", initializeDirectEpistemicRepository, {
+      actionKey: "repository-initialize",
+      busy: state.directEpistemicActiveActions.has("repository-initialize"),
+      disabled: directEpistemicBusy(),
+    }));
+    sections.push(section);
+  } else {
+    const observation = repository.observation || {};
+    const observationCurrent = observation.observationComplete === true;
+    const section = drawerSection("Repository O / E", [
+      ["O revision", shortEpistemicId(repository.oRevision?.oRevisionId)],
+      ["E revision", shortEpistemicId(repository.eRevision?.eRevisionId)],
+      ["E class", repository.eRevision?.revisionClass || "unknown"],
+      ["coverage", repository.eRevision?.coverage?.posture || "unknown"],
+      ["Git head", shortEpistemicId(observation.gitHead || repository.oRevision?.substrateIdentity?.gitHead)],
+      ["branch", observation.branch || repository.oRevision?.substrateIdentity?.branch || "unknown"],
+      ["observation freshness", observationCurrent ? "current" : "refresh required"],
+      ["worktree", observationCurrent ? (observation.dirty ? "dirty" : "clean") : "refresh required"],
+      ["status entries", observation.statusEntryCount ?? "unknown"],
+      ["untracked files", observation.untrackedFileCount ?? "unknown"],
+      ["typed records", repository.recordCount || 0],
+      ["pinned sources", observation.pinnedSourceCount ?? "refresh required"],
+      ["omissions", (observation.omissions || []).join(", ") || "none"],
+    ]);
+    section.appendChild(refreshButton("Refresh repository O / E", refreshDirectEpistemicRepository, {
+      actionKey: "repository-refresh",
+      busy: state.directEpistemicActiveActions.has("repository-refresh"),
+      disabled: directEpistemicBusy(),
+    }));
+    sections.push(section);
+    appendEpistemicPortActions(sections, "repository", repository, {
+      materializationAllowed: observationCurrent,
+      disabledReason: observationCurrent ? "" : "Refresh repository observation before materializing a preview.",
+    });
+  }
+
+  const thread = projection.thread;
+  if (!thread) {
+    sections.push(drawerSection("Thread O / E", [
+      ["status", "no Direct session for this project"],
+      ["capture", "begins when a Direct session is persisted"],
+    ]));
+  } else {
+    const transcription = thread.latestTranscription || {};
+    const indexedThreads = Array.isArray(projection.threads) ? projection.threads : [];
+    const nativeChildCount = indexedThreads.filter((entry) => /^Native child\b/i.test(entry.subject?.label || "")).length;
+    const section = drawerSection("Thread O / E", [
+      ["session", shortEpistemicId(thread.subject?.externalId)],
+      ["selected", thread.subject?.label || "Direct thread"],
+      ["indexed project workthreads", indexedThreads.length],
+      ["native child workthreads", nativeChildCount],
+      ["O revision", shortEpistemicId(thread.oRevision?.oRevisionId)],
+      ["E revision", shortEpistemicId(thread.eRevision?.eRevisionId)],
+      ["E class", thread.eRevision?.revisionClass || "unknown"],
+      ["typed records", thread.recordCount || 0],
+      ["transcription", transcription.status || "deterministic only"],
+      ["transcriber", `${projection.transcriber?.model || "gpt-5.6-luna"} · ${projection.transcriber?.reasoningEffort || "low"}`],
+      ["semantic promotion", projection.transcriber?.semanticPromotionAllowed ? "allowed" : "forbidden"],
+    ]);
+    if (indexedThreads.length > 1) {
+      section.appendChild(selectField(
+        "Project workthread",
+        thread.subject?.externalId || state.directEpistemicThreadSelection,
+        indexedThreads.map((entry) => ({
+          value: entry.subject?.externalId || "",
+          label: `${entry.subject?.label || "Direct thread"} · ${entry.recordCount || 0} records`,
+        })),
+        (value) => {
+          state.directEpistemicThreadSelection = value;
+          state.directEpistemicLastPreview = null;
+          refreshDirectEpistemicProjection({ force: true, sessionId: value });
+        },
+        {
+          disabled: directEpistemicBusy(),
+          description: "Select which persisted primary or native-child workthread the thread ports address.",
+        },
+      ));
+    }
+    const sessionId = thread.subject?.externalId || "";
+    section.appendChild(refreshButton("Sync exact events", syncDirectEpistemicThread, {
+      actionKey: `thread-sync:${sessionId}`,
+      busy: state.directEpistemicActiveActions.has(`thread-sync:${sessionId}`),
+      disabled: directEpistemicBusy(),
+    }));
+    section.appendChild(refreshButton("Transcribe latest turn with Luna", transcribeDirectEpistemicThread, {
+      actionKey: `thread-transcribe:${sessionId}`,
+      busy: state.directEpistemicActiveActions.has(`thread-transcribe:${sessionId}`),
+      disabled: directEpistemicBusy() || projection.transcriber?.available !== true,
+      description: projection.transcriber?.available === true
+        ? `Request one Luna transcription; ${projection.transcriber?.readiness || "model availability is verified on invocation"}.`
+        : projection.transcriber?.blocker || "Luna transcription is unavailable.",
+    }));
+    sections.push(section);
+    appendEpistemicPortActions(sections, "thread", thread);
+  }
+
+  const previewSelection = latestDirectEpistemicPreview(repository, thread);
+  const latestPreview = previewSelection?.preview;
+  if (latestPreview) {
+    const records = Array.isArray(latestPreview.records) ? latestPreview.records : [];
+    sections.push(drawerSection("Latest materialized context preview", [
+      ["preview", shortEpistemicId(latestPreview.importId)],
+      ["subject", [
+        previewSelection.subjectKind,
+        previewSelection.subjectLabel,
+        previewSelection.subjectExternalId ? shortEpistemicId(previewSelection.subjectExternalId) : "",
+      ].filter(Boolean).join(" · ")],
+      ["port", latestPreview.purposeId || shortEpistemicId(latestPreview.portRef?.id)],
+      ["purpose", latestPreview.purpose || "—"],
+      ["records", latestPreview.recordCount ?? records.length],
+      ["freshness", latestPreview.freshness || "unknown"],
+      ["provider delivery", "none"],
+      ["Direct turn admission", "none"],
+      ["O witness", shortEpistemicId(latestPreview.oRevisionRef?.id)],
+      ["E witness", shortEpistemicId(latestPreview.eRevisionRef?.id)],
+      ["digest", shortEpistemicId(latestPreview.importDigest)],
+      ["omissions", (latestPreview.omissions || []).join(", ") || "none"],
+    ]));
+    if (records.length) {
+      sections.push(drawerSection("Previewed semantic records", records.slice(0, 16).map((record) => [
+        record.semanticKey || record.recordType,
+        [
+          record.standing,
+          record.predicate,
+          record.payload?.statement || record.payload?.outcome || record.payload?.name || "typed record",
+        ].filter(Boolean).join(" · "),
+      ])));
+    }
+  }
+  return sections;
+}
+
 function runtimeDrawerSections(c, tab) {
+  if (tab === "epistemic") return directEpistemicDrawerSections();
   if (tab === "runtime") {
     return [
       drawerSection("Runtime", [
