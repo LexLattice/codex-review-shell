@@ -11,6 +11,13 @@ const {
   buildDirectThreadIntakeLineage,
   buildDirectThreadIntakeProjection,
 } = require("../src/main/direct/import/thread-intake.js");
+const {
+  RUG008_PROMOTED_SCOPE,
+  buildCheckpointContinuationEvidenceScope,
+  resolvePromotedCheckpointContinuationEvidence,
+} = require("../src/main/direct/import/checkpoint-continuation-evidence.js");
+const { buildImportCandidate } = require("../src/main/direct/import/codex-jsonl-import.js");
+const { rendererSafeMaterializationResult } = require("../src/main/direct/import/import-controller.js");
 
 const source = {
   sourceState: "materialized",
@@ -138,6 +145,101 @@ const selectedOnly = buildDirectThreadIntakeProjection({
 assert.equal(selectedOnly.modes.resumeOriginalThread.enabled, true);
 assert.equal(selectedOnly.modes.continueInFreshDirectThread.enabled, false);
 assert(selectedOnly.modes.continueInFreshDirectThread.blockerCodes.includes("read_only_import_required"));
+
+const syntheticIdentityCandidate = buildImportCandidate([
+  { timestamp: "2026-08-11T08:00:00.000Z", message: { role: "user", content: "No provider id." } },
+  { timestamp: "2026-08-11T08:01:00.000Z", message: { role: "assistant", content: "Still no provider id." } },
+], { sourceFileSha256: "a".repeat(64) });
+assert.match(syntheticIdentityCandidate.source.threadId, /^thread_/);
+assert.equal(syntheticIdentityCandidate.source.providerThreadId, "");
+assert.equal(syntheticIdentityCandidate.source.providerThreadIdProvenance, "unavailable");
+const syntheticResumeProjection = buildDirectThreadIntakeProjection({
+  project: windowsProject,
+  source: {
+    ...source,
+    threadId: syntheticIdentityCandidate.source.threadId,
+    providerThreadId: syntheticIdentityCandidate.source.providerThreadId,
+  },
+  workspaceMatch,
+  runtime: {
+    transport: "codex-app-server",
+    projectBound: true,
+    providerResumeCapability: true,
+  },
+});
+assert.equal(syntheticResumeProjection.modes.resumeOriginalThread.enabled, false);
+assert(syntheticResumeProjection.modes.resumeOriginalThread.blockerCodes.includes("provider_thread_identity_missing"));
+
+const providerIdentityCandidate = buildImportCandidate([
+  { timestamp: "2026-08-11T08:00:00.000Z", thread_id: "provider_thread_1", message: { role: "user", content: "Provider id." } },
+], { sourceFileSha256: "b".repeat(64) });
+assert.equal(providerIdentityCandidate.source.providerThreadId, "provider_thread_1");
+assert.equal(providerIdentityCandidate.source.providerThreadIdProvenance, "source_record");
+assert.equal(providerIdentityCandidate.source.providerThreadIdDurable, true);
+
+const ambiguousProviderIdentityCandidate = buildImportCandidate([
+  { timestamp: "2026-08-11T08:00:00.000Z", thread_id: "provider_thread_1", message: { role: "user", content: "First id." } },
+  { timestamp: "2026-08-11T08:01:00.000Z", thread_id: "provider_thread_2", message: { role: "assistant", content: "Second id." } },
+], { sourceFileSha256: "c".repeat(64) });
+assert.equal(ambiguousProviderIdentityCandidate.source.providerThreadId, "");
+assert.equal(ambiguousProviderIdentityCandidate.source.providerThreadIdProvenance, "ambiguous_source_records");
+assert.equal(ambiguousProviderIdentityCandidate.source.providerThreadIdDurable, false);
+
+const unsafeMaterialization = {
+  schema: "direct_codex_materialized_import_session@1",
+  sessionId: "safe_session",
+  turnId: "safe_turn",
+  importState: "checkpoint-validated",
+  materializationKind: "readonly-transcript",
+  readOnlyImported: true,
+  nativeDirectSession: false,
+  continuationEligible: true,
+  session: {
+    sessionId: "safe_session",
+    title: "Imported transcript",
+    importState: "checkpoint-validated",
+    importLineage: { importId: "safe_import" },
+    importSource: {
+      sourcePath: "/private/raw/source.jsonl",
+      sourceFileSha256: "secret_hash",
+      sourceDisplayName: "source.jsonl",
+    },
+    directImportCheckpoint: { validationReport: { warnings: [], blockers: [], gates: {} } },
+    messages: [{ items: [{ type: "agentMessage", text: "Safe projected text", rawRecord: { secret: true } }] }],
+  },
+  turn: { raw: "private" },
+};
+const safeMaterialization = rendererSafeMaterializationResult(unsafeMaterialization);
+assert.equal(safeMaterialization.importId, "safe_import");
+assert.equal(safeMaterialization.rendererSafeSession.transcriptItems[0].text, "Safe projected text");
+assert.equal(JSON.stringify(safeMaterialization).includes("/private/raw/source.jsonl"), false);
+assert.equal(JSON.stringify(safeMaterialization).includes("secret_hash"), false);
+assert.equal(JSON.stringify(safeMaterialization).includes('"raw"'), false);
+
+const sampleEvidenceScope = buildCheckpointContinuationEvidenceScope({
+  profileDoc: {
+    summary: {
+      schema: "direct_codex_odeu_profile@1",
+      profileId: "test_profile",
+      backendContractVersion: "test_contract@1",
+    },
+  },
+  credentials: { authMode: "chatgpt", accountId: "account_fixture" },
+  model: "gpt-5.4",
+});
+const matchingEvidence = resolvePromotedCheckpointContinuationEvidence(sampleEvidenceScope, sampleEvidenceScope);
+assert.equal(matchingEvidence.accepted, true);
+assert.equal(matchingEvidence.rawAccountIdentityExposed, false);
+assert.equal(JSON.stringify(matchingEvidence).includes("account_fixture"), false);
+for (const field of Object.keys(sampleEvidenceScope)) {
+  const mismatch = resolvePromotedCheckpointContinuationEvidence(
+    { ...sampleEvidenceScope, [field]: `different_${field}` },
+    sampleEvidenceScope,
+  );
+  assert.equal(mismatch.accepted, false, `${field} mismatch must fail closed`);
+  assert(mismatch.mismatchedFields.includes(field));
+}
+assert.equal(RUG008_PROMOTED_SCOPE.requestShapeHash, "b5ca37664b0622ae6e9207aa810363f8f24e05a71e893f88c2dc28d33c55db9b");
 
 assert.throws(
   () => buildDirectThreadIntakeLineage(appServerProjection, "transplant_into_fresh_direct_thread"),

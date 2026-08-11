@@ -711,9 +711,11 @@ must not mutate committed ODEU baselines.
 
 The production Direct Workbench intake path binds the accepted RUG-008 witness
 `rug008_import_checkpoint_continuation_live_20260518` for the already promoted
-request shape. Therefore that exact scope no longer requires the manual flag;
-changed provider/request scopes still fail closed until separately probed and
-promoted.
+request shape. The matcher compares auth mode, hashed account and endpoint
+identity, endpoint class, model, profile identity/version, seed builder,
+request builder, and request-shape hash. Therefore that exact scope no longer
+requires the manual flag; changed provider/request scopes fail closed until
+separately probed and promoted.
 
 One successful checkpoint continuation proves only that exact scope. It does
 not promote:

@@ -6,6 +6,7 @@ const crypto = require("node:crypto");
 const { parseJsonl } = require("../fixtures/fixture-loader");
 const {
   DIRECT_IMPORT_VALIDATION_REPORT_SCHEMA,
+  DIRECT_MATERIALIZED_IMPORT_SCHEMA,
   MAX_IMPORT_FILE_BYTES,
   MAX_IMPORT_RECORDS,
   buildDirectCheckpointCandidate,
@@ -255,6 +256,9 @@ function rendererSafeValidationReport(report = {}) {
       sourceFileSizeBytes: Number(source.sourceFileSizeBytes || 0),
       sourceFileMtimeMs: Number(source.sourceFileMtimeMs || 0) || undefined,
       threadId: normalizeString(source.threadId, ""),
+      providerThreadId: normalizeString(source.providerThreadId, ""),
+      providerThreadIdProvenance: normalizeString(source.providerThreadIdProvenance, "unavailable"),
+      providerThreadIdDurable: source.providerThreadIdDurable === true,
       timestampStart: normalizeString(source.timestampStart, ""),
       timestampEnd: normalizeString(source.timestampEnd, ""),
       recordCount: Number(source.recordCount || 0),
@@ -273,6 +277,30 @@ function rendererSafeValidationReport(report = {}) {
         ? "future_checkpoint_continuation_only"
         : "imported_evidence_only",
     },
+    rawPathExposed: false,
+    rawRecordsExposed: false,
+    rawSourceSha256Exposed: false,
+  };
+}
+
+function rendererSafeMaterializationResult(materialized = {}) {
+  const safeSession = isPlainObject(materialized.session)
+    ? buildRendererSafeImportSession(materialized.session)
+    : isPlainObject(materialized.rendererSafeSession)
+      ? materialized.rendererSafeSession
+      : {};
+  return {
+    ok: Boolean(safeSession.sessionId || materialized.sessionId),
+    schema: normalizeString(materialized.schema, DIRECT_MATERIALIZED_IMPORT_SCHEMA),
+    importId: normalizeString(safeSession.importId, ""),
+    sessionId: normalizeString(safeSession.sessionId || materialized.sessionId, ""),
+    turnId: normalizeString(materialized.turnId, ""),
+    importState: canonicalImportState(materialized.importState),
+    materializationKind: normalizeString(materialized.materializationKind, "readonly-transcript"),
+    readOnlyImported: materialized.readOnlyImported === true,
+    nativeDirectSession: materialized.nativeDirectSession === true,
+    continuationEligible: materialized.continuationEligible === true,
+    rendererSafeSession: safeSession,
     rawPathExposed: false,
     rawRecordsExposed: false,
     rawSourceSha256Exposed: false,
@@ -523,6 +551,9 @@ class DirectImportController {
         duplicateMatched: this.duplicateMatchedFor(sourceFileSha256, candidate),
         sourceFileMtimeMs: stat.mtimeMs,
         threadId: candidate.source.threadId,
+        providerThreadId: candidate.source.providerThreadId,
+        providerThreadIdProvenance: candidate.source.providerThreadIdProvenance,
+        providerThreadIdDurable: candidate.source.providerThreadIdDurable === true,
         timestampStart: candidate.source.timestampStart,
         timestampEnd: candidate.source.timestampEnd,
         recordCount: records.length,
@@ -630,6 +661,8 @@ class DirectImportController {
         sourceDisplayName: normalizeString(entry.sourceDisplayName, ""),
         sourceRootDisplayName: normalizeString(entry.sourceRootDisplayName, ""),
         threadId: normalizeString(entry.threadId, ""),
+        providerThreadId: normalizeString(entry.providerThreadId, ""),
+        providerThreadIdProvenance: normalizeString(entry.providerThreadIdProvenance, "unavailable"),
         timestampStart: normalizeString(entry.timestampStart, ""),
         timestampEnd: normalizeString(entry.timestampEnd, ""),
         recordCount: Number(entry.recordCount || 0),
@@ -693,7 +726,11 @@ class DirectImportController {
         sourceClass: normalizeString(entry.sourceClass || report?.source?.sourceClass, "codex-cli-jsonl"),
         sourceDisplayName: normalizeString(entry.sourceDisplayName || report?.source?.sourceDisplayName, "Imported Codex session"),
         sourceRootDisplayName: normalizeString(entry.sourceRootDisplayName || report?.source?.sourceRootDisplayName, ""),
-        providerThreadId: normalizeString(entry.threadId || report?.source?.threadId, ""),
+        providerThreadId: normalizeString(entry.providerThreadId || report?.source?.providerThreadId, ""),
+        providerThreadIdProvenance: normalizeString(
+          entry.providerThreadIdProvenance || report?.source?.providerThreadIdProvenance,
+          "unavailable",
+        ),
         timestampStart: normalizeString(entry.timestampStart || report?.source?.timestampStart, ""),
         timestampEnd: normalizeString(entry.timestampEnd || report?.source?.timestampEnd, ""),
         recordCount: Number(entry.recordCount || report?.source?.recordCount || 0),
@@ -709,7 +746,11 @@ class DirectImportController {
       source = {
         sourceState: "selected",
         ...inspected.source,
-        providerThreadId: normalizeString(inspected.source?.threadId, ""),
+        providerThreadId: normalizeString(inspected.source?.providerThreadId, ""),
+        providerThreadIdProvenance: normalizeString(
+          inspected.source?.providerThreadIdProvenance,
+          "unavailable",
+        ),
       };
       workspaceMatch = this.workspaceMatchForProject(project, params);
       freshContinuationBlockReason = "read_only_import_required";
@@ -1134,4 +1175,5 @@ class DirectImportController {
 module.exports = {
   DirectImportController,
   rendererSafeValidationReport,
+  rendererSafeMaterializationResult,
 };

@@ -30,6 +30,7 @@
     imports: [],
     selectedHandleId: "",
     selectedImportId: "",
+    workspaceConfirmationKey: "",
     projection: null,
     continuationIntent: "",
   };
@@ -47,6 +48,31 @@
     return {};
   }
 
+  function selectionKey() {
+    if (intake.selectedImportId) return `import:${intake.selectedImportId}`;
+    if (intake.selectedHandleId) return `source:${intake.selectedHandleId}`;
+    return "";
+  }
+
+  function workspaceConfirmedForSelection() {
+    const key = selectionKey();
+    return Boolean(key && workspaceConfirm?.checked === true && intake.workspaceConfirmationKey === key);
+  }
+
+  function resetWorkspaceConfirmation() {
+    intake.workspaceConfirmationKey = "";
+    if (workspaceConfirm) workspaceConfirm.checked = false;
+  }
+
+  function setSelection(kind, id) {
+    const nextImportId = kind === "import" ? String(id || "") : "";
+    const nextHandleId = kind === "source" ? String(id || "") : "";
+    const changed = nextImportId !== intake.selectedImportId || nextHandleId !== intake.selectedHandleId;
+    intake.selectedImportId = nextImportId;
+    intake.selectedHandleId = nextHandleId;
+    if (changed) resetWorkspaceConfirmation();
+  }
+
   function blockerLabel(code) {
     const labels = {
       provider_thread_identity_missing: "No durable provider thread identity was found.",
@@ -59,6 +85,7 @@
       direct_runtime_required: "Switch the project runtime to Direct before creating a fresh Direct continuation.",
       direct_auth_required: "Direct authentication is required.",
       checkpoint_request_shape_unaccepted: "The Direct checkpoint request shape is not admitted.",
+      checkpoint_promotion_scope_mismatch: "The active Direct provider scope differs from the promoted checkpoint-continuation evidence.",
       workspace_mismatch: "The imported workspace does not match the selected project.",
       live_text_unavailable: "The Direct live-text runtime is unavailable.",
       missing_import: "Select a materialized import.",
@@ -97,14 +124,15 @@
     row.dataset.intakeSourceKind = kind;
     row.dataset.intakeSourceId = id;
     const copy = el("div", "direct-intake-source-copy");
+    const providerThreadId = entry.providerThreadId || entry.source?.providerThreadId || "";
     copy.append(
       el("strong", "", entry.sourceDisplayName || entry.source?.sourceDisplayName || "Codex transcript"),
       el(
         "span",
         "",
         kind === "import"
-          ? `${entry.state || "imported-readonly"} · ${entry.threadId || "thread identity unknown"}`
-          : `${entry.recordCount ? `${entry.recordCount} records` : "selected source"} · ${entry.threadId || "inspect for identity"}`,
+          ? `${entry.state || "imported-readonly"} · ${providerThreadId || "provider identity unavailable"}`
+          : `${entry.recordCount ? `${entry.recordCount} records` : "selected source"} · ${providerThreadId || "inspect for provider identity"}`,
       ),
     );
     const action = el("button", "", "Inspect");
@@ -150,7 +178,14 @@
     const source = projection.source || {};
     grid.append(
       evidenceRow("source", source.sourceDisplayName || "none selected"),
-      evidenceRow("provider identity", source.providerThreadId || "not present"),
+      evidenceRow(
+        "provider identity",
+        source.providerThreadId
+          ? `${source.providerThreadId} · ${source.providerThreadIdProvenance || "provenance unknown"}`
+          : source.providerThreadIdProvenance && source.providerThreadIdProvenance !== "unavailable"
+            ? `not present · ${source.providerThreadIdProvenance}`
+            : "not present",
+      ),
       evidenceRow("source standing", source.importState || source.sourceState || "unselected"),
       evidenceRow("workspace", projection.workspaceMatch?.matched ? "matched" : projection.workspaceMatch?.status || "unknown"),
       evidenceRow("active runtime", projection.runtime?.runtimePath || "unavailable"),
@@ -165,8 +200,8 @@
     if (intake.selectedHandleId) {
       const materialize = el("button", "", "Materialize read-only evidence");
       materialize.type = "button";
-      materialize.disabled = intake.working || workspaceConfirm?.checked !== true;
-      materialize.title = workspaceConfirm?.checked
+      materialize.disabled = intake.working || !workspaceConfirmedForSelection();
+      materialize.title = workspaceConfirmedForSelection()
         ? "Create a validated, read-only local evidence session."
         : "Confirm the project workspace before materializing this source.";
       materialize.addEventListener("click", materializeSelectedSource);
@@ -253,7 +288,7 @@
     if (!project?.id || typeof bridge?.readDirectThreadIntakeProjection !== "function") return;
     intake.projection = await bridge.readDirectThreadIntakeProjection(project.id, {
       ...selection(),
-      userConfirmedWorkspace: workspaceConfirm?.checked === true,
+      userConfirmedWorkspace: workspaceConfirmedForSelection(),
     });
   }
 
@@ -268,7 +303,7 @@
         : { entries: [] };
       intake.imports = Array.isArray(listed?.entries) ? listed.entries : [];
       if (intake.selectedImportId && !intake.imports.some((entry) => entry.importId === intake.selectedImportId)) {
-        intake.selectedImportId = "";
+        setSelection("", "");
       }
       await loadProjection();
     } catch (error) {
@@ -284,11 +319,9 @@
     intake.error = "";
     try {
       if (kind === "import") {
-        intake.selectedImportId = id;
-        intake.selectedHandleId = "";
+        setSelection("import", id);
       } else {
-        intake.selectedHandleId = id;
-        intake.selectedImportId = "";
+        setSelection("source", id);
         if (typeof bridge?.inspectDirectImportSource === "function") {
           const inspected = await bridge.inspectDirectImportSource(project.id, { handleId: id });
           intake.sources = intake.sources.map((source) => source.handleId === id ? { ...source, ...(inspected?.source || {}) } : source);
@@ -310,8 +343,7 @@
       const result = await bridge.chooseDirectImportSourceFile(project.id);
       if (result?.ok && !result.canceled && result.source) {
         intake.sources = [result.source, ...intake.sources.filter((source) => source.handleId !== result.source.handleId)];
-        intake.selectedHandleId = result.source.handleId;
-        intake.selectedImportId = "";
+        setSelection("source", result.source.handleId);
         const inspected = await bridge.inspectDirectImportSource(project.id, { handleId: result.source.handleId });
         intake.sources = intake.sources.map((source) => source.handleId === result.source.handleId ? { ...source, ...(inspected?.source || {}) } : source);
         await loadProjection();
@@ -333,8 +365,7 @@
       const result = await bridge.chooseDirectImportSourceRoot(project.id);
       if (result?.ok && !result.canceled) {
         intake.sources = Array.isArray(result.sources) ? result.sources : [];
-        intake.selectedHandleId = intake.sources[0]?.handleId || "";
-        intake.selectedImportId = "";
+        setSelection("source", intake.sources[0]?.handleId || "");
         await loadProjection();
       }
     } catch (error) {
@@ -353,12 +384,11 @@
     try {
       const result = await bridge.materializeDirectImport(project.id, {
         handleId: intake.selectedHandleId,
-        userConfirmedWorkspace: workspaceConfirm?.checked === true,
+        userConfirmedWorkspace: workspaceConfirmedForSelection(),
       });
-      const importId = result?.rendererSafeSession?.importId || result?.session?.importLineage?.importId || "";
+      const importId = result?.rendererSafeSession?.importId || result?.importId || "";
       intake.sources = intake.sources.filter((source) => source.handleId !== intake.selectedHandleId);
-      intake.selectedHandleId = "";
-      intake.selectedImportId = importId;
+      setSelection("import", importId);
       const listed = await bridge.listDirectImports(project.id);
       intake.imports = Array.isArray(listed?.entries) ? listed.entries : [];
       await loadProjection();
@@ -445,6 +475,7 @@
   chooseRootButton?.addEventListener("click", chooseRoot);
   refreshButton?.addEventListener("click", refresh);
   workspaceConfirm?.addEventListener("change", async () => {
+    intake.workspaceConfirmationKey = workspaceConfirm.checked ? selectionKey() : "";
     try {
       await loadProjection();
     } catch (error) {

@@ -32,7 +32,14 @@ const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectWorkThreadRegistryStore } = require("./main/direct/bridge/work-thread-registry");
 const { DirectAgentRegistryStore } = require("./main/direct/bridge/agent-registry");
-const { DirectImportController } = require("./main/direct/import/import-controller");
+const {
+  DirectImportController,
+  rendererSafeMaterializationResult,
+} = require("./main/direct/import/import-controller");
+const {
+  buildCheckpointContinuationEvidenceScope,
+  resolvePromotedCheckpointContinuationEvidence,
+} = require("./main/direct/import/checkpoint-continuation-evidence");
 const {
   DirectMetaSessionStore,
   assertMetaSessionRendererSafe,
@@ -3461,13 +3468,19 @@ function ensureDirectImportController() {
     sessionStore: ensureDirectSessionStore(),
     projectResolver: (projectId) => getProjectById(projectId),
     liveTextController: () => ensureDirectLiveTextController(),
-    checkpointContinuationEvidenceResolver: () => ({
-      accepted: true,
-      status: "real_provider_promoted",
-      evidenceState: "runtime_probed",
-      evidenceId: "rug008_import_checkpoint_continuation_live_20260518",
-      reason: "",
-    }),
+    checkpointContinuationEvidenceResolver: ({ project, params }) => {
+      const liveController = ensureDirectLiveTextController();
+      const liveStatus = liveController.statusForProject(project);
+      const credentials = directRuntimeAuthStore().readCredentials() || {};
+      const scope = buildCheckpointContinuationEvidenceScope({
+        profileDoc: ensureDirectCodexProfileDoc(),
+        credentials,
+        accountEvidenceId: liveStatus.auth?.accountId,
+        endpoint: liveController.endpoint,
+        model: normalizeString(params?.model || liveStatus.model, ""),
+      });
+      return resolvePromotedCheckpointContinuationEvidence(scope);
+    },
   });
   return directImportController;
 }
@@ -11490,7 +11503,8 @@ ipcMain.handle("direct-import:build-checkpoint", async (_event, payload) => {
 
 ipcMain.handle("direct-import:materialize", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
-  return ensureDirectImportController().materialize(project, payload || {});
+  const materialized = await ensureDirectImportController().materialize(project, payload || {});
+  return rendererSafeMaterializationResult(materialized);
 });
 
 ipcMain.handle("direct-import:read-report", async (_event, payload) => {

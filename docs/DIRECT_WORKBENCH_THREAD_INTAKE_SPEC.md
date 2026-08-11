@@ -60,6 +60,11 @@ This mode is eligible only when:
 Execution reuses the existing hybrid thread-open path. The provider verifies
 the thread at execution time. No new conversation identity is created.
 
+The internal import `threadId` is not sufficient evidence for this action. A
+source must carry a distinct durable `providerThreadId` with provenance from a
+source record or an explicit provider-identity adapter. Digest-derived local
+import IDs therefore cannot enable provider resume.
+
 ## Continue As A Fresh Direct Thread
 
 This mode is eligible only when:
@@ -89,12 +94,16 @@ hashes, and authentication material from the renderer contract.
 
 ## Runtime Promotion
 
-The production Direct import controller now binds the previously observed
-RUG-008 provider-promotion evidence
-`rug008_import_checkpoint_continuation_live_20260518`. This admits the exact
-checkpoint continuation request shape used by the fresh-thread path. The
-manual `CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE=1` bootstrap remains available for
-new or changed provider scopes; it is no longer required for this already
+The production Direct import controller binds the previously observed RUG-008
+provider-promotion evidence
+`rug008_import_checkpoint_continuation_live_20260518`. Admission requires an
+exact match over auth mode, hashed account identity, endpoint class and hash,
+model, profile identity/version, seed builder, request builder, and request
+shape. Raw account and endpoint values are not projected. Any discriminator
+change fails closed with `checkpoint_promotion_scope_mismatch`.
+
+The manual `CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE=1` bootstrap remains available
+for new or changed provider scopes; it is no longer required for the exact
 promoted production scope.
 
 ## Verification

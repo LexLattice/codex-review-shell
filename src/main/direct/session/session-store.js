@@ -733,6 +733,8 @@ class DirectSessionStore {
         sourceFileSizeBytes: Number(source.sourceFileSizeBytes || 0),
         sourceFileMtimeMs: Number(source.sourceFileMtimeMs || 0) || undefined,
         threadId: normalizeString(source.threadId, ""),
+        providerThreadId: normalizeString(source.providerThreadId, ""),
+        providerThreadIdProvenance: normalizeString(source.providerThreadIdProvenance, "unavailable"),
         timestampStart: normalizeString(source.timestampStart, ""),
         timestampEnd: normalizeString(source.timestampEnd, ""),
         recordCount: Number(source.recordCount || 0),
