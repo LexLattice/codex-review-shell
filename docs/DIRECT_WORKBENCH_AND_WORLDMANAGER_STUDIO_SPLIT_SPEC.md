@@ -1,7 +1,8 @@
 # Direct Workbench And WorldManager Studio Split
 
 Status: phase 2 active — Direct Workbench and WorldManager Studio share a
-reviewed Direct kernel; DW-I1 thread intake is implemented.
+reviewed Direct kernel; DW-I1 thread intake and DW-P1 project directory are
+implemented.
 
 ## Run Stance
 
@@ -56,6 +57,7 @@ Related specifications:
 
 - `DIRECT_T3_ALTERNATE_GUI_EXPERIMENT.md`
 - `DIRECT_WORKBENCH_THREAD_INTAKE_SPEC.md`
+- `DIRECT_WORKBENCH_PROJECT_DIRECTORY_SPEC.md`
 - `DIRECT_WORLD_MANAGER_AGENT_WORLD_AND_UNIFIED_UX_SPEC.md`
 - `DIRECT_WORLD_MANAGER_SEMANTIC_STANDBY_FRONTIER.md`
 
@@ -135,7 +137,8 @@ experience.
 
 Direct Workbench:
 
-- navigation region: projects and Direct thread directory;
+- navigation region: renderer-safe configured-project directory and Direct
+  thread directory;
 - primary work region: active Direct transcript and composer;
 - evidence region: runtime and analytics inspectors;
 - trust-boundary surface: persistent `Direct thread control plane` witness;
@@ -195,6 +198,8 @@ The previous `dev:t3`, `dev:worldmanager`, `dev:worldmanager:mock`, and
 
 ## Deferred Work
 
+- add Direct-native create/edit project binding flows after the project
+  directory activation contract;
 - add provider-specific resume adapters beyond the current App Server durable
   thread identity path;
 - implement WorldManager semantic ingestion and admission of external threads;
@@ -208,6 +213,7 @@ Observed through real Electron windows under the headless/Xvfb harness:
 
 ```text
 npm run direct:experience-split
+npm run direct:project-directory
 npm run direct:thread-intake
 npm run direct:t3-alternate-gui
 npm run direct:t3-alternate-gui:electron
@@ -220,8 +226,9 @@ npm run check:main-syntax
 ```
 
 The Direct Workbench Electron smoke verifies the bootstrap identity, visible
-control-plane witness, restored project binding, Runtime/Analytics tenants, and
-the project-bound thread-intake evidence dock, then attempts a WorldManager
+control-plane witness, a WSL-to-Windows project activation with target-thread
+restoration, Runtime/Analytics tenants, and the project-bound thread-intake
+evidence dock, then attempts a WorldManager
 snapshot call from the trusted Direct renderer.
 The main process rejects it before initializing the WorldManager service. The
 WorldManager launch smoke verifies the separate production document, title,

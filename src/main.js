@@ -134,6 +134,12 @@ const {
   resolveCodexThreadOpenRuntime,
 } = require("./main/direct/runtime/runtime-path-selection");
 const {
+  buildDirectWorkbenchProjectActivationReceipt,
+  buildDirectWorkbenchProjectDirectory,
+  resolveDirectWorkbenchProjectActivationReplay,
+  validateDirectWorkbenchProjectActivation,
+} = require("./main/direct/project/project-directory");
+const {
   buildDirectImplementationLaneUiStatus,
   buildDirectPolicyReadOnlyView,
   projectOperationHistoryPage,
@@ -459,6 +465,8 @@ let worldManagerRoleRuntime = null;
 const worldManagerTransitionSubscribers =
   new Map();
 const directActivationLocks = new Map();
+const directWorkbenchProjectActivationOperations = new Map();
+let directWorkbenchProjectTransition = { state: "idle" };
 const directAgentRegistryBackfillStateByProject = new Map();
 let chatgptDownloadHandler = null;
 let pendingChatgptDownloadMacroRequests = [];
@@ -6219,6 +6227,177 @@ function requireWorldManagerStudioExperience(channel) {
   throw error;
 }
 
+function requireDirectWorkbenchExperience(channel) {
+  if (APP_EXPERIENCE.id === APP_EXPERIENCES.DIRECT_WORKBENCH) {
+    return APP_EXPERIENCE;
+  }
+  const error = new Error(
+    `${channel} belongs to Direct Workbench and is unavailable from ${APP_EXPERIENCE.label}.`,
+  );
+  error.code = "direct_workbench_experience_required";
+  throw error;
+}
+
+function pendingCodexSurfaceWorkCount(sender, projectId) {
+  const session = sender?.id ? codexSurfaceSessions?.get(sender.id) : null;
+  if (!session || normalizeString(session.connection?.projectId, "") !== normalizeString(projectId, "")) return 0;
+  const pendingRequests = Number(session.pending?.size || 0);
+  const pendingServerRequests = [...(session.serverRequests?.values?.() || [])]
+    .filter((record) => ["pending", "responding"].includes(normalizeString(record?.status, "pending")))
+    .length;
+  return pendingRequests + pendingServerRequests;
+}
+
+function directWorkbenchActiveTurnCounts(config = {}, sender = null) {
+  const counts = {};
+  const sessionStore = ensureDirectSessionStore();
+  for (const project of Array.isArray(config.projects) ? config.projects : []) {
+    const projectId = normalizeString(project?.id, "");
+    if (!projectId) continue;
+    counts[projectId] = activeDirectTurnCountForProject(sessionStore, projectId);
+  }
+  const authority = sender ? senderAuthority(sender) : null;
+  const senderProjectId = normalizeString(authority?.projectId, "");
+  if (senderProjectId) {
+    counts[senderProjectId] = Number(counts[senderProjectId] || 0) +
+      pendingCodexSurfaceWorkCount(sender, senderProjectId);
+  }
+  return counts;
+}
+
+async function directWorkbenchProjectDirectoryForSender(sender, options = {}) {
+  const authority = requireFullCodexSurfaceBridge(sender, "direct-workbench:project-directory");
+  requireDirectWorkbenchExperience("direct-workbench:project-directory");
+  const config = options.config || await loadConfig();
+  const activeProjectId = normalizeString(options.activeProjectId, authority.projectId || config.selectedProjectId);
+  return buildDirectWorkbenchProjectDirectory(config, {
+    activeProjectId,
+    activeTurnCounts: options.activeTurnCounts || directWorkbenchActiveTurnCounts(config, sender),
+    transition: options.transition || directWorkbenchProjectTransition,
+  });
+}
+
+function rememberDirectWorkbenchProjectActivation(clientActivationId, record) {
+  directWorkbenchProjectActivationOperations.set(clientActivationId, record);
+  while (directWorkbenchProjectActivationOperations.size > 128) {
+    const oldest = directWorkbenchProjectActivationOperations.keys().next().value;
+    if (!oldest) break;
+    directWorkbenchProjectActivationOperations.delete(oldest);
+  }
+  return record;
+}
+
+function emitDirectWorkbenchProjectDirectoryEvent(payload = {}) {
+  if (!codexView?.webContents || codexView.webContents.isDestroyed()) return false;
+  codexView.webContents.send("direct-workbench:project-directory-event", payload);
+  return true;
+}
+
+async function performDirectWorkbenchProjectActivation(operation = {}) {
+  const sourceProjectId = normalizeString(operation.sourceProjectId, "");
+  const targetProjectId = normalizeString(operation.targetProjectId, "");
+  let sourceConfig = null;
+  try {
+    const config = await loadConfig();
+    sourceConfig = config;
+    if (normalizeString(config.selectedProjectId, "") !== sourceProjectId) {
+      const error = new Error("The selected project changed before activation started.");
+      error.code = "project_activation_source_stale";
+      throw error;
+    }
+    const freshDirectory = buildDirectWorkbenchProjectDirectory(config, {
+      activeProjectId: sourceProjectId,
+      activeTurnCounts: directWorkbenchActiveTurnCounts(config, codexView?.webContents),
+      transition: { state: "idle" },
+    });
+    validateDirectWorkbenchProjectActivation(freshDirectory, {
+      ...operation,
+      expectedCatalogRevision: operation.expectedCatalogRevision,
+    });
+    const target = config.projects.find((project) => project.id === targetProjectId);
+    const activation = applyProjectActivationBinding(target);
+    const projects = activation.project
+      ? config.projects.map((project) => project.id === targetProjectId ? activation.project : project)
+      : config.projects;
+    const saved = await saveConfig({ ...config, selectedProjectId: targetProjectId, projects });
+    const savedTarget = saved.projects.find((project) => project.id === targetProjectId);
+    const activationBinding = activation.binding?.id
+      ? savedTarget?.laneBindings?.find((binding) => binding.id === activation.binding.id) || activation.binding
+      : null;
+    currentProject = savedTarget;
+    await loadCodexSurface(savedTarget, {
+      ...codexSurfaceOptionsForBinding(activationBinding),
+      activationEpoch: nextSurfaceActivationEpoch("direct-workbench-project-activation"),
+    });
+    const completedAt = nowIso();
+    directWorkbenchProjectTransition = {
+      state: "completed",
+      activationId: operation.activationId,
+      sourceProjectId,
+      targetProjectId,
+      reason: "",
+      updatedAt: completedAt,
+    };
+    const receipt = buildDirectWorkbenchProjectActivationReceipt({
+      ...operation,
+      ok: true,
+      status: "completed",
+      completedAt,
+    });
+    rememberDirectWorkbenchProjectActivation(operation.clientActivationId, { ...operation, receipt });
+    const directory = buildDirectWorkbenchProjectDirectory(saved, {
+      activeProjectId: targetProjectId,
+      activeTurnCounts: directWorkbenchActiveTurnCounts(saved, codexView.webContents),
+      transition: directWorkbenchProjectTransition,
+    });
+    emitDirectWorkbenchProjectDirectoryEvent({ receipt, directory });
+  } catch (error) {
+    const reason = normalizeString(error?.code, "project_activation_failed");
+    directWorkbenchProjectTransition = {
+      state: "failed",
+      activationId: operation.activationId,
+      sourceProjectId,
+      targetProjectId,
+      reason,
+      updatedAt: nowIso(),
+    };
+    const receipt = buildDirectWorkbenchProjectActivationReceipt({
+      ...operation,
+      ok: false,
+      status: "failed",
+      reason,
+    });
+    rememberDirectWorkbenchProjectActivation(operation.clientActivationId, { ...operation, receipt });
+    let restored = sourceConfig;
+    try {
+      if (sourceConfig) {
+        restored = await saveConfig({ ...sourceConfig, selectedProjectId: sourceProjectId });
+        const sourceProject = restored.projects.find((project) => project.id === sourceProjectId);
+        if (sourceProject) {
+          currentProject = sourceProject;
+          const activation = applyProjectActivationBinding(sourceProject);
+          await loadCodexSurface(sourceProject, {
+            ...codexSurfaceOptionsForBinding(activation.binding),
+            activationEpoch: nextSurfaceActivationEpoch("direct-workbench-project-activation-rollback"),
+          });
+        }
+      }
+    } catch {
+      // The failed transition remains inspectable; a restart reopens the persisted source project.
+    }
+    if (restored) {
+      const directory = buildDirectWorkbenchProjectDirectory(restored, {
+        activeProjectId: sourceProjectId,
+        activeTurnCounts: directWorkbenchActiveTurnCounts(restored, codexView?.webContents),
+        transition: directWorkbenchProjectTransition,
+      });
+      emitDirectWorkbenchProjectDirectoryEvent({ receipt, directory });
+    } else {
+      emitDirectWorkbenchProjectDirectoryEvent({ receipt, directory: null });
+    }
+  }
+}
+
 function requireShellOrTrustedCodex(sender, channel) {
   const authority = requireSenderRole(sender, [SURFACE_ROLES.SHELL_RENDERER, SURFACE_ROLES.TRUSTED_CODEX_SURFACE], channel);
   if (authority.surfaceRole === SURFACE_ROLES.TRUSTED_CODEX_SURFACE && !hasFullCodexBridge(authority)) {
@@ -10002,6 +10181,8 @@ async function listChatgptRecentThreads(limit = 40, options = {}) {
 }
 
 async function createDirectWorkbenchWindow() {
+  directWorkbenchProjectActivationOperations.clear();
+  directWorkbenchProjectTransition = { state: "idle" };
   Menu.setApplicationMenu(null);
   console.log(
     `[Direct Workbench] launch experience=${APP_EXPERIENCE.id} ` +
@@ -10072,6 +10253,8 @@ async function createDirectWorkbenchWindow() {
     directLiveProbeEvidenceStore = null;
     directImplementationProofEvidenceStore = null;
     directActivationStore = null;
+    directWorkbenchProjectActivationOperations.clear();
+    directWorkbenchProjectTransition = { state: "idle" };
     directThreadWorkbenchController = null;
     directThreadStore?.close();
     directThreadStore = null;
@@ -11558,6 +11741,66 @@ ipcMain.handle("direct-import:start-checkpoint-continuation", async (_event, pay
   });
   emitDirectRuntimeStatus(project);
   return result;
+});
+
+ipcMain.handle("direct-workbench:project-directory", async (event) => {
+  return directWorkbenchProjectDirectoryForSender(event.sender);
+});
+
+ipcMain.handle("direct-workbench:activate-project", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:activate-project");
+  requireDirectWorkbenchExperience("direct-workbench:activate-project");
+  const sourceProjectId = normalizeString(payload?.sourceProjectId, "");
+  const targetProjectId = normalizeString(payload?.targetProjectId, "");
+  const clientActivationId = normalizeString(payload?.clientActivationId, "");
+  const replayReceipt = resolveDirectWorkbenchProjectActivationReplay(
+    directWorkbenchProjectActivationOperations,
+    authority.projectId,
+    { clientActivationId, sourceProjectId, targetProjectId },
+  );
+  if (replayReceipt) return replayReceipt;
+  const config = await loadConfig();
+  if (sourceProjectId !== normalizeString(authority.projectId, "") || sourceProjectId !== config.selectedProjectId) {
+    const error = new Error("The Direct Workbench project source is stale.");
+    error.code = "project_activation_source_stale";
+    throw error;
+  }
+  const directory = await directWorkbenchProjectDirectoryForSender(event.sender, {
+    config,
+    activeProjectId: sourceProjectId,
+  });
+  const concurrentReplayReceipt = resolveDirectWorkbenchProjectActivationReplay(
+    directWorkbenchProjectActivationOperations,
+    authority.projectId,
+    { clientActivationId, sourceProjectId, targetProjectId },
+  );
+  if (concurrentReplayReceipt) return concurrentReplayReceipt;
+  if (directWorkbenchProjectTransition.state === "activating") {
+    const error = new Error("Another Direct Workbench project activation is already in progress.");
+    error.code = "project_activation_in_progress";
+    throw error;
+  }
+  const operation = validateDirectWorkbenchProjectActivation(directory, payload || {});
+  const acceptedAt = nowIso();
+  directWorkbenchProjectTransition = {
+    state: "activating",
+    activationId: operation.activationId,
+    sourceProjectId,
+    targetProjectId,
+    reason: "",
+    updatedAt: acceptedAt,
+  };
+  const receipt = buildDirectWorkbenchProjectActivationReceipt({
+    ...operation,
+    ok: true,
+    status: "accepted",
+    acceptedAt,
+  });
+  rememberDirectWorkbenchProjectActivation(clientActivationId, { ...operation, receipt });
+  setTimeout(() => {
+    performDirectWorkbenchProjectActivation(operation).catch(() => {});
+  }, 0);
+  return receipt;
 });
 
 ipcMain.handle("direct-thread-workbench:snapshot", async (_event, payload) => {

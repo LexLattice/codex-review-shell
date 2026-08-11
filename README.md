@@ -131,11 +131,13 @@ npm run dev:world-manager-studio
 ```
 
 The normal legacy shell remains the default `npm run dev` compatibility path.
-Direct Workbench currently connects real Runtime and Analytics surfaces;
-Files, Diff, Terminal, and Browser remain visibly unavailable until bounded
-Direct tenant adapters exist. See the
+Direct Workbench currently connects a main-owned project directory, thread
+intake, Runtime, and Analytics surfaces. Project switching shows the configured
+WSL/Windows/local substrate and runtime before activation. Files, Diff,
+Terminal, and Browser remain visibly unavailable until bounded Direct tenant
+adapters exist. See the
 [experience split spec](./docs/DIRECT_WORKBENCH_AND_WORLDMANAGER_STUDIO_SPLIT_SPEC.md)
-and [T3 geometry experiment](./docs/DIRECT_T3_ALTERNATE_GUI_EXPERIMENT.md).
+and [project directory spec](./docs/DIRECT_WORKBENCH_PROJECT_DIRECTORY_SPEC.md).
 
 ## Windows + WSL mirror launcher
 

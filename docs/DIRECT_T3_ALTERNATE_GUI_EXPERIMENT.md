@@ -112,6 +112,7 @@ Morphable:
 | Artifact | Truth source | Visible region | Authority |
 | --- | --- | --- | --- |
 | selected project | signed/encoded main-process bootstrap payload | left sidebar/header | display only |
+| project directory | typed renderer-safe main-process projection | bounded sidebar reveal | evidence-gated main-owned activation |
 | Direct thread directory | existing Direct surface projection and thread deck | left sidebar | existing focus/new-thread actions |
 | transcript and turn state | existing `codex-surface:event` stream | central workspace | existing composer/turn protocol |
 | model, effort, access, quota, context | existing Direct runtime witness and preference APIs | composer/header | existing controls only |
@@ -178,8 +179,10 @@ connection boundary, rendered the three-region geometry, and exited cleanly.
 An isolated fixture-backed Electron interaction smoke additionally opens the
 real Runtime, Analytics, and Thread Intake tenants, proves their exclusive
 right-panel selection, inspects the project substrate and both identity
-dispositions, collapses and restores the thread sidebar, records screenshots,
-and fails on renderer console/page errors. The focused source regression also
+dispositions, switches from a WSL project to a Windows project through the
+main-owned project directory, restores the target thread binding, collapses and
+restores the thread sidebar, records screenshots, and fails on renderer
+console/page errors. The focused source regression also
 proves that the alternate document preserves every DOM identity required by
 the base Codex renderer contract, retains trusted managed-surface URL
 recognition, and keeps unavailable tenants disabled.
@@ -187,6 +190,7 @@ recognition, and keeps unavailable tenants disabled.
 ```text
 npm run direct:t3-alternate-gui  -> passed
 npm run direct:t3-alternate-gui:electron -> passed
+npm run direct:project-directory -> passed
 npm run direct:thread-intake     -> passed
 npm run check:main-syntax        -> passed
 isolated Electron/Xvfb smoke     -> exit 0
