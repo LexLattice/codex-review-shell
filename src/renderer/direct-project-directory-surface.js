@@ -8,6 +8,7 @@
   const directoryPanel = document.getElementById("directProjectDirectory");
   const directoryClose = document.getElementById("directProjectDirectoryClose");
   const directoryRefresh = document.getElementById("directProjectDirectoryRefresh");
+  const archivedToggle = document.getElementById("directProjectArchivedToggle");
   const bindingNew = document.getElementById("directProjectBindingNew");
   const directoryCount = document.getElementById("directProjectDirectoryCount");
   const directoryStatus = document.getElementById("directProjectDirectoryStatus");
@@ -33,6 +34,19 @@
   const editorRuntimePath = document.getElementById("directProjectBindingRuntimePath");
   const editorEvidence = document.getElementById("directProjectBindingEvidence");
   const editorCommit = document.getElementById("directProjectBindingCommit");
+  const lifecyclePanel = document.getElementById("directProjectLifecyclePanel");
+  const lifecycleClose = document.getElementById("directProjectLifecycleClose");
+  const lifecycleTitle = document.getElementById("directProjectLifecycleTitle");
+  const lifecycleMeta = document.getElementById("directProjectLifecycleMeta");
+  const lifecycleStatus = document.getElementById("directProjectLifecycleStatus");
+  const lifecycleState = document.getElementById("directProjectLifecycleState");
+  const lifecycleTarget = document.getElementById("directProjectLifecycleTarget");
+  const lifecycleEvidence = document.getElementById("directProjectLifecycleEvidence");
+  const lifecycleArchive = document.getElementById("directProjectLifecycleArchive");
+  const lifecycleRestore = document.getElementById("directProjectLifecycleRestore");
+  const lifecycleConfirmationLabel = document.getElementById("directProjectLifecycleConfirmationLabel");
+  const lifecycleConfirmation = document.getElementById("directProjectLifecycleConfirmation");
+  const lifecycleDelete = document.getElementById("directProjectLifecycleDelete");
 
   if (!directoryPanel || typeof bridge?.readDirectWorkbenchProjectDirectory !== "function") return;
 
@@ -46,6 +60,12 @@
     editorLoading: false,
     editorWorking: false,
     editorError: "",
+    showArchived: false,
+    lifecycleDraft: null,
+    lifecycleLoading: false,
+    lifecycleWorking: false,
+    lifecycleError: "",
+    lifecycleDraftRequestId: 0,
   };
 
   function createElement(tagName, className = "", text = "") {
@@ -100,6 +120,16 @@
       project_binding_windows_path_invalid: "Use an absolute Windows drive or UNC path.",
       project_binding_local_path_invalid: "Use an absolute local path.",
       project_binding_runtime_path_invalid: "Choose a supported Direct runtime path.",
+      project_binding_archived: "Archived bindings must be restored before activation or editing.",
+      project_lifecycle_active_project_forbidden: "Switch away from this project before changing its lifecycle.",
+      project_lifecycle_archive_state_invalid: "Only an active binding can be archived.",
+      project_lifecycle_restore_state_invalid: "Only an archived binding can be restored.",
+      project_lifecycle_delete_state_invalid: "A binding must be archived before deletion.",
+      project_lifecycle_delete_confirmation_invalid: "Type the exact deletion phrase before removing the binding.",
+      project_lifecycle_action_invalid: "Choose a supported lifecycle action.",
+      client_lifecycle_id_required: "The lifecycle request has no stable identity; retry it.",
+      client_lifecycle_id_reused: "This lifecycle request identity was already used for another transition.",
+      project_lifecycle_mutation_failed: "Main could not complete the project lifecycle transition.",
     };
     return labels[code] || String(code || "Project activation is unavailable.").replaceAll("_", " ");
   }
@@ -163,9 +193,16 @@
     const actions = createElement("div", "direct-project-row-actions");
     const editAction = createElement("button", "", "Edit");
     editAction.type = "button";
-    editAction.disabled = view.working || view.editorWorking || transitionState() === "activating";
+    editAction.disabled = row.lifecycle?.state === "archived" || view.working || view.editorWorking ||
+      view.lifecycleWorking || transitionState() === "activating";
     editAction.dataset.projectBindingTarget = row.projectId || "";
     editAction.addEventListener("click", () => openBindingEditor(row.projectId));
+    const lifecycleAction = createElement("button", "", "Manage");
+    lifecycleAction.type = "button";
+    lifecycleAction.disabled = view.working || view.editorWorking || view.lifecycleWorking ||
+      transitionState() === "activating";
+    lifecycleAction.dataset.projectLifecycleTarget = row.projectId || "";
+    lifecycleAction.addEventListener("click", () => openLifecyclePanel(row.projectId));
     const action = createElement(
       "button",
       "",
@@ -175,7 +212,7 @@
     action.disabled = row.selected || !row.selectable || view.working || transitionState() === "activating";
     action.dataset.projectActivationTarget = row.projectId || "";
     action.addEventListener("click", () => activateProject(row));
-    actions.append(editAction, action);
+    actions.append(editAction, lifecycleAction, action);
     container.append(copy, actions);
     return container;
   }
@@ -194,6 +231,119 @@
     view.bindingDraft = null;
     view.editorLoading = false;
     view.editorError = "";
+  }
+
+  function closeLifecyclePanel() {
+    if (view.lifecycleWorking) return;
+    view.lifecycleDraftRequestId += 1;
+    if (lifecyclePanel) lifecyclePanel.hidden = true;
+    shell?.removeAttribute("data-t3-project-lifecycle-open");
+    view.lifecycleDraft = null;
+    view.lifecycleLoading = false;
+    view.lifecycleError = "";
+    if (lifecycleConfirmation) lifecycleConfirmation.value = "";
+  }
+
+  function renderLifecyclePanel() {
+    if (!lifecyclePanel) return;
+    const draft = view.lifecycleDraft;
+    const target = draft?.target || {};
+    const requiredConfirmation = draft?.actions?.delete?.requiredConfirmation || "DELETE project";
+    lifecycleTitle.textContent = target.displayName ? `${target.displayName} lifecycle` : "Project lifecycle";
+    lifecycleMeta.textContent = draft
+      ? `catalog ${String(draft.expectedCatalogRevision || "unknown").slice(0, 10)}`
+      : "Draft not loaded";
+    lifecycleState.textContent = target.lifecycleState || "unknown";
+    lifecycleTarget.textContent = target.displayName || "No target selected";
+    lifecycleEvidence.textContent = draft
+      ? `${target.substrateLabel || "workspace unavailable"} · ${target.runtimeLabel || "runtime unavailable"} · ${target.restoreLabel || "thread restore unavailable"}`
+      : "Workspace and runtime evidence unavailable.";
+    lifecycleConfirmationLabel.textContent = requiredConfirmation;
+
+    let state = "ready";
+    let text = "Choose a lifecycle disposition. Main revalidates current work and revision evidence before persistence.";
+    if (view.lifecycleLoading) {
+      state = "loading";
+      text = "Loading revision-bound lifecycle evidence…";
+    } else if (view.lifecycleError) {
+      state = "failed";
+      text = blockerLabel(view.lifecycleError);
+    } else if (view.lifecycleWorking) {
+      state = "saving";
+      text = "Main is revalidating and applying the lifecycle transition…";
+    } else if (target.selected) {
+      text = "This is the active project. Switch away before archiving or deleting its binding.";
+    }
+    lifecycleStatus.dataset.state = state;
+    lifecycleStatus.textContent = text;
+
+    const disabled = view.lifecycleLoading || view.lifecycleWorking || !draft;
+    lifecycleArchive.disabled = disabled || draft?.actions?.archive?.eligible !== true;
+    lifecycleRestore.disabled = disabled || draft?.actions?.restore?.eligible !== true;
+    lifecycleConfirmation.disabled = disabled || draft?.actions?.delete?.eligible !== true;
+    lifecycleDelete.disabled = disabled || draft?.actions?.delete?.eligible !== true ||
+      lifecycleConfirmation.value !== requiredConfirmation;
+    lifecycleClose.disabled = view.lifecycleWorking;
+  }
+
+  async function openLifecyclePanel(projectId) {
+    if (!lifecyclePanel || typeof bridge?.readDirectWorkbenchProjectLifecycleDraft !== "function") return;
+    const requestId = view.lifecycleDraftRequestId + 1;
+    view.lifecycleDraftRequestId = requestId;
+    document.getElementById("runtimeDrawerClose")?.click();
+    document.getElementById("threadAnalyticsPanelClose")?.click();
+    const intake = document.getElementById("directThreadIntakePanel");
+    if (intake) intake.hidden = true;
+    closeBindingEditor();
+    lifecyclePanel.hidden = false;
+    shell?.setAttribute("data-t3-project-lifecycle-open", "true");
+    view.lifecycleDraft = null;
+    view.lifecycleLoading = true;
+    view.lifecycleWorking = false;
+    view.lifecycleError = "";
+    lifecycleConfirmation.value = "";
+    renderLifecyclePanel();
+    try {
+      const draft = await bridge.readDirectWorkbenchProjectLifecycleDraft({ projectId });
+      if (requestId !== view.lifecycleDraftRequestId || lifecyclePanel.hidden) return;
+      if (draft?.schema !== "direct_workbench_project_lifecycle_draft@1") {
+        throw new Error("project_lifecycle_draft_invalid");
+      }
+      view.lifecycleDraft = draft;
+    } catch (error) {
+      if (requestId !== view.lifecycleDraftRequestId || lifecyclePanel.hidden) return;
+      view.lifecycleError = error?.code || error?.message || "project_lifecycle_draft_unavailable";
+    } finally {
+      if (requestId !== view.lifecycleDraftRequestId || lifecyclePanel.hidden) return;
+      view.lifecycleLoading = false;
+      renderLifecyclePanel();
+    }
+  }
+
+  async function submitLifecycleAction(action) {
+    const draft = view.lifecycleDraft;
+    if (!draft || view.lifecycleWorking || typeof bridge?.mutateDirectWorkbenchProjectLifecycle !== "function") return;
+    view.lifecycleWorking = true;
+    view.lifecycleError = "";
+    renderLifecyclePanel();
+    try {
+      const receipt = await bridge.mutateDirectWorkbenchProjectLifecycle({
+        clientLifecycleId: globalThis.crypto?.randomUUID?.() || `project_lifecycle_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        action,
+        sourceProjectId: draft.sourceProjectId,
+        projectId: draft.projectId,
+        expectedCatalogRevision: draft.expectedCatalogRevision,
+        expectedProjectRevision: draft.expectedProjectRevision,
+        confirmation: action === "delete" ? lifecycleConfirmation.value : "",
+      });
+      if (!receipt?.ok || !["accepted", "completed"].includes(receipt.status)) {
+        throw Object.assign(new Error(receipt?.reason || "project_lifecycle_mutation_failed"), { code: receipt?.reason });
+      }
+    } catch (error) {
+      view.lifecycleWorking = false;
+      view.lifecycleError = error?.code || error?.message || "project_lifecycle_mutation_failed";
+      renderLifecyclePanel();
+    }
   }
 
   function renderBindingEditor() {
@@ -251,6 +401,7 @@
     document.getElementById("threadAnalyticsPanelClose")?.click();
     const intake = document.getElementById("directThreadIntakePanel");
     if (intake) intake.hidden = true;
+    closeLifecyclePanel();
     editorPanel.hidden = false;
     shell?.setAttribute("data-t3-project-editor-open", "true");
     view.bindingDraft = null;
@@ -328,20 +479,32 @@
 
   function render() {
     const rows = Array.isArray(view.directory?.projects) ? view.directory.projects : [];
+    const visibleRows = view.showArchived
+      ? rows
+      : rows.filter((row) => row.lifecycle?.state !== "archived");
     directoryCount.textContent = view.directory
-      ? `${rows.length} configured · ${view.directory.activeProjectId ? "1 active" : "none active"}`
+      ? `${view.directory.activeProjectCount || 0} active · ${view.directory.archivedProjectCount || 0} archived`
       : view.loading ? "Loading…" : "Unavailable";
     directoryRefresh.disabled = view.loading || view.working;
     if (bindingNew) bindingNew.disabled = view.loading || view.working || view.editorWorking;
+    if (archivedToggle) {
+      archivedToggle.textContent = `Archived ${view.directory?.archivedProjectCount || 0}`;
+      archivedToggle.disabled = view.loading || view.working || !view.directory?.archivedProjectCount;
+      archivedToggle.setAttribute("aria-pressed", view.showArchived ? "true" : "false");
+    }
     directoryList.replaceChildren();
-    if (!rows.length) {
+    if (!visibleRows.length) {
       directoryList.append(createElement(
         "p",
         "direct-project-directory-status",
-        view.loading ? "Loading projects…" : "No renderer-safe project rows are available.",
+        view.loading
+          ? "Loading projects…"
+          : rows.length
+            ? "Archived bindings are hidden. Use the Archived control to inspect them."
+            : "No renderer-safe project rows are available.",
       ));
     } else {
-      for (const row of rows) directoryList.append(projectRow(row));
+      for (const row of visibleRows) directoryList.append(projectRow(row));
     }
     renderStatus();
   }
@@ -403,11 +566,20 @@
   });
   directoryClose?.addEventListener("click", () => setProjectDirectoryOpen(false));
   directoryRefresh?.addEventListener("click", () => refreshDirectory());
+  archivedToggle?.addEventListener("click", () => {
+    view.showArchived = !view.showArchived;
+    render();
+  });
   bindingNew?.addEventListener("click", () => openBindingEditor());
   editorWorkspaceKind?.addEventListener("change", syncWorkspaceFields);
   editorClose?.addEventListener("click", closeBindingEditor);
   editorCancel?.addEventListener("click", closeBindingEditor);
   editorForm?.addEventListener("submit", submitBindingEditor);
+  lifecycleClose?.addEventListener("click", closeLifecyclePanel);
+  lifecycleArchive?.addEventListener("click", () => submitLifecycleAction("archive"));
+  lifecycleRestore?.addEventListener("click", () => submitLifecycleAction("restore"));
+  lifecycleDelete?.addEventListener("click", () => submitLifecycleAction("delete"));
+  lifecycleConfirmation?.addEventListener("input", renderLifecyclePanel);
 
   bridge.onDirectWorkbenchProjectDirectoryEvent?.((event) => {
     if (event?.directory) view.directory = event.directory;
@@ -423,6 +595,18 @@
       render();
       return;
     }
+    if (event?.lifecycleReceipt) {
+      view.lifecycleWorking = false;
+      if (event.lifecycleReceipt.ok) {
+        closeLifecyclePanel();
+        view.error = "";
+      } else {
+        view.lifecycleError = event.lifecycleReceipt.reason || "project_lifecycle_mutation_failed";
+        renderLifecyclePanel();
+      }
+      render();
+      return;
+    }
     view.working = false;
     view.localTargetProjectId = "";
     view.error = event?.receipt?.ok === false ? event.receipt.reason || "project_activation_failed" : "";
@@ -431,5 +615,6 @@
 
   render();
   renderBindingEditor();
+  renderLifecyclePanel();
   refreshDirectory().catch(() => {});
 })();

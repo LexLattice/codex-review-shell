@@ -10,6 +10,7 @@
   const analyticsClose = document.getElementById("threadAnalyticsPanelClose");
   const intakePanel = document.getElementById("directThreadIntakePanel");
   const projectEditor = document.getElementById("directProjectBindingEditor");
+  const projectLifecyclePanel = document.getElementById("directProjectLifecyclePanel");
   const coreNewThread = document.getElementById("morphicNewThreadButton");
   const coreAnalytics = document.getElementById("morphicAnalyticsButton");
   const railList = document.getElementById("morphicThreadRailList");
@@ -74,10 +75,12 @@
     const analyticsOpen = Boolean(analyticsPanel && !analyticsPanel.hidden);
     const intakeOpen = Boolean(intakePanel && !intakePanel.hidden);
     const projectEditorOpen = Boolean(projectEditor && !projectEditor.hidden);
+    const projectLifecycleOpen = Boolean(projectLifecyclePanel && !projectLifecyclePanel.hidden);
     shell?.toggleAttribute("data-t3-runtime-open", runtimeOpen);
     shell?.toggleAttribute("data-t3-analytics-open", analyticsOpen);
     shell?.toggleAttribute("data-t3-intake-open", intakeOpen);
     shell?.toggleAttribute("data-t3-project-editor-open", projectEditorOpen);
+    shell?.toggleAttribute("data-t3-project-lifecycle-open", projectLifecycleOpen);
     for (const button of utilityRuntimeButtons) {
       button.setAttribute("aria-pressed", runtimeOpen ? "true" : "false");
     }
@@ -111,6 +114,9 @@
     if (target.closest("[data-runtime-tab]") && projectEditor && !projectEditor.hidden) {
       projectEditor.hidden = true;
     }
+    if (target.closest("[data-runtime-tab]") && projectLifecyclePanel && !projectLifecyclePanel.hidden) {
+      projectLifecyclePanel.hidden = true;
+    }
     if (
       (target.closest('[data-t3-action="analytics"]') || target.closest("#morphicAnalyticsButton")) &&
       runtimeDrawer &&
@@ -132,8 +138,18 @@
     ) {
       projectEditor.hidden = true;
     }
+    if (
+      (target.closest('[data-t3-action="analytics"]') || target.closest("#morphicAnalyticsButton")) &&
+      projectLifecyclePanel &&
+      !projectLifecyclePanel.hidden
+    ) {
+      projectLifecyclePanel.hidden = true;
+    }
     if (target.closest('[data-t3-action="intake"]') && projectEditor && !projectEditor.hidden) {
       projectEditor.hidden = true;
+    }
+    if (target.closest('[data-t3-action="intake"]') && projectLifecyclePanel && !projectLifecyclePanel.hidden) {
+      projectLifecyclePanel.hidden = true;
     }
   }, true);
 
@@ -142,4 +158,5 @@
   if (analyticsPanel) inspectorObserver.observe(analyticsPanel, { attributes: true, attributeFilter: ["hidden", "class"] });
   if (intakePanel) inspectorObserver.observe(intakePanel, { attributes: true, attributeFilter: ["hidden"] });
   if (projectEditor) inspectorObserver.observe(projectEditor, { attributes: true, attributeFilter: ["hidden"] });
+  if (projectLifecyclePanel) inspectorObserver.observe(projectLifecyclePanel, { attributes: true, attributeFilter: ["hidden"] });
 })();

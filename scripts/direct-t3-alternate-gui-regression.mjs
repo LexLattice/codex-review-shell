@@ -43,6 +43,9 @@ assert.match(alternateHtml, /data-t3-action="intake"/);
 assert.match(alternateHtml, /data-morphic-region="project-directory"/);
 assert.match(alternateHtml, /data-morphic-region="project-binding-editor"/);
 assert.match(alternateHtml, /data-morphic-region="project-binding-evidence-lane"/);
+assert.match(alternateHtml, /data-morphic-region="project-lifecycle"/);
+assert.match(alternateHtml, /data-morphic-action-cluster="project-lifecycle-reversible"/);
+assert.match(alternateHtml, /data-morphic-action-cluster="project-lifecycle-destructive"/);
 assert.match(alternateHtml, /src="\.\/direct-project-directory-surface\.js"/);
 assert.match(alternateHtml, /data-morphic-region="direct-thread-intake-evidence"/);
 assert.match(alternateHtml, /src="\.\/direct-thread-intake-surface\.js"/);
@@ -60,6 +63,34 @@ assert.match(projectDirectoryJs, /activateDirectWorkbenchProject/);
 assert.match(projectDirectoryJs, /readDirectWorkbenchProjectBindingDraft/);
 assert.match(projectDirectoryJs, /mutateDirectWorkbenchProjectBinding/);
 assert.match(projectDirectoryJs, /direct_workbench_project_binding_draft@1/);
+assert.match(projectDirectoryJs, /direct_workbench_project_lifecycle_draft@1/);
+assert.match(projectDirectoryJs, /readDirectWorkbenchProjectLifecycleDraft/);
+assert.match(projectDirectoryJs, /mutateDirectWorkbenchProjectLifecycle/);
+assert.match(projectDirectoryJs, /requiredConfirmation/);
+assert.match(projectDirectoryJs, /lifecycleDraftRequestId/);
+assert.match(projectDirectoryJs, /requestId !== view\.lifecycleDraftRequestId \|\| lifecyclePanel\.hidden/);
+assert.match(mainSource, /if \(sourceConfig && !persistedConfig\) configCache = sourceConfig;/);
+const lifecycleOpenStart = projectDirectoryJs.indexOf("async function openLifecyclePanel");
+const lifecycleDraftAssignment = projectDirectoryJs.indexOf("view.lifecycleDraft = draft", lifecycleOpenStart);
+const lifecycleRequestGuard = projectDirectoryJs.lastIndexOf(
+  "requestId !== view.lifecycleDraftRequestId || lifecyclePanel.hidden",
+  lifecycleDraftAssignment,
+);
+assert.ok(lifecycleOpenStart >= 0 && lifecycleRequestGuard > lifecycleOpenStart);
+assert.ok(lifecycleDraftAssignment > lifecycleRequestGuard);
+const lifecycleMutationStart = mainSource.indexOf("async function performDirectWorkbenchProjectLifecycleMutation");
+const lifecyclePersistenceMarker = mainSource.indexOf("let persistedConfig = null", lifecycleMutationStart);
+const lifecycleCacheRollback = mainSource.indexOf(
+  "if (sourceConfig && !persistedConfig) configCache = sourceConfig",
+  lifecycleMutationStart,
+);
+const lifecycleFailedReceipt = mainSource.indexOf(
+  "const reason = normalizeString(error?.code, \"project_lifecycle_mutation_failed\")",
+  lifecycleMutationStart,
+);
+assert.ok(lifecycleMutationStart >= 0 && lifecyclePersistenceMarker > lifecycleMutationStart);
+assert.ok(lifecycleCacheRollback > lifecyclePersistenceMarker);
+assert.ok(lifecycleFailedReceipt > lifecycleCacheRollback);
 assert.match(projectDirectoryJs, /expectedCatalogRevision/);
 assert.match(projectDirectoryJs, /sourceProjectId/);
 assert.match(projectDirectoryJs, /targetProjectId/);
@@ -92,6 +123,7 @@ assert.match(alternateCss, /@media \(max-width: 720px\)/);
 assert.match(alternateCss, /\.direct-thread-intake-panel/);
 assert.match(alternateCss, /\.direct-project-directory/);
 assert.match(alternateCss, /\.direct-project-binding-editor/);
+assert.match(alternateCss, /\.direct-project-lifecycle-panel/);
 assert.match(alternateCss, /data-t3-projects-open/);
 assert.match(alternateCss, /\.t3-project-sidebar:has\(\.morphic-thread-rail:not\(\[hidden\]\)\)/);
 assert.match(alternateCss, /\.morphic-thread-tab-evidence/);

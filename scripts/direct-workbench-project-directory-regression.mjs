@@ -11,19 +11,25 @@ const {
   buildDirectWorkbenchProjectBindingDraft,
   buildDirectWorkbenchProjectBindingReceipt,
   buildDirectWorkbenchProjectDirectory,
+  buildDirectWorkbenchProjectLifecycleDraft,
+  buildDirectWorkbenchProjectLifecycleReceipt,
+  normalizeDirectWorkbenchProjectLifecycleCatalog,
   resolveDirectWorkbenchProjectBindingReplay,
+  resolveDirectWorkbenchProjectLifecycleReplay,
   resolveDirectWorkbenchProjectActivationReplay,
   validateDirectWorkbenchProjectBindingMutation,
+  validateDirectWorkbenchProjectLifecycleMutation,
   validateDirectWorkbenchProjectActivation,
 } = require("../src/main/direct/project/project-directory.js");
 const {
   alignCodexHostRuntimeWithWorkspace,
 } = require("../src/main/direct/runtime/runtime-path-selection.js");
 
-function project({ id, name, workspace, codex, laneBindings = [] }) {
+function project({ id, name, workspace, codex, laneBindings = [], lifecycle = { state: "active" } }) {
   return {
     id,
     name,
+    lifecycle,
     repoPath: workspace.linuxPath || workspace.windowsPath || workspace.localPath,
     workspace,
     surfaceBinding: {
@@ -439,6 +445,173 @@ assert.throws(
     { ...editMutation, projectId: "project_local" },
   ),
   (error) => error?.code === "client_mutation_id_reused",
+);
+
+assert.equal(directory.activeProjectCount, 3);
+assert.equal(directory.archivedProjectCount, 0);
+assert.equal(directory.projects[0].lifecycle.canArchive, false);
+assert(directory.projects[0].lifecycle.blockerCodes.includes("project_lifecycle_active_project_forbidden"));
+assert.equal(directory.projects[2].lifecycle.canArchive, true);
+
+const lifecycleDraft = buildDirectWorkbenchProjectLifecycleDraft(config, directory, {
+  projectId: "project_local",
+});
+assert.equal(lifecycleDraft.schema, "direct_workbench_project_lifecycle_draft@1");
+assert.equal(lifecycleDraft.target.lifecycleState, "active");
+assert.equal(lifecycleDraft.actions.archive.eligible, true);
+assert.equal(lifecycleDraft.actions.restore.eligible, false);
+assert.equal(lifecycleDraft.actions.delete.eligible, false);
+assert.equal(lifecycleDraft.effects.workspaceFilesDeleted, false);
+assert.equal(lifecycleDraft.effects.threadEvidenceDeleted, false);
+
+const archiveMutation = validateDirectWorkbenchProjectLifecycleMutation(directory, config, {
+  clientLifecycleId: "client_archive_local",
+  action: "archive",
+  sourceProjectId: lifecycleDraft.sourceProjectId,
+  projectId: lifecycleDraft.projectId,
+  expectedCatalogRevision: lifecycleDraft.expectedCatalogRevision,
+  expectedProjectRevision: lifecycleDraft.expectedProjectRevision,
+});
+assert.match(archiveMutation.lifecycleId, /^project_lifecycle_[a-f0-9]{24}$/);
+assert.equal(archiveMutation.action, "archive");
+assert.throws(
+  () => validateDirectWorkbenchProjectLifecycleMutation(directory, config, {
+    ...archiveMutation,
+    clientLifecycleId: "client_archive_stale",
+    expectedCatalogRevision: "stale",
+  }),
+  (error) => error?.code === "project_catalog_revision_stale",
+);
+assert.throws(
+  () => validateDirectWorkbenchProjectLifecycleMutation(directory, config, {
+    clientLifecycleId: "client_archive_selected",
+    action: "archive",
+    sourceProjectId: "project_wsl",
+    projectId: "project_wsl",
+    expectedCatalogRevision: directory.catalogRevision,
+    expectedProjectRevision: buildDirectWorkbenchProjectBindingDraft(config, {
+      projectId: "project_wsl",
+      catalogRevision: directory.catalogRevision,
+    }).expectedProjectRevision,
+  }),
+  (error) => error?.code === "project_lifecycle_active_project_forbidden",
+);
+
+const lifecycleBusyDirectory = buildDirectWorkbenchProjectDirectory(config, {
+  activeTurnCounts: { project_local: 1 },
+});
+assert.equal(lifecycleBusyDirectory.projects[2].lifecycle.canArchive, false);
+assert.throws(
+  () => validateDirectWorkbenchProjectLifecycleMutation(lifecycleBusyDirectory, config, {
+    clientLifecycleId: "client_archive_busy",
+    action: "archive",
+    sourceProjectId: "project_wsl",
+    projectId: "project_local",
+    expectedCatalogRevision: lifecycleBusyDirectory.catalogRevision,
+    expectedProjectRevision: lifecycleDraft.expectedProjectRevision,
+  }),
+  (error) => error?.code === "active_turn_in_target_project",
+);
+
+const archivedConfig = structuredClone(config);
+archivedConfig.projects[2].lifecycle = {
+  state: "archived",
+  archivedAt: "2026-08-11T08:20:00.000Z",
+  updatedAt: "2026-08-11T08:20:00.000Z",
+};
+const archivedDirectory = buildDirectWorkbenchProjectDirectory(archivedConfig, {
+  generatedAt: "2026-08-11T08:21:00.000Z",
+  activeTurnCounts: {},
+});
+assert.equal(archivedDirectory.activeProjectCount, 2);
+assert.equal(archivedDirectory.archivedProjectCount, 1);
+assert.equal(archivedDirectory.projects[2].state, "archived");
+assert.equal(archivedDirectory.projects[2].selectable, false);
+assert.equal(archivedDirectory.projects[2].lifecycle.canRestore, true);
+assert.equal(archivedDirectory.projects[2].lifecycle.canDelete, true);
+
+const allArchivedCatalog = normalizeDirectWorkbenchProjectLifecycleCatalog(
+  archivedConfig.projects.map((entry) => ({
+    ...structuredClone(entry),
+    lifecycle: { state: "archived", archivedAt: "2026-08-11T08:20:00.000Z" },
+  })),
+  "project_local",
+  "2026-08-11T08:23:00.000Z",
+);
+assert.equal(allArchivedCatalog.projects.filter((entry) => entry.lifecycle.state === "active").length, 1);
+assert.equal(allArchivedCatalog.projects[0].id, "project_wsl");
+assert.equal(allArchivedCatalog.projects[0].lifecycle.restoredAt, "2026-08-11T08:23:00.000Z");
+assert.equal(allArchivedCatalog.selectedProjectId, "project_wsl");
+assert.throws(
+  () => buildDirectWorkbenchProjectBindingDraft(archivedConfig, {
+    projectId: "project_local",
+    catalogRevision: archivedDirectory.catalogRevision,
+  }),
+  (error) => error?.code === "project_binding_archived",
+);
+
+const archivedDraft = buildDirectWorkbenchProjectLifecycleDraft(archivedConfig, archivedDirectory, {
+  projectId: "project_local",
+});
+const restoreMutation = validateDirectWorkbenchProjectLifecycleMutation(archivedDirectory, archivedConfig, {
+  clientLifecycleId: "client_restore_local",
+  action: "restore",
+  sourceProjectId: archivedDraft.sourceProjectId,
+  projectId: archivedDraft.projectId,
+  expectedCatalogRevision: archivedDraft.expectedCatalogRevision,
+  expectedProjectRevision: archivedDraft.expectedProjectRevision,
+});
+assert.equal(restoreMutation.projectId, archiveMutation.projectId);
+assert.throws(
+  () => validateDirectWorkbenchProjectLifecycleMutation(archivedDirectory, archivedConfig, {
+    clientLifecycleId: "client_delete_without_phrase",
+    action: "delete",
+    sourceProjectId: archivedDraft.sourceProjectId,
+    projectId: archivedDraft.projectId,
+    expectedCatalogRevision: archivedDraft.expectedCatalogRevision,
+    expectedProjectRevision: archivedDraft.expectedProjectRevision,
+    confirmation: "DELETE something else",
+  }),
+  (error) => error?.code === "project_lifecycle_delete_confirmation_invalid",
+);
+const deleteMutation = validateDirectWorkbenchProjectLifecycleMutation(archivedDirectory, archivedConfig, {
+  clientLifecycleId: "client_delete_local",
+  action: "delete",
+  sourceProjectId: archivedDraft.sourceProjectId,
+  projectId: archivedDraft.projectId,
+  expectedCatalogRevision: archivedDraft.expectedCatalogRevision,
+  expectedProjectRevision: archivedDraft.expectedProjectRevision,
+  confirmation: archivedDraft.actions.delete.requiredConfirmation,
+});
+assert.equal(deleteMutation.confirmation, "DELETE Local fixture");
+
+const lifecycleReceipt = buildDirectWorkbenchProjectLifecycleReceipt({
+  ...deleteMutation,
+  ok: true,
+  status: "completed",
+  completedAt: "2026-08-11T08:22:00.000Z",
+});
+assert.equal(lifecycleReceipt.workspaceFilesDeleted, false);
+assert.equal(lifecycleReceipt.gitStateDeleted, false);
+assert.equal(lifecycleReceipt.threadEvidenceDeleted, false);
+const lifecycleOperations = new Map([[
+  deleteMutation.clientLifecycleId,
+  { ...deleteMutation, receipt: lifecycleReceipt },
+]]);
+const replayedLifecycleReceipt = resolveDirectWorkbenchProjectLifecycleReplay(
+  lifecycleOperations,
+  "project_wsl",
+  deleteMutation,
+);
+assert.equal(replayedLifecycleReceipt.status, "completed");
+assert.equal(replayedLifecycleReceipt.duplicate, true);
+assert.throws(
+  () => resolveDirectWorkbenchProjectLifecycleReplay(
+    lifecycleOperations,
+    "project_wsl",
+    { ...deleteMutation, action: "restore" },
+  ),
+  (error) => error?.code === "client_lifecycle_id_reused",
 );
 
 const preservedHostRuntime = alignCodexHostRuntimeWithWorkspace(

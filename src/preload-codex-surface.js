@@ -335,6 +335,10 @@ if (directWorkbenchPreload) {
       ipcRenderer.invoke("direct-workbench:project-binding-draft", payload),
     mutateDirectWorkbenchProjectBinding: (payload = {}) =>
       ipcRenderer.invoke("direct-workbench:mutate-project-binding", payload),
+    readDirectWorkbenchProjectLifecycleDraft: (payload = {}) =>
+      ipcRenderer.invoke("direct-workbench:project-lifecycle-draft", payload),
+    mutateDirectWorkbenchProjectLifecycle: (payload = {}) =>
+      ipcRenderer.invoke("direct-workbench:mutate-project-lifecycle", payload),
     activateDirectWorkbenchProject: (payload = {}) =>
       ipcRenderer.invoke("direct-workbench:activate-project", payload),
     onDirectWorkbenchProjectDirectoryEvent: (callback) => {

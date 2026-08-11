@@ -224,7 +224,6 @@ Focused fixture coverage must prove:
 
 ## Deferred
 
-- create/edit/delete project bindings;
 - substrate discovery and port operations;
 - cross-machine project catalogs;
 - WorldManager project constitution or worldstate admission;
