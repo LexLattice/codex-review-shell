@@ -825,7 +825,7 @@ function providerSchemaFor(toolName) {
     return {
       type: "function",
       name: "spawn_agent",
-      description: "Spawn a bounded Direct child agent asynchronously. Context handoff, model, and reasoning effort are independent choices. The shared Direct pool admits more than three active children when configured capacity permits.",
+      description: "Spawn a bounded Direct child agent asynchronously. Context handoff, model, reasoning effort, and workspace constitution are independent choices. Omit workspace_mode for the existing reasoning-only child; request isolated_worktree only when the child must inspect or change the project in its own local Git worktree.",
       parameters: {
         type: "object",
         properties: {
@@ -853,6 +853,16 @@ function providerSchemaFor(toolName) {
           fork_turns: {
             type: "string",
             description: "Context handoff: `none`, `all`, or a positive integer string for the most recent turns. Defaults to `all` and does not constrain model or effort.",
+          },
+          workspace_mode: {
+            type: "string",
+            enum: ["reasoning_only", "isolated_worktree"],
+            description: "Optional child realization. Defaults to reasoning_only. isolated_worktree asks the harness to compile an isolated local Git-worktree constitution.",
+          },
+          tool_profile: {
+            type: "string",
+            enum: ["read_only_worker", "implementation_worker"],
+            description: "Required when workspace_mode is isolated_worktree; omit for reasoning_only. The harness derives the actual tools and test profile; this does not grant arbitrary shell, remote Git, messaging, or recursive spawn.",
           },
         },
         required: ["message", "task_name"],

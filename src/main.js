@@ -34,6 +34,7 @@ const {
   validateResidentRepositoryObservation,
 } = require("./main/direct/epistemic/repository-runtime");
 const { persistNativeChildProviderTurn } = require("./main/direct/epistemic/native-child-capture");
+const { runDirectWorkspaceWorker } = require("./main/direct/agents/workspace-worker-runtime");
 const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectWorkThreadRegistryStore } = require("./main/direct/bridge/work-thread-registry");
@@ -3780,6 +3781,190 @@ async function runDirectNativeChildProviderTurn(input = {}) {
   };
 }
 
+function directWorkspaceWorkerKey(childAgentId) {
+  const normalized = normalizeString(childAgentId, `direct_child_${crypto.randomUUID().slice(0, 8)}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72);
+  return normalized || `direct-child-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function directWorkspaceWorkerBranch(workerKey) {
+  const suffix = workerKey.replace(/_/g, "-").replace(/^-+|-+$/g, "").slice(0, 90);
+  return `codex/worker/${suffix || crypto.randomUUID().slice(0, 12)}`;
+}
+
+function projectForWorkspaceWorker(parentProject = {}, worktreePath = "", workerKey = "") {
+  const parentWorkspace = isPlainObject(parentProject.workspace) ? parentProject.workspace : {};
+  const kind = normalizeString(parentWorkspace.kind, "local");
+  const workspace = kind === "wsl"
+    ? { ...parentWorkspace, kind, linuxPath: worktreePath, label: `Worker ${workerKey}` }
+    : kind === "windows"
+      ? { ...parentWorkspace, kind, windowsPath: worktreePath, label: `Worker ${workerKey}` }
+      : { ...parentWorkspace, kind: "local", localPath: worktreePath, label: `Worker ${workerKey}` };
+  return {
+    ...parentProject,
+    id: `${normalizeString(parentProject.id, "project_direct")}__${workerKey}`.slice(0, 180),
+    name: `${normalizeString(parentProject.name, "Direct project")} · ${workerKey}`,
+    repoPath: worktreePath,
+    workspace,
+  };
+}
+
+async function provisionDirectWorkspaceWorker(input = {}) {
+  const parentProject = input.project;
+  if (!isPlainObject(parentProject)) {
+    const error = new Error("Workspace worker project binding is missing.");
+    error.code = "direct_workspace_worker_project_binding_missing";
+    throw error;
+  }
+  const workerKey = directWorkspaceWorkerKey(input.childAgentId);
+  const branch = directWorkspaceWorkerBranch(workerKey);
+  const provisioned = await requestWorkspace(parentProject, "provisionGitWorktree", {
+    workerKey,
+    branch,
+    baseRef: "HEAD",
+  }, 45_000);
+  let manager = null;
+  let workerProject = null;
+  try {
+    const nativeRoot = normalizeString(provisioned?.worktreePath, "");
+    const parentWorkspaceKind = normalizeString(parentProject.workspace?.kind, "local");
+    const nativeRootIsAbsolute = parentWorkspaceKind === "windows"
+      ? path.win32.isAbsolute(nativeRoot)
+      : path.posix.isAbsolute(nativeRoot);
+    if (!nativeRoot || !nativeRootIsAbsolute) {
+      const error = new Error("Resident backend did not return a native workspace-worker realization.");
+      error.code = "direct_workspace_worker_native_root_missing";
+      throw error;
+    }
+    const binding = { ...provisioned };
+    delete binding.worktreePath;
+    workerProject = projectForWorkspaceWorker(parentProject, nativeRoot, workerKey);
+    manager = ensureWorkspaceBackendManager();
+    const workerSession = await manager.ensureForProject(workerProject, {
+      workspaceHygiene: false,
+    });
+    const testProfile = await workerSession.request("directTestProfile", {}, 10_000);
+    return {
+      binding,
+      testProfile,
+      nativeRoot,
+      workerProject,
+      workspaceRequest: (method, params = {}, timeoutMs) => workerSession.request(method, params, timeoutMs),
+      release: () => manager.disposeForProject(workerProject),
+    };
+  } catch (error) {
+    if (manager && workerProject) manager.disposeForProject(workerProject);
+    try {
+      await requestWorkspace(parentProject, "removeGitWorktree", {
+        workerKey,
+        branch,
+        deleteBranch: true,
+      }, 45_000);
+    } catch (cleanupError) {
+      error.workspaceCleanupErrorCode = normalizeString(
+        cleanupError?.code,
+        "direct_workspace_worker_failed_provision_cleanup_failed",
+      );
+    }
+    throw error;
+  }
+}
+
+function tokenUsageFromWorkspaceWorkerCapture(captureResult = {}) {
+  const usageEvents = (Array.isArray(captureResult.normalizedEvents) ? captureResult.normalizedEvents : [])
+    .filter((event) => event?.type === "usage_delta" && event.usage);
+  if (!usageEvents.length) return {};
+  return usageEvents.reduce((total, event) => ({
+    inputTokens: total.inputTokens + Number(event.usage.inputTokens || 0),
+    cachedInputTokens: total.cachedInputTokens + Number(event.usage.cachedInputTokens || 0),
+    outputTokens: total.outputTokens + Number(event.usage.outputTokens || 0),
+    reasoningOutputTokens: total.reasoningOutputTokens + Number(event.usage.reasoningTokens || 0),
+    totalTokens: total.totalTokens + Number(event.usage.totalTokens || 0),
+  }), {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+  });
+}
+
+async function runDirectWorkspaceWorkerTurn(input = {}) {
+  const workspaceResult = await runDirectWorkspaceWorker({
+    ...input,
+    workspaceProvisioner: (request) => provisionDirectWorkspaceWorker(request),
+    providerRequestRunner: ({ requestBody, signal }) => runImplementationToolInitialProbe({
+      authStore: directRuntimeAuthStore(),
+      refreshCredentials: () => refreshDirectRuntimeCredentials(),
+      profileDoc: ensureDirectCodexProfileDoc(),
+      requestBody,
+      signal,
+    }),
+  });
+  let epistemicCapture = {
+    status: "unavailable",
+    errorCode: workspaceResult.blockerCode || "direct_workspace_worker_capture_unavailable",
+    receiptDigest: "",
+    sessionId: "",
+    turnId: "",
+  };
+  if (workspaceResult.captureResult && input.signal?.aborted !== true) {
+    try {
+      const contract = workspaceResult.captureResult.workspaceWorkerContract || {};
+      const receipt = persistNativeChildProviderTurn(ensureDirectSessionStore(), {
+        ...input,
+        agent: {
+          agentThreadId: input.childAgentId,
+          displayLabel: input.displayLabel,
+          role: input.role,
+          model: input.model,
+          reasoningEffort: input.reasoningEffort,
+        },
+        attemptId: `workspace_worker_${input.childAgentId}`,
+        promptDigest: crypto.createHash("sha256").update(normalizeString(input.prompt, "")).digest("hex"),
+        contextDigest: normalizeString(contract.contextAdmission?.admittedContextDigest, ""),
+        contextMessageCount: Number(contract.contextAdmission?.admittedMessageCount || 0),
+        requestBody: {
+          model: input.model,
+          reasoning: { effort: input.reasoningEffort },
+        },
+      }, workspaceResult.captureResult);
+      epistemicCapture = {
+        status: "captured",
+        errorCode: "",
+        receiptDigest: normalizeString(receipt.captureDigest, ""),
+        sessionId: normalizeString(receipt.sessionId, ""),
+        turnId: normalizeString(receipt.turnId, ""),
+      };
+    } catch (error) {
+      epistemicCapture = {
+        status: "failed",
+        errorCode: normalizeString(error?.code, "direct_epistemic_native_workspace_child_capture_failed"),
+        receiptDigest: "",
+        sessionId: "",
+        turnId: "",
+      };
+    }
+  }
+  const captureComplete = epistemicCapture.status === "captured" && Boolean(epistemicCapture.receiptDigest);
+  return {
+    ...workspaceResult,
+    tokenUsage: tokenUsageFromWorkspaceWorkerCapture(workspaceResult.captureResult),
+    epistemicCapture,
+    resultEnvelope: { confidence: captureComplete ? "exact" : "partial" },
+    reducedSummary: {
+      summaryText: normalizeString(
+        workspaceResult.outputText || workspaceResult.blockerCode,
+        workspaceResult.status === "completed" ? "Workspace worker completed." : "Workspace worker failed.",
+      ),
+    },
+    captureResult: undefined,
+  };
+}
+
 function ensureDirectNativeAgentPool() {
   if (directNativeAgentPool) return directNativeAgentPool;
   directNativeAgentPool = new DirectNativeAgentPool({
@@ -3798,6 +3983,7 @@ function ensureDirectNativeAgentPool() {
       "medium",
     ),
     providerTurnRunner: (input) => runDirectNativeChildProviderTurn(input),
+    workspaceWorkerRunner: (input) => runDirectWorkspaceWorkerTurn(input),
   });
   return directNativeAgentPool;
 }

@@ -251,6 +251,7 @@ class NdjsonTransport extends EventEmitter {
       clearTimeout(pending.timer);
       if (message.error) {
         const error = new Error(message.error.message || "Workspace backend request failed.");
+        error.code = normalizeString(message.error.code, "");
         error.backendStack = message.error.stack;
         pending.reject(error);
       } else {
@@ -518,6 +519,15 @@ class WorkspaceBackendManager extends EventEmitter {
 
   statusForProject(project) {
     return this.sessionForProject(project).snapshot();
+  }
+
+  disposeForProject(project) {
+    const key = workspaceSessionKey(project, this.options.fallbackRoot);
+    const session = this.sessions.get(key);
+    if (!session) return false;
+    session.dispose();
+    this.sessions.delete(key);
+    return true;
   }
 
   disposeAll() {

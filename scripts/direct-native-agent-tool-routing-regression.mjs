@@ -90,6 +90,7 @@ try {
     }],
   });
   const childCalls = [];
+  const workspaceChildCalls = [];
   const pool = new DirectNativeAgentPool({
     maxActiveChildren: 8,
     providerTurnRunner: async (request) => {
@@ -98,6 +99,29 @@ try {
         ok: true,
         terminalState: "completed",
         outputText: "Child analyzed the delegated slice.",
+      };
+    },
+    workspaceWorkerRunner: async (request) => {
+      workspaceChildCalls.push(request);
+      return {
+        status: "completed",
+        outputText: "Workspace child completed its bounded implementation slice.",
+        resultDigest: "sha256:workspace_child_fixture",
+        workspaceExecution: {
+          schema: "direct_workspace_worker_execution@1",
+          status: "completed",
+          workspaceMode: request.workspaceMode,
+          toolProfile: request.toolProfile,
+          toolResultCount: 2,
+          rawWorkspacePathIncluded: false,
+        },
+        epistemicCapture: {
+          status: "captured",
+          receiptDigest: "sha256:workspace_child_capture_fixture",
+          sessionId: "native_workspace_child_fixture",
+          turnId: "native_workspace_child_turn_fixture",
+        },
+        resultEnvelope: { confidence: "exact" },
       };
     },
   });
@@ -255,6 +279,62 @@ try {
   assert.equal(waitTurn.state, "completed");
   assert.equal(waitTurn.unresolvedObligations[0].result.resultKind, "direct_sub_agent_runtime");
 
+  sessionStore.createTurn("direct_parent_native_agents", {
+    turnId: "turn_spawn_workspace",
+    state: "tool_waiting",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "ultra",
+    input: [{ role: "user", text: "Delegate one isolated implementation slice." }],
+    responseId: "resp_parent_spawn_workspace",
+  });
+  const workspaceSpawnObligation = sessionStore.addToolObligations(
+    "direct_parent_native_agents",
+    "turn_spawn_workspace",
+    [toolEvent("spawn_agent", {
+      task_name: "isolated_implementation",
+      message: "Inspect and change only the delegated workspace slice.",
+      fork_turns: "none",
+      model: "gpt-5.6-sol",
+      reasoning_effort: "xhigh",
+      workspace_mode: "isolated_worktree",
+      tool_profile: "implementation_worker",
+    }, 3)],
+  ).obligations;
+  const workspaceSpawnHandled = await controller.emitToolApprovalRequests(
+    null,
+    "direct_parent_native_agents",
+    "turn_spawn_workspace",
+    workspaceSpawnObligation,
+    project,
+  );
+  assert.equal(workspaceSpawnHandled, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(workspaceChildCalls.length, 1);
+  assert.equal(workspaceChildCalls[0].workspaceMode, "isolated_worktree");
+  assert.equal(workspaceChildCalls[0].toolProfile, "implementation_worker");
+  assert.equal(workspaceChildCalls[0].project, project);
+  assert.equal(workspaceChildCalls[0].contextMessages.length, 0);
+  const workspaceRecord = pool.records({
+    projectId: project.id,
+    primaryThreadId: "direct_parent_native_agents",
+  }).find((record) => record.taskName === "isolated_implementation");
+  assert.equal(workspaceRecord.state, "completed");
+  assert.equal(workspaceRecord.workspaceExecution.status, "completed");
+  assert.equal(workspaceRecord.workspaceExecution.rawWorkspacePathIncluded, false);
+  const workspaceSpawnTurn = sessionStore.readTurn(
+    "direct_parent_native_agents",
+    "turn_spawn_workspace",
+  );
+  assert.equal(workspaceSpawnTurn.state, "completed");
+  assert.match(
+    JSON.stringify(workspaceSpawnTurn.unresolvedObligations[0].result),
+    /isolated_worktree/,
+  );
+  assert.equal(
+    JSON.stringify(workspaceSpawnTurn.unresolvedObligations[0].result).includes("repoPath"),
+    false,
+  );
+
   console.log(JSON.stringify({
     ok: true,
     maxActiveChildren: pool.descriptor().maxActiveChildren,
@@ -263,6 +343,7 @@ try {
     contextHandoffMode: childCalls[0].requestShape.contextHandoffMode,
     parentContinuations: parentBodies.length,
     sameTurnNativeTransitions: 3,
+    isolatedWorkspaceToolRoute: true,
   }, null, 2));
 } finally {
   await fs.rm(rootDir, { recursive: true, force: true });
