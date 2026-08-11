@@ -328,6 +328,17 @@ const directWorkbenchPreload = process.env.CODEX_EXPERIENCE === "direct-workbenc
   (!process.env.CODEX_EXPERIENCE && process.env.CODEX_DIRECT_T3_GUI === "1");
 
 if (directWorkbenchPreload) {
+  Object.assign(codexSurfaceApi, {
+    readDirectWorkbenchProjectDirectory: () =>
+      ipcRenderer.invoke("direct-workbench:project-directory"),
+    activateDirectWorkbenchProject: (payload = {}) =>
+      ipcRenderer.invoke("direct-workbench:activate-project", payload),
+    onDirectWorkbenchProjectDirectoryEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("direct-workbench:project-directory-event", listener);
+      return () => ipcRenderer.removeListener("direct-workbench:project-directory-event", listener);
+    },
+  });
   for (const key of Object.keys(codexSurfaceApi)) {
     if (key.includes("WorldManager")) delete codexSurfaceApi[key];
   }

@@ -35,6 +35,7 @@ const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-t3-gui-electron-"
 const userDataRoot = path.join(testRoot, "profile");
 const screenshotPath = process.env.CODEX_T3_GUI_SCREENSHOT || path.join(testRoot, "t3-direct-gui.png");
 const intakeScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-intake.png");
+const projectDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-project-directory.png");
 fs.mkdirSync(userDataRoot, { recursive: true, mode: 0o700 });
 
 fs.writeFileSync(path.join(userDataRoot, "workspace-config.json"), `${JSON.stringify({
@@ -48,12 +49,13 @@ fs.writeFileSync(path.join(userDataRoot, "workspace-config.json"), `${JSON.strin
   },
   projects: [{
     id: "project_t3_gui_fixture",
-    name: "T3 Alternate GUI Fixture",
-    repoPath: repoRoot,
+    name: "WSL Direct GUI Fixture",
+    repoPath: "wsl:Ubuntu:/home/rose/work/direct-gui-fixture",
     workspace: {
-      kind: "local",
-      localPath: repoRoot,
-      label: "Isolated Direct GUI fixture",
+      kind: "wsl",
+      distro: "Ubuntu",
+      linuxPath: "/home/rose/work/direct-gui-fixture",
+      label: "WSL native workspace",
     },
     surfaceBinding: {
       codex: {
@@ -84,6 +86,50 @@ fs.writeFileSync(path.join(userDataRoot, "workspace-config.json"), `${JSON.strin
         cwdSnapshot: repoRoot,
         sourceHome: "/tmp/direct-workbench-bound-home",
         sessionFilePath: path.join(testRoot, "sessions", "bound-thread.jsonl"),
+      },
+      chatThreadId: "",
+      isDefaultForLane: true,
+      openOnProjectActivate: true,
+      status: "resolved",
+    }],
+    promptTemplates: {},
+    flowProfile: {},
+  }, {
+    id: "project_t3_windows_fixture",
+    name: "Windows Direct GUI Fixture",
+    repoPath: "C:\\Fixtures\\direct-gui",
+    workspace: {
+      kind: "windows",
+      windowsPath: "C:\\Fixtures\\direct-gui",
+      label: "Windows native workspace",
+    },
+    surfaceBinding: {
+      codex: {
+        mode: "managed",
+        bindingProvider: "codex-compatible",
+        runtimeMode: "direct-experimental",
+        directTransport: "fixture",
+        directTier: "implementation-lane",
+        runtime: "host",
+        target: "codex://t3-windows-gui-fixture",
+        binaryPath: "codex",
+        label: "Windows fixture-only Direct runtime",
+      },
+      chatgpt: {
+        reviewThreadUrl: "",
+        reduceChrome: true,
+      },
+    },
+    chatThreads: [],
+    laneBindings: [{
+      id: "binding_direct_workbench_windows",
+      lane: "implementation",
+      label: "Bound Windows Direct thread",
+      codexThreadRef: {
+        threadId: "thread_direct_workbench_windows",
+        originator: "codex",
+        titleSnapshot: "Windows bound thread",
+        cwdSnapshot: "C:\\Fixtures\\direct-gui",
       },
       chatThreadId: "",
       isDefaultForLane: true,
@@ -164,7 +210,7 @@ try {
     "true",
   );
   assert.match(await page.locator("#directThreadIntakeBinding").innerText(), /Direct thread control plane/);
-  assert.match(await page.locator("#directThreadIntakeBinding").innerText(), /env_local_native/);
+  assert.match(await page.locator("#directThreadIntakeBinding").innerText(), /env_wsl_native/);
   assert.equal(await page.locator(".direct-intake-mode-card").count(), 2);
   assert.match(await page.locator("#directThreadIntakeModes").innerText(), /Resume original thread/);
   assert.match(await page.locator("#directThreadIntakeModes").innerText(), /Continue as a new Direct thread/);
@@ -172,6 +218,47 @@ try {
   await page.screenshot({ path: intakeScreenshotPath, fullPage: true });
   await page.locator("#directThreadIntakeClose").click();
   assert.equal(await page.locator("#directThreadIntakePanel").isHidden(), true);
+
+  await page.locator('.t3-utility-rail [data-t3-action="projects"]').click();
+  await page.locator("#directProjectDirectory:not([hidden])").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelectorAll(".direct-project-row").length === 2);
+  assert.equal(await page.locator('.direct-project-row[data-project-id="project_t3_gui_fixture"]').getAttribute("data-state"), "active");
+  assert.match(
+    await page.locator('.direct-project-row[data-project-id="project_t3_gui_fixture"]').innerText(),
+    /WSL native workspace/,
+  );
+  assert.match(
+    await page.locator('.direct-project-row[data-project-id="project_t3_windows_fixture"]').innerText(),
+    /Windows native workspace/,
+  );
+  const safeDirectory = await page.evaluate(() => window.codexSurfaceBridge.readDirectWorkbenchProjectDirectory());
+  assert.equal(safeDirectory.schema, "direct_workbench_project_directory@1");
+  assert.equal(safeDirectory.authorityBoundary.rendererMayMutateConfig, false);
+  assert.equal(JSON.stringify(safeDirectory).includes("/home/rose/work/direct-gui-fixture"), false);
+  assert.equal(JSON.stringify(safeDirectory).includes("C:\\Fixtures\\direct-gui"), false);
+
+  const sourcePageUrl = page.url();
+  await page.locator('.direct-project-row[data-project-id="project_t3_windows_fixture"] button').click();
+  await page.waitForFunction((url) => window.location.href !== url, sourcePageUrl, { timeout: 30_000 });
+  await page.waitForSelector('body[data-direct-gui="direct-workbench"][data-experience-state="verified"]', { timeout: 30_000 });
+  await page.waitForFunction(() => document.getElementById("projectName")?.textContent?.includes("Windows Direct GUI Fixture"));
+  assert.match(page.url(), /\/t3-direct-surface\.html/);
+  const switchedBootstrapPayload = JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8"));
+  assert.equal(switchedBootstrapPayload.project.id, "project_t3_windows_fixture");
+  assert.equal(switchedBootstrapPayload.initialThreadId, "thread_direct_workbench_windows");
+  assert.equal(switchedBootstrapPayload.initialThreadTitle, "Windows bound thread");
+
+  await page.locator('.t3-utility-rail [data-t3-action="projects"]').click();
+  await page.locator("#directProjectDirectory:not([hidden])").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelectorAll(".direct-project-row").length === 2);
+  assert.equal(await page.locator('.direct-project-row[data-project-id="project_t3_windows_fixture"]').getAttribute("data-state"), "active");
+  assert.match(await page.locator("#directProjectDirectoryStatus").innerText(), /authoritative active selection/);
+  await page.screenshot({ path: projectDirectoryScreenshotPath, fullPage: true });
+  await page.locator("#directProjectDirectoryClose").click();
+
+  const switchedConfig = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
+  assert.equal(switchedConfig.selectedProjectId, "project_t3_windows_fixture");
+  assert.match(switchedConfig.projects[1].laneBindings[0].lastActivatedAt, /^\d{4}-\d{2}-\d{2}T/);
 
   await page.locator("#t3SidebarToggle").click();
   assert.equal(await page.locator("#codexShell").getAttribute("data-t3-sidebar"), "collapsed");
@@ -188,8 +275,10 @@ try {
     backendOwner: "direct",
     controlPlane: "direct-thread",
     worldManagerAuthorityExposed: false,
+    projectSwitchObserved: true,
     screenshotPath,
     intakeScreenshotPath,
+    projectDirectoryScreenshotPath,
   }, null, 2));
 } finally {
   await app.close().catch(() => {});

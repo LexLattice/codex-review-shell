@@ -61,6 +61,8 @@ assert.deepEqual(publicAppExperience(direct), {
 const mainSource = read("src/main.js");
 const directHtml = read("src/renderer/t3-direct-surface.html");
 const directRenderer = read("src/renderer/t3-direct-surface.js");
+const directProjectDirectoryRenderer = read("src/renderer/direct-project-directory-surface.js");
+const codexPreload = read("src/preload-codex-surface.js");
 const worldManagerHtml = read("src/renderer/world-manager-surface.html");
 const worldManagerRenderer = read("src/renderer/world-manager-surface.js");
 const packageJson = JSON.parse(read("package.json"));
@@ -68,6 +70,8 @@ const packageJson = JSON.parse(read("package.json"));
 assert.match(mainSource, /const APP_EXPERIENCE = resolveAppExperience\(process\.env\)/);
 assert.match(mainSource, /appExperience: publicAppExperience\(APP_EXPERIENCE\)/);
 assert.match(mainSource, /function requireWorldManagerStudioExperience/);
+assert.match(mainSource, /function requireDirectWorkbenchExperience/);
+assert.match(mainSource, /direct-workbench:activate-project/);
 assert.match(mainSource, /async function createDirectWorkbenchWindow/);
 assert.match(mainSource, /if \(DIRECT_WORKBENCH_MODE\)/);
 assert.match(
@@ -77,6 +81,8 @@ assert.match(
 assert.match(directHtml, /data-app-experience="direct-workbench"/);
 assert.match(directHtml, /Direct thread control plane/);
 assert.match(directRenderer, /experience\.controlPlane === "direct-thread"/);
+assert.match(directProjectDirectoryRenderer, /activateDirectWorkbenchProject/);
+assert.match(codexPreload, /if \(directWorkbenchPreload\) \{[\s\S]*activateDirectWorkbenchProject/);
 assert.match(worldManagerHtml, /data-app-experience="world-manager-studio"/);
 assert.match(worldManagerHtml, /WorldManager semantic control plane/);
 assert.match(worldManagerRenderer, /payload\.appExperience\?\.controlPlane === "worldmanager-semantic"/);
