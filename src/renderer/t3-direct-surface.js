@@ -9,6 +9,7 @@
   const analyticsPanel = document.getElementById("threadAnalyticsPanel");
   const analyticsClose = document.getElementById("threadAnalyticsPanelClose");
   const intakePanel = document.getElementById("directThreadIntakePanel");
+  const projectEditor = document.getElementById("directProjectBindingEditor");
   const coreNewThread = document.getElementById("morphicNewThreadButton");
   const coreAnalytics = document.getElementById("morphicAnalyticsButton");
   const railList = document.getElementById("morphicThreadRailList");
@@ -72,9 +73,11 @@
     const runtimeOpen = Boolean(runtimeDrawer && !runtimeDrawer.hidden);
     const analyticsOpen = Boolean(analyticsPanel && !analyticsPanel.hidden);
     const intakeOpen = Boolean(intakePanel && !intakePanel.hidden);
+    const projectEditorOpen = Boolean(projectEditor && !projectEditor.hidden);
     shell?.toggleAttribute("data-t3-runtime-open", runtimeOpen);
     shell?.toggleAttribute("data-t3-analytics-open", analyticsOpen);
     shell?.toggleAttribute("data-t3-intake-open", intakeOpen);
+    shell?.toggleAttribute("data-t3-project-editor-open", projectEditorOpen);
     for (const button of utilityRuntimeButtons) {
       button.setAttribute("aria-pressed", runtimeOpen ? "true" : "false");
     }
@@ -105,6 +108,9 @@
     if (target.closest("[data-runtime-tab]") && intakePanel && !intakePanel.hidden) {
       intakePanel.hidden = true;
     }
+    if (target.closest("[data-runtime-tab]") && projectEditor && !projectEditor.hidden) {
+      projectEditor.hidden = true;
+    }
     if (
       (target.closest('[data-t3-action="analytics"]') || target.closest("#morphicAnalyticsButton")) &&
       runtimeDrawer &&
@@ -119,10 +125,21 @@
     ) {
       intakePanel.hidden = true;
     }
+    if (
+      (target.closest('[data-t3-action="analytics"]') || target.closest("#morphicAnalyticsButton")) &&
+      projectEditor &&
+      !projectEditor.hidden
+    ) {
+      projectEditor.hidden = true;
+    }
+    if (target.closest('[data-t3-action="intake"]') && projectEditor && !projectEditor.hidden) {
+      projectEditor.hidden = true;
+    }
   }, true);
 
   const inspectorObserver = new MutationObserver(syncInspectorState);
   if (runtimeDrawer) inspectorObserver.observe(runtimeDrawer, { attributes: true, attributeFilter: ["hidden"] });
   if (analyticsPanel) inspectorObserver.observe(analyticsPanel, { attributes: true, attributeFilter: ["hidden", "class"] });
   if (intakePanel) inspectorObserver.observe(intakePanel, { attributes: true, attributeFilter: ["hidden"] });
+  if (projectEditor) inspectorObserver.observe(projectEditor, { attributes: true, attributeFilter: ["hidden"] });
 })();

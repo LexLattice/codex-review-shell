@@ -8,8 +8,11 @@ const {
 
 const DIRECT_WORKBENCH_PROJECT_DIRECTORY_SCHEMA = "direct_workbench_project_directory@1";
 const DIRECT_WORKBENCH_PROJECT_ACTIVATION_RECEIPT_SCHEMA = "direct_workbench_project_activation_receipt@1";
+const DIRECT_WORKBENCH_PROJECT_BINDING_DRAFT_SCHEMA = "direct_workbench_project_binding_draft@1";
+const DIRECT_WORKBENCH_PROJECT_BINDING_RECEIPT_SCHEMA = "direct_workbench_project_binding_receipt@1";
 const PROJECT_TRANSITION_STATES = new Set(["idle", "activating", "completed", "failed"]);
 const WORKSPACE_KINDS = new Set(["wsl", "windows", "local"]);
+const PROJECT_BINDING_MODES = new Set(["create", "edit"]);
 const FORBIDDEN_RENDERER_KEYS = new Set([
   "repoPath",
   "localPath",
@@ -132,6 +135,181 @@ function activationAuthorityDigest(project = {}) {
       })),
     },
   });
+}
+
+function projectBindingRevision(project = {}) {
+  return digest({
+    projectId: normalizeString(project.id, ""),
+    displayName: normalizeString(project.name, ""),
+    activationAuthority: activationAuthorityDigest(project),
+  });
+}
+
+function workspaceBindingDraft(workspace = {}) {
+  const kind = WORKSPACE_KINDS.has(workspace.kind) ? workspace.kind : "local";
+  return {
+    kind,
+    label: normalizeString(workspace.label, ""),
+    localPath: kind === "local" ? normalizeString(workspace.localPath, "") : "",
+    windowsPath: kind === "windows" ? normalizeString(workspace.windowsPath, "") : "",
+    distro: kind === "wsl" ? normalizeString(workspace.distro, "") : "",
+    linuxPath: kind === "wsl" ? normalizeString(workspace.linuxPath, "") : "",
+  };
+}
+
+function buildDirectWorkbenchProjectBindingDraft(config = {}, options = {}) {
+  const projects = Array.isArray(config.projects) ? config.projects.filter(isPlainObject) : [];
+  const projectId = normalizeString(options.projectId, "");
+  const project = projectId ? projects.find((entry) => normalizeString(entry.id, "") === projectId) : null;
+  if (projectId && !project) throw projectDirectoryError("project_binding_target_unknown");
+  const mode = project ? "edit" : "create";
+  const defaults = isPlainObject(options.defaults) ? options.defaults : {};
+  const workspace = project?.workspace || defaults.workspace || {};
+  return {
+    schema: DIRECT_WORKBENCH_PROJECT_BINDING_DRAFT_SCHEMA,
+    mode,
+    sourceProjectId: normalizeString(options.sourceProjectId, config.selectedProjectId || projects[0]?.id || ""),
+    projectId: project ? normalizeString(project.id, "") : "",
+    expectedCatalogRevision: normalizeString(options.catalogRevision, ""),
+    expectedProjectRevision: project ? projectBindingRevision(project) : "",
+    fields: {
+      displayName: normalizeString(project?.name, normalizeString(defaults.displayName, "New project")),
+      workspace: workspaceBindingDraft(workspace),
+      runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || defaults.codexBinding || {}),
+    },
+    evidence: {
+      projectIdentityAssignedByMain: mode === "create",
+      workspaceLocatorVisibleForEditing: true,
+      remoteAuthExposed: false,
+      providerSecretsExposed: false,
+      activeProjectEditRebindsRuntime: mode === "edit" && normalizeString(project?.id, "") === normalizeString(config.selectedProjectId, ""),
+    },
+    authorityBoundary: {
+      rendererMayProposeBindingFields: true,
+      rendererMayAssignProjectIdentity: false,
+      rendererMayPersistConfig: false,
+      mainRevalidatesRevisionAndActiveWork: true,
+      worldManagerStateAffected: false,
+    },
+  };
+}
+
+function normalizeProjectBindingWorkspace(input = {}) {
+  const kind = normalizeString(input.kind, "").toLowerCase();
+  if (!WORKSPACE_KINDS.has(kind)) throw projectDirectoryError("project_binding_workspace_kind_invalid");
+  const label = normalizeString(input.label, "").slice(0, 160);
+  if (kind === "wsl") {
+    const linuxPath = normalizeString(input.linuxPath, "");
+    if (!linuxPath.startsWith("/")) throw projectDirectoryError("project_binding_wsl_path_invalid");
+    return {
+      kind,
+      distro: normalizeString(input.distro, "").slice(0, 120),
+      linuxPath,
+      label: label || "WSL workspace",
+    };
+  }
+  if (kind === "windows") {
+    const windowsPath = normalizeString(input.windowsPath, "");
+    if (!/^(?:[A-Za-z]:[\\/]|\\\\)/.test(windowsPath)) {
+      throw projectDirectoryError("project_binding_windows_path_invalid");
+    }
+    return { kind, windowsPath, label: label || "Windows workspace" };
+  }
+  const localPath = normalizeString(input.localPath, "");
+  if (!localPath || (!localPath.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(localPath))) {
+    throw projectDirectoryError("project_binding_local_path_invalid");
+  }
+  return { kind, localPath, label: label || "Local workspace" };
+}
+
+function validateDirectWorkbenchProjectBindingMutation(directory = {}, config = {}, request = {}) {
+  if (directory.schema !== DIRECT_WORKBENCH_PROJECT_DIRECTORY_SCHEMA) {
+    throw projectDirectoryError("project_directory_schema_mismatch");
+  }
+  const mode = normalizeString(request.mode, "").toLowerCase();
+  const clientMutationId = normalizeString(request.clientMutationId, "");
+  const sourceProjectId = normalizeString(request.sourceProjectId, "");
+  const projectId = normalizeString(request.projectId, "");
+  if (!PROJECT_BINDING_MODES.has(mode)) throw projectDirectoryError("project_binding_mode_invalid");
+  if (!clientMutationId) throw projectDirectoryError("client_mutation_id_required");
+  if (sourceProjectId !== directory.activeProjectId) throw projectDirectoryError("project_binding_source_stale");
+  if (normalizeString(request.expectedCatalogRevision, "") !== directory.catalogRevision) {
+    throw projectDirectoryError("project_catalog_revision_stale");
+  }
+  if (directory.transition?.state === "activating") throw projectDirectoryError("project_activation_in_progress");
+  const projects = Array.isArray(config.projects) ? config.projects.filter(isPlainObject) : [];
+  const project = projectId ? projects.find((entry) => normalizeString(entry.id, "") === projectId) : null;
+  if (mode === "edit") {
+    if (!project) throw projectDirectoryError("project_binding_target_unknown");
+    if (normalizeString(request.expectedProjectRevision, "") !== projectBindingRevision(project)) {
+      throw projectDirectoryError("project_binding_revision_stale");
+    }
+    const directoryRow = directory.projects.find((row) => row.projectId === projectId);
+    if (Number(directoryRow?.activeTurnCount || 0) > 0) {
+      throw projectDirectoryError(
+        projectId === directory.activeProjectId
+          ? "active_turn_in_current_project"
+          : "active_turn_in_target_project",
+      );
+    }
+  } else if (projectId) {
+    throw projectDirectoryError("project_binding_create_identity_forbidden");
+  }
+  const displayName = normalizeString(request.fields?.displayName, "").slice(0, 160);
+  if (!displayName) throw projectDirectoryError("project_binding_name_required");
+  const workspace = normalizeProjectBindingWorkspace(request.fields?.workspace || {});
+  const runtimePath = normalizeString(request.fields?.runtimePath, "");
+  if (!["app-server", "direct-text", "direct-implementation"].includes(runtimePath)) {
+    throw projectDirectoryError("project_binding_runtime_path_invalid");
+  }
+  return {
+    mode,
+    clientMutationId,
+    sourceProjectId,
+    projectId,
+    expectedCatalogRevision: directory.catalogRevision,
+    expectedProjectRevision: mode === "edit" ? projectBindingRevision(project) : "",
+    displayName,
+    workspace,
+    runtimePath,
+    mutationId: `project_binding_${digest({ clientMutationId, sourceProjectId, mode, projectId }).slice(0, 24)}`,
+  };
+}
+
+function buildDirectWorkbenchProjectBindingReceipt(input = {}) {
+  return {
+    schema: DIRECT_WORKBENCH_PROJECT_BINDING_RECEIPT_SCHEMA,
+    ok: input.ok === true,
+    status: normalizeString(input.status, input.ok === true ? "accepted" : "failed"),
+    mutationId: normalizeString(input.mutationId, ""),
+    clientMutationId: normalizeString(input.clientMutationId, ""),
+    mode: PROJECT_BINDING_MODES.has(input.mode) ? input.mode : "",
+    sourceProjectId: normalizeString(input.sourceProjectId, ""),
+    projectId: normalizeString(input.projectId, ""),
+    reason: normalizeString(input.reason, ""),
+    duplicate: input.duplicate === true,
+    acceptedAt: normalizeString(input.acceptedAt, ""),
+    completedAt: normalizeString(input.completedAt, ""),
+    worldManagerStateAffected: false,
+  };
+}
+
+function resolveDirectWorkbenchProjectBindingReplay(operations, authorityProjectId, request = {}) {
+  const clientMutationId = normalizeString(request.clientMutationId, "");
+  const existing = clientMutationId && operations instanceof Map ? operations.get(clientMutationId) : null;
+  if (!existing) return null;
+  const signature = {
+    sourceProjectId: normalizeString(request.sourceProjectId, ""),
+    mode: normalizeString(request.mode, ""),
+    projectId: normalizeString(request.projectId, ""),
+  };
+  if (existing.sourceProjectId !== signature.sourceProjectId || existing.mode !== signature.mode || existing.projectId !== signature.projectId) {
+    throw projectDirectoryError("client_mutation_id_reused");
+  }
+  if (normalizeString(authorityProjectId, "") !== existing.sourceProjectId) {
+    throw projectDirectoryError("project_binding_source_stale");
+  }
+  return { ...existing.receipt, duplicate: true };
 }
 
 function normalizedTransition(input = {}) {
@@ -343,10 +521,17 @@ function assertDirectWorkbenchProjectDirectoryRendererSafe(projection = {}) {
 
 module.exports = {
   DIRECT_WORKBENCH_PROJECT_ACTIVATION_RECEIPT_SCHEMA,
+  DIRECT_WORKBENCH_PROJECT_BINDING_DRAFT_SCHEMA,
+  DIRECT_WORKBENCH_PROJECT_BINDING_RECEIPT_SCHEMA,
   DIRECT_WORKBENCH_PROJECT_DIRECTORY_SCHEMA,
   assertDirectWorkbenchProjectDirectoryRendererSafe,
   buildDirectWorkbenchProjectActivationReceipt,
+  buildDirectWorkbenchProjectBindingDraft,
+  buildDirectWorkbenchProjectBindingReceipt,
   buildDirectWorkbenchProjectDirectory,
+  projectBindingRevision,
+  resolveDirectWorkbenchProjectBindingReplay,
   resolveDirectWorkbenchProjectActivationReplay,
+  validateDirectWorkbenchProjectBindingMutation,
   validateDirectWorkbenchProjectActivation,
 };

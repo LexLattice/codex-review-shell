@@ -102,6 +102,9 @@
 - [Direct Workbench Project Directory](./DIRECT_WORKBENCH_PROJECT_DIRECTORY_SPEC.md) -
   main-owned, renderer-safe multi-project switching with visible substrate,
   runtime, restore, blocker, and activation-transition evidence.
+- [Direct Workbench Project Binding Editor](./DIRECT_WORKBENCH_PROJECT_BINDING_EDITOR_SPEC.md) -
+  revision-bound create/edit drafts with main-owned identity, persistence,
+  active-runtime reload, rollback, and same-context commit evidence.
 - [Direct Workbench Runtime-Neutral Thread Directory](./DIRECT_WORKBENCH_THREAD_DIRECTORY_SPEC.md) -
   project-scoped Direct/App Server inventory normalization, source/runtime
   evidence, visible focus gates, and renderer-safe continuation adapters.

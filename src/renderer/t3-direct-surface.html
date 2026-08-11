@@ -33,6 +33,7 @@
               <span id="directProjectDirectoryCount">Loading…</span>
             </div>
             <div class="direct-project-directory-header-actions">
+              <button id="directProjectBindingNew" type="button">New</button>
               <button id="directProjectDirectoryRefresh" type="button">Refresh</button>
               <button id="directProjectDirectoryClose" type="button" aria-label="Close project directory">×</button>
             </div>
@@ -137,6 +138,92 @@
           <section id="directThreadIntakeEvidence" class="direct-intake-evidence" data-morphic-region="intake-evidence-lane"></section>
           <section id="directThreadIntakeModes" class="direct-intake-mode-list" data-morphic-action-cluster="identity-disposition"></section>
         </section>
+      </aside>
+
+      <aside id="directProjectBindingEditor" class="direct-project-binding-editor" hidden aria-label="Project binding editor" data-morphic-region="project-binding-editor" data-morphic-state-surface="provisional-project-binding">
+        <header class="direct-project-binding-editor-header">
+          <div>
+            <p class="eyebrow">Configuration boundary</p>
+            <h2 id="directProjectBindingEditorTitle">Project binding</h2>
+            <p id="directProjectBindingEditorMeta" class="subline mono">Draft not loaded</p>
+          </div>
+          <button id="directProjectBindingEditorClose" class="drawer-close" type="button" aria-label="Close project binding editor">×</button>
+        </header>
+        <form id="directProjectBindingForm" class="direct-project-binding-form" autocomplete="off">
+          <p id="directProjectBindingStatus" class="direct-project-binding-status" data-state="loading">Load a main-owned binding draft to begin.</p>
+          <section class="direct-project-binding-section" aria-labelledby="directProjectBindingIdentityHeading">
+            <div class="direct-project-binding-section-heading">
+              <h3 id="directProjectBindingIdentityHeading">Project identity</h3>
+              <span id="directProjectBindingIdentityWitness">Main assigns new IDs</span>
+            </div>
+            <label>
+              <span>Name</span>
+              <input id="directProjectBindingName" name="displayName" maxlength="160" required />
+            </label>
+          </section>
+          <section class="direct-project-binding-section" aria-labelledby="directProjectBindingWorkspaceHeading">
+            <div class="direct-project-binding-section-heading">
+              <h3 id="directProjectBindingWorkspaceHeading">Workspace substrate</h3>
+              <span>Project-level invariant</span>
+            </div>
+            <label>
+              <span>Environment</span>
+              <select id="directProjectBindingWorkspaceKind" name="workspaceKind">
+                <option value="wsl">WSL native</option>
+                <option value="windows">Windows native</option>
+                <option value="local">Local host</option>
+              </select>
+            </label>
+            <label>
+              <span>Display label</span>
+              <input id="directProjectBindingWorkspaceLabel" name="workspaceLabel" maxlength="160" placeholder="Workspace label" />
+            </label>
+            <div id="directProjectBindingWslFields" class="direct-project-binding-kind-fields">
+              <label>
+                <span>WSL distribution</span>
+                <input id="directProjectBindingWslDistro" name="wslDistro" placeholder="Ubuntu" />
+              </label>
+              <label>
+                <span>Linux path</span>
+                <input id="directProjectBindingWslPath" name="wslPath" placeholder="/home/user/work/project" />
+              </label>
+            </div>
+            <div id="directProjectBindingWindowsFields" class="direct-project-binding-kind-fields" hidden>
+              <label>
+                <span>Windows path</span>
+                <input id="directProjectBindingWindowsPath" name="windowsPath" placeholder="C:\Work\project" />
+              </label>
+            </div>
+            <div id="directProjectBindingLocalFields" class="direct-project-binding-kind-fields" hidden>
+              <label>
+                <span>Local path</span>
+                <input id="directProjectBindingLocalPath" name="localPath" placeholder="/home/user/work/project" />
+              </label>
+            </div>
+          </section>
+          <section class="direct-project-binding-section" aria-labelledby="directProjectBindingRuntimeHeading">
+            <div class="direct-project-binding-section-heading">
+              <h3 id="directProjectBindingRuntimeHeading">Agent runtime</h3>
+              <span>Inherited by project threads</span>
+            </div>
+            <label>
+              <span>Default path</span>
+              <select id="directProjectBindingRuntimePath" name="runtimePath">
+                <option value="app-server">App Server</option>
+                <option value="direct-text">Direct · text</option>
+                <option value="direct-implementation">Direct · implementation</option>
+              </select>
+            </label>
+          </section>
+          <section class="direct-project-binding-evidence" data-morphic-region="project-binding-evidence-lane">
+            <strong>Commit evidence</strong>
+            <p id="directProjectBindingEvidence">The draft is provisional. Main revalidates the catalog, target revision, active work, and runtime binding before persistence.</p>
+          </section>
+          <div class="direct-project-binding-actions" data-morphic-action-cluster="project-binding-commit">
+            <button id="directProjectBindingCancel" type="button">Cancel</button>
+            <button id="directProjectBindingCommit" class="primary" type="submit">Save binding</button>
+          </div>
+        </form>
       </aside>
 
       <nav class="t3-utility-rail" aria-label="Thread utility surfaces">
