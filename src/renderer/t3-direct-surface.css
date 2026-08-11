@@ -252,6 +252,12 @@ body {
   opacity: 0.72;
 }
 
+.direct-project-row[data-state="archived"] {
+  border-color: rgba(151, 154, 161, 0.16);
+  background: #0f1012;
+  opacity: 0.76;
+}
+
 .direct-project-row-copy {
   min-width: 0;
   display: grid;
@@ -690,6 +696,7 @@ body {
 .thread-analytics-panel,
 .direct-thread-intake-panel,
 .direct-project-binding-editor,
+.direct-project-lifecycle-panel,
 .thread-analytics-panel.dock-right,
 .thread-analytics-panel.dock-left,
 .thread-analytics-panel.dock-float,
@@ -704,6 +711,7 @@ body {
 .thread-analytics-header,
 .direct-thread-intake-header,
 .direct-project-binding-editor-header,
+.direct-project-lifecycle-header,
 .runtime-drawer-tabs {
   border-color: var(--border);
   background: #111214;
@@ -713,7 +721,8 @@ body {
   .t3-direct-shell:has(.runtime-drawer:not([hidden])),
   .t3-direct-shell:has(.thread-analytics-panel:not([hidden])),
   .t3-direct-shell:has(.direct-thread-intake-panel:not([hidden])),
-  .t3-direct-shell:has(.direct-project-binding-editor:not([hidden])) {
+  .t3-direct-shell:has(.direct-project-binding-editor:not([hidden])),
+  .t3-direct-shell:has(.direct-project-lifecycle-panel:not([hidden])) {
     grid-template-columns: var(--t3-sidebar-width) minmax(0, 1fr) var(--t3-dock-width) var(--t3-utility-width);
     grid-template-areas:
       "sidebar thread-bar dock utility"
@@ -724,7 +733,8 @@ body {
   .t3-direct-shell[data-t3-sidebar="collapsed"]:has(.runtime-drawer:not([hidden])),
   .t3-direct-shell[data-t3-sidebar="collapsed"]:has(.thread-analytics-panel:not([hidden])),
   .t3-direct-shell[data-t3-sidebar="collapsed"]:has(.direct-thread-intake-panel:not([hidden])),
-  .t3-direct-shell[data-t3-sidebar="collapsed"]:has(.direct-project-binding-editor:not([hidden])) {
+  .t3-direct-shell[data-t3-sidebar="collapsed"]:has(.direct-project-binding-editor:not([hidden])),
+  .t3-direct-shell[data-t3-sidebar="collapsed"]:has(.direct-project-lifecycle-panel:not([hidden])) {
     grid-template-columns: var(--t3-sidebar-collapsed-width) minmax(0, 1fr) var(--t3-dock-width) var(--t3-utility-width);
   }
 
@@ -732,6 +742,7 @@ body {
   .thread-analytics-panel,
   .direct-thread-intake-panel,
   .direct-project-binding-editor,
+  .direct-project-lifecycle-panel,
   .thread-analytics-panel.dock-right,
   .thread-analytics-panel.dock-left,
   .thread-analytics-panel.dock-float,
@@ -760,6 +771,7 @@ body {
   .thread-analytics-panel,
   .direct-thread-intake-panel,
   .direct-project-binding-editor,
+  .direct-project-lifecycle-panel,
   .thread-analytics-panel.dock-right,
   .thread-analytics-panel.dock-left,
   .thread-analytics-panel.dock-float,
@@ -906,6 +918,7 @@ body {
   .thread-analytics-panel,
   .direct-thread-intake-panel,
   .direct-project-binding-editor,
+  .direct-project-lifecycle-panel,
   .thread-analytics-panel.dock-right,
   .thread-analytics-panel.dock-left,
   .thread-analytics-panel.dock-float,
@@ -1088,6 +1101,151 @@ body {
 .direct-project-binding-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.56;
+}
+
+.direct-project-lifecycle-panel {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.direct-project-lifecycle-panel[hidden] {
+  display: none;
+}
+
+.direct-project-lifecycle-header {
+  min-height: 78px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.direct-project-lifecycle-header h2 {
+  margin: 2px 0 0;
+  font-size: 16px;
+}
+
+.direct-project-lifecycle-body {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 11px;
+  padding: 13px;
+  overflow: auto;
+}
+
+.direct-project-lifecycle-status,
+.direct-project-lifecycle-target,
+.direct-project-lifecycle-preservation,
+.direct-project-lifecycle-reversible,
+.direct-project-lifecycle-danger {
+  margin: 0;
+  padding: 11px 12px;
+  border: 1px solid #2b2d32;
+  border-radius: 10px;
+  background: #131416;
+}
+
+.direct-project-lifecycle-status {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.direct-project-lifecycle-status[data-state="failed"] {
+  border-color: rgba(239, 124, 136, 0.32);
+  background: rgba(239, 124, 136, 0.07);
+  color: var(--danger);
+}
+
+.direct-project-lifecycle-status[data-state="saving"] {
+  border-color: rgba(167, 176, 255, 0.3);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.direct-project-lifecycle-target,
+.direct-project-lifecycle-preservation,
+.direct-project-lifecycle-reversible,
+.direct-project-lifecycle-danger {
+  display: grid;
+  gap: 8px;
+}
+
+.direct-project-lifecycle-target > strong,
+.direct-project-lifecycle-preservation > strong,
+.direct-project-lifecycle-reversible strong,
+.direct-project-lifecycle-danger strong {
+  font-size: 11px;
+}
+
+.direct-project-lifecycle-target p,
+.direct-project-lifecycle-preservation p,
+.direct-project-lifecycle-reversible p,
+.direct-project-lifecycle-danger p,
+.direct-project-lifecycle-danger label > span {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.direct-project-lifecycle-preservation {
+  border-color: rgba(117, 213, 155, 0.24);
+  background: rgba(117, 213, 155, 0.045);
+}
+
+.direct-project-lifecycle-actions {
+  display: flex;
+  gap: 7px;
+}
+
+.direct-project-lifecycle-actions button,
+.direct-project-lifecycle-danger button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #383a41;
+  border-radius: 8px;
+  background: #1a1b1f;
+  color: var(--text);
+}
+
+.direct-project-lifecycle-danger {
+  margin-top: 3px;
+  border-color: rgba(239, 124, 136, 0.34);
+  background: rgba(239, 124, 136, 0.045);
+}
+
+.direct-project-lifecycle-danger label {
+  display: grid;
+  gap: 5px;
+}
+
+.direct-project-lifecycle-danger input {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid rgba(239, 124, 136, 0.35);
+  border-radius: 8px;
+  background: #0d0e10;
+  color: var(--text);
+  font: 11px/1.3 var(--mono);
+}
+
+.direct-project-lifecycle-danger button {
+  border-color: rgba(239, 124, 136, 0.48);
+  color: var(--danger);
+}
+
+.direct-project-lifecycle-panel button:disabled,
+.direct-project-lifecycle-panel input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .direct-thread-intake-panel {

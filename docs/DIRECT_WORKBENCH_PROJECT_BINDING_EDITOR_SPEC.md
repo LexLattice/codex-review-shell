@@ -244,7 +244,6 @@ npm run check:main-syntax
 
 ## Deferred
 
-- delete and archive project bindings;
 - directory picker and substrate discovery helpers;
 - validate workspace reachability before admission;
 - constitutional port operations between Windows, WSL, local, and remote hosts;

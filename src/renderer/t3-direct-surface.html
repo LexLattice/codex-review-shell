@@ -33,6 +33,7 @@
               <span id="directProjectDirectoryCount">Loading…</span>
             </div>
             <div class="direct-project-directory-header-actions">
+              <button id="directProjectArchivedToggle" type="button" aria-pressed="false">Archived 0</button>
               <button id="directProjectBindingNew" type="button">New</button>
               <button id="directProjectDirectoryRefresh" type="button">Refresh</button>
               <button id="directProjectDirectoryClose" type="button" aria-label="Close project directory">×</button>
@@ -224,6 +225,53 @@
             <button id="directProjectBindingCommit" class="primary" type="submit">Save binding</button>
           </div>
         </form>
+      </aside>
+
+      <aside id="directProjectLifecyclePanel" class="direct-project-lifecycle-panel" hidden aria-label="Project lifecycle" data-morphic-region="project-lifecycle" data-morphic-state-surface="project-lifecycle-evidence">
+        <header class="direct-project-lifecycle-header">
+          <div>
+            <p class="eyebrow">Lifecycle boundary</p>
+            <h2 id="directProjectLifecycleTitle">Project lifecycle</h2>
+            <p id="directProjectLifecycleMeta" class="subline mono">Draft not loaded</p>
+          </div>
+          <button id="directProjectLifecycleClose" class="drawer-close" type="button" aria-label="Close project lifecycle">×</button>
+        </header>
+        <div class="direct-project-lifecycle-body">
+          <p id="directProjectLifecycleStatus" class="direct-project-lifecycle-status" data-state="loading">Load main-owned lifecycle evidence to begin.</p>
+          <section class="direct-project-lifecycle-target" aria-labelledby="directProjectLifecycleTargetHeading">
+            <div class="direct-project-binding-section-heading">
+              <h3 id="directProjectLifecycleTargetHeading">Target binding</h3>
+              <span id="directProjectLifecycleState">unknown</span>
+            </div>
+            <strong id="directProjectLifecycleTarget">No target selected</strong>
+            <p id="directProjectLifecycleEvidence">Workspace and runtime evidence unavailable.</p>
+          </section>
+          <section class="direct-project-lifecycle-preservation" data-morphic-region="project-lifecycle-evidence-lane">
+            <strong>Preservation witness</strong>
+            <p>Archive, restore, and delete do not remove workspace files, Git state, or thread evidence. Delete removes only this shell's project binding identity.</p>
+          </section>
+          <section class="direct-project-lifecycle-reversible" data-morphic-action-cluster="project-lifecycle-reversible">
+            <div>
+              <strong>Reversible disposition</strong>
+              <p>Archive hides an inactive binding from normal work. Restore returns the same project identity.</p>
+            </div>
+            <div class="direct-project-lifecycle-actions">
+              <button id="directProjectLifecycleArchive" type="button">Archive binding</button>
+              <button id="directProjectLifecycleRestore" type="button">Restore binding</button>
+            </div>
+          </section>
+          <section class="direct-project-lifecycle-danger" data-morphic-action-cluster="project-lifecycle-destructive">
+            <div>
+              <strong>Remove binding</strong>
+              <p>Only an archived binding is eligible. Type the exact phrase shown below.</p>
+            </div>
+            <label>
+              <span id="directProjectLifecycleConfirmationLabel">DELETE project</span>
+              <input id="directProjectLifecycleConfirmation" autocomplete="off" spellcheck="false" />
+            </label>
+            <button id="directProjectLifecycleDelete" type="button">Delete archived binding</button>
+          </section>
+        </div>
       </aside>
 
       <nav class="t3-utility-rail" aria-label="Thread utility surfaces">

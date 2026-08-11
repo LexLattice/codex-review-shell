@@ -16,6 +16,15 @@ const {
   normalizeDirectExperimentalRuntimeTier,
   normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
 } = require("../src/main/direct/runtime/runtime-status");
+const {
+  defaultCodexHostRuntimeForWorkspace,
+} = require("../src/main/direct/runtime/runtime-path-selection");
+const {
+  normalizeDirectWorkbenchProjectLifecycleCatalog,
+} = require("../src/main/direct/project/project-directory");
+const {
+  normalizeWorldManagerRuntimePreferences,
+} = require("../src/main/direct/worldmanager/runtime-settings");
 const start = source.indexOf("function nowIso()");
 const end = source.indexOf("async function loadConfig()", start);
 if (start < 0 || end < 0) throw new Error("Unable to locate config-normalization block in main.js");
@@ -31,6 +40,9 @@ const sandbox = {
   normalizeCodexBindingProvider,
   normalizeDirectExperimentalRuntimeTier,
   normalizeDirectRuntimeModeForStatus,
+  defaultCodexHostRuntimeForWorkspace,
+  normalizeDirectWorkbenchProjectLifecycleCatalog,
+  normalizeWorldManagerRuntimePreferences,
   CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES: 500,
   defaultUsageLedgerConfig,
   normalizeUsageLedgerConfig,

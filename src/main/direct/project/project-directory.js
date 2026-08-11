@@ -10,9 +10,12 @@ const DIRECT_WORKBENCH_PROJECT_DIRECTORY_SCHEMA = "direct_workbench_project_dire
 const DIRECT_WORKBENCH_PROJECT_ACTIVATION_RECEIPT_SCHEMA = "direct_workbench_project_activation_receipt@1";
 const DIRECT_WORKBENCH_PROJECT_BINDING_DRAFT_SCHEMA = "direct_workbench_project_binding_draft@1";
 const DIRECT_WORKBENCH_PROJECT_BINDING_RECEIPT_SCHEMA = "direct_workbench_project_binding_receipt@1";
+const DIRECT_WORKBENCH_PROJECT_LIFECYCLE_DRAFT_SCHEMA = "direct_workbench_project_lifecycle_draft@1";
+const DIRECT_WORKBENCH_PROJECT_LIFECYCLE_RECEIPT_SCHEMA = "direct_workbench_project_lifecycle_receipt@1";
 const PROJECT_TRANSITION_STATES = new Set(["idle", "activating", "completed", "failed"]);
 const WORKSPACE_KINDS = new Set(["wsl", "windows", "local"]);
 const PROJECT_BINDING_MODES = new Set(["create", "edit"]);
+const PROJECT_LIFECYCLE_ACTIONS = new Set(["archive", "restore", "delete"]);
 const FORBIDDEN_RENDERER_KEYS = new Set([
   "repoPath",
   "localPath",
@@ -122,6 +125,7 @@ function activationAuthorityDigest(project = {}) {
     repoPath: normalizeString(project.repoPath, ""),
     workspace: isPlainObject(project.workspace) ? project.workspace : {},
     codexRuntime: isPlainObject(project.surfaceBinding?.codex) ? project.surfaceBinding.codex : {},
+    lifecycle: isPlainObject(project.lifecycle) ? project.lifecycle : {},
     laneBindings: Array.isArray(project.laneBindings) ? project.laneBindings : [],
     chatActivation: {
       activeChatThreadId: normalizeString(project.activeChatThreadId, ""),
@@ -135,6 +139,50 @@ function activationAuthorityDigest(project = {}) {
       })),
     },
   });
+}
+
+function projectLifecycleState(project = {}) {
+  return project.lifecycle?.state === "archived" ? "archived" : "active";
+}
+
+function normalizeDirectWorkbenchProjectLifecycleCatalog(projects = [], selectedProjectId = "", now = new Date().toISOString()) {
+  const normalizedProjects = (Array.isArray(projects) ? projects : []).filter(isPlainObject).map((project) => ({
+    ...project,
+    lifecycle: projectLifecycleState(project) === "archived"
+      ? {
+          state: "archived",
+          archivedAt: normalizeString(project.lifecycle?.archivedAt, normalizeString(project.lifecycle?.updatedAt, now)),
+          restoredAt: normalizeString(project.lifecycle?.restoredAt, ""),
+          updatedAt: normalizeString(project.lifecycle?.updatedAt, ""),
+        }
+      : {
+          state: "active",
+          archivedAt: "",
+          restoredAt: normalizeString(project.lifecycle?.restoredAt, ""),
+          updatedAt: normalizeString(project.lifecycle?.updatedAt, ""),
+        },
+  }));
+  if (normalizedProjects.length && !normalizedProjects.some((project) => projectLifecycleState(project) === "active")) {
+    normalizedProjects[0] = {
+      ...normalizedProjects[0],
+      lifecycle: {
+        state: "active",
+        archivedAt: "",
+        restoredAt: now,
+        updatedAt: now,
+      },
+      updatedAt: now,
+    };
+  }
+  const selectedCandidate = normalizeString(selectedProjectId, "");
+  const selected = normalizedProjects.find((project) =>
+    normalizeString(project.id, "") === selectedCandidate && projectLifecycleState(project) === "active") ||
+    normalizedProjects.find((project) => projectLifecycleState(project) === "active") ||
+    null;
+  return {
+    projects: normalizedProjects,
+    selectedProjectId: normalizeString(selected?.id, ""),
+  };
 }
 
 function projectBindingRevision(project = {}) {
@@ -162,6 +210,9 @@ function buildDirectWorkbenchProjectBindingDraft(config = {}, options = {}) {
   const projectId = normalizeString(options.projectId, "");
   const project = projectId ? projects.find((entry) => normalizeString(entry.id, "") === projectId) : null;
   if (projectId && !project) throw projectDirectoryError("project_binding_target_unknown");
+  if (project && projectLifecycleState(project) === "archived") {
+    throw projectDirectoryError("project_binding_archived");
+  }
   const mode = project ? "edit" : "create";
   const defaults = isPlainObject(options.defaults) ? options.defaults : {};
   const workspace = project?.workspace || defaults.workspace || {};
@@ -342,30 +393,48 @@ function buildDirectWorkbenchProjectDirectory(config = {}, options = {}) {
   const transition = normalizedTransition(options.transition);
   const activeTurns = options.activeTurnCounts || {};
   const currentActiveTurnCount = activeTurnCount(activeTurns, activeProjectId);
+  const activeProjectCount = projects.filter((project) => projectLifecycleState(project) === "active").length;
+  const archivedProjectCount = projects.length - activeProjectCount;
   const rows = projects.map((project) => {
     const projectId = normalizeString(project.id, "");
     const selected = projectId === activeProjectId;
+    const lifecycleState = projectLifecycleState(project);
+    const archived = lifecycleState === "archived";
     const targetActiveTurnCount = activeTurnCount(activeTurns, projectId);
     const blockerCodes = [];
     if (!selected && transition.state === "activating") blockerCodes.push("project_activation_in_progress");
     if (!selected && currentActiveTurnCount > 0) blockerCodes.push("active_turn_in_current_project");
     if (!selected && targetActiveTurnCount > 0) blockerCodes.push("active_turn_in_target_project");
+    if (archived) blockerCodes.push("project_binding_archived");
     const substrate = substrateProjection(project);
     const runtime = runtimeProjection(project);
     if (!substrate.configured) blockerCodes.push("project_substrate_unknown");
     if (!runtime.configured) blockerCodes.push("project_runtime_unconfigured");
-    const activating = transition.state === "activating" && transition.targetProjectId === projectId;
+    const activating = !archived && transition.state === "activating" && transition.targetProjectId === projectId;
+    const lifecycleBlockerCodes = [];
+    if (selected) lifecycleBlockerCodes.push("project_lifecycle_active_project_forbidden");
+    if (targetActiveTurnCount > 0) lifecycleBlockerCodes.push("active_turn_in_target_project");
+    if (transition.state === "activating") lifecycleBlockerCodes.push("project_activation_in_progress");
+    const lifecycleEligible = lifecycleBlockerCodes.length === 0;
     return {
       projectId,
       displayName: safeLabel(project.name, "Unnamed project"),
       selected,
-      state: selected ? "active" : activating ? "activating" : blockerCodes.length ? "blocked" : "available",
-      selectable: !selected && !activating && blockerCodes.length === 0,
+      state: archived ? "archived" : selected ? "active" : activating ? "activating" : blockerCodes.length ? "blocked" : "available",
+      selectable: !archived && !selected && !activating && blockerCodes.length === 0,
       blockerCodes: uniqueStrings(blockerCodes),
       activeTurnCount: targetActiveTurnCount,
       substrate,
       runtime,
       restore: restoreProjection(project),
+      lifecycle: {
+        state: lifecycleState,
+        archivedAt: archived ? normalizeString(project.lifecycle?.archivedAt, "") : "",
+        canArchive: !archived && lifecycleEligible,
+        canRestore: archived && lifecycleEligible,
+        canDelete: archived && lifecycleEligible,
+        blockerCodes: uniqueStrings(lifecycleBlockerCodes),
+      },
     };
   });
   const revisionInput = {
@@ -384,6 +453,7 @@ function buildDirectWorkbenchProjectDirectory(config = {}, options = {}) {
       substrate: row.substrate,
       runtime: row.runtime,
       restore: row.restore,
+      lifecycle: row.lifecycle,
       activationAuthorityDigest: activationAuthorityDigest(projectsById.get(row.projectId)),
     })),
   };
@@ -393,6 +463,8 @@ function buildDirectWorkbenchProjectDirectory(config = {}, options = {}) {
     catalogRevision: digest(revisionInput),
     activeProjectId,
     projectCount: rows.length,
+    activeProjectCount,
+    archivedProjectCount,
     transition,
     projects: rows,
     authorityBoundary: {
@@ -400,6 +472,7 @@ function buildDirectWorkbenchProjectDirectory(config = {}, options = {}) {
       rendererMayMutateConfig: false,
       rendererMaySupplyWorkspaceLocator: false,
       mainRevalidatesActivation: true,
+      mainOwnsProjectLifecycle: true,
       worldManagerStateAffected: false,
     },
     rawPathExposed: false,
@@ -408,6 +481,165 @@ function buildDirectWorkbenchProjectDirectory(config = {}, options = {}) {
   };
   assertDirectWorkbenchProjectDirectoryRendererSafe(projection);
   return projection;
+}
+
+function projectLifecycleActionProjection(row = {}, action = "") {
+  const lifecycle = isPlainObject(row.lifecycle) ? row.lifecycle : {};
+  const eligibility = action === "archive"
+    ? lifecycle.canArchive === true
+    : action === "restore"
+      ? lifecycle.canRestore === true
+      : lifecycle.canDelete === true;
+  const wrongState = action === "archive"
+    ? lifecycle.state !== "active"
+    : lifecycle.state !== "archived";
+  return {
+    eligible: eligibility,
+    blockerCodes: uniqueStrings([
+      ...(Array.isArray(lifecycle.blockerCodes) ? lifecycle.blockerCodes : []),
+      wrongState ? `project_lifecycle_${action}_state_invalid` : "",
+    ]),
+  };
+}
+
+function buildDirectWorkbenchProjectLifecycleDraft(config = {}, directory = {}, options = {}) {
+  if (directory.schema !== DIRECT_WORKBENCH_PROJECT_DIRECTORY_SCHEMA) {
+    throw projectDirectoryError("project_directory_schema_mismatch");
+  }
+  const projectId = normalizeString(options.projectId, "");
+  const project = (Array.isArray(config.projects) ? config.projects : [])
+    .find((entry) => normalizeString(entry?.id, "") === projectId);
+  const row = (Array.isArray(directory.projects) ? directory.projects : [])
+    .find((entry) => entry?.projectId === projectId);
+  if (!project || !row) throw projectDirectoryError("project_binding_target_unknown");
+  const displayName = safeLabel(project.name, "Unnamed project");
+  const requiredConfirmation = `DELETE ${displayName}`;
+  return {
+    schema: DIRECT_WORKBENCH_PROJECT_LIFECYCLE_DRAFT_SCHEMA,
+    sourceProjectId: directory.activeProjectId,
+    projectId,
+    expectedCatalogRevision: directory.catalogRevision,
+    expectedProjectRevision: projectBindingRevision(project),
+    target: {
+      displayName,
+      lifecycleState: row.lifecycle?.state || "active",
+      substrateLabel: row.substrate?.displayLabel || "Workspace unavailable",
+      runtimeLabel: row.runtime?.displayLabel || "Runtime unavailable",
+      restoreLabel: row.restore?.displayLabel || "Thread restore unavailable",
+      selected: row.selected === true,
+      activeTurnCount: Number(row.activeTurnCount || 0),
+    },
+    actions: {
+      archive: projectLifecycleActionProjection(row, "archive"),
+      restore: projectLifecycleActionProjection(row, "restore"),
+      delete: {
+        ...projectLifecycleActionProjection(row, "delete"),
+        requiredConfirmation,
+      },
+    },
+    effects: {
+      archivePreservesProjectBinding: true,
+      restorePreservesProjectIdentity: true,
+      deleteRemovesProjectBindingIdentity: true,
+      workspaceFilesDeleted: false,
+      gitStateDeleted: false,
+      threadEvidenceDeleted: false,
+      worldManagerStateAffected: false,
+    },
+    authorityBoundary: {
+      rendererMayRequestLifecycleTransition: true,
+      rendererMayPersistOrDeleteConfig: false,
+      mainRevalidatesRevisionAndActiveWork: true,
+      deleteRequiresExactConfirmation: true,
+    },
+  };
+}
+
+function validateDirectWorkbenchProjectLifecycleMutation(directory = {}, config = {}, request = {}) {
+  if (directory.schema !== DIRECT_WORKBENCH_PROJECT_DIRECTORY_SCHEMA) {
+    throw projectDirectoryError("project_directory_schema_mismatch");
+  }
+  const clientLifecycleId = normalizeString(request.clientLifecycleId, "");
+  const action = normalizeString(request.action, "").toLowerCase();
+  const sourceProjectId = normalizeString(request.sourceProjectId, "");
+  const projectId = normalizeString(request.projectId, "");
+  if (!clientLifecycleId) throw projectDirectoryError("client_lifecycle_id_required");
+  if (!PROJECT_LIFECYCLE_ACTIONS.has(action)) throw projectDirectoryError("project_lifecycle_action_invalid");
+  if (sourceProjectId !== directory.activeProjectId) throw projectDirectoryError("project_binding_source_stale");
+  if (normalizeString(request.expectedCatalogRevision, "") !== directory.catalogRevision) {
+    throw projectDirectoryError("project_catalog_revision_stale");
+  }
+  if (directory.transition?.state === "activating") throw projectDirectoryError("project_activation_in_progress");
+  const project = (Array.isArray(config.projects) ? config.projects : [])
+    .find((entry) => normalizeString(entry?.id, "") === projectId);
+  const row = (Array.isArray(directory.projects) ? directory.projects : [])
+    .find((entry) => entry?.projectId === projectId);
+  if (!project || !row) throw projectDirectoryError("project_binding_target_unknown");
+  if (normalizeString(request.expectedProjectRevision, "") !== projectBindingRevision(project)) {
+    throw projectDirectoryError("project_binding_revision_stale");
+  }
+  const actionProjection = projectLifecycleActionProjection(row, action);
+  if (!actionProjection.eligible) {
+    throw projectDirectoryError(actionProjection.blockerCodes[0] || "project_lifecycle_transition_blocked");
+  }
+  const requiredConfirmation = `DELETE ${safeLabel(project.name, "Unnamed project")}`;
+  if (action === "delete" && request.confirmation !== requiredConfirmation) {
+    throw projectDirectoryError("project_lifecycle_delete_confirmation_invalid");
+  }
+  return {
+    clientLifecycleId,
+    action,
+    sourceProjectId,
+    projectId,
+    expectedCatalogRevision: directory.catalogRevision,
+    expectedProjectRevision: projectBindingRevision(project),
+    confirmation: action === "delete" ? request.confirmation : "",
+    requiredConfirmation: action === "delete" ? requiredConfirmation : "",
+    lifecycleId: `project_lifecycle_${digest({ clientLifecycleId, sourceProjectId, projectId, action }).slice(0, 24)}`,
+  };
+}
+
+function buildDirectWorkbenchProjectLifecycleReceipt(input = {}) {
+  return {
+    schema: DIRECT_WORKBENCH_PROJECT_LIFECYCLE_RECEIPT_SCHEMA,
+    ok: input.ok === true,
+    status: normalizeString(input.status, input.ok === true ? "accepted" : "failed"),
+    lifecycleId: normalizeString(input.lifecycleId, ""),
+    clientLifecycleId: normalizeString(input.clientLifecycleId, ""),
+    action: PROJECT_LIFECYCLE_ACTIONS.has(input.action) ? input.action : "",
+    sourceProjectId: normalizeString(input.sourceProjectId, ""),
+    projectId: normalizeString(input.projectId, ""),
+    reason: normalizeString(input.reason, ""),
+    duplicate: input.duplicate === true,
+    acceptedAt: normalizeString(input.acceptedAt, ""),
+    completedAt: normalizeString(input.completedAt, ""),
+    workspaceFilesDeleted: false,
+    gitStateDeleted: false,
+    threadEvidenceDeleted: false,
+    worldManagerStateAffected: false,
+  };
+}
+
+function resolveDirectWorkbenchProjectLifecycleReplay(operations, authorityProjectId, request = {}) {
+  const clientLifecycleId = normalizeString(request.clientLifecycleId, "");
+  const existing = clientLifecycleId && operations instanceof Map ? operations.get(clientLifecycleId) : null;
+  if (!existing) return null;
+  const signature = {
+    sourceProjectId: normalizeString(request.sourceProjectId, ""),
+    projectId: normalizeString(request.projectId, ""),
+    action: normalizeString(request.action, ""),
+  };
+  if (
+    existing.sourceProjectId !== signature.sourceProjectId ||
+    existing.projectId !== signature.projectId ||
+    existing.action !== signature.action
+  ) {
+    throw projectDirectoryError("client_lifecycle_id_reused");
+  }
+  if (normalizeString(authorityProjectId, "") !== existing.sourceProjectId) {
+    throw projectDirectoryError("project_binding_source_stale");
+  }
+  return { ...existing.receipt, duplicate: true };
 }
 
 function projectDirectoryError(code, message = code) {
@@ -524,14 +756,21 @@ module.exports = {
   DIRECT_WORKBENCH_PROJECT_BINDING_DRAFT_SCHEMA,
   DIRECT_WORKBENCH_PROJECT_BINDING_RECEIPT_SCHEMA,
   DIRECT_WORKBENCH_PROJECT_DIRECTORY_SCHEMA,
+  DIRECT_WORKBENCH_PROJECT_LIFECYCLE_DRAFT_SCHEMA,
+  DIRECT_WORKBENCH_PROJECT_LIFECYCLE_RECEIPT_SCHEMA,
   assertDirectWorkbenchProjectDirectoryRendererSafe,
   buildDirectWorkbenchProjectActivationReceipt,
   buildDirectWorkbenchProjectBindingDraft,
   buildDirectWorkbenchProjectBindingReceipt,
   buildDirectWorkbenchProjectDirectory,
+  buildDirectWorkbenchProjectLifecycleDraft,
+  buildDirectWorkbenchProjectLifecycleReceipt,
+  normalizeDirectWorkbenchProjectLifecycleCatalog,
   projectBindingRevision,
   resolveDirectWorkbenchProjectBindingReplay,
+  resolveDirectWorkbenchProjectLifecycleReplay,
   resolveDirectWorkbenchProjectActivationReplay,
   validateDirectWorkbenchProjectBindingMutation,
+  validateDirectWorkbenchProjectLifecycleMutation,
   validateDirectWorkbenchProjectActivation,
 };

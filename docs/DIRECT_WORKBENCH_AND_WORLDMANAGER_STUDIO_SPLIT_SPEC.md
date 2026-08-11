@@ -2,8 +2,8 @@
 
 Status: phase 2 active — Direct Workbench and WorldManager Studio share a
 reviewed Direct kernel; DW-I1 thread intake, DW-P1 project directory, DW-P2
-project binding editor, and DW-T1 runtime-neutral thread directory are
-implemented.
+project binding editor, DW-P3 project lifecycle governance, and DW-T1
+runtime-neutral thread directory are implemented.
 
 ## Run Stance
 
@@ -59,6 +59,7 @@ Related specifications:
 - `DIRECT_T3_ALTERNATE_GUI_EXPERIMENT.md`
 - `DIRECT_WORKBENCH_THREAD_INTAKE_SPEC.md`
 - `DIRECT_WORKBENCH_PROJECT_DIRECTORY_SPEC.md`
+- `DIRECT_WORKBENCH_PROJECT_LIFECYCLE_SPEC.md`
 - `DIRECT_WORLD_MANAGER_AGENT_WORLD_AND_UNIFIED_UX_SPEC.md`
 - `DIRECT_WORLD_MANAGER_SEMANTIC_STANDBY_FRONTIER.md`
 
@@ -187,6 +188,12 @@ transaction. New identity is main-generated, inactive edits preserve the
 current thread, and active-project edits reload or roll back the runtime and
 config as one bounded transition.
 
+DW-P3 adds reversible archive/restore and destructive binding removal behind a
+separate main-owned lifecycle contract. Archived bindings are quiet and
+non-selectable but same-context inspectable. Delete is available only after
+archive and exact confirmation, and never mutates workspace, Git, thread, or
+WorldManager evidence.
+
 ## Launch Surfaces
 
 Canonical development commands:
@@ -210,8 +217,8 @@ The previous `dev:t3`, `dev:worldmanager`, `dev:worldmanager:mock`, and
 
 ## Deferred Work
 
-- add delete/archive binding governance, substrate discovery, and port
-  operations after the DW-P2 create/edit contract;
+- add substrate discovery and constitutional port operations after the DW-P3
+  lifecycle contract;
 - add provider-specific resume adapters beyond the current App Server durable
   thread identity path;
 - implement WorldManager semantic ingestion and admission of external threads;

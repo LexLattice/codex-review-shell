@@ -37,9 +37,14 @@ const screenshotPath = process.env.CODEX_T3_GUI_SCREENSHOT || path.join(testRoot
 const intakeScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-intake.png");
 const projectDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-project-directory.png");
 const projectBindingEditorScreenshotPath = screenshotPath.replace(/\.png$/i, "-project-binding-editor.png");
+const projectLifecycleScreenshotPath = screenshotPath.replace(/\.png$/i, "-project-lifecycle.png");
 const threadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-directory.png");
 const narrowThreadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-directory-narrow.png");
+const localProjectRoot = path.join(testRoot, "local-fixture");
+const localProjectSentinel = path.join(localProjectRoot, "workspace-preserved.txt");
 fs.mkdirSync(userDataRoot, { recursive: true, mode: 0o700 });
+fs.mkdirSync(localProjectRoot, { recursive: true });
+fs.writeFileSync(localProjectSentinel, "project binding lifecycle must not delete workspace files\n");
 
 fs.writeFileSync(path.join(userDataRoot, "workspace-config.json"), `${JSON.stringify({
   version: 5,
@@ -279,6 +284,13 @@ try {
   assert.equal(JSON.stringify(safeDirectory).includes("/home/rose/work/direct-gui-fixture"), false);
   assert.equal(JSON.stringify(safeDirectory).includes("C:\\Fixtures\\direct-gui"), false);
 
+  await page.locator('[data-project-lifecycle-target="project_t3_gui_fixture"]').click();
+  await page.locator("#directProjectLifecyclePanel:not([hidden])").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#directProjectLifecycleArchive").isDisabled(), true);
+  assert.match(await page.locator("#directProjectLifecycleStatus").innerText(), /Switch away/);
+  await page.locator("#directProjectLifecycleClose").click();
+  await page.locator("#directProjectLifecyclePanel").waitFor({ state: "hidden" });
+
   await page.locator("#directProjectBindingNew").click();
   await page.locator("#directProjectBindingEditor:not([hidden])").waitFor({ state: "visible" });
   assert.equal(await page.locator("#runtimeDrawer").isHidden(), true);
@@ -289,7 +301,7 @@ try {
   await page.locator("#directProjectBindingName").fill("Local Direct GUI Fixture");
   await page.locator("#directProjectBindingWorkspaceKind").selectOption("local");
   await page.locator("#directProjectBindingWorkspaceLabel").fill("Local fixture workspace");
-  await page.locator("#directProjectBindingLocalPath").fill(path.join(testRoot, "local-fixture"));
+  await page.locator("#directProjectBindingLocalPath").fill(localProjectRoot);
   await page.locator("#directProjectBindingRuntimePath").selectOption("app-server");
   await page.screenshot({ path: projectBindingEditorScreenshotPath, fullPage: true });
   await page.locator("#directProjectBindingCommit").click();
@@ -301,6 +313,66 @@ try {
   assert.ok(createdProject?.id?.startsWith("project_"));
   assert.notEqual(createdProject.id, "");
   assert.equal(configAfterCreate.selectedProjectId, "project_t3_gui_fixture");
+
+  await page.locator(`[data-project-lifecycle-target="${createdProject.id}"]`).click();
+  await page.locator("#directProjectLifecyclePanel:not([hidden])").waitFor({ state: "visible" });
+  assert.match(await page.locator("#directProjectLifecycleTitle").innerText(), /Local Direct GUI Fixture lifecycle/);
+  assert.equal(await page.locator("#directProjectLifecycleArchive").isEnabled(), true);
+  assert.equal(await page.locator("#directProjectLifecycleRestore").isDisabled(), true);
+  assert.equal(await page.locator("#directProjectLifecycleDelete").isDisabled(), true);
+  await page.screenshot({ path: projectLifecycleScreenshotPath, fullPage: true });
+  await page.locator("#directProjectLifecycleArchive").click();
+  await page.locator("#directProjectLifecyclePanel").waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    (projectId) => !document.querySelector(`.direct-project-row[data-project-id="${projectId}"]`),
+    createdProject.id,
+  );
+  assert.match(await page.locator("#directProjectArchivedToggle").innerText(), /Archived 1/);
+
+  await page.locator("#directProjectArchivedToggle").click();
+  await page.waitForFunction(
+    (projectId) => document.querySelector(`.direct-project-row[data-project-id="${projectId}"]`)?.dataset?.state === "archived",
+    createdProject.id,
+  );
+  await page.locator(`[data-project-lifecycle-target="${createdProject.id}"]`).click();
+  await page.locator("#directProjectLifecyclePanel:not([hidden])").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#directProjectLifecycleRestore").isEnabled(), true);
+  assert.equal(await page.locator("#directProjectLifecycleDelete").isDisabled(), true);
+  await page.locator("#directProjectLifecycleRestore").click();
+  await page.locator("#directProjectLifecyclePanel").waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    (projectId) => document.querySelector(`.direct-project-row[data-project-id="${projectId}"]`)?.dataset?.state === "available",
+    createdProject.id,
+  );
+  const restoredConfig = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
+  assert.equal(restoredConfig.projects.find((project) => project.id === createdProject.id)?.id, createdProject.id);
+  assert.equal(restoredConfig.projects.find((project) => project.id === createdProject.id)?.lifecycle?.state, "active");
+
+  await page.locator(`[data-project-lifecycle-target="${createdProject.id}"]`).click();
+  await page.locator("#directProjectLifecyclePanel:not([hidden])").waitFor({ state: "visible" });
+  await page.locator("#directProjectLifecycleArchive").click();
+  await page.locator("#directProjectLifecyclePanel").waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    (projectId) => document.querySelector(`.direct-project-row[data-project-id="${projectId}"]`)?.dataset?.state === "archived",
+    createdProject.id,
+  );
+  await page.locator(`[data-project-lifecycle-target="${createdProject.id}"]`).click();
+  await page.locator("#directProjectLifecyclePanel:not([hidden])").waitFor({ state: "visible" });
+  const requiredDeletePhrase = await page.locator("#directProjectLifecycleConfirmationLabel").innerText();
+  await page.locator("#directProjectLifecycleConfirmation").fill("DELETE something else");
+  assert.equal(await page.locator("#directProjectLifecycleDelete").isDisabled(), true);
+  await page.locator("#directProjectLifecycleConfirmation").fill(requiredDeletePhrase);
+  assert.equal(await page.locator("#directProjectLifecycleDelete").isEnabled(), true);
+  await page.locator("#directProjectLifecycleDelete").click();
+  await page.locator("#directProjectLifecyclePanel").waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    (projectId) => !document.querySelector(`.direct-project-row[data-project-id="${projectId}"]`),
+    createdProject.id,
+  );
+  const configAfterDelete = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
+  assert.equal(configAfterDelete.projects.some((project) => project.id === createdProject.id), false);
+  assert.equal(configAfterDelete.projects.length, 2);
+  assert.equal(fs.readFileSync(localProjectSentinel, "utf8"), "project binding lifecycle must not delete workspace files\n");
 
   await page.locator('[data-project-binding-target="project_t3_windows_fixture"]').click();
   await page.locator("#directProjectBindingEditor:not([hidden])").waitFor({ state: "visible" });
@@ -336,7 +408,7 @@ try {
 
   await page.locator('.t3-utility-rail [data-t3-action="projects"]').click();
   await page.locator("#directProjectDirectory:not([hidden])").waitFor({ state: "visible" });
-  await page.waitForFunction(() => document.querySelectorAll(".direct-project-row").length === 3);
+  await page.waitForFunction(() => document.querySelectorAll(".direct-project-row").length === 2);
   assert.equal(await page.locator('.direct-project-row[data-project-id="project_t3_windows_fixture"]').getAttribute("data-state"), "active");
   assert.match(await page.locator("#directProjectDirectoryStatus").innerText(), /authoritative active selection/);
   await page.screenshot({ path: projectDirectoryScreenshotPath, fullPage: true });
@@ -403,6 +475,7 @@ try {
     intakeScreenshotPath,
     projectDirectoryScreenshotPath,
     projectBindingEditorScreenshotPath,
+    projectLifecycleScreenshotPath,
   }, null, 2));
 } finally {
   await app.close().catch(() => {});

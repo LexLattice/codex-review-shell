@@ -105,6 +105,9 @@
 - [Direct Workbench Project Binding Editor](./DIRECT_WORKBENCH_PROJECT_BINDING_EDITOR_SPEC.md) -
   revision-bound create/edit drafts with main-owned identity, persistence,
   active-runtime reload, rollback, and same-context commit evidence.
+- [Direct Workbench Project Lifecycle Governance](./DIRECT_WORKBENCH_PROJECT_LIFECYCLE_SPEC.md) -
+  reversible archive/restore, archived-only exact-confirmation deletion,
+  renderer-safe preservation evidence, and a main-owned lifecycle transaction.
 - [Direct Workbench Runtime-Neutral Thread Directory](./DIRECT_WORKBENCH_THREAD_DIRECTORY_SPEC.md) -
   project-scoped Direct/App Server inventory normalization, source/runtime
   evidence, visible focus gates, and renderer-safe continuation adapters.
