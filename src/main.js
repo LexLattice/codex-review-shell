@@ -3462,13 +3462,43 @@ function ensureDirectImportController() {
     projectResolver: (projectId) => getProjectById(projectId),
     liveTextController: () => ensureDirectLiveTextController(),
     checkpointContinuationEvidenceResolver: () => ({
-      accepted: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1",
-      status: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "runtime_probed" : "profile_required",
-      evidenceState: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "runtime_probed" : "unknown",
-      reason: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "" : "checkpoint_request_shape_unaccepted",
+      accepted: true,
+      status: "real_provider_promoted",
+      evidenceState: "runtime_probed",
+      evidenceId: "rug008_import_checkpoint_continuation_live_20260518",
+      reason: "",
     }),
   });
   return directImportController;
+}
+
+function directThreadIntakeRuntimeWitness(project = {}) {
+  const projectId = normalizeString(project.id, "");
+  const connectionProjectId = normalizeString(activeCodexSurfaceConnection?.projectId, "");
+  const projectBound = Boolean(projectId && projectId === connectionProjectId);
+  const transport = projectBound
+    ? codexSurfaceSessionKindForConnection(activeCodexSurfaceConnection || {})
+    : "unavailable";
+  const capabilities = projectBound && isPlainObject(activeCodexSurfaceConnection?.capabilities)
+    ? activeCodexSurfaceConnection.capabilities
+    : {};
+  const liveStatus = ensureDirectLiveTextController().statusForProject(project);
+  const freshDirectCapability = projectBound &&
+    transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT &&
+    (liveStatus?.status === "ready" || liveStatus?.turnRunnable === true);
+  return {
+    transport,
+    runtimePath: transport === "codex-app-server"
+      ? "app-server"
+      : transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT
+        ? "direct-implementation"
+        : transport,
+    projectBound,
+    providerResumeCapability: transport === "codex-app-server" && capabilities.threads?.canResume === true,
+    providerReadCapability: transport === "codex-app-server" && capabilities.threads?.canRead === true,
+    freshDirectCapability,
+    evidenceState: projectBound ? "active_runtime_projection" : "unavailable",
+  };
 }
 
 function ensureDirectLiveProbeEvidenceStore() {
@@ -11478,6 +11508,14 @@ ipcMain.handle("direct-import:list-imports", async (_event, payload) => {
   return ensureDirectImportController().listImports(project, payload || {});
 });
 
+ipcMain.handle("direct-import:thread-intake-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().threadIntakeProjection(project, {
+    ...(payload || {}),
+    runtimeWitness: directThreadIntakeRuntimeWitness(project),
+  });
+});
+
 ipcMain.handle("direct-import:hide", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return ensureDirectImportController().hideImport(project, payload || {});
@@ -11500,7 +11538,10 @@ ipcMain.handle("direct-import:preview-checkpoint-continuation", async (_event, p
 
 ipcMain.handle("direct-import:start-checkpoint-continuation", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
-  const result = await ensureDirectImportController().startCheckpointContinuation(project, payload || {});
+  const result = await ensureDirectImportController().startCheckpointContinuation(project, {
+    ...(payload || {}),
+    runtimeWitness: directThreadIntakeRuntimeWitness(project),
+  });
   emitDirectRuntimeStatus(project);
   return result;
 });

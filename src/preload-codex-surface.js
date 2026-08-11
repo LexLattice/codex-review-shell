@@ -14,7 +14,7 @@ function fileSystemPathsForFiles(files) {
     .filter(Boolean);
 }
 
-contextBridge.exposeInMainWorld("codexSurfaceBridge", {
+const codexSurfaceApi = {
   connect: (connection) => ipcRenderer.invoke("codex-surface:connect", { connection }),
   disconnect: () => ipcRenderer.invoke("codex-surface:disconnect"),
   request: (method, params) => ipcRenderer.invoke("codex-surface:request", { method, params }),
@@ -47,6 +47,20 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   openContextMenu: (request) => ipcRenderer.invoke("context-menu:open", request || {}),
   readStoredThreadTranscript: (projectId, threadId, sourceHome = "", sessionFilePath = "", limit = 800) =>
     ipcRenderer.invoke("codex-thread:transcript", { projectId, threadId, sourceHome, sessionFilePath, limit }),
+  chooseDirectImportSourceFile: (projectId) =>
+    ipcRenderer.invoke("direct-import:choose-source-file", { projectId }),
+  chooseDirectImportSourceRoot: (projectId) =>
+    ipcRenderer.invoke("direct-import:choose-source-root", { projectId }),
+  inspectDirectImportSource: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:inspect-source", { ...options, projectId }),
+  materializeDirectImport: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:materialize", { ...options, projectId }),
+  listDirectImports: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:list-imports", { ...options, projectId }),
+  readDirectThreadIntakeProjection: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:thread-intake-projection", { ...options, projectId }),
+  startDirectImportCheckpointContinuation: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:start-checkpoint-continuation", { ...options, projectId }),
   getWorldManagerSemanticSnapshot: () =>
     ipcRenderer.invoke("world-manager-semantic:snapshot"),
   submitWorldManagerSemanticMessage: (payload = {}) =>
@@ -308,4 +322,15 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
     ipcRenderer.on("world-manager:event", listener);
     return () => ipcRenderer.removeListener("world-manager:event", listener);
   },
-});
+};
+
+const directWorkbenchPreload = process.env.CODEX_EXPERIENCE === "direct-workbench" ||
+  (!process.env.CODEX_EXPERIENCE && process.env.CODEX_DIRECT_T3_GUI === "1");
+
+if (directWorkbenchPreload) {
+  for (const key of Object.keys(codexSurfaceApi)) {
+    if (key.includes("WorldManager")) delete codexSurfaceApi[key];
+  }
+}
+
+contextBridge.exposeInMainWorld("codexSurfaceBridge", codexSurfaceApi);

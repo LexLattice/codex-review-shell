@@ -88,11 +88,44 @@
         <section id="threadAnalyticsPanelBody" class="thread-analytics-body"></section>
       </aside>
 
+      <aside id="directThreadIntakePanel" class="direct-thread-intake-panel" hidden aria-label="Direct thread intake" data-morphic-region="direct-thread-intake-evidence">
+        <header class="direct-thread-intake-header">
+          <div>
+            <p class="eyebrow">Identity boundary</p>
+            <h2>Thread intake</h2>
+            <p id="directThreadIntakeStatus" class="subline">Choose how an existing conversation enters Direct Workbench.</p>
+          </div>
+          <button id="directThreadIntakeClose" class="drawer-close" type="button" aria-label="Close thread intake">×</button>
+        </header>
+        <section class="direct-thread-intake-body">
+          <div id="directThreadIntakeBinding" class="direct-intake-binding" data-morphic-state-surface="trust-boundary"></div>
+          <div class="direct-intake-source-actions" data-morphic-action-cluster="source-acquisition">
+            <button id="directThreadIntakeChooseFile" type="button">Choose transcript</button>
+            <button id="directThreadIntakeChooseRoot" type="button">Choose source folder</button>
+            <button id="directThreadIntakeRefresh" type="button">Refresh</button>
+          </div>
+          <label class="direct-intake-workspace-confirmation">
+            <input id="directThreadIntakeWorkspaceConfirm" type="checkbox" />
+            <span>This transcript belongs to the selected project workspace.</span>
+          </label>
+          <section class="direct-intake-source-lane" aria-labelledby="directThreadIntakeSourcesHeading">
+            <div class="direct-intake-section-heading">
+              <h3 id="directThreadIntakeSourcesHeading">Sources and imported evidence</h3>
+              <span id="directThreadIntakeCount">0</span>
+            </div>
+            <div id="directThreadIntakeSources" class="direct-intake-source-list"></div>
+          </section>
+          <section id="directThreadIntakeEvidence" class="direct-intake-evidence" data-morphic-region="intake-evidence-lane"></section>
+          <section id="directThreadIntakeModes" class="direct-intake-mode-list" data-morphic-action-cluster="identity-disposition"></section>
+        </section>
+      </aside>
+
       <nav class="t3-utility-rail" aria-label="Thread utility surfaces">
         <button type="button" data-t3-action="threads" aria-label="Focus thread directory" title="Threads">☰</button>
         <span class="t3-utility-separator" aria-hidden="true"></span>
         <button type="button" data-runtime-tab="runtime" aria-label="Open runtime inspector" title="Runtime">R</button>
         <button type="button" data-t3-action="analytics" aria-label="Open thread analytics" title="Analytics">A</button>
+        <button type="button" data-t3-action="intake" aria-label="Open Direct thread intake" title="Thread intake">I</button>
         <button type="button" disabled aria-label="Files are not connected in this experiment" title="Files are not connected in this experiment">F</button>
         <button type="button" disabled aria-label="Diff is not connected in this experiment" title="Diff is not connected in this experiment">Δ</button>
         <button type="button" disabled aria-label="Terminal is not connected in this experiment" title="Terminal is not connected in this experiment">›_</button>
@@ -150,5 +183,6 @@
     <script src="./codex-app-server-evidence.js"></script>
     <script src="./codex-surface.js"></script>
     <script src="./t3-direct-surface.js"></script>
+    <script src="./direct-thread-intake-surface.js"></script>
   </body>
 </html>

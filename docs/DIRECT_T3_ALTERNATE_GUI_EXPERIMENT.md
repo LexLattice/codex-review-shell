@@ -117,6 +117,7 @@ Morphable:
 | model, effort, access, quota, context | existing Direct runtime witness and preference APIs | composer/header | existing controls only |
 | Runtime inspector | existing runtime constitution/projection | right dock | existing read/control actions |
 | Analytics inspector | existing runtime analytics projection | right dock | display only |
+| Thread intake | typed main-process intake projection and read-only import store | right dock | evidence-gated resume or fresh Direct continuation |
 | terminal/files/diff/browser | no v0 Direct tenant adapter | utility rail | disabled with explicit explanation |
 
 ## Evidence And Authority Rules
@@ -175,8 +176,9 @@ real Electron main process. The observed document was
 `t3-direct-surface.html`; the window reached the existing Direct/Appserver
 connection boundary, rendered the three-region geometry, and exited cleanly.
 An isolated fixture-backed Electron interaction smoke additionally opens the
-real Runtime and Analytics tenants, proves their exclusive right-panel
-selection, collapses and restores the thread sidebar, records a screenshot,
+real Runtime, Analytics, and Thread Intake tenants, proves their exclusive
+right-panel selection, inspects the project substrate and both identity
+dispositions, collapses and restores the thread sidebar, records screenshots,
 and fails on renderer console/page errors. The focused source regression also
 proves that the alternate document preserves every DOM identity required by
 the base Codex renderer contract, retains trusted managed-surface URL
@@ -185,6 +187,7 @@ recognition, and keeps unavailable tenants disabled.
 ```text
 npm run direct:t3-alternate-gui  -> passed
 npm run direct:t3-alternate-gui:electron -> passed
+npm run direct:thread-intake     -> passed
 npm run check:main-syntax        -> passed
 isolated Electron/Xvfb smoke     -> exit 0
 ```

@@ -6568,9 +6568,15 @@ function applyLiveThreadResult(result) {
   bindThread(result.thread, result.model, { liveAttached: true });
 }
 
-async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "", titleHint = "") {
+async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "", titleHint = "", options = {}) {
   const requestedThreadId = String(threadId || "").trim();
   if (!requestedThreadId) throw new Error("Missing Codex thread id.");
+  const verifiedLiveResult = options.requireProviderResume === true
+    ? await attachLiveThread(requestedThreadId, sessionFilePath, {
+        excludeTurns: false,
+        skipReadFallback: true,
+      })
+    : null;
   const openRequestId = state.openRequestId + 1;
   state.openRequestId = openRequestId;
   state.threadId = requestedThreadId;
@@ -6627,7 +6633,7 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
   }
 
   try {
-    const liveResult = await attachLiveThread(requestedThreadId, sessionFilePath, {
+    const liveResult = verifiedLiveResult || await attachLiveThread(requestedThreadId, sessionFilePath, {
       excludeTurns: preserveStoredTranscriptOnAttach,
       skipReadFallback: preserveStoredTranscriptOnAttach,
     });

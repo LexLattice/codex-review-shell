@@ -390,6 +390,7 @@ body {
 
 .runtime-drawer,
 .thread-analytics-panel,
+.direct-thread-intake-panel,
 .thread-analytics-panel.dock-right,
 .thread-analytics-panel.dock-left,
 .thread-analytics-panel.dock-float,
@@ -402,6 +403,7 @@ body {
 
 .runtime-drawer-header,
 .thread-analytics-header,
+.direct-thread-intake-header,
 .runtime-drawer-tabs {
   border-color: var(--border);
   background: #111214;
@@ -409,7 +411,8 @@ body {
 
 @media (min-width: 1101px) {
   .t3-direct-shell:has(.runtime-drawer:not([hidden])),
-  .t3-direct-shell:has(.thread-analytics-panel:not([hidden])) {
+  .t3-direct-shell:has(.thread-analytics-panel:not([hidden])),
+  .t3-direct-shell:has(.direct-thread-intake-panel:not([hidden])) {
     grid-template-columns: var(--t3-sidebar-width) minmax(0, 1fr) var(--t3-dock-width) var(--t3-utility-width);
     grid-template-areas:
       "sidebar thread-bar dock utility"
@@ -418,12 +421,14 @@ body {
   }
 
   .t3-direct-shell[data-t3-sidebar="collapsed"]:has(.runtime-drawer:not([hidden])),
-  .t3-direct-shell[data-t3-sidebar="collapsed"]:has(.thread-analytics-panel:not([hidden])) {
+  .t3-direct-shell[data-t3-sidebar="collapsed"]:has(.thread-analytics-panel:not([hidden])),
+  .t3-direct-shell[data-t3-sidebar="collapsed"]:has(.direct-thread-intake-panel:not([hidden])) {
     grid-template-columns: var(--t3-sidebar-collapsed-width) minmax(0, 1fr) var(--t3-dock-width) var(--t3-utility-width);
   }
 
   .runtime-drawer,
   .thread-analytics-panel,
+  .direct-thread-intake-panel,
   .thread-analytics-panel.dock-right,
   .thread-analytics-panel.dock-left,
   .thread-analytics-panel.dock-float,
@@ -450,6 +455,7 @@ body {
 @media (max-width: 1100px) {
   .runtime-drawer,
   .thread-analytics-panel,
+  .direct-thread-intake-panel,
   .thread-analytics-panel.dock-right,
   .thread-analytics-panel.dock-left,
   .thread-analytics-panel.dock-float,
@@ -560,6 +566,7 @@ body {
 
   .runtime-drawer,
   .thread-analytics-panel,
+  .direct-thread-intake-panel,
   .thread-analytics-panel.dock-right,
   .thread-analytics-panel.dock-left,
   .thread-analytics-panel.dock-float,
@@ -567,5 +574,259 @@ body {
     right: 0;
     bottom: 44px;
     width: 100%;
+  }
+}
+
+.direct-thread-intake-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.direct-thread-intake-header {
+  min-height: 78px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.direct-thread-intake-header h2,
+.direct-intake-section-heading h3,
+.direct-intake-mode-card h3 {
+  margin: 0;
+}
+
+.direct-thread-intake-header h2 {
+  margin-top: 2px;
+  font-size: 16px;
+}
+
+.direct-thread-intake-body {
+  height: calc(100% - 78px);
+  padding: 13px;
+  overflow: auto;
+}
+
+.direct-intake-binding,
+.direct-intake-evidence,
+.direct-intake-mode-card,
+.direct-intake-source-item,
+.direct-intake-empty {
+  border: 1px solid #2b2d32;
+  border-radius: 10px;
+  background: #131416;
+}
+
+.direct-intake-binding {
+  display: grid;
+  gap: 5px;
+  padding: 11px 12px;
+  border-color: rgba(167, 176, 255, 0.28);
+  background: rgba(135, 146, 255, 0.07);
+}
+
+.direct-intake-binding strong,
+.direct-intake-evidence strong {
+  font-size: 12px;
+}
+
+.direct-intake-binding span,
+.direct-intake-evidence span,
+.direct-intake-mode-card p,
+.direct-intake-source-item span,
+.direct-intake-empty {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.direct-intake-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.direct-intake-source-actions button,
+.direct-intake-mode-card button,
+.direct-intake-source-item button {
+  min-height: 30px;
+  border: 1px solid #36383f;
+  border-radius: 8px;
+  background: #1a1b1f;
+  color: var(--text);
+}
+
+.direct-intake-workspace-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  color: #b9bbc1;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.direct-intake-workspace-confirmation input {
+  margin-top: 2px;
+}
+
+.direct-intake-source-lane,
+.direct-intake-evidence,
+.direct-intake-mode-list {
+  margin-top: 14px;
+}
+
+.direct-intake-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.direct-intake-section-heading h3 {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.direct-intake-section-heading span {
+  color: var(--muted);
+  font: 10px/1 var(--mono);
+}
+
+.direct-intake-source-list,
+.direct-intake-mode-list {
+  display: grid;
+  gap: 7px;
+}
+
+.direct-intake-source-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.direct-intake-source-item.active {
+  border-color: rgba(167, 176, 255, 0.38);
+  background: rgba(135, 146, 255, 0.08);
+}
+
+.direct-intake-source-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.direct-intake-source-copy strong,
+.direct-intake-source-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.direct-intake-source-item button {
+  align-self: center;
+  padding-inline: 9px;
+}
+
+.direct-intake-evidence {
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px;
+}
+
+.direct-intake-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.direct-intake-evidence-row {
+  display: grid;
+  gap: 2px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: #0e0f11;
+}
+
+.direct-intake-evidence-row small {
+  color: #70737a;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.direct-intake-mode-card {
+  padding: 12px;
+}
+
+.direct-intake-mode-card[data-intake-state="eligible"] {
+  border-color: rgba(117, 213, 155, 0.28);
+}
+
+.direct-intake-mode-card[data-intake-state="blocked"] {
+  background: #111214;
+}
+
+.direct-intake-mode-card h3 {
+  font-size: 13px;
+}
+
+.direct-intake-mode-card p {
+  margin: 6px 0;
+}
+
+.direct-intake-mode-card .direct-intake-mode-status {
+  color: var(--warning);
+  font: 10px/1.4 var(--mono);
+}
+
+.direct-intake-mode-card[data-intake-state="eligible"] .direct-intake-mode-status {
+  color: var(--success);
+}
+
+.direct-intake-mode-card textarea {
+  width: 100%;
+  min-height: 62px;
+  margin: 5px 0 8px;
+  padding: 8px;
+  resize: vertical;
+  border: 1px solid #303238;
+  border-radius: 8px;
+  background: #0d0e10;
+  color: var(--text);
+  font: 11px/1.45 var(--sans);
+}
+
+.direct-intake-mode-card button {
+  width: 100%;
+}
+
+.direct-intake-mode-card button.primary {
+  border-color: #4a4f75;
+  background: #262a43;
+}
+
+.direct-intake-mode-card button:disabled,
+.direct-intake-source-actions button:disabled,
+.direct-intake-source-item button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.direct-intake-empty {
+  padding: 12px;
+}
+
+@media (max-width: 720px) {
+  .direct-intake-evidence-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

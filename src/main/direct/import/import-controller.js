@@ -19,6 +19,10 @@ const {
   buildDirectImportCheckpointSeed,
   rendererSafeCheckpointSeedPreview,
 } = require("./checkpoint-continuation");
+const {
+  buildDirectThreadIntakeLineage,
+  buildDirectThreadIntakeProjection,
+} = require("./thread-intake");
 
 const SOURCE_HANDLE_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_SOURCE_LIST_LIMIT = 200;
@@ -665,6 +669,78 @@ class DirectImportController {
     };
   }
 
+  async threadIntakeProjection(projectOrId, params = {}) {
+    const project = await this.resolveProject(projectOrId);
+    const importId = normalizeString(params.importId, "");
+    const handleId = normalizeString(params.handleId, "");
+    let source = { sourceState: "unselected" };
+    let workspaceMatch = {};
+    let freshContinuationBlockReason = "missing_import";
+
+    if (importId) {
+      const entry = this.importEntryForProject(project, importId);
+      if (!entry) {
+        const error = new Error("Import record was not found.");
+        error.code = "missing_import";
+        throw error;
+      }
+      const report = this.sessionStore.readImportArtifact
+        ? this.sessionStore.readImportArtifact(importId, "validation-report.json")
+        : null;
+      source = {
+        sourceState: "materialized",
+        importId,
+        sourceClass: normalizeString(entry.sourceClass || report?.source?.sourceClass, "codex-cli-jsonl"),
+        sourceDisplayName: normalizeString(entry.sourceDisplayName || report?.source?.sourceDisplayName, "Imported Codex session"),
+        sourceRootDisplayName: normalizeString(entry.sourceRootDisplayName || report?.source?.sourceRootDisplayName, ""),
+        providerThreadId: normalizeString(entry.threadId || report?.source?.threadId, ""),
+        timestampStart: normalizeString(entry.timestampStart || report?.source?.timestampStart, ""),
+        timestampEnd: normalizeString(entry.timestampEnd || report?.source?.timestampEnd, ""),
+        recordCount: Number(entry.recordCount || report?.source?.recordCount || 0),
+        importState: canonicalImportState(entry.state),
+        recoveryState: normalizeString(entry.recoveryState, "healthy"),
+        materializedSessionId: normalizeString(entry.materializedSessionId, ""),
+        checkpointEligible: entry.checkpointEligible === true,
+      };
+      workspaceMatch = report?.workspaceMatch || {};
+      freshContinuationBlockReason = this.continuationBlockReason(project, entry, params);
+    } else if (handleId) {
+      const inspected = await this.inspectSource(project, { handleId });
+      source = {
+        sourceState: "selected",
+        ...inspected.source,
+        providerThreadId: normalizeString(inspected.source?.threadId, ""),
+      };
+      workspaceMatch = this.workspaceMatchForProject(project, params);
+      freshContinuationBlockReason = "read_only_import_required";
+    }
+
+    const suppliedRuntimeWitness = isPlainObject(params.runtimeWitness) ? params.runtimeWitness : {};
+    const liveStatus = this.liveController()?.statusForProject
+      ? this.liveController().statusForProject(project)
+      : null;
+    const runtimeWitness = Object.keys(suppliedRuntimeWitness).length
+      ? suppliedRuntimeWitness
+      : {
+          transport: "direct-live-text",
+          runtimePath: "direct-implementation",
+          projectBound: Boolean(this.projectId(project)),
+          providerResumeCapability: false,
+          providerReadCapability: false,
+          freshDirectCapability: liveStatus?.status === "ready" || liveStatus?.turnRunnable === true,
+          evidenceState: liveStatus?.status === "ready" || liveStatus?.turnRunnable === true
+            ? "runtime_probed"
+            : "unavailable",
+        };
+    return buildDirectThreadIntakeProjection({
+      project,
+      source,
+      workspaceMatch,
+      runtime: runtimeWitness,
+      freshContinuationBlockReason,
+    });
+  }
+
   statusForProject(projectOrId) {
     const project = isPlainObject(projectOrId) ? projectOrId : { id: normalizeString(projectOrId, "") };
     const projectId = this.projectId(project);
@@ -901,6 +977,14 @@ class DirectImportController {
       profileId: normalizeString(project.surfaceBinding?.codex?.profileId, ""),
       profileHash: normalizeString(params.profileHash, ""),
     });
+    const intakeProjection = await this.threadIntakeProjection(project, {
+      importId,
+      runtimeWitness: isPlainObject(params.runtimeWitness) ? params.runtimeWitness : {},
+    });
+    const intakeLineage = buildDirectThreadIntakeLineage(
+      intakeProjection,
+      "transplant_into_fresh_direct_thread",
+    );
     const now = new Date().toISOString();
     const recordBase = {
       schema: DIRECT_IMPORT_CHECKPOINT_CONTINUATION_SCHEMA,
@@ -925,6 +1009,7 @@ class DirectImportController {
       previousResponseIdFromImportUsed: false,
       importedToolReplayAttempted: false,
       rightPaneModified: false,
+      threadIntake: intakeLineage,
     };
     this.sessionStore.writeImportContinuationArtifact(importId, params.continuationId, "seed.json", seed);
     this.sessionStore.writeImportContinuationArtifact(importId, params.continuationId, "continuation.json", recordBase);
@@ -947,6 +1032,7 @@ class DirectImportController {
         continuationId: params.continuationId,
         clientCheckpointContinuationId: params.clientCheckpointContinuationId,
         parentImportLineage: recordBase.parentImportLineage,
+        threadIntake: intakeLineage,
         model: params.model,
       });
       const terminalState = result.turnState || result.terminal?.state || "failed";

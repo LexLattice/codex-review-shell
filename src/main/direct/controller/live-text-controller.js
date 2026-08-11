@@ -3182,6 +3182,7 @@ class DirectLiveTextController {
       requestShapeHash: normalizeString(seed.requestShapeHash, ""),
       importedSessionId: normalizeString(seed.materializedSessionId, ""),
       importedSessionReadOnly: true,
+      threadIntake: isPlainObject(options.threadIntake) ? options.threadIntake : null,
     });
     let requestBody = buildTextOnlyProbeRequest({
       profileDoc: this.profileDoc,
@@ -3210,6 +3211,7 @@ class DirectLiveTextController {
       seedShapeHash: normalizeString(seed.seedShapeHash, ""),
       importedSessionId: normalizeString(seed.materializedSessionId, ""),
       importedSessionReadOnly: true,
+      threadIntake: isPlainObject(options.threadIntake) ? options.threadIntake : null,
     });
     let contextResult = null;
     if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForCheckpointContinuation === "function") {
@@ -3341,6 +3343,7 @@ class DirectLiveTextController {
       requestShapeHash: normalizeString(seed.requestShapeHash, ""),
       importedSessionId: normalizeString(seed.materializedSessionId, ""),
       importedSessionReadOnly: true,
+      threadIntake: isPlainObject(options.threadIntake) ? options.threadIntake : null,
     });
     return {
       ...result,

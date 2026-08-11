@@ -116,6 +116,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
     ipcRenderer.invoke("direct-import:materialize", { ...options, projectId }),
   listDirectImports: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-import:list-imports", { ...options, projectId }),
+  readDirectThreadIntakeProjection: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:thread-intake-projection", { ...options, projectId }),
   readDirectImportReport: (projectId, importId) =>
     ipcRenderer.invoke("direct-import:read-report", { projectId, importId }),
   readDirectImportSession: (projectId, importId) =>

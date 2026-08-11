@@ -8,11 +8,13 @@
   const runtimeDrawerClose = document.getElementById("runtimeDrawerClose");
   const analyticsPanel = document.getElementById("threadAnalyticsPanel");
   const analyticsClose = document.getElementById("threadAnalyticsPanelClose");
+  const intakePanel = document.getElementById("directThreadIntakePanel");
   const coreNewThread = document.getElementById("morphicNewThreadButton");
   const coreAnalytics = document.getElementById("morphicAnalyticsButton");
   const railList = document.getElementById("morphicThreadRailList");
   const utilityRuntimeButtons = Array.from(document.querySelectorAll(".t3-utility-rail [data-runtime-tab]"));
   const utilityAnalyticsButton = document.querySelector('.t3-utility-rail [data-t3-action="analytics"]');
+  const utilityIntakeButton = document.querySelector('.t3-utility-rail [data-t3-action="intake"]');
   const experienceWitness = document.getElementById("t3ExperienceWitness");
   const SIDEBAR_KEY = "direct.t3Alternate.sidebar";
 
@@ -69,12 +71,15 @@
   function syncInspectorState() {
     const runtimeOpen = Boolean(runtimeDrawer && !runtimeDrawer.hidden);
     const analyticsOpen = Boolean(analyticsPanel && !analyticsPanel.hidden);
+    const intakeOpen = Boolean(intakePanel && !intakePanel.hidden);
     shell?.toggleAttribute("data-t3-runtime-open", runtimeOpen);
     shell?.toggleAttribute("data-t3-analytics-open", analyticsOpen);
+    shell?.toggleAttribute("data-t3-intake-open", intakeOpen);
     for (const button of utilityRuntimeButtons) {
       button.setAttribute("aria-pressed", runtimeOpen ? "true" : "false");
     }
     utilityAnalyticsButton?.setAttribute("aria-pressed", analyticsOpen ? "true" : "false");
+    utilityIntakeButton?.setAttribute("aria-pressed", intakeOpen ? "true" : "false");
   }
 
   setSidebarExpanded(storageGet(SIDEBAR_KEY, "expanded") !== "collapsed");
@@ -97,6 +102,9 @@
     if (target.closest("[data-runtime-tab]") && analyticsPanel && !analyticsPanel.hidden) {
       analyticsClose?.click();
     }
+    if (target.closest("[data-runtime-tab]") && intakePanel && !intakePanel.hidden) {
+      intakePanel.hidden = true;
+    }
     if (
       (target.closest('[data-t3-action="analytics"]') || target.closest("#morphicAnalyticsButton")) &&
       runtimeDrawer &&
@@ -104,9 +112,17 @@
     ) {
       runtimeDrawerClose?.click();
     }
+    if (
+      (target.closest('[data-t3-action="analytics"]') || target.closest("#morphicAnalyticsButton")) &&
+      intakePanel &&
+      !intakePanel.hidden
+    ) {
+      intakePanel.hidden = true;
+    }
   }, true);
 
   const inspectorObserver = new MutationObserver(syncInspectorState);
   if (runtimeDrawer) inspectorObserver.observe(runtimeDrawer, { attributes: true, attributeFilter: ["hidden"] });
   if (analyticsPanel) inspectorObserver.observe(analyticsPanel, { attributes: true, attributeFilter: ["hidden", "class"] });
+  if (intakePanel) inspectorObserver.observe(intakePanel, { attributes: true, attributeFilter: ["hidden"] });
 })();

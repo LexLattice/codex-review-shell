@@ -1,13 +1,14 @@
 # Direct Import Checkpoint Continuation Spec
 
-Status: implementation specification for the next direct-runtime bundle on the
-long-lived `codex/direct-chatgpt-harness` branch.
+Status: implemented foundation; live request shape promoted through RUG-008 and
+now consumed by Direct Workbench thread intake.
 
 Related docs:
 
 - [DIRECT_CODEX_APP_SERVER_REPLACEMENT_SPEC.md](./DIRECT_CODEX_APP_SERVER_REPLACEMENT_SPEC.md)
 - [DIRECT_LEGACY_IMPORT_CHECKPOINT_SPEC.md](./DIRECT_LEGACY_IMPORT_CHECKPOINT_SPEC.md)
 - [DIRECT_IMPORT_UX_STATUS_SPEC.md](./DIRECT_IMPORT_UX_STATUS_SPEC.md)
+- [DIRECT_WORKBENCH_THREAD_INTAKE_SPEC.md](./DIRECT_WORKBENCH_THREAD_INTAKE_SPEC.md)
 - [DIRECT_LIVE_TEXT_TURN_SURFACE_SPEC.md](./DIRECT_LIVE_TEXT_TURN_SURFACE_SPEC.md)
 - [DIRECT_LIVE_PROBE_EVIDENCE_PROMOTION_SPEC.md](./DIRECT_LIVE_PROBE_EVIDENCE_PROMOTION_SPEC.md)
 - [DIRECT_READONLY_TOOL_CONTINUATION_SPEC.md](./DIRECT_READONLY_TOOL_CONTINUATION_SPEC.md)
@@ -703,10 +704,16 @@ Manual probe bootstrap:
 CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE=1
 ```
 
-may create the first `runtime_probed` evidence for this request shape. Normal
+may create the first `runtime_probed` evidence for a new request shape. Normal
 UI cannot use that bootstrap bypass. Probe evidence is local, redacted, scoped
 to the exact profile/auth/account/endpoint/model/seed/request/version tuple, and
 must not mutate committed ODEU baselines.
+
+The production Direct Workbench intake path binds the accepted RUG-008 witness
+`rug008_import_checkpoint_continuation_live_20260518` for the already promoted
+request shape. Therefore that exact scope no longer requires the manual flag;
+changed provider/request scopes still fail closed until separately probed and
+promoted.
 
 One successful checkpoint continuation proves only that exact scope. It does
 not promote:
