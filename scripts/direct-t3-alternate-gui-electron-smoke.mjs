@@ -36,6 +36,8 @@ const userDataRoot = path.join(testRoot, "profile");
 const screenshotPath = process.env.CODEX_T3_GUI_SCREENSHOT || path.join(testRoot, "t3-direct-gui.png");
 const intakeScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-intake.png");
 const projectDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-project-directory.png");
+const threadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-directory.png");
+const narrowThreadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-directory-narrow.png");
 fs.mkdirSync(userDataRoot, { recursive: true, mode: 0o700 });
 
 fs.writeFileSync(path.join(userDataRoot, "workspace-config.json"), `${JSON.stringify({
@@ -182,6 +184,45 @@ try {
   assert.equal(persistedConfig.projects[0].lastActiveBindingId, "binding_direct_workbench_startup");
   assert.match(persistedConfig.projects[0].laneBindings[0].lastActivatedAt, /^\d{4}-\d{2}-\d{2}T/);
 
+  await page.waitForFunction(() => document.querySelectorAll("#morphicThreadRailList .morphic-thread-tab").length === 1);
+  assert.equal(await page.locator("#morphicThreadRail").isVisible(), true);
+  assert.match(await page.locator("#morphicThreadDirectoryStatus").innerText(), /1 thread/);
+  const firstProjectThreadId = await page.locator("#morphicThreadRailList .morphic-thread-tab").getAttribute("data-thread-id");
+  assert.ok(firstProjectThreadId);
+  assert.equal(
+    await page.locator("#morphicThreadRailList .morphic-thread-tab").getAttribute("data-runtime-path"),
+    "direct-fixture",
+  );
+  assert.equal(
+    await page.locator("#morphicThreadRailList .morphic-thread-tab").getAttribute("data-source-kind"),
+    "direct",
+  );
+  assert.equal(await page.locator("#morphicThreadRailList .morphic-thread-tab.active").count(), 1);
+  const initialThreadGeometry = await page.evaluate(() => {
+    const label = document.querySelector(".t3-sidebar-section-label")?.getBoundingClientRect();
+    const row = document.querySelector("#morphicThreadRailList .morphic-thread-tab")?.getBoundingClientRect();
+    return {
+      labelBottom: label?.bottom || 0,
+      rowTop: row?.top || 0,
+    };
+  });
+  const initialThreadGap = initialThreadGeometry.rowTop - initialThreadGeometry.labelBottom;
+  assert.ok(
+    initialThreadGap >= 0 && initialThreadGap < 24,
+    `Thread directory rows drifted away from their heading: ${JSON.stringify(initialThreadGeometry)}`,
+  );
+  await page.locator("#t3SidebarNewThread").click();
+  await page.waitForFunction(() => document.querySelectorAll("#morphicThreadRailList .morphic-thread-tab").length === 2);
+  const secondProjectThreadId = await page.locator("#morphicThreadRailList .morphic-thread-tab.active").getAttribute("data-thread-id");
+  assert.ok(secondProjectThreadId);
+  assert.notEqual(secondProjectThreadId, firstProjectThreadId);
+  await page.locator(`#morphicThreadRailList .morphic-thread-tab[data-thread-id="${firstProjectThreadId}"]`).click();
+  await page.waitForFunction(
+    (threadId) => document.querySelector("#morphicThreadRailList .morphic-thread-tab.active")?.dataset?.threadId === threadId,
+    firstProjectThreadId,
+  );
+  await page.screenshot({ path: threadDirectoryScreenshotPath, fullPage: true });
+
   const worldManagerAuthorityExposed = await page.evaluate(
     () => typeof window.codexSurfaceBridge.getWorldManagerSnapshot === "function",
   );
@@ -247,6 +288,12 @@ try {
   assert.equal(switchedBootstrapPayload.project.id, "project_t3_windows_fixture");
   assert.equal(switchedBootstrapPayload.initialThreadId, "thread_direct_workbench_windows");
   assert.equal(switchedBootstrapPayload.initialThreadTitle, "Windows bound thread");
+  await page.waitForFunction(() => document.querySelectorAll("#morphicThreadRailList .morphic-thread-tab").length === 1);
+  const windowsThreadId = await page.locator("#morphicThreadRailList .morphic-thread-tab").getAttribute("data-thread-id");
+  assert.ok(windowsThreadId);
+  assert.notEqual(windowsThreadId, firstProjectThreadId);
+  assert.notEqual(windowsThreadId, secondProjectThreadId);
+  assert.equal(await page.locator(`#morphicThreadRailList .morphic-thread-tab[data-thread-id="${firstProjectThreadId}"]`).count(), 0);
 
   await page.locator('.t3-utility-rail [data-t3-action="projects"]').click();
   await page.locator("#directProjectDirectory:not([hidden])").waitFor({ state: "visible" });
@@ -265,6 +312,28 @@ try {
   await page.locator('.t3-utility-rail [data-t3-action="threads"]').click();
   assert.equal(await page.locator("#codexShell").getAttribute("data-t3-sidebar"), "expanded");
 
+  const originalViewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  await page.setViewportSize({ width: 700, height: 900 });
+  await page.waitForFunction(() => window.innerWidth <= 720);
+  assert.equal(await page.locator("#morphicThreadRail").isVisible(), true);
+  assert.equal(
+    await page.locator("#morphicThreadRailList").evaluate((element) => getComputedStyle(element).flexDirection),
+    "row",
+  );
+  assert.equal(await page.locator("#morphicThreadRailList .morphic-thread-tab").count(), 1);
+  const narrowHeaderGeometry = await page.evaluate(() => {
+    const header = document.querySelector("#morphicCockpitBar")?.getBoundingClientRect();
+    const actions = document.querySelector("#morphicCockpitBar .compact-thread-actions")?.getBoundingClientRect();
+    return { headerBottom: header?.bottom || 0, actionsBottom: actions?.bottom || 0 };
+  });
+  assert.ok(
+    narrowHeaderGeometry.actionsBottom <= narrowHeaderGeometry.headerBottom + 1,
+    `Narrow header actions escaped into the thread directory: ${JSON.stringify(narrowHeaderGeometry)}`,
+  );
+  await page.screenshot({ path: narrowThreadDirectoryScreenshotPath, fullPage: true });
+  await page.setViewportSize(originalViewport);
+  await page.waitForFunction(() => window.innerWidth > 720);
+
   await page.screenshot({ path: screenshotPath, fullPage: true });
   assert.deepEqual(rendererErrors, [], rendererErrors.join("\n"));
 
@@ -276,7 +345,10 @@ try {
     controlPlane: "direct-thread",
     worldManagerAuthorityExposed: false,
     projectSwitchObserved: true,
+    runtimeNeutralThreadDirectoryObserved: true,
     screenshotPath,
+    threadDirectoryScreenshotPath,
+    narrowThreadDirectoryScreenshotPath,
     intakeScreenshotPath,
     projectDirectoryScreenshotPath,
   }, null, 2));

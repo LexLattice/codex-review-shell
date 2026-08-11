@@ -33,6 +33,7 @@ const payload = decodePayload() || {};
 const project = payload.project || null;
 let connection = payload.codexConnection || null;
 const appServerEvidence = window.CodexAppServerEvidence;
+const threadDirectoryModel = window.DirectWorkbenchThreadDirectoryModel;
 
 const USER_MESSAGE_PAGE_SIZE = 10;
 const USER_MESSAGE_PREVIEW_LINES = 10;
@@ -184,9 +185,17 @@ const state = {
   directUiPolicyView: null,
   directThreadList: [],
   directThreadDeck: null,
+  directThreadDirectory: null,
   directThreadListStatus: "idle",
   directThreadListError: "",
+  directThreadListRequestId: 0,
   directThreadOpenRequestId: 0,
+  directThreadFocusTransition: {
+    state: "idle",
+    targetThreadId: "",
+    reason: "",
+  },
+  directThreadRefreshTimer: null,
   composerMenu: "",
   composerAttachments: [],
   composerAttachmentGeneration: 0,
@@ -528,6 +537,7 @@ const els = {
   morphicThreadRail: document.getElementById("morphicThreadRail"),
   morphicThreadRailList: document.getElementById("morphicThreadRailList"),
   morphicThreadDirectoryButton: document.getElementById("morphicThreadDirectoryButton"),
+  morphicThreadDirectoryStatus: document.getElementById("morphicThreadDirectoryStatus"),
   projectName: document.getElementById("projectName"),
   repoPath: document.getElementById("repoPath"),
   connectionBadge: document.getElementById("connectionBadge"),
@@ -940,7 +950,11 @@ function firstEvidence(refs) {
 }
 
 function workspaceRootText() {
-  return project?.workspace?.linuxPath || project?.workspace?.localPath || project?.repoPath || "";
+  return project?.workspace?.linuxPath ||
+    project?.workspace?.windowsPath ||
+    project?.workspace?.localPath ||
+    project?.repoPath ||
+    "";
 }
 
 function basenameFromPath(value) {
@@ -5110,6 +5124,68 @@ function isDirectLiveTextSurface() {
   return connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT;
 }
 
+function isDirectRuntimeSurface() {
+  return DIRECT_TRANSPORTS.has(connection?.transport);
+}
+
+function isDirectWorkbenchExperience() {
+  return payload?.appExperience?.id === "direct-workbench" &&
+    payload?.appExperience?.controlPlane === "direct-thread";
+}
+
+function threadDirectoryRuntimePath() {
+  if (connection?.transport === DIRECT_FIXTURE_TRANSPORT) return "direct-fixture";
+  if (connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT) {
+    return connection?.directTier === "implementation-lane" ? "direct-implementation" : "direct-text";
+  }
+  return "app-server";
+}
+
+function threadDirectoryEnabled() {
+  const experienceEligible = isDirectWorkbenchExperience() || isDirectLiveTextSurface();
+  return Boolean(
+    threadDirectoryModel &&
+    experienceEligible &&
+    state.connected &&
+    hasCapability("threads", "canList"),
+  );
+}
+
+function pendingProviderRequestCount() {
+  return [...state.serverRequests.values()].filter((request) => {
+    const status = String(request?.status || "pending").toLowerCase();
+    return status === "pending" || status === "responding";
+  }).length;
+}
+
+function threadDirectoryBlockerLabel(code) {
+  const labels = {
+    thread_already_active: "This is the active thread.",
+    active_turn_in_current_thread: "Finish or stop the current turn before changing threads.",
+    pending_provider_request_in_current_thread: "Resolve the pending provider request before changing threads.",
+    thread_focus_transition_in_progress: "Another thread focus transition is in progress.",
+    thread_directory_loading: "Wait for the thread directory refresh to finish.",
+    thread_directory_refresh_failed: "Refresh the directory before changing threads.",
+    provider_thread_focus_unavailable: "The selected runtime cannot resume or read this thread.",
+    ephemeral_thread_unavailable: "Ephemeral threads cannot be resumed from the directory.",
+    session_unreadable: "The Direct session could not be read.",
+    thread_identity_missing: "The runtime did not provide a thread identity.",
+    thread_focus_failed: "The target thread could not be attached. The current transcript remains active.",
+  };
+  return labels[code] || String(code || "Thread focus is unavailable.").replaceAll("_", " ");
+}
+
+function threadFocusPosture(row) {
+  return threadDirectoryModel.resolveThreadFocusPosture(row, {
+    activeThreadId: state.threadId,
+    currentTurnActive: turnIsActive(),
+    pendingProviderRequestCount: pendingProviderRequestCount(),
+    transitionState: state.directThreadFocusTransition.state,
+    transitionTargetThreadId: state.directThreadFocusTransition.targetThreadId,
+    directoryStatus: state.directThreadListStatus,
+  });
+}
+
 function directLiveTextReadinessStatus() {
   return directSurfaceProjection()?.liveTextStatus || connection?.directLiveText || null;
 }
@@ -5181,35 +5257,20 @@ function activeDirectThreadRow() {
 }
 
 function morphicRailRows() {
-  const rows = Array.isArray(state.directThreadDeck?.rows)
-    ? state.directThreadDeck.rows
-    : Array.isArray(state.directThreadList) ? state.directThreadList : [];
-  const selectedWorkThreadId = state.directSurfaceProjection?.operatorBroker?.selectedWorkThreadId ||
-    state.directSurfaceProjection?.workThreads?.resolutionReport?.selectedWorkThreadId ||
-    "";
-  const now = Date.now();
-  const recentWindowMs = 14 * 24 * 60 * 60 * 1000;
-  return rows
-    .filter(Boolean)
-    .filter((entry) => {
-      const id = String(entry.threadId || entry.id || "").trim();
-      if (!id) return false;
-      const isActive = id === String(state.threadId || "");
-      const isRunning = Number(entry.activeTurnCount || 0) > 0 || entry.displayState === "running";
-      const updated = Date.parse(entry.updatedAt || entry.createdAt || "");
-      const isRecent = Number.isFinite(updated) && now - updated <= recentWindowMs;
-      const workThreadLinked = Boolean(entry.workThreadId && selectedWorkThreadId === entry.workThreadId);
-      return isActive || isRunning || isRecent || workThreadLinked;
-    })
-    .slice(0, 12);
+  const rows = Array.isArray(state.directThreadDirectory?.rows)
+    ? state.directThreadDirectory.rows.filter(Boolean)
+    : [];
+  const active = rows.find((entry) => entry.threadId === String(state.threadId || ""));
+  return [active, ...rows.filter((entry) => entry !== active)].filter(Boolean).slice(0, 40);
 }
 
 function renderMorphicThreadRail() {
   if (!els.morphicThreadRail || !els.morphicThreadRailList) return;
-  const enabled = isDirectLiveTextSurface();
+  const enabled = threadDirectoryEnabled();
   els.morphicThreadRail.hidden = !enabled;
   if (!enabled) {
     els.morphicThreadRailList.replaceChildren();
+    if (els.morphicThreadDirectoryStatus) els.morphicThreadDirectoryStatus.textContent = "Directory unavailable";
     return;
   }
   const rows = morphicRailRows();
@@ -5218,45 +5279,74 @@ function renderMorphicThreadRail() {
     const empty = document.createElement("span");
     empty.className = "morphic-thread-empty";
     empty.textContent = state.directThreadListStatus === "loading"
-      ? "Refreshing direct threads..."
+      ? "Refreshing project threads…"
       : state.directThreadListStatus === "error"
         ? `Thread list unavailable: ${state.directThreadListError || "unknown error"}`
-        : "No recent direct threads.";
+        : "No project-scoped threads yet.";
     els.morphicThreadRailList.appendChild(empty);
   } else {
-    for (const entry of rows) {
-      const threadId = String(entry.threadId || entry.id || "").trim();
+    for (const row of rows) {
+      const threadId = String(row.threadId || "").trim();
       if (!threadId) continue;
-      const isActive = threadId === String(state.threadId || "");
-      const isRunning = Number(entry.activeTurnCount || 0) > 0 || entry.displayState === "running";
+      const posture = threadFocusPosture(row);
+      const isRunning = Number(row.activeTurnCount || 0) > 0;
       const button = document.createElement("button");
       button.type = "button";
-      button.className = `morphic-thread-tab${isActive ? " active" : ""}${isRunning ? " running" : ""}`;
+      button.className = `morphic-thread-tab${posture.selected ? " active" : ""}${isRunning ? " running" : ""}${posture.state === "opening" ? " opening" : ""}${posture.state === "blocked" ? " blocked" : ""}`;
       button.dataset.threadId = threadId;
-      button.disabled = !directThreadActionEnabled(entry, "focus");
+      button.dataset.state = posture.state;
+      button.dataset.runtimePath = row.runtimePath || "unknown";
+      button.dataset.sourceKind = row.sourceKind || "unknown";
+      button.disabled = !posture.enabled;
       button.title = [
-        entry.title || threadId,
+        row.displayTitle || threadId,
         threadId,
-        entry.workThreadId ? `WorkThread ${entry.workThreadId}` : "WorkThread unresolved",
-        entry.actions?.focus?.disabledReason || entry.actions?.focus?.effect || "",
+        `${row.sourceLabel || "Source unknown"} · ${row.runtimeLabel || "Runtime unknown"}`,
+        row.continuationLabel || "",
+        posture.blockerCodes.length ? threadDirectoryBlockerLabel(posture.blockerCodes[0]) : "Focus this thread",
       ].filter(Boolean).join("\n");
+      const copy = document.createElement("span");
+      copy.className = "morphic-thread-tab-copy";
       const title = document.createElement("span");
       title.className = "morphic-thread-tab-title";
-      title.textContent = entry.title || shortThreadId(threadId);
+      title.textContent = row.displayTitle || shortThreadId(threadId);
+      const evidence = document.createElement("span");
+      evidence.className = "morphic-thread-tab-evidence";
+      evidence.textContent = posture.blockerCodes.length && !posture.selected
+        ? threadDirectoryBlockerLabel(posture.blockerCodes[0])
+        : [row.sourceLabel, row.runtimeLabel, directThreadTimeLabel(row.updatedAt || row.createdAt)].filter(Boolean).join(" · ");
+      copy.append(title, evidence);
       const stateLabel = document.createElement("span");
       stateLabel.className = "morphic-thread-tab-state";
-      stateLabel.textContent = isRunning ? "●" : directThreadTimeLabel(entry.updatedAt || entry.createdAt);
-      button.append(title, stateLabel);
+      stateLabel.textContent = posture.state === "opening"
+        ? "opening"
+        : posture.selected ? "active" : isRunning ? "running" : row.lifecycleLabel || "available";
+      button.append(copy, stateLabel);
       button.addEventListener("click", () => {
-        openDirectThread(threadId).catch((openError) => addSystemMessage(`Unable to open direct thread: ${openError.message}`));
+        focusWorkbenchThread(row).catch((openError) => addSystemMessage(`Unable to focus thread: ${openError.message}`));
       });
       els.morphicThreadRailList.appendChild(button);
     }
   }
   const loading = state.directThreadListStatus === "loading";
+  const projection = state.directThreadDirectory;
+  if (els.morphicThreadDirectoryStatus) {
+    els.morphicThreadDirectoryStatus.dataset.state = state.directThreadFocusTransition.state === "failed"
+      ? "failed"
+      : loading ? "loading" : projection?.partial ? "partial" : "ready";
+    els.morphicThreadDirectoryStatus.textContent = state.directThreadFocusTransition.state === "opening"
+      ? "Opening thread…"
+      : state.directThreadFocusTransition.state === "failed"
+        ? threadDirectoryBlockerLabel(state.directThreadFocusTransition.reason || "thread_focus_failed")
+        : state.directThreadListStatus === "error"
+          ? "Directory refresh failed"
+          : projection
+            ? `${projection.counts.rows} thread${projection.counts.rows === 1 ? "" : "s"}${projection.partial ? " · more available" : ""}`
+            : loading ? "Refreshing…" : "Directory ready";
+  }
   if (els.morphicThreadDirectoryButton) {
     els.morphicThreadDirectoryButton.disabled = loading;
-    els.morphicThreadDirectoryButton.title = loading ? "Refreshing direct thread directory." : "Refresh direct thread directory.";
+    els.morphicThreadDirectoryButton.title = loading ? "Refreshing project thread directory." : "Refresh project thread directory.";
   }
 }
 
@@ -5351,10 +5441,13 @@ function renderDirectThreadList() {
 }
 
 async function refreshDirectThreadList(options = {}) {
-  if (!isDirectLiveTextSurface() || !state.connected || !hasCapability("threads", "canList")) {
+  const requestId = state.directThreadListRequestId + 1;
+  state.directThreadListRequestId = requestId;
+  if (!threadDirectoryEnabled()) {
     state.directThreadList = [];
     state.directThreadDeck = null;
-    state.directThreadListStatus = isDirectLiveTextSurface() ? "unavailable" : "hidden";
+    state.directThreadDirectory = null;
+    state.directThreadListStatus = isDirectWorkbenchExperience() ? "unavailable" : "hidden";
     state.directThreadListError = "";
     renderDirectThreadList();
     return;
@@ -5365,20 +5458,44 @@ async function refreshDirectThreadList(options = {}) {
   try {
     const result = await rpc("thread/list", {
       limit: options.limit || 40,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      cwd: workspaceRootText() || null,
       defaultModel: activeModelId() || null,
       defaultReasoningEffort: requestedReasoningEffort() || null,
     });
-    state.directThreadList = Array.isArray(result?.threads) ? result.threads.filter(Boolean) : [];
+    if (requestId !== state.directThreadListRequestId) return;
+    const runtimeThreads = (Array.isArray(result?.threads)
+      ? result.threads
+      : Array.isArray(result?.data) ? result.data : []).filter(Boolean);
     state.directThreadDeck = result?.deck && result.deck.schema === "direct_thread_deck_projection@1" ? result.deck : null;
-    state.directThreadListStatus = "ready";
+    state.directThreadDirectory = threadDirectoryModel.normalizeThreadDirectory(result, {
+      projectId: project?.id || connection?.projectId || "",
+      runtimePath: threadDirectoryRuntimePath(),
+      observedAt: new Date().toISOString(),
+      capabilities: capabilityArea("threads"),
+    });
+    state.directThreadList = isDirectRuntimeSurface()
+      ? runtimeThreads
+      : state.directThreadDirectory.rows;
+    state.directThreadListStatus = state.directThreadDirectory.partial ? "partial" : "ready";
     state.directThreadListError = "";
   } catch (error) {
+    if (requestId !== state.directThreadListRequestId) return;
     state.directThreadListStatus = "error";
     state.directThreadListError = error.message || "unknown error";
-    state.directThreadDeck = null;
-    if (options.showErrors !== false) addSystemMessage(`Direct thread list failed: ${state.directThreadListError}`);
+    if (options.showErrors !== false) addSystemMessage(`Thread directory refresh failed: ${state.directThreadListError}`);
   }
   renderDirectThreadList();
+}
+
+function scheduleThreadDirectoryRefresh(reason = "runtime-event") {
+  if (!threadDirectoryEnabled()) return;
+  if (state.directThreadRefreshTimer) clearTimeout(state.directThreadRefreshTimer);
+  state.directThreadRefreshTimer = setTimeout(() => {
+    state.directThreadRefreshTimer = null;
+    refreshDirectThreadList({ showErrors: false, reason }).catch(() => {});
+  }, 160);
 }
 
 async function openDirectThread(threadId) {
@@ -5406,6 +5523,48 @@ async function openDirectThread(threadId) {
     title: result?.thread?.title || requestedThreadId,
     evidence: "direct-thread-strip-open",
   });
+  renderDirectThreadList();
+}
+
+async function focusWorkbenchThread(row = {}) {
+  const posture = threadFocusPosture(row);
+  if (!posture.enabled) {
+    const code = posture.blockerCodes[0] || "thread_focus_unavailable";
+    const error = new Error(threadDirectoryBlockerLabel(code));
+    error.code = code;
+    throw error;
+  }
+  const threadId = String(row.threadId || "").trim();
+  state.directThreadFocusTransition = {
+    state: "opening",
+    targetThreadId: threadId,
+    reason: "",
+  };
+  renderDirectThreadList();
+  try {
+    if (isDirectRuntimeSurface()) {
+      await openDirectThread(threadId);
+    } else {
+      await openThreadHybrid(threadId, "", "", row.displayTitle || "", {
+        requireProviderAttach: true,
+      });
+    }
+    state.directThreadFocusTransition = {
+      state: "completed",
+      targetThreadId: threadId,
+      reason: "",
+    };
+    await refreshDirectThreadList({ showErrors: false });
+  } catch (error) {
+    const stableFailureCode = String(error?.code || "").trim();
+    state.directThreadFocusTransition = {
+      state: "failed",
+      targetThreadId: threadId,
+      reason: stableFailureCode || "thread_focus_failed",
+    };
+    renderDirectThreadList();
+    throw error;
+  }
   renderDirectThreadList();
 }
 
@@ -5976,6 +6135,7 @@ function renderServerRequest(request) {
   maybeReportContextManagementControl(request);
   state.serverRequests.set(request.key, request);
   renderRuntimeConstitution();
+  renderDirectThreadList();
   const node = ensureMessage(requestMessageId(request), "system", request.title || "Codex request");
   node.dataset.requestKey = request.key;
   const bubble = node.querySelector(".bubble");
@@ -6444,21 +6604,19 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
 }
 
 async function loadExistingThreadOrStartNew() {
-  if (isDirectLiveTextSurface() && hasCapability("threads", "canList")) {
+  if (threadDirectoryEnabled()) {
     await refreshDirectThreadList({ showErrors: false });
     let lastOpenError = null;
-    for (const entry of state.directThreadList) {
-      const threadId = String(entry?.threadId || entry?.id || "").trim();
-      if (!threadId) continue;
+    for (const row of state.directThreadDirectory?.rows || []) {
       try {
-        await openDirectThread(threadId);
+        await focusWorkbenchThread(row);
         return;
       } catch (error) {
         lastOpenError = error;
       }
     }
     if (lastOpenError) {
-      addSystemMessage(`Unable to restore existing direct thread: ${lastOpenError.message}. Starting a new thread instead.`);
+      addSystemMessage(`Unable to restore an existing project thread: ${lastOpenError.message}. Starting a new thread instead.`);
     }
   }
   setNotice("Preparing Codex session…", "Starting a fresh Codex thread for this workspace.", { showNewThread: true });
@@ -6571,10 +6729,11 @@ function applyLiveThreadResult(result) {
 async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "", titleHint = "", options = {}) {
   const requestedThreadId = String(threadId || "").trim();
   if (!requestedThreadId) throw new Error("Missing Codex thread id.");
-  const verifiedLiveResult = options.requireProviderResume === true
+  const verifyProviderBeforeReplacement = options.requireProviderResume === true || options.requireProviderAttach === true;
+  const verifiedLiveResult = verifyProviderBeforeReplacement
     ? await attachLiveThread(requestedThreadId, sessionFilePath, {
         excludeTurns: false,
-        skipReadFallback: true,
+        skipReadFallback: options.requireProviderResume === true,
       })
     : null;
   const openRequestId = state.openRequestId + 1;
@@ -8371,6 +8530,17 @@ async function refreshEnvironmentRuntimeStatus(environmentId, threadId = "", exp
 }
 
 function handleNotification(method, params) {
+  if ([
+    "thread/started",
+    "thread/status/changed",
+    "thread/name/updated",
+    "thread/archived",
+    "thread/unarchived",
+    "turn/started",
+    "turn/completed",
+  ].includes(method)) {
+    scheduleThreadDirectoryRefresh(method);
+  }
   if (method === "error") {
     if (!notificationMatchesPrimaryThread(params)) return;
     const turnId = String(params?.turnId || state.turnId || "");
@@ -8865,6 +9035,9 @@ async function connect() {
     } else {
       await loadExistingThreadOrStartNew();
     }
+    if (threadDirectoryEnabled() && ["idle", "unavailable"].includes(state.directThreadListStatus)) {
+      await refreshDirectThreadList({ showErrors: false });
+    }
     enforceDirectLiveTextStartupReadiness();
   } catch (error) {
     addSystemMessage(`Codex initialization failed: ${error.message}`);
@@ -8931,7 +9104,7 @@ els.morphicNewThreadButton?.addEventListener("click", () => {
   starter().catch((error) => addSystemMessage(`New thread failed: ${error.message}`));
 });
 els.morphicThreadDirectoryButton?.addEventListener("click", () => {
-  refreshDirectThreadList({ showErrors: true }).catch((error) => addSystemMessage(`Direct thread refresh failed: ${error.message}`));
+  refreshDirectThreadList({ showErrors: true }).catch((error) => addSystemMessage(`Thread directory refresh failed: ${error.message}`));
 });
 els.chooseAttachmentButton?.addEventListener("click", async () => {
   if (!bridge?.chooseAttachmentFiles || !project?.id) {

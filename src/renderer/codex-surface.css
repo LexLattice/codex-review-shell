@@ -227,6 +227,22 @@ textarea {
   white-space: nowrap;
 }
 
+.morphic-thread-tab-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.morphic-thread-tab-evidence {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .morphic-thread-tab-state {
   flex: 0 0 auto;
   opacity: 0.86;
@@ -241,6 +257,21 @@ textarea {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.morphic-thread-directory-status {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.morphic-thread-directory-status[data-state="failed"] {
+  color: var(--danger);
+}
+
+.morphic-thread-directory-status[data-state="partial"],
+.morphic-thread-directory-status[data-state="loading"] {
+  color: var(--warning);
 }
 
 .morphic-rail-action {
