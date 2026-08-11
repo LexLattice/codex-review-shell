@@ -113,19 +113,27 @@ npm install
 npm run start
 ```
 
-## Direct Workbench
+## Direct Workbench and WorldManager Studio
 
-Direct Workbench is the explicit thread-first experience for conventional
-Codex work. It retains the existing Direct runtime, thread, approval, and
-evidence contracts while using the T3-informed project/thread geometry:
+The two primary experiences now have explicit launch and control-plane
+identities. Direct Workbench preserves the conventional thread-first Codex
+workflow using the T3-informed project/thread geometry:
 
 ```bash
 npm run dev:direct-workbench
 ```
 
-The legacy three-plane review shell remains the default `npm run dev` path.
-WorldManager Studio is a reserved, unavailable experience until its dormant
-semantic stack is reintroduced through separately reviewed slices. See the
+WorldManager Studio retains the semantic settlement, admission, and worldstate
+path:
+
+```bash
+npm run dev:world-manager-studio
+```
+
+The normal legacy shell remains the default `npm run dev` compatibility path.
+Direct Workbench currently connects real Runtime and Analytics surfaces;
+Files, Diff, Terminal, and Browser remain visibly unavailable until bounded
+Direct tenant adapters exist. See the
 [experience split spec](./docs/DIRECT_WORKBENCH_AND_WORLDMANAGER_STUDIO_SPLIT_SPEC.md)
 and [T3 geometry experiment](./docs/DIRECT_T3_ALTERNATE_GUI_EXPERIMENT.md).
 
@@ -141,8 +149,10 @@ cd C:\LexLattice\codex-review-shell
 What it does:
 
 - mirrors `\\wsl.localhost\<distro>\<path>` to the Windows repo root via `sync-from-wsl.cmd`
-- runs `npm install` on Windows after mirror
+- runs `npm install` only when `package.json` or `package-lock.json` changed, or when the Windows dependency installation is incomplete
 - writes `.wsl-sync-head.txt` in the Windows repo with the mirrored WSL commit hash
+- writes a timestamped log pair under `%LOCALAPPDATA%\codex-review-shell-direct\launcher-logs` and records the newest pair in `launcher-latest.txt`
+- prints the active preflight stage in the launcher console
 - starts Electron via `scripts/run-electron.mjs`
 
 Default source path is `/home/rose/work/LexLattice/codex-review-shell` in `Ubuntu`.
@@ -155,6 +165,8 @@ If your Windows checkout predates these scripts, copy these tracked files from W
 
 - `start-codex-review-shell.cmd`
 - `start-direct-workbench.cmd`
+- `start-world-manager-studio.cmd`
+- `start-world-manager-studio-mock.cmd`
 - `start-codex-review-shell-t3.cmd`
 - `sync-from-wsl.cmd`
 

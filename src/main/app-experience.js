@@ -31,7 +31,7 @@ const EXPERIENCE_DEFINITIONS = Object.freeze({
     controlPlane: "worldmanager-semantic",
     interactionLaw: "semantic-settlement-and-admission",
     rendererDocument: "world-manager-surface.html",
-    available: false,
+    available: true,
   }),
 });
 
@@ -43,6 +43,10 @@ function experienceError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function resolveWorldManagerVariant(env) {
+  return env.CODEX_WORLD_MANAGER_MOCKUP === "1" ? "mockup" : "production";
 }
 
 function resolveAppExperience(env = process.env) {
@@ -57,7 +61,10 @@ function resolveAppExperience(env = process.env) {
   let id = explicit;
   let source = "explicit";
   if (!id) {
-    if (env.CODEX_DIRECT_T3_GUI === "1") {
+    if (env.CODEX_WORLD_MANAGER === "1" || env.CODEX_WORLD_MANAGER_MOCKUP === "1") {
+      id = APP_EXPERIENCES.WORLD_MANAGER_STUDIO;
+      source = "compatibility";
+    } else if (env.CODEX_DIRECT_T3_GUI === "1") {
       id = APP_EXPERIENCES.DIRECT_WORKBENCH;
       source = "compatibility";
     } else {
@@ -76,6 +83,9 @@ function resolveAppExperience(env = process.env) {
 
   return Object.freeze({
     ...definition,
+    variant: id === APP_EXPERIENCES.WORLD_MANAGER_STUDIO
+      ? resolveWorldManagerVariant(env)
+      : "standard",
     source,
   });
 }
@@ -88,6 +98,7 @@ function publicAppExperience(experience) {
     controlPlane: resolved.controlPlane,
     interactionLaw: resolved.interactionLaw,
     rendererDocument: resolved.rendererDocument,
+    variant: resolved.variant,
   };
 }
 

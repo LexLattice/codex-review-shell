@@ -47,9 +47,265 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   openContextMenu: (request) => ipcRenderer.invoke("context-menu:open", request || {}),
   readStoredThreadTranscript: (projectId, threadId, sourceHome = "", sessionFilePath = "", limit = 800) =>
     ipcRenderer.invoke("codex-thread:transcript", { projectId, threadId, sourceHome, sessionFilePath, limit }),
+  getWorldManagerSemanticSnapshot: () =>
+    ipcRenderer.invoke("world-manager-semantic:snapshot"),
+  submitWorldManagerSemanticMessage: (payload = {}) =>
+    ipcRenderer.invoke("world-manager-semantic:submit", payload),
+  inspectWorldManagerProposal: (proposalId) =>
+    ipcRenderer.invoke("world-manager-semantic:inspect-proposal", { proposalId }),
+  admitWorldManagerProposal: (proposalId, actorId = "operator") =>
+    ipcRenderer.invoke("world-manager-semantic:admit-proposal", { proposalId, actorId }),
+  resetWorldManagerSemanticMockup: (mode = "fixture") =>
+    ipcRenderer.invoke("world-manager-semantic:reset", { mode }),
+  getWorldManagerSnapshot: () =>
+    ipcRenderer.invoke("world-manager:snapshot"),
+  getWorldManagerRuntimeSettings: (refreshMetadata = false) =>
+    ipcRenderer.invoke("world-manager:runtime-settings", {
+      refreshMetadata,
+    }),
+  updateWorldManagerRuntimeSettings: (payload = {}) =>
+    ipcRenderer.invoke(
+      "world-manager:update-runtime-settings",
+      payload,
+    ),
+  getWorldManagerEpistemicFabric: () =>
+    ipcRenderer.invoke("world-manager:epistemic-fabric"),
+  acknowledgeWorldManagerLedgerDelivery: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:ack-ledger-delivery", payload),
+  importWorldManagerLedgerDeliveryContext: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:import-ledger-delivery", payload),
+  requestWorldManagerArtifactAdmission: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:request-artifact-admission", payload),
+  submitWorldManagerMessage: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:submit", payload),
+  transitionWorldManagerDecision: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:transition-decision", payload),
+  inspectWorldManagerPlanProposal: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:inspect-plan-proposal", payload),
+  admitWorldManagerPlanProposal: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:admit-plan-proposal", payload),
+  prepareWorldManagerPlanExecution: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:prepare-plan-execution", payload),
+  authorizeWorldManagerPlanExecution: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:authorize-plan-execution", payload),
+  completeWorldManagerPlanExecution: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:complete-plan-execution", payload),
+  focusWorldManagerProject: (projectId, expectedProjectionRevision = null) =>
+    ipcRenderer.invoke("world-manager:focus-project", { projectId, expectedProjectionRevision }),
+  inspectWorldManagerProjectGenesisCandidate: (
+    candidateId,
+    semanticRegionBindingRef = null,
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:inspect-project-genesis",
+      {
+        candidateId,
+        semanticRegionBindingRef,
+      },
+    ),
+  admitWorldManagerProjectGenesisCandidate: (
+    candidateId,
+    actorId = "operator",
+    semanticRegionBindingRef = null,
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:admit-project-genesis",
+      {
+        candidateId,
+        actorId,
+        semanticRegionBindingRef,
+      },
+    ),
+  provisionWorldManagerProjectSubstrate: (
+    projectId,
+    workspace,
+    actorId = "operator",
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:provision-project-substrate",
+      {
+        projectId,
+        workspace,
+        actorId,
+      },
+    ),
+  reviewWorldManagerAroReconstruction: (
+    candidateId,
+    candidateDigest,
+    expectedCandidateRevision,
+    semanticRegionBindingRef,
+    actorId = "operator",
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:review-aro-reconstruction",
+      {
+        candidateId,
+        candidateDigest,
+        expectedCandidateRevision,
+        semanticRegionBindingRef,
+        actorId,
+      },
+    ),
+  admitWorldManagerAroReconstruction: (
+    candidateId,
+    candidateDigest,
+    expectedCandidateRevision,
+    semanticRegionBindingRef,
+    actorId = "operator",
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:admit-aro-reconstruction",
+      {
+        candidateId,
+        candidateDigest,
+        expectedCandidateRevision,
+        semanticRegionBindingRef,
+        actorId,
+      },
+    ),
+  defineWorldManagerAroTarget: (
+    projectId,
+    currentAroId,
+    currentAroDigest,
+    targetIntent,
+    semanticRegionBindingRef,
+    retry = false,
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:define-aro-target",
+      {
+        projectId,
+        currentAroId,
+        currentAroDigest,
+        targetIntent,
+        semanticRegionBindingRef,
+        retry,
+      },
+    ),
+  retryWorldManagerAroReconstruction: (
+    projectId,
+    expectedRunDigest = "",
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:retry-aro-reconstruction",
+      {
+        projectId,
+        expectedRunDigest,
+      },
+    ),
+  compileWorldManagerAroMutationContract: (
+    projectId,
+    comparisonId,
+    comparisonDigest,
+    semanticRegionBindingRef,
+    retry = false,
+    expectedRunDigest = "",
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:compile-aro-mutation-contract",
+      {
+        projectId,
+        comparisonId,
+        comparisonDigest,
+        semanticRegionBindingRef,
+        retry,
+        expectedRunDigest,
+      },
+    ),
+  mapWorldManagerAroRealizationContext: (
+    projectId,
+    contractId,
+    contractDigest,
+    semanticRegionBindingRef,
+    retry = false,
+    expectedRunDigest = "",
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:map-aro-realization-context",
+      {
+        projectId,
+        contractId,
+        contractDigest,
+        semanticRegionBindingRef,
+        retry,
+        expectedRunDigest,
+      },
+    ),
+  prepareWorldManagerAroWorker: (
+    payload = {},
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:prepare-aro-worker",
+      payload,
+    ),
+  authorizeWorldManagerAroWorker: (
+    payload = {},
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:authorize-aro-worker",
+      payload,
+    ),
+  respondWorldManagerAroWorkerRequest: (
+    key,
+    result = {},
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:respond-aro-worker-request",
+      {
+        key,
+        result,
+      },
+    ),
+  captureWorldManagerAroExecutionEvidence: (
+    payload = {},
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:capture-aro-execution-evidence",
+      payload,
+    ),
+  verifyWorldManagerAroRealization: (
+    payload = {},
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:verify-aro-realization",
+      payload,
+    ),
+  applyWorldManagerThoughtBrush: (
+    payload = {},
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:apply-thought-brush",
+      payload,
+    ),
+  undoWorldManagerContextCanvas: (
+    payload = {},
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:undo-context-canvas",
+      payload,
+    ),
+  extractWorldManagerContextCanvasInsight: (
+    payload = {},
+  ) =>
+    ipcRenderer.invoke(
+      "world-manager:extract-context-canvas-insight",
+      payload,
+    ),
+  getWorldManagerStatus: () =>
+    ipcRenderer.invoke("world-manager:status"),
   onEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("codex-surface:event", listener);
     return () => ipcRenderer.removeListener("codex-surface:event", listener);
+  },
+  onWorldManagerSemanticEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("world-manager-semantic:event", listener);
+    return () => ipcRenderer.removeListener("world-manager-semantic:event", listener);
+  },
+  onWorldManagerEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("world-manager:event", listener);
+    return () => ipcRenderer.removeListener("world-manager:event", listener);
   },
 });

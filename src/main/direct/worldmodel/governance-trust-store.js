@@ -158,11 +158,34 @@ function installAuthoritativeWorldmodelGovernanceRegistry(store, graph, governan
 function readAuthoritativeWorldmodelGraph(store, graph) {
   const value = refresh(store); assertAnchor(store, graph); const entry = value.state.graphs[graph.graphId]; if (!entry || entry.headGraphDigest !== graph.digest) fail("direct_worldmodel_trust_store_stale_or_swapped_graph"); return { graph: clone(entry.graph), governanceRegistry: clone(entry.governanceRegistry), registryRef: clone(entry.registryRef), storeRevision: entry.storeRevision, trustAnchorRef: clone(entry.anchor) };
 }
+function readAuthoritativeWorldmodelGraphById(store, graphId) {
+  const value = refresh(store);
+  const id = normalizeId(graphId, "hierarchical_worldmodel_graph");
+  const entry = value.state.graphs[id];
+  if (!entry?.graph || entry.graph.graphId !== id || entry.headGraphDigest !== entry.graph.digest)
+    fail("direct_worldmodel_trust_store_graph_missing", id);
+  assertAnchor(store, entry.graph);
+  return {
+    graph: clone(entry.graph),
+    governanceRegistry: clone(entry.governanceRegistry),
+    registryRef: clone(entry.registryRef),
+    storeRevision: entry.storeRevision,
+    trustAnchorRef: clone(entry.anchor),
+  };
+}
 function admitWorldmodelGovernanceRequest(store, input = {}) {
   const value = refresh(store); const current = readAuthoritativeWorldmodelGraph(store, input.graph); const context = isPlainObject(input.context) ? input.context : {};
   requireGovernanceProvenanceAdmission(current.governanceRegistry, { ...context, registryRef: current.registryRef, expectedRegistryRevision: current.governanceRegistry.revision });
   const next = clone(value.state); next.revision += 1; const entry = next.graphs[input.graph.graphId]; entry.storeRevision = next.revision;
   const admission = { schema: DIRECT_WORLDMODEL_STORE_ADMISSION_SCHEMA, admissionId: normalizeId(input.admissionId, "worldmodel_store_admission"), storeId: next.storeId, authorityIdentityDigest: next.authorityIdentityDigest, trustAnchorRef: current.trustAnchorRef, graphRef: { id: current.graph.graphId, digest: current.graph.digest }, registryRef: current.registryRef, storeRevision: entry.storeRevision, actorAgentId: normalizeString(context.agentId, ""), actorRole: normalizeString(context.role, ""), purpose: normalizeString(context.purpose, ""), requiredArtifacts: clone(context.requiredArtifacts || []), issuedAt: normalizeString(input.issuedAt, nowIso(input.now || Date.now)) }; admission.digest = digest("direct-worldmodel-store-admission@2", admission); entry.admissions[admission.admissionId] = clone(admission); next.digest = digest("direct-worldmodel-trust-store@1", next); snapshot(store, next); return clone(admission);
+}
+function readWorldmodelStoreAdmission(store, graph, admissionId) {
+  const value = refresh(store);
+  const current = readAuthoritativeWorldmodelGraph(store, graph);
+  const id = normalizeId(admissionId, "worldmodel_store_admission");
+  const admission = value.state.graphs[current.graph.graphId]
+    ?.admissions?.[id];
+  return admission ? clone(admission) : null;
 }
 function validateWorldmodelStoreAdmission(store, graph, admission, context = {}) {
   const value = refresh(store); const current = readAuthoritativeWorldmodelGraph(store, graph); const issued = value.state.graphs[graph.graphId]?.admissions?.[admission?.admissionId];
@@ -173,4 +196,4 @@ function commitAuthoritativeWorldmodelGraph(store, priorGraph, nextGraph, nextRe
   const next = clone(value.state); next.revision += 1; next.graphs[nextGraph.graphId] = { ...next.graphs[nextGraph.graphId], headGraphDigest: nextGraph.digest, graph: clone(nextGraph), governanceRegistry: clone(nextRegistry), registryRef: registryRef(nextRegistry), storeRevision: next.revision, transitionCount: nextGraph.transitions.length, admissions: {} }; next.digest = digest("direct-worldmodel-trust-store@1", next); snapshot(store, next); return readAuthoritativeWorldmodelGraph(store, nextGraph);
 }
 
-module.exports = { DIRECT_WORLDMODEL_TRUST_STORE_SCHEMA, DIRECT_WORLDMODEL_STORE_ADMISSION_SCHEMA, createWorldmodelTrustStore, openWorldmodelTrustStore, buildWorldmodelTrustAnchor, resolveAuthoritativeWorldmodelTrustStore, initializeAuthoritativeWorldmodelGraph, installAuthoritativeWorldmodelGovernanceRegistry, readAuthoritativeWorldmodelGraph, admitWorldmodelGovernanceRequest, validateWorldmodelStoreAdmission, commitAuthoritativeWorldmodelGraph };
+module.exports = { DIRECT_WORLDMODEL_TRUST_STORE_SCHEMA, DIRECT_WORLDMODEL_STORE_ADMISSION_SCHEMA, createWorldmodelTrustStore, openWorldmodelTrustStore, buildWorldmodelTrustAnchor, resolveAuthoritativeWorldmodelTrustStore, initializeAuthoritativeWorldmodelGraph, installAuthoritativeWorldmodelGovernanceRegistry, readAuthoritativeWorldmodelGraph, readAuthoritativeWorldmodelGraphById, admitWorldmodelGovernanceRequest, readWorldmodelStoreAdmission, validateWorldmodelStoreAdmission, commitAuthoritativeWorldmodelGraph };

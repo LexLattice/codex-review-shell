@@ -1022,7 +1022,7 @@ Simple future implementations may let it carry a bounded reasoning task, but
 execution authority must remain separately declared and must not follow merely
 from `roleKind=project_manager`.
 
-The intended human-facing surfaces are:
+The intended human-facing role reachability is:
 
 ```text
 World Manager chat
@@ -1033,6 +1033,14 @@ WorkThread Managers and workers:
   steerable through owning Project Manager
   no direct user conversation by default
 ```
+
+UX refinement (2026-07-26): the target product no longer requires these to be
+separate top-level chat systems. The
+[World Manager Agent-World And Unified UX spec](./DIRECT_WORLD_MANAGER_AGENT_WORLD_AND_UNIFIED_UX_SPEC.md)
+defines one persistent World Manager-governed communications plane in which a
+Project Manager may formulate a project-scoped response with explicit
+provenance. The role/custody distinction above remains binding; only its default
+human-facing projection is refined.
 
 ## Project World State
 

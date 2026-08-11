@@ -65,8 +65,57 @@ const {
   runTextOnlyDirectProbe,
 } = require("./main/direct/transport/codex-responses-transport");
 const {
+  DirectWorldManagerSemanticCoordinator,
+  DirectWorldManagerSemanticStore,
+  assertSemanticMockupProjectionSafe,
+  deterministicSemanticRoleRunner,
+} = require("./main/direct/worldmanager/semantic-mockup");
+const {
+  DirectWorldManagerControlPlaneStore,
+} = require("./main/direct/worldmanager/control-plane-store");
+const {
+  DirectWorldManagerService,
+} = require("./main/direct/worldmanager/service");
+const {
+  DirectPlanExecutionClosureRuntime,
+} = require("./main/direct/worldmanager/plan-execution-closure-runtime");
+const {
+  DirectWorldManagerEpistemicFabricRuntime,
+} = require("./main/direct/worldmanager/epistemic-fabric-runtime");
+const {
+  DirectRoleRuntime,
+} = require("./main/direct/worldmanager/role-runtime");
+const {
+  buildWorldManagerRuntimeSettingsProjection,
+  normalizeWorldManagerRuntimePreferences,
+  resolveWorldManagerModelEvidence,
+  resolveWorldManagerRuntimeSelection,
+} = require("./main/direct/worldmanager/runtime-settings");
+const {
+  DirectAroReconstructionRuntime,
+} = require("./main/direct/worldmanager/aro-reconstruction-runtime");
+const {
+  DirectAroMutationContractRuntime,
+} = require("./main/direct/worldmanager/aro-mutation-contract");
+const {
+  DirectAroRealizationMappingRuntime,
+} = require("./main/direct/worldmanager/aro-realization-mapping");
+const {
+  DirectAroTargetDefinitionRuntime,
+} = require("./main/direct/worldmanager/aro-target-definition");
+const {
+  DirectAroSemanticVerificationRuntime,
+} = require("./main/direct/worldmanager/aro-semantic-verification");
+const {
+  DirectThoughtBrushRuntime,
+} = require("./main/direct/worldmanager/thought-brush");
+const {
+  discoverRealizationOptions,
+} = require("./main/direct/worldmanager/realization-discovery");
+const {
   buildDirectRuntimeStatus,
   directRuntimeLaneLabel,
+  normalizeCodexBinding,
   normalizeCodexBindingProvider,
   normalizeDirectExperimentalRuntimeTier,
   normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
@@ -252,7 +301,14 @@ const USER_DATA_DIR_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_DIR";
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
 const CHATGPT_DOWNLOAD_MACRO_REQUEST_TTL_MS = 60_000;
 const APP_EXPERIENCE = resolveAppExperience(process.env);
-const DIRECT_WORKBENCH_MODE = APP_EXPERIENCE.id === APP_EXPERIENCES.DIRECT_WORKBENCH;
+const WORLD_MANAGER_SURFACE_MODE =
+  APP_EXPERIENCE.id === APP_EXPERIENCES.WORLD_MANAGER_STUDIO;
+const WORLD_MANAGER_SEMANTIC_MOCKUP_MODE =
+  WORLD_MANAGER_SURFACE_MODE && APP_EXPERIENCE.variant === "mockup";
+const WORLD_MANAGER_PRODUCTION_MODE =
+  WORLD_MANAGER_SURFACE_MODE && APP_EXPERIENCE.variant === "production";
+const DIRECT_WORKBENCH_MODE =
+  APP_EXPERIENCE.id === APP_EXPERIENCES.DIRECT_WORKBENCH;
 
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = appRoot;
@@ -390,6 +446,11 @@ let directLiveTextController = null;
 let directNativeAgentPool = null;
 let directProviderMetadataAdapter = null;
 let directActivationStore = null;
+let worldManagerSemanticCoordinator = null;
+let worldManagerService = null;
+let worldManagerRoleRuntime = null;
+const worldManagerTransitionSubscribers =
+  new Map();
 const directActivationLocks = new Map();
 const directAgentRegistryBackfillStateByProject = new Map();
 let chatgptDownloadHandler = null;
@@ -473,8 +534,1009 @@ function directSessionRootDir() {
   return path.join(app.getPath("userData"), DIRECT_SESSION_ROOT_NAME);
 }
 
+function worldManagerSemanticMockupRootDir() {
+  return path.join(app.getPath("userData"), "world-manager-semantic-mockup");
+}
+
+function worldManagerControlPlaneRootDir() {
+  return path.join(app.getPath("userData"), "world-manager-control-plane");
+}
+
 function directLiveProbeEvidenceRootDir() {
   return path.join(app.getPath("userData"), DIRECT_LIVE_PROBE_EVIDENCE_ROOT_NAME);
+}
+
+function worldManagerProjectDescriptors(config = {}, selectedProjectId = "") {
+  const projects = Array.isArray(config.projects) ? config.projects : [];
+  return projects.map((project) => ({
+    id: project.id,
+    name: project.name,
+    summary: normalizeString(
+      project.flowProfile?.goal ||
+        project.description ||
+        project.surfaceBinding?.codex?.description,
+      project.id === selectedProjectId
+        ? "Selected project is ready for a WorldManager-routed interaction."
+        : "Project remains visible in the quiet world posture.",
+    ),
+    runtimePath: directRuntimePathFromBinding(project.surfaceBinding?.codex || {}),
+    workspaceKind: normalizeString(
+      project.workspace?.kind,
+      "local",
+    ),
+    roleRuntimeAddressable: true,
+  }));
+}
+
+function assistantTextFromDirectSemanticResult(result = {}) {
+  return (Array.isArray(result.normalizedEvents) ? result.normalizedEvents : [])
+    .filter((event) => event?.type === "message_delta")
+    .map((event) => normalizeString(event?.text, ""))
+    .join("");
+}
+
+function configuredWorldManagerRuntimePreferences(config = {}) {
+  return normalizeWorldManagerRuntimePreferences(
+    config?.runtimeDefaults?.worldManager,
+  );
+}
+
+async function resolveWorldManagerRuntimeSelectionForProject(
+  project = {},
+  requestedReasoningEffort = "",
+) {
+  const config = await loadConfig();
+  const directProviderMetadata =
+    directProviderMetadataStatusForProject(project);
+  return resolveWorldManagerRuntimeSelection({
+    configured:
+      configuredWorldManagerRuntimePreferences(config),
+    project,
+    requestedReasoningEffort,
+    providerMetadataProfile:
+      directProviderMetadata?.profile || null,
+    profileDoc: ensureDirectCodexProfileDoc(),
+  });
+}
+
+function latestObservedWorldManagerRuntime() {
+  const records = worldManagerService?.store
+    ?.listAgentResults?.({ limit: 500 }) || [];
+  const record = [...records].reverse().find((entry) =>
+    entry?.agentResult?.roleKind === "world_manager" &&
+    entry?.telemetry?.model);
+  if (!record) return null;
+  return {
+    model: normalizeString(record.telemetry?.model, ""),
+    reasoningEffort: normalizeString(
+      record.telemetry?.reasoningEffort ||
+        record.telemetry?.usage?.reasoningEffort,
+      "",
+    ),
+    observedAt: normalizeString(
+      record.telemetry?.completedAt ||
+        record.telemetry?.usage?.updatedAt ||
+        record.telemetry?.usage?.generatedAt,
+      "",
+    ),
+    evidenceState: "persisted_provider_telemetry",
+  };
+}
+
+async function worldManagerRuntimeSettingsProjection(options = {}) {
+  const config = await loadConfig();
+  const project = options.project ||
+    currentProject ||
+    getSelectedProject(config);
+  if (!project) {
+    const error = new Error(
+      "WorldManager runtime settings require a configured runtime project.",
+    );
+    error.code = "world_manager_runtime_settings_project_unavailable";
+    throw error;
+  }
+  const directProviderMetadata = options.refreshMetadata === true
+    ? await refreshDirectProviderMetadataForProject(project)
+    : directProviderMetadataStatusForProject(project);
+  return buildWorldManagerRuntimeSettingsProjection({
+    configured:
+      configuredWorldManagerRuntimePreferences(config),
+    project,
+    requestedReasoningEffort: "medium",
+    providerMetadataProfile:
+      directProviderMetadata?.profile || null,
+    profileDoc: ensureDirectCodexProfileDoc(),
+    metadataCacheState:
+      directProviderMetadata?.cacheState,
+    refreshed:
+      options.refreshMetadata === true &&
+      directProviderMetadata?.fetched === true,
+    lastObserved:
+      latestObservedWorldManagerRuntime(),
+    generatedAt: nowIso(),
+  });
+}
+
+async function updateWorldManagerRuntimeSettings(payload = {}) {
+  if (worldManagerService?.snapshot?.()?.busy === true) {
+    const error = new Error(
+      "Wait for the active WorldManager transition before changing its runtime.",
+    );
+    error.code = "world_manager_runtime_settings_busy";
+    throw error;
+  }
+  const next = normalizeWorldManagerRuntimePreferences(payload);
+  const currentProjection =
+    await worldManagerRuntimeSettingsProjection();
+  if (
+    next.model &&
+    !currentProjection.catalog.models.some((entry) =>
+      entry.id === next.model)
+  ) {
+    const error = new Error(
+      `WorldManager model is not present in the current catalog: ${next.model}`,
+    );
+    error.code = "world_manager_runtime_model_unknown";
+    throw error;
+  }
+  const selectedDescriptor =
+    currentProjection.catalog.models.find((entry) =>
+      entry.id === (
+        next.model ||
+        currentProjection.catalog.providerDefaultModel ||
+        currentProjection.catalog.bundledDefaultModel ||
+        currentProjection.effective.model
+      )) || null;
+  if (
+    next.reasoningEffort &&
+    selectedDescriptor?.supportedReasoningEfforts?.length &&
+    !selectedDescriptor.supportedReasoningEfforts.includes(
+      next.reasoningEffort,
+    )
+  ) {
+    const error = new Error(
+      `${next.model} does not advertise ${next.reasoningEffort} reasoning effort.`,
+    );
+    error.code = "world_manager_runtime_effort_unsupported";
+    throw error;
+  }
+  const config = await loadConfig();
+  const saved = await saveConfig({
+    ...config,
+    runtimeDefaults: {
+      ...config.runtimeDefaults,
+      worldManager: next,
+    },
+  });
+  emitShellEvent({
+    type: "config-updated",
+    reason: "world-manager-runtime-settings",
+    config: saved,
+    at: nowIso(),
+  });
+  return {
+    ok: true,
+    settings:
+      await worldManagerRuntimeSettingsProjection(),
+  };
+}
+
+async function runWorldManagerSemanticRoleThroughDirect(input = {}) {
+  const projectId = normalizeString(input.projectId, "");
+  const project = await resolveWorldManagerRuntimeProject({ id: projectId });
+  if (!project) {
+    const error = new Error(`WorldManager semantic role project is unavailable: ${projectId || "<empty>"}`);
+    error.code = "world_manager_semantic_project_unavailable";
+    throw error;
+  }
+  const runtimeSelection =
+    await resolveWorldManagerRuntimeSelectionForProject(
+      project,
+      input.reasoningEffort,
+    );
+  const model = runtimeSelection.model;
+  const reasoningEffort = runtimeSelection.reasoningEffort;
+  const result = await runImplementationToolInitialProbe({
+    authStore: directRuntimeAuthStore(),
+    refreshCredentials: () => refreshDirectRuntimeCredentials(),
+    profileDoc: ensureDirectCodexProfileDoc(),
+    model,
+    reasoningEffort,
+    prompt: normalizeString(input.prompt, ""),
+    instructions: normalizeString(input.instructions, ""),
+    tools: Array.isArray(input.tools)
+      ? input.tools
+      : input.outputContract?.tools,
+    toolChoicePolicy: "required",
+  });
+  const normalizedEvents = Array.isArray(result.normalizedEvents)
+    ? result.normalizedEvents
+    : [];
+  const actionCalls = normalizedEvents
+    .filter((event) => event?.type === "tool_call_completed")
+    .map((event) => ({
+      callId: normalizeString(event.callId, ""),
+      name: normalizeString(event.name || event.toolName, ""),
+      argumentsJson: normalizeString(event.argumentsJson, ""),
+    }));
+  if (
+    result.terminal?.state !== "tool_waiting" ||
+    !actionCalls.length
+  ) {
+    const error = new Error(
+      result.terminal?.error?.message ||
+        result.error?.message ||
+        "The Direct semantic role turn did not complete with a semantic discharge action.",
+    );
+    error.code = normalizeString(
+      result.terminal?.error?.code || result.error?.code,
+      "world_manager_semantic_discharge_action_missing",
+    );
+    throw error;
+  }
+  const usageEvent = [...normalizedEvents].reverse().find((event) =>
+    event?.type === "token_usage" || event?.type === "usage");
+  return {
+    actionCalls,
+    telemetry: {
+      runtimeMode: "direct_live",
+      model: normalizeString(result.requestShape?.model, model),
+      reasoningEffort,
+      inputTokens: Number(usageEvent?.inputTokens || usageEvent?.input_tokens || 0),
+      outputTokens: Number(usageEvent?.outputTokens || usageEvent?.output_tokens || 0),
+      toolCallCount: actionCalls.length,
+      toolNames: [...new Set(actionCalls.map((call) => call.name).filter(Boolean))],
+      telemetrySource: usageEvent ? "provider_reported_and_harness_observed" : "harness_observed",
+    },
+  };
+}
+
+async function observeWorldManagerProjectRepository(
+  projectDescriptor = {},
+) {
+  const projectId = normalizeString(
+    projectDescriptor.id ||
+      projectDescriptor.projectId,
+    "",
+  );
+  const project = await resolveWorldManagerRuntimeProject(projectDescriptor);
+  if (!project) {
+    const error = new Error(
+      `WorldManager repository project is unavailable: ${projectId || "<empty>"}`,
+    );
+    error.code =
+      "world_manager_repository_project_unavailable";
+    throw error;
+  }
+  return ensureWorkspaceBackendManager()
+    .requestForProject(
+      project,
+      "repositorySemanticSnapshot",
+      {},
+      60_000,
+    );
+}
+
+async function importWorldManagerAroRealizationContext(
+  projectDescriptor = {},
+  request = {},
+) {
+  const projectId = normalizeString(
+    projectDescriptor.id ||
+      projectDescriptor.projectId,
+    "",
+  );
+  const project = await resolveWorldManagerRuntimeProject(projectDescriptor);
+  if (!project) {
+    const error = new Error(
+      `WorldManager realization project is unavailable: ${projectId || "<empty>"}`,
+    );
+    error.code =
+      "world_manager_aro_realization_project_unavailable";
+    throw error;
+  }
+  return ensureWorkspaceBackendManager()
+    .requestForProject(
+      project,
+      "repositoryRealizationContext",
+      {
+        relativePaths:
+          Array.isArray(
+            request.relativePaths,
+          )
+            ? request.relativePaths
+            : [],
+      },
+      60_000,
+    );
+}
+
+async function observeWorldManagerAroWorkerCapability(
+  projectDescriptor = {},
+) {
+  const projectId = normalizeString(
+    projectDescriptor.id ||
+      projectDescriptor.projectId,
+    "",
+  );
+  const project = await resolveWorldManagerRuntimeProject(projectDescriptor);
+  if (!project) {
+    const error = new Error(
+      `WorldManager worker project is unavailable: ${projectId || "<empty>"}`,
+    );
+    error.code =
+      "world_manager_aro_worker_project_unavailable";
+    throw error;
+  }
+  const binding =
+    normalizeCodexBinding(
+      project.surfaceBinding?.codex ||
+        {},
+    );
+  const status =
+    ensureDirectLiveTextController()
+      .statusForProject(project);
+  const implementationLane =
+    binding.runtimeMode ===
+      "direct-experimental" &&
+    binding.directTransport ===
+      "live-text" &&
+    binding.directTier ===
+      "implementation-lane";
+  return {
+    runtimePath:
+      implementationLane
+        ? "direct-implementation"
+        : "unavailable",
+    workspaceKind:
+      normalizeString(
+        project.workspace?.kind,
+        "unknown",
+      ),
+    runtimeStatus:
+      normalizeString(
+        status.status,
+        "unavailable",
+      ),
+    turnRunnable:
+      implementationLane &&
+      status.turnRunnable === true,
+    toolStates: {
+      read_file:
+        status
+          .readOnlyToolContinuation
+          ?.status === "ready"
+          ? "ready"
+          : "blocked",
+      apply_patch:
+        status
+          .patchApplyContinuation
+          ?.status === "ready"
+          ? "ready"
+          : "blocked",
+      run_command:
+        status
+          .commandExecutionContinuation
+          ?.status === "ready"
+          ? "ready"
+          : "blocked",
+    },
+    blockerCodes: [
+      ...(
+        implementationLane
+          ? []
+          : [
+              "project_not_bound_to_direct_implementation_lane",
+            ]
+      ),
+      ...(
+        status.turnRunnable === true
+          ? []
+          : [
+              normalizeString(
+                status.reason,
+                "direct_turn_unavailable",
+              ),
+            ]
+      ),
+    ],
+  };
+}
+
+async function observeWorldManagerAroWorkerExecution(
+  projectDescriptor = {},
+  request = {},
+) {
+  const projectId = normalizeString(
+    projectDescriptor.id ||
+      projectDescriptor.projectId,
+    "",
+  );
+  const project = await resolveWorldManagerRuntimeProject(projectDescriptor);
+  if (!project) {
+    const error = new Error(
+      `WorldManager worker project is unavailable: ${projectId || "<empty>"}`,
+    );
+    error.code =
+      "world_manager_aro_worker_project_unavailable";
+    throw error;
+  }
+  const workerSessionId =
+    normalizeString(
+      request.workerSessionId,
+      "",
+    );
+  const workerTurnId =
+    normalizeString(
+      request.workerTurnId,
+      "",
+    );
+  const sessionStore =
+    ensureDirectSessionStore();
+  const session =
+    workerSessionId
+      ? sessionStore.readSession(
+          workerSessionId,
+        )
+      : null;
+  const turn =
+    session && workerTurnId
+      ? sessionStore.readTurn(
+          workerSessionId,
+          workerTurnId,
+        )
+      : null;
+  if (
+    !session ||
+    !turn ||
+    session.projectId !== projectId ||
+    turn.sessionId !==
+      workerSessionId ||
+    turn.turnId !== workerTurnId
+  ) {
+    const error = new Error(
+      "world_manager_aro_worker_turn_unavailable",
+    );
+    error.code =
+      "world_manager_aro_worker_turn_unavailable";
+    throw error;
+  }
+  const message =
+    (
+      Array.isArray(session.messages)
+        ? session.messages
+        : []
+    ).find((entry) =>
+      entry.id === workerTurnId) ||
+    null;
+  const assistantItems =
+    (
+      Array.isArray(message?.items)
+        ? message.items
+        : []
+    ).filter((item) =>
+      item?.type ===
+        "agentMessage" &&
+      typeof item.text === "string");
+  const finalAssistantText =
+    assistantItems.length
+      ? assistantItems[
+          assistantItems.length - 1
+        ].text
+      : "";
+  return {
+    schema:
+      "direct_aro_worker_execution_observation@1",
+    projectId,
+    workerSessionId,
+    workerTurnId,
+    session,
+    turn,
+    finalAssistantText,
+    observedAt: nowIso(),
+    readOnlyObservation: true,
+    workspaceMutationEffect: false,
+    rawProviderPayloadPersisted:
+      false,
+    grantsAuthority: false,
+  };
+}
+
+async function observeWorldManagerArtifactRuntimeEvidence(
+  request = {},
+) {
+  const projectId = normalizeString(request.projectId, "");
+  const project = await resolveWorldManagerRuntimeProject({ id: projectId });
+  if (!project) {
+    const error = new Error(
+      `WorldManager artifact project is unavailable: ${projectId || "<empty>"}`,
+    );
+    error.code = "world_manager_artifact_runtime_project_unavailable";
+    throw error;
+  }
+  const workerSessionId = normalizeString(
+    request.dispatchReceipt?.workerSessionId,
+    "",
+  );
+  const workerTurnId = normalizeString(
+    request.dispatchReceipt?.workerTurnId,
+    "",
+  );
+  const sessionStore = ensureDirectSessionStore();
+  const session = workerSessionId
+    ? sessionStore.readSession(workerSessionId)
+    : null;
+  const turn = session && workerTurnId
+    ? sessionStore.readTurn(workerSessionId, workerTurnId)
+    : null;
+  if (
+    !session ||
+    !turn ||
+    session.projectId !== projectId ||
+    turn.sessionId !== workerSessionId ||
+    turn.turnId !== workerTurnId
+  ) {
+    const error = new Error(
+      "world_manager_artifact_runtime_worker_turn_unavailable",
+    );
+    error.code = "world_manager_artifact_runtime_worker_turn_unavailable";
+    throw error;
+  }
+  const repositoryObservation = await ensureWorkspaceBackendManager()
+    .requestForProject(
+      project,
+      "repositorySemanticSnapshot",
+      {},
+      60_000,
+    );
+  return {
+    schema: "direct_artifact_runtime_evidence_observation@1",
+    projectId,
+    workerSessionId,
+    workerTurnId,
+    session,
+    turn,
+    repositoryObservation,
+    observationOnly: true,
+    workspaceMutationEffect: false,
+    canonicalEffect: false,
+    grantsAuthority: false,
+    rawProviderPayloadIncluded: false,
+  };
+}
+
+async function observeWorldManagerPlanExecution(request = {}) {
+  const projectId = normalizeString(request.projectId, "");
+  const project = await resolveWorldManagerRuntimeProject({ id: projectId });
+  if (!project) {
+    const error = new Error(
+      `WorldManager plan-execution project is unavailable: ${projectId || "<empty>"}`,
+    );
+    error.code = "world_manager_plan_execution_project_unavailable";
+    throw error;
+  }
+  const workerSessionId = normalizeString(request.workerSessionId, "");
+  const workerTurnId = normalizeString(request.workerTurnId, "");
+  const controller = ensureDirectLiveTextController();
+  await controller.waitForTurnCompletion({
+    sessionId: workerSessionId,
+    turnId: workerTurnId,
+  });
+  const sessionStore = ensureDirectSessionStore();
+  const session = sessionStore.readSession(workerSessionId);
+  const turn = sessionStore.readTurn(workerSessionId, workerTurnId);
+  if (
+    !session ||
+    !turn ||
+    session.projectId !== projectId ||
+    turn.sessionId !== workerSessionId ||
+    turn.turnId !== workerTurnId
+  ) {
+    const error = new Error(
+      "world_manager_plan_execution_worker_turn_unavailable",
+    );
+    error.code = "world_manager_plan_execution_worker_turn_unavailable";
+    throw error;
+  }
+  const turnEvidenceRef = {
+    kind: "direct_worker_turn",
+    id: turn.turnId,
+    digest: `sha256:${stableDigest({
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      state: turn.state,
+      createdAt: turn.createdAt,
+      updatedAt: turn.updatedAt,
+      completedAt: turn.completedAt,
+      normalizedEventCount: turn.normalizedEventCount,
+      toolResultIds: (turn.toolResults || []).map((result) =>
+        normalizeString(
+          result.resultId || result.obligationId || result.toolCallId,
+          "",
+        )).filter(Boolean),
+    })}`,
+    projectId,
+  };
+  const toolResultRefs = (Array.isArray(turn.toolResults)
+    ? turn.toolResults
+    : []).map((result, index) => ({
+      kind: "direct_tool_result",
+      id: normalizeString(
+        result.resultId || result.obligationId || result.toolCallId,
+        `tool_result_${index + 1}`,
+      ),
+      digest: `sha256:${stableDigest({
+        index,
+        result,
+      })}`,
+      projectId,
+    }));
+  const workerStartResultRef =
+    request.record?.workerStart?.resultRef || null;
+  const turnMessage = (Array.isArray(session.messages)
+    ? session.messages
+    : []).find((message) => message.id === workerTurnId) || null;
+  const finalAssistantText = (Array.isArray(turnMessage?.items)
+    ? turnMessage.items
+    : []).filter((item) =>
+      item?.type === "agentMessage" &&
+      typeof item.text === "string")
+    .at(-1)?.text || "";
+  return {
+    schema: "direct_plan_execution_runtime_observation@1",
+    projectId,
+    workerSessionId,
+    workerTurnId,
+    workerTerminalState: normalizeString(turn.state, "failed"),
+    workerStartResultRef,
+    runtimeEvidenceRefs: [
+      ...(workerStartResultRef ? [workerStartResultRef] : []),
+      turnEvidenceRef,
+      ...toolResultRefs,
+    ],
+    finalAssistantText,
+    observedAt: nowIso(),
+    observationOnly: true,
+    workspaceMutationEffect: false,
+    canonicalEffect: false,
+    grantsAuthority: false,
+    rawProviderPayloadIncluded: false,
+  };
+}
+
+async function evaluateWorldManagerPlanExecutionClosure(input = {}) {
+  const runtime = new DirectPlanExecutionClosureRuntime({
+    runner: (request) => runWorldManagerSemanticRoleThroughDirect(request),
+  });
+  return runtime.evaluate(input);
+}
+
+function ensureWorldManagerSemanticCoordinator(options = {}) {
+  const projects = Array.isArray(options.projects) ? options.projects : [];
+  const activeProjectId = normalizeString(options.activeProjectId, currentProject?.id || "");
+  if (!worldManagerSemanticCoordinator) {
+    worldManagerSemanticCoordinator = new DirectWorldManagerSemanticCoordinator({
+      store: new DirectWorldManagerSemanticStore({
+        rootDir: worldManagerSemanticMockupRootDir(),
+      }),
+      projects,
+      activeProjectId,
+      roleRunner: (input) => normalizeString(input.mode, "fixture") === "live_direct"
+        ? runWorldManagerSemanticRoleThroughDirect(input)
+        : deterministicSemanticRoleRunner(input),
+    });
+  } else if (worldManagerSemanticCoordinator.configureProjects(projects, activeProjectId)) {
+    worldManagerSemanticCoordinator.persist();
+  }
+  return worldManagerSemanticCoordinator;
+}
+
+function ensureWorldManagerService(options = {}) {
+  const projects = Array.isArray(options.projects) ? options.projects : [];
+  const activeProjectId = normalizeString(options.activeProjectId, currentProject?.id || "");
+  if (!worldManagerService) {
+    worldManagerRoleRuntime = new DirectRoleRuntime({
+      controller: ensureDirectLiveTextController(),
+      sessionStore: ensureDirectSessionStore(),
+      resolveProject: async (projectId) =>
+        resolveWorldManagerRuntimeProject({ id: projectId }),
+      resolveRuntimePreferences: async (input = {}) => {
+        if (!["world_manager", "project_manager"].includes(
+          normalizeString(input.roleKind, ""),
+        )) {
+          return null;
+        }
+        return resolveWorldManagerRuntimeSelectionForProject(
+          input.project,
+          input.requestedReasoningEffort,
+        );
+      },
+    });
+    const worldManagerStore =
+      new DirectWorldManagerControlPlaneStore({
+        rootDir: worldManagerControlPlaneRootDir(),
+      });
+    const epistemicFabric =
+      new DirectWorldManagerEpistemicFabricRuntime({
+        dbPath: worldManagerStore.dbPath,
+        userWorldId: "user_world_local",
+        nativeContextImporterEnabled: true,
+        recipientResolver: (input) =>
+          worldManagerRoleRuntime?.resolveLedgerRecipient(input) || {},
+        deliveryTargetResolver: (input) =>
+          worldManagerRoleRuntime?.resolveLedgerDeliveryTarget(input) || null,
+        deliveryDispatchAdapter: (input) =>
+          worldManagerRoleRuntime.dispatchLedgerDelivery(input),
+        artifactWorkThreadDispatchAdapter: (input) =>
+          worldManagerRoleRuntime.dispatchArtifactWorkThread(input),
+        artifactRuntimeEvidenceResolver: (input) =>
+          observeWorldManagerArtifactRuntimeEvidence(input),
+        canonicalRevisionResolver: (input) => {
+          if (!worldManagerService?.worldmodel) {
+            const error = new Error(
+              "world_manager_canonical_revision_resolver_unavailable",
+            );
+            error.code =
+              "world_manager_canonical_revision_resolver_unavailable";
+            throw error;
+          }
+          return worldManagerService.worldmodel
+            .canonicalArtifactRevisionRefs(
+              input.targetAdmissionScope,
+            );
+        },
+        authorityAdapter: (input) => {
+          if (!worldManagerService?.worldmodel) {
+            const error = new Error(
+              "world_manager_canonical_authority_adapter_unavailable",
+            );
+            error.code =
+              "world_manager_canonical_authority_adapter_unavailable";
+            throw error;
+          }
+          return worldManagerService.worldmodel
+            .admitArtifactRevision(input);
+        },
+        contextManifestProvider: () =>
+          worldManagerStore
+            .listOperationalMetaContexts({
+              currentOnly: true,
+              full: true,
+              limit: 5000,
+            })
+            .map((record) => record.operationalManifest),
+      });
+    worldManagerRoleRuntime.setResidentIdleCallback(() =>
+      epistemicFabric.dispatchQueuedDeliveries());
+    worldManagerService = new DirectWorldManagerService({
+      store: worldManagerStore,
+      planProposalLifecycleEnabled: true,
+      epistemicFabric,
+      workThreadStore: ensureDirectWorkThreadStore(),
+      userWorldId: "user_world_local",
+      projects,
+      activeProjectId,
+      roleRuntime: worldManagerRoleRuntime,
+      semanticIngressRunner: (input) =>
+        runWorldManagerSemanticRoleThroughDirect(input),
+      repositorySnapshotProvider: (project) =>
+        observeWorldManagerProjectRepository(
+          project,
+        ),
+      aroReconstructionRuntime:
+        new DirectAroReconstructionRuntime({
+          runner: (input) =>
+            runWorldManagerSemanticRoleThroughDirect(
+              input,
+            ),
+        }),
+      automaticAroReconstructionEnabled:
+        process.env
+          .CODEX_WORLD_MANAGER_AUTOMATIC_ARO_RECONSTRUCTION !==
+        "0",
+      aroMutationRuntime:
+        new DirectAroMutationContractRuntime({
+          runner: (input) =>
+            runWorldManagerSemanticRoleThroughDirect(
+              input,
+            ),
+        }),
+      aroRealizationContextProvider:
+        (
+          project,
+          request,
+        ) =>
+          importWorldManagerAroRealizationContext(
+            project,
+            request,
+          ),
+      aroRealizationMappingRuntime:
+        new DirectAroRealizationMappingRuntime({
+          runner: (input) =>
+            runWorldManagerSemanticRoleThroughDirect(
+              input,
+            ),
+        }),
+      aroWorkerCapabilityProvider:
+        (project) =>
+          observeWorldManagerAroWorkerCapability(
+            project,
+          ),
+      aroWorkerEvidenceProvider:
+        (project, request) =>
+          observeWorldManagerAroWorkerExecution(
+            project,
+            request,
+          ),
+      aroWorkerRuntime: {
+        available: () => true,
+        start: async (input = {}) => {
+          const projectId =
+            normalizeString(
+              input.projectId,
+              "",
+            );
+          const project =
+            await resolveWorldManagerRuntimeProject(
+              input.project || { id: projectId },
+            );
+          if (!project) {
+            const error = new Error(
+              `WorldManager worker project is unavailable: ${projectId || "<empty>"}`,
+            );
+            error.code =
+              "world_manager_aro_worker_project_unavailable";
+            throw error;
+          }
+          return ensureDirectLiveTextController()
+            .startWorkerFromHandoff(
+              {
+                handoffPacket:
+                  input.handoffPacket,
+                workerPrompt:
+                  input.workerPrompt,
+                operatorAcceptance: {
+                  decision: "accepted",
+                  accepted: true,
+                  operatorActionId:
+                    input
+                      .operatorActionId,
+                  acceptedAt:
+                    nowIso(),
+                  rendererSafeLabel:
+                    "WorldManager ARO worker handoff authorization",
+                },
+                workThread:
+                  input.workThread,
+                compiledAgentContextRef:
+                  input
+                    .compiledAgentContextRef,
+                threadEnvironmentBindingRef:
+                  input.threadEnvironmentBindingRef,
+                stepEnvironmentSnapshotRef:
+                  input.stepEnvironmentSnapshotRef,
+                environmentSelection:
+                  input.environmentSelection,
+                reasoningEffort:
+                  "medium",
+              },
+              {
+                project,
+                surfaceSession:
+                  input.surfaceSession ||
+                  null,
+              },
+            );
+        },
+      },
+      planExecutionRuntime: {
+        available: () => true,
+        capabilitySnapshot: async (input = {}) => {
+          const observation =
+            await observeWorldManagerAroWorkerCapability({
+              id: input.projectId,
+            });
+          return {
+            availableToolNames: Object.entries(
+              observation.toolStates || {},
+            ).filter(([, state]) => state === "ready")
+              .map(([name]) => name),
+            environment:
+              observation.workspaceKind === "windows"
+                ? "windows_local_repository"
+                : observation.workspaceKind === "wsl"
+                  ? "wsl_local_repository"
+                  : "local_repository",
+            turnRunnable: observation.turnRunnable === true,
+            reason: observation.blockerCodes?.join(",") || "",
+            remoteMutationAvailable: false,
+            canonicalWriteAvailable: false,
+            perCallApprovalRequired: true,
+          };
+        },
+        start: async (input = {}) => {
+          const projectId = normalizeString(input.projectId, "");
+          const project = await resolveWorldManagerRuntimeProject(
+            input.project || { id: projectId },
+          );
+          if (!project) {
+            const error = new Error(
+              `WorldManager plan-execution project is unavailable: ${projectId || "<empty>"}`,
+            );
+            error.code =
+              "world_manager_plan_execution_project_unavailable";
+            throw error;
+          }
+          return ensureDirectLiveTextController()
+            .startWorkerFromHandoff(
+              {
+                handoffPacket: input.handoffPacket,
+                workerPrompt: input.workerPrompt,
+                operatorAcceptance: {
+                  decision: "accepted",
+                  accepted: true,
+                  operatorActionId: input.operatorActionId,
+                  acceptedAt: nowIso(),
+                  rendererSafeLabel:
+                    "WorldManager admitted-plan worker authorization",
+                },
+                workThread: input.workThread,
+                authorityBoundary:
+                  input.workThread?.authorityBoundary,
+                compiledAgentContextRef:
+                  input.compiledAgentContextRef,
+                reasoningEffort: "medium",
+              },
+              {
+                project,
+                surfaceSession: input.surfaceSession || null,
+              },
+            );
+        },
+        observe: (input = {}) =>
+          observeWorldManagerPlanExecution(input),
+        evaluateClosure: (input = {}) =>
+          evaluateWorldManagerPlanExecutionClosure(input),
+      },
+      aroTargetDefinitionRuntime:
+        new DirectAroTargetDefinitionRuntime({
+          runner: (input) =>
+            runWorldManagerSemanticRoleThroughDirect(
+              input,
+            ),
+        }),
+      aroSemanticVerificationRuntime:
+        new DirectAroSemanticVerificationRuntime({
+          runner: (input) =>
+            runWorldManagerSemanticRoleThroughDirect(
+              input,
+            ),
+        }),
+      thoughtBrushRuntime:
+        new DirectThoughtBrushRuntime({
+          runner: (input) =>
+            runWorldManagerSemanticRoleThroughDirect(
+              input,
+            ),
+        }),
+      realizationSnapshotProvider: () =>
+        discoverRealizationOptions({
+          platform: process.platform,
+          env: process.env,
+        }).snapshot,
+      projectSubstrateProvisioner: (input) =>
+        provisionWorldManagerProjectSubstrate(input),
+      environmentReadinessProvider: (input) =>
+        refreshWorldManagerEnvironmentReadiness(input),
+    });
+    worldManagerService.bootstrap();
+  } else {
+    worldManagerService.configure({
+      projects,
+      activeProjectId,
+    });
+  }
+  return worldManagerService;
 }
 
 function directImplementationProofRunsRootDir() {
@@ -546,6 +1608,9 @@ function defaultProjectRepoPath(workspace = defaultProjectWorkspaceConfig()) {
     const distro = workspace.distro || "default";
     return `wsl:${distro}:${workspace.linuxPath}`;
   }
+  if (workspace.kind === "windows") {
+    return workspace.windowsPath;
+  }
   return workspace.localPath;
 }
 
@@ -568,6 +1633,10 @@ function defaultConfig() {
       codex: {
         approvalPolicy: "",
         sandboxMode: "",
+      },
+      worldManager: {
+        model: "",
+        reasoningEffort: "",
       },
     },
     codexThreadRuntimeDefaults: {},
@@ -740,6 +1809,9 @@ function normalizeRuntimeDefaults(value) {
       approvalPolicy: normalizeApprovalPolicy(rawCodex.approvalPolicy),
       sandboxMode: normalizeSandboxMode(rawCodex.sandboxMode),
     },
+    worldManager: normalizeWorldManagerRuntimePreferences(
+      raw.worldManager,
+    ),
   };
 }
 
@@ -1382,6 +2454,24 @@ function normalizeWorkspaceConfig(rawWorkspace, repoPath) {
     };
   }
 
+  if (raw?.kind === "windows") {
+    return {
+      kind: "windows",
+      windowsPath: normalizeString(
+        raw.windowsPath || raw.localPath,
+        normalizeString(repoPath, "C:\\"),
+      ),
+      windowsNodePath: normalizeString(
+        raw.windowsNodePath,
+        "",
+      ),
+      label: normalizeString(
+        raw.label,
+        "Windows workspace",
+      ),
+    };
+  }
+
   if (!raw && legacyWsl) return legacyWsl;
 
   return {
@@ -1395,6 +2485,9 @@ function workspaceToRepoPath(workspace, fallback = repoRoot) {
   if (workspace?.kind === "wsl") {
     const distro = workspace.distro || "default";
     return `wsl:${distro}:${workspace.linuxPath}`;
+  }
+  if (workspace?.kind === "windows") {
+    return normalizeString(workspace.windowsPath, fallback);
   }
   return normalizeString(workspace?.localPath, fallback);
 }
@@ -1703,6 +2796,39 @@ async function getProjectById(projectId) {
   return project;
 }
 
+async function resolveWorldManagerRuntimeProject(projectDescriptor = {}) {
+  const projectId = normalizeString(
+    typeof projectDescriptor === "string"
+      ? projectDescriptor
+      : projectDescriptor.id || projectDescriptor.projectId,
+    "",
+  );
+  if (!projectId) return null;
+  try {
+    const governed =
+      worldManagerService?.runtimeProjectDescriptor?.(projectId) || null;
+    if (governed?.semanticSource === "canonical_project_workspace_binding") {
+      return governed;
+    }
+  } catch {}
+  if (currentProject?.id === projectId) return currentProject;
+  const config = await loadConfig();
+  const configured = config.projects.find((item) => item.id === projectId);
+  if (configured) return configured;
+  if (
+    typeof projectDescriptor === "object" &&
+    projectDescriptor.id === projectId &&
+    projectDescriptor.workspace
+  ) {
+    return projectDescriptor;
+  }
+  try {
+    return worldManagerService?.runtimeProjectDescriptor?.(projectId) || null;
+  } catch {
+    return null;
+  }
+}
+
 function sanitizeBounds(bounds) {
   return {
     x: Math.max(0, Math.floor(Number(bounds?.x) || 0)),
@@ -1920,6 +3046,157 @@ function ensureWorkspaceBackendManager() {
     emitShellEvent({ type: "backend-agent-event", ...payload });
   });
   return workspaceBackends;
+}
+
+function sameNativeWorkspacePath(left, right, workspaceKind) {
+  const normalize = (value) => String(value || "")
+    .replace(/\\/g, "/")
+    .replace(/\/+$/g, "")
+    .toLowerCase();
+  if (workspaceKind === "windows") {
+    return normalize(left) === normalize(right);
+  }
+  return String(left || "").replace(/\/+$/g, "") ===
+    String(right || "").replace(/\/+$/g, "");
+}
+
+function worldManagerProvisioningWorkspace(
+  environmentId,
+  inputWorkspace = {},
+) {
+  const discovered = discoverRealizationOptions({
+    platform: process.platform,
+    env: process.env,
+  });
+  const option = discovered.snapshot.options.find((entry) =>
+    entry.environmentId === environmentId);
+  if (!option || option.admissionState !== "eligible") {
+    const error = new Error(
+      `WorldManager environment is not currently eligible: ${environmentId}`,
+    );
+    error.code = "world_manager_project_substrate_environment_ineligible";
+    throw error;
+  }
+  const workspace = normalizeWorkspaceConfig(inputWorkspace, "");
+  if (
+    environmentId === "env_windows_native" &&
+    workspace.kind !== "windows"
+  ) {
+    const error = new Error(
+      "The admitted Windows project requires a native Windows workspace.",
+    );
+    error.code = "world_manager_project_substrate_workspace_kind_mismatch";
+    throw error;
+  }
+  if (
+    environmentId === "env_wsl_native" &&
+    workspace.kind !== "wsl"
+  ) {
+    const error = new Error(
+      "The admitted WSL project requires a WSL workspace.",
+    );
+    error.code = "world_manager_project_substrate_workspace_kind_mismatch";
+    throw error;
+  }
+  if (workspace.kind === "windows" && !workspace.windowsNodePath) {
+    workspace.windowsNodePath = discovered.privateBindings.windowsNodePath;
+  }
+  return { workspace, option };
+}
+
+async function observeWorldManagerNativeEnvironment(project) {
+  const manager = ensureWorkspaceBackendManager();
+  const session = await manager.ensureForProject(project, {
+    workspaceHygiene: false,
+  });
+  const status = session.snapshot();
+  const helloAgain = await manager.requestForProject(project, "hello");
+  const root = workspaceRoot(project, repoRoot);
+  const workspaceKind = project.workspace?.kind || "local";
+  const capabilityClasses = Object.entries(helloAgain.capabilities || {})
+    .filter(([, available]) => available === true)
+    .map(([name]) => name)
+    .sort();
+  const nativePlatformExpected = workspaceKind === "windows"
+    ? "win32"
+    : workspaceKind === "wsl"
+      ? "linux"
+      : process.platform;
+  const workspaceIdentityMatched =
+    helloAgain.projectId === project.id &&
+    helloAgain.workspaceKind === workspaceKind &&
+    helloAgain.platform === nativePlatformExpected &&
+    sameNativeWorkspacePath(helloAgain.root, root, workspaceKind);
+  return {
+    workspaceKind,
+    nativeWorkspacePath: root,
+    distro: normalizeString(project.workspace?.distro, ""),
+    windowsNodePath: normalizeString(
+      project.workspace?.windowsNodePath,
+      "",
+    ),
+    workspaceLabel: normalizeString(
+      project.workspace?.label,
+      workspaceKind === "windows"
+        ? "Windows project workspace"
+        : workspaceKind === "wsl"
+          ? "WSL project workspace"
+          : "Project workspace",
+    ),
+    adapterKind:
+      status.transport === "local-child"
+        ? "direct_in_process"
+        : "direct_resident",
+    probeState:
+      status.status === "attached" && workspaceIdentityMatched
+        ? "ready"
+        : "unavailable",
+    nativePlatform: normalizeString(helloAgain.platform, "unknown"),
+    backendSessionId: normalizeString(helloAgain.sessionId, ""),
+    processContinuityObserved:
+      helloAgain.sessionId === status.hello?.sessionId &&
+      helloAgain.pid === status.hello?.pid,
+    workspaceIdentityMatched,
+    capabilityClasses,
+    blockerCodes:
+      status.status === "attached" && workspaceIdentityMatched
+        ? []
+        : ["native_workspace_probe_mismatch"],
+    observedAt: nowIso(),
+  };
+}
+
+async function provisionWorldManagerProjectSubstrate(input = {}) {
+  const environmentId = normalizeString(
+    input.runtimeDefault?.defaultEnvironmentId,
+    "",
+  );
+  const { workspace } = worldManagerProvisioningWorkspace(
+    environmentId,
+    input.workspace,
+  );
+  const project = {
+    id: input.projectId,
+    name: input.constitution?.identity || input.projectId,
+    repoPath: workspaceToRepoPath(workspace, repoRoot),
+    workspace,
+  };
+  return {
+    environmentId,
+    ...(await observeWorldManagerNativeEnvironment(project)),
+  };
+}
+
+async function refreshWorldManagerEnvironmentReadiness(input = {}) {
+  const project = input.project;
+  if (!project?.id || !project.workspace) {
+    const error = new Error(
+      "WorldManager runtime project descriptor is unavailable.",
+    );
+    error.code = "world_manager_project_runtime_descriptor_unavailable";
+    throw error;
+  }
+  return observeWorldManagerNativeEnvironment(project);
 }
 
 function ensureThreadAnalyticsStore() {
@@ -2210,6 +3487,20 @@ function ensureDirectImplementationProofEvidenceStore() {
   return directImplementationProofEvidenceStore;
 }
 
+function resolveDirectLiveModelEvidence(context = {}) {
+  const probeEvidence =
+    ensureDirectLiveProbeEvidenceStore().resolveModelEvidence(context);
+  return resolveWorldManagerModelEvidence({
+    probeEvidence,
+    providerMetadataStatus:
+      directProviderMetadataStatusForProject(context.project),
+    model: context.model,
+    managerScoped: Boolean(
+      context.project?.worldManagerRuntimePreferences,
+    ),
+  });
+}
+
 function ensureDirectFixtureController() {
   if (directFixtureController) return directFixtureController;
   directFixtureController = new DirectFixtureController({
@@ -2293,13 +3584,117 @@ function ensureDirectLiveTextController() {
     profileDoc: ensureDirectCodexProfileDoc(),
     authStore: () => directRuntimeAuthStore(),
     refreshCredentials: () => refreshDirectRuntimeCredentials(),
-    modelEvidenceResolver: (context) => ensureDirectLiveProbeEvidenceStore().resolveModelEvidence(context),
+    modelEvidenceResolver: (context) =>
+      resolveDirectLiveModelEvidence(context),
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     subAgentPool: ensureDirectNativeAgentPool(),
     subAgentStatusSurfaceResolver: (context) => directSubAgentStatusSurfaceFor(context),
     externalCapabilityProfileResolver: (context) => buildDirectExternalCapabilityProfileForProject(context),
     providerHostedToolsStatusResolver: (context) => buildDirectProviderHostedToolsStatusForProject(context),
+    compiledAgentContextResolver: (input) =>
+      worldManagerRoleRuntime?.resolveCompiledAgentContext(input) || null,
+    epistemicLedgerToolBundleResolver: (input = {}) => {
+      if (
+        !worldManagerService ||
+        !input.compiledAgentContext ||
+        !normalizeString(input.workThreadId, "") ||
+        !normalizeString(
+          input.controlledRoutingResult?.route?.routeId,
+          "",
+        ) ||
+        !normalizeString(
+          input.controlledRoutingResult?.route?.routeDigest,
+          "",
+        )
+      ) {
+        return null;
+      }
+      const compiled = input.compiledAgentContext;
+      const projectId = normalizeString(input.projectId, "");
+      const workThreadId = normalizeString(input.workThreadId, "");
+      const roleLane = [
+        "implementation_worker",
+        "review_auditor",
+      ].includes(normalizeString(input.roleLane, ""))
+        ? normalizeString(input.roleLane, "")
+        : "implementation_worker";
+      const actorRef = compiled.agentInstantiationRef;
+      if (!actorRef?.id || !actorRef?.digest) return null;
+      const visibleEvidenceRefs = [
+        compiled.agentInstantiationRef,
+        compiled.manifestRef,
+        compiled.taskConstitutionRef,
+        compiled.projectionAgreementRef,
+      ].filter((entry) => entry?.kind && entry?.id && entry?.digest);
+      const controlledRoute = input.controlledRoutingResult.route;
+      const authorityBoundaryRef = {
+        kind: "controlled_route",
+        id: controlledRoute.routeId,
+        digest: controlledRoute.routeDigest,
+      };
+      const bundle = worldManagerService.compileEpistemicLedgerTools({
+        roleLane,
+        actorRef,
+        agentWorldRef: {
+          kind: "compiled_agent_context",
+          id: compiled.compiledAgentContextId,
+          digest: compiled.digest,
+        },
+        authorityBoundaryRef,
+        scope: {
+          kind: "work_thread",
+          userWorldId: "user_world_local",
+          projectId,
+          workThreadId,
+        },
+        allowedRights: roleLane === "review_auditor"
+          ? ["observe", "propose", "challenge", "assess"]
+          : ["observe", "propose", "challenge"],
+        disabledOperations: [
+          "ledger_submit_candidate_artifact",
+          "ledger_ack_delivery",
+          "ledger_import_delivery_context",
+          "ledger_create_watch",
+          "ledger_revise_watch",
+          "ledger_remove_watch",
+        ],
+        canonicalAdmissionEnabled: false,
+      });
+      const directSession = ensureDirectSessionStore().readSession(
+        normalizeString(input.sessionId, ""),
+      );
+      const artifactLifecycleBinding =
+        normalizeString(
+          directSession?.artifactWorkThreadAuthorizationId,
+          "",
+        )
+          ? worldManagerService.resolveArtifactLedgerBinding({
+              authorizationId:
+                directSession.artifactWorkThreadAuthorizationId,
+              authorizationDigest:
+                directSession.artifactWorkThreadAuthorizationDigest,
+              actorRef,
+              roleLane,
+            })
+          : null;
+      return {
+        bundle,
+        visibleEvidenceRefs,
+        currentRevisionByScope: {},
+        artifactLifecycleBinding,
+      };
+    },
+    epistemicLedgerToolInvoker: (input) => {
+      if (!worldManagerService) {
+        const error = new Error(
+          "WorldManager epistemic fabric is unavailable.",
+        );
+        error.code = "world_manager_epistemic_fabric_unavailable";
+        throw error;
+      }
+      return worldManagerService.invokeEpistemicLedgerTool(input);
+    },
     workspaceRequest: (project, method, params, timeoutMs) => requestWorkspace(project, method, params, timeoutMs),
   });
   return directLiveTextController;
@@ -4709,7 +6104,8 @@ function urlsShareCodexSurfaceDocument(left, right) {
     const rightUrl = new URL(String(right || ""));
     const managedSurfacePath = (pathname) =>
       pathname.endsWith("/codex-surface.html") ||
-      pathname.endsWith("/t3-direct-surface.html");
+      pathname.endsWith("/t3-direct-surface.html") ||
+      pathname.endsWith("/world-manager-surface.html");
     return leftUrl.href === rightUrl.href ||
       (
         leftUrl.origin === rightUrl.origin &&
@@ -4767,6 +6163,17 @@ function requireFullCodexSurfaceBridge(sender, channel) {
     throw new Error(`${channel} requires the active trusted Codex surface document.`);
   }
   return authority;
+}
+
+function requireWorldManagerStudioExperience(channel) {
+  if (APP_EXPERIENCE.id === APP_EXPERIENCES.WORLD_MANAGER_STUDIO) {
+    return APP_EXPERIENCE;
+  }
+  const error = new Error(
+    `${channel} belongs to WorldManager Studio and is unavailable from ${APP_EXPERIENCE.label}.`,
+  );
+  error.code = "world_manager_studio_experience_required";
+  throw error;
 }
 
 function requireShellOrTrustedCodex(sender, channel) {
@@ -5131,6 +6538,23 @@ function encodeCodexSurfacePayload(project, extra = {}) {
     error: normalizeString(extra.error, ""),
     runtimeStartupPending: Boolean(extra.runtimeStartupPending),
     runtimeStartupMessage: normalizeString(extra.runtimeStartupMessage, ""),
+    worldManager: isPlainObject(extra.worldManager)
+      ? {
+          mode: normalizeString(extra.worldManager.mode, ""),
+          pipelineStage: normalizeString(
+            extra.worldManager.pipelineStage,
+            "",
+          ),
+        }
+      : null,
+    semanticMockup: isPlainObject(extra.semanticMockup)
+      ? {
+          mode: normalizeString(extra.semanticMockup.mode, ""),
+          liveDirectAvailable: Boolean(
+            extra.semanticMockup.liveDirectAvailable,
+          ),
+        }
+      : null,
   };
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
@@ -5389,7 +6813,8 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
   const surfaceModeManaged = project.surfaceBinding?.codex?.mode === "managed";
   const hasLocalSurface =
     currentUrl.includes("codex-surface.html") ||
-    currentUrl.includes("t3-direct-surface.html");
+    currentUrl.includes("t3-direct-surface.html") ||
+    currentUrl.includes("world-manager-surface.html");
   const needsSurfaceReload = !hasLocalSurface ||
     !surfaceModeManaged ||
     !activeCodexSurfaceConnection ||
@@ -8636,7 +10061,101 @@ async function createDirectWorkbenchWindow() {
   });
 }
 
+async function createWorldManagerWindow() {
+  Menu.setApplicationMenu(null);
+  const production = WORLD_MANAGER_PRODUCTION_MODE && !WORLD_MANAGER_SEMANTIC_MOCKUP_MODE;
+  console.log(
+    `[WorldManager Studio] launch mode=${production ? "production-k6-genesis" : "semantic-mockup"} ` +
+      `experience=${APP_EXPERIENCE.id} controlPlane=${APP_EXPERIENCE.controlPlane} ` +
+      `productionFlag=${WORLD_MANAGER_PRODUCTION_MODE ? "1" : "0"} ` +
+      `mockupFlag=${WORLD_MANAGER_SEMANTIC_MOCKUP_MODE ? "1" : "0"}`,
+  );
+  app.setName(`WorldManager Studio${production ? "" : " · semantic mockup"}`);
+  nativeTheme.themeSource = "dark";
+
+  mainWindow = new BaseWindow({
+    width: 1720,
+    height: 980,
+    minWidth: 1080,
+    minHeight: 700,
+    title: production ? "WorldManager Studio" : "WorldManager Studio · semantic mockup",
+    backgroundColor: "#08111f",
+    show: true,
+  });
+  codexView = new WebContentsView({
+    webPreferences: {
+      preload: codexSurfacePreloadPath,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+      partition: CODEX_PARTITION,
+      devTools: true,
+    },
+  });
+  registerWebContentsAuthority(codexView, {
+    surfaceName: "codex",
+    surfaceRole: SURFACE_ROLES.EXTERNAL_CODEX_URL,
+    codexTrustProfile: CODEX_SURFACE_TRUST_PROFILES.UNKNOWN,
+    codexBridgeProfile: CODEX_SURFACE_BRIDGE_PROFILES.NONE,
+    reason: "world-manager-semantic-surface-not-loaded",
+  });
+  mainWindow.contentView.addChildView(codexView);
+  const applyBounds = () => {
+    if (!mainWindow || !codexView || codexView.webContents.isDestroyed()) return;
+    const bounds = mainWindow.getBounds();
+    codexView.setBounds({ x: 0, y: 0, width: Math.max(1, bounds.width), height: Math.max(1, bounds.height) });
+  };
+  applyBounds();
+  for (const eventName of ["resize", "resized", "maximize", "unmaximize", "enter-full-screen", "leave-full-screen", "restore"]) {
+    mainWindow.on(eventName, applyBounds);
+  }
+  configureGuestSurface("codex", codexView);
+  mainWindow.on("closed", () => {
+    localSurfaceServer?.dispose();
+    localSurfaceServer = null;
+    worldManagerSemanticCoordinator = null;
+    clearWorldManagerTransitionSubscribers();
+    worldManagerService?.close();
+    worldManagerService = null;
+    worldManagerRoleRuntime = null;
+    closeView(codexView);
+    codexView = null;
+    mainWindow = null;
+  });
+
+  const config = await loadConfig();
+  currentProject = getSelectedProject(config);
+  if (!currentProject) throw new Error("WorldManager requires at least one configured project.");
+  const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
+  const localUrl = codexSurfaceUrl(
+    localSurfaceBaseUrl,
+    currentProject,
+    production
+      ? {
+          worldManager: {
+            mode: "production",
+            pipelineStage: "wm_k6_genesis",
+          },
+        }
+      : {
+          semanticMockup: {
+            mode: "fixture",
+            liveDirectAvailable: true,
+          },
+        },
+  );
+  setManagedCodexSurfaceAuthority(
+    currentProject,
+    localUrl,
+    production ? "world-manager-production-k6-genesis" : "world-manager-semantic-mockup",
+  );
+  await codexView.webContents.loadURL(localUrl);
+}
+
 async function createWindow() {
+  if (WORLD_MANAGER_SURFACE_MODE) {
+    return createWorldManagerWindow();
+  }
   if (DIRECT_WORKBENCH_MODE) {
     return createDirectWorkbenchWindow();
   }
@@ -8800,6 +10319,481 @@ ipcMain.handle("config:save", async (_event, nextConfig) => {
   return { config: saved, configPath: configPath() };
 });
 
+async function worldManagerSemanticCoordinatorForRequest() {
+  requireWorldManagerStudioExperience("world-manager-semantic");
+  const config = await loadConfig();
+  const selectedProject = getSelectedProject(config);
+  return ensureWorldManagerSemanticCoordinator({
+    projects: worldManagerProjectDescriptors(config, selectedProject?.id || ""),
+    activeProjectId: selectedProject?.id || currentProject?.id || "",
+  });
+}
+
+async function runWorldManagerSemanticTransition(event, callback) {
+  requireFullCodexSurfaceBridge(event.sender, "world-manager-semantic");
+  const coordinator = await worldManagerSemanticCoordinatorForRequest();
+  coordinator.onTransition = async ({ reason, projection }) => {
+    assertSemanticMockupProjectionSafe(projection);
+    if (!event.sender.isDestroyed()) {
+      event.sender.send("world-manager-semantic:event", { reason, projection });
+    }
+  };
+  try {
+    return await callback(coordinator);
+  } finally {
+    coordinator.onTransition = null;
+  }
+}
+
+ipcMain.handle("world-manager-semantic:snapshot", async (event) => {
+  requireFullCodexSurfaceBridge(event.sender, "world-manager-semantic:snapshot");
+  const coordinator = await worldManagerSemanticCoordinatorForRequest();
+  const projection = coordinator.snapshot();
+  assertSemanticMockupProjectionSafe(projection);
+  return projection;
+});
+
+ipcMain.handle("world-manager-semantic:submit", async (event, payload) => {
+  return runWorldManagerSemanticTransition(event, (coordinator) =>
+    coordinator.submitPlanningMessage({
+      text: payload?.text,
+      projectId: payload?.projectId,
+      mode: payload?.mode,
+      model: payload?.model,
+      reasoningEffort: payload?.reasoningEffort,
+    }));
+});
+
+ipcMain.handle("world-manager-semantic:inspect-proposal", async (event, payload) => {
+  return runWorldManagerSemanticTransition(event, (coordinator) =>
+    coordinator.inspectProposal({ proposalId: payload?.proposalId }));
+});
+
+ipcMain.handle("world-manager-semantic:admit-proposal", async (event, payload) => {
+  return runWorldManagerSemanticTransition(event, (coordinator) =>
+    coordinator.admitProposal({
+      proposalId: payload?.proposalId,
+      actorId: payload?.actorId || "operator",
+    }));
+});
+
+ipcMain.handle("world-manager-semantic:reset", async (event, payload) => {
+  return runWorldManagerSemanticTransition(event, async (coordinator) => {
+    const config = await loadConfig();
+    const selectedProject = getSelectedProject(config);
+    return coordinator.reset({
+      projects: worldManagerProjectDescriptors(config, selectedProject?.id || ""),
+      activeProjectId: selectedProject?.id || currentProject?.id || "",
+      mode: payload?.mode,
+    });
+  });
+});
+
+function unsubscribeWorldManagerTransitionSubscriber(
+  senderId,
+) {
+  const subscription =
+    worldManagerTransitionSubscribers.get(
+      senderId,
+    );
+  if (!subscription) return;
+  worldManagerTransitionSubscribers.delete(
+    senderId,
+  );
+  subscription.service.off(
+    "transition",
+    subscription.onTransition,
+  );
+  if (
+    !subscription.sender.isDestroyed()
+  ) {
+    subscription.sender.off(
+      "destroyed",
+      subscription.onDestroyed,
+    );
+  }
+}
+
+function subscribeWorldManagerTransitions(
+  sender,
+  service,
+) {
+  if (
+    !sender ||
+    sender.isDestroyed()
+  ) {
+    return;
+  }
+  const existing =
+    worldManagerTransitionSubscribers.get(
+      sender.id,
+    );
+  if (
+    existing?.service === service
+  ) {
+    return;
+  }
+  if (existing) {
+    unsubscribeWorldManagerTransitionSubscriber(
+      sender.id,
+    );
+  }
+  const onTransition = (payload) => {
+    if (sender.isDestroyed()) {
+      unsubscribeWorldManagerTransitionSubscriber(
+        sender.id,
+      );
+      return;
+    }
+    sender.send(
+      "world-manager:event",
+      payload,
+    );
+  };
+  const onDestroyed = () => {
+    unsubscribeWorldManagerTransitionSubscriber(
+      sender.id,
+    );
+  };
+  worldManagerTransitionSubscribers.set(
+    sender.id,
+    {
+      sender,
+      service,
+      onTransition,
+      onDestroyed,
+    },
+  );
+  service.on(
+    "transition",
+    onTransition,
+  );
+  sender.once(
+    "destroyed",
+    onDestroyed,
+  );
+}
+
+function clearWorldManagerTransitionSubscribers() {
+  for (const senderId of [
+    ...worldManagerTransitionSubscribers.keys(),
+  ]) {
+    unsubscribeWorldManagerTransitionSubscriber(
+      senderId,
+    );
+  }
+}
+
+async function worldManagerServiceForRequest(
+  sender = null,
+) {
+  requireWorldManagerStudioExperience("world-manager");
+  const config = await loadConfig();
+  const selectedProject = getSelectedProject(config);
+  const service = ensureWorldManagerService({
+    projects: worldManagerProjectDescriptors(config, selectedProject?.id || ""),
+    activeProjectId: selectedProject?.id || currentProject?.id || "",
+  });
+  subscribeWorldManagerTransitions(
+    sender,
+    service,
+  );
+  await service.ready();
+  return service;
+}
+
+async function worldManagerWorkerSurfaceSessionFor(
+  sender,
+  project,
+) {
+  requireFullCodexSurfaceBridge(
+    sender,
+    "world-manager ARO worker session",
+  );
+  const sessions =
+    ensureCodexSurfaceSessions();
+  const existing =
+    sessions.get(sender.id);
+  if (
+    existing?.transportKind ===
+      DIRECT_LIVE_TEXT_SURFACE_TRANSPORT &&
+    existing.project?.id === project?.id
+  ) {
+    if (!existing.connection) {
+      await existing.connect({
+        transport:
+          DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+      });
+    }
+    return existing;
+  }
+  if (existing) {
+    sessions.delete(sender.id);
+    if (existing.destroyedListener) {
+      sender.removeListener(
+        "destroyed",
+        existing.destroyedListener,
+      );
+    }
+    await existing.dispose?.({
+      silent: true,
+      reason:
+        "WorldManager worker runtime changed.",
+    });
+  }
+  const session =
+    new DirectLiveTextSurfaceSession(
+      sender,
+      {
+        controller:
+          ensureDirectLiveTextController(),
+        project,
+      },
+    );
+  sessions.set(sender.id, session);
+  session.destroyedListener = () => {
+    if (
+      sessions.get(sender.id) !==
+      session
+    ) {
+      return;
+    }
+    session.dispose({
+      silent: true,
+      reason:
+        "WorldManager renderer destroyed.",
+    }).catch(() => {});
+    sessions.delete(sender.id);
+  };
+  sender.once(
+    "destroyed",
+    session.destroyedListener,
+  );
+  await session.connect({
+    transport:
+      DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+  });
+  return session;
+}
+
+async function runWorldManagerTransition(event, callback) {
+  requireFullCodexSurfaceBridge(event.sender, "world-manager");
+  const service =
+    await worldManagerServiceForRequest(
+      event.sender,
+    );
+  return callback(service);
+}
+
+ipcMain.handle("world-manager:snapshot", async (event) => {
+  requireFullCodexSurfaceBridge(event.sender, "world-manager:snapshot");
+  const service =
+    await worldManagerServiceForRequest(
+      event.sender,
+    );
+  return service.snapshot();
+});
+
+ipcMain.handle("world-manager:runtime-settings", async (event, payload) => {
+  requireWorldManagerStudioExperience("world-manager:runtime-settings");
+  requireFullCodexSurfaceBridge(
+    event.sender,
+    "world-manager:runtime-settings",
+  );
+  return worldManagerRuntimeSettingsProjection({
+    refreshMetadata: payload?.refreshMetadata === true,
+  });
+});
+
+ipcMain.handle("world-manager:update-runtime-settings", async (event, payload) => {
+  requireWorldManagerStudioExperience("world-manager:update-runtime-settings");
+  requireFullCodexSurfaceBridge(
+    event.sender,
+    "world-manager:update-runtime-settings",
+  );
+  return updateWorldManagerRuntimeSettings(payload);
+});
+
+ipcMain.handle("world-manager:epistemic-fabric", async (event) =>
+  runWorldManagerTransition(event, (service) =>
+    service.epistemicFabricSnapshot()));
+
+ipcMain.handle("world-manager:ack-ledger-delivery", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.acknowledgeEpistemicDelivery(payload)));
+
+ipcMain.handle("world-manager:import-ledger-delivery", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.importEpistemicDeliveryContext(payload)));
+
+ipcMain.handle("world-manager:request-artifact-admission", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.requestImplementationPatchAdmissionFromSurface(payload)));
+
+ipcMain.handle("world-manager:submit", async (event, payload) =>
+  runWorldManagerTransition(event, (service) => service.submit(payload)));
+
+ipcMain.handle("world-manager:transition-decision", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.transitionDecision(payload)));
+
+ipcMain.handle("world-manager:inspect-plan-proposal", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.inspectPlanProposal(payload)));
+
+ipcMain.handle("world-manager:admit-plan-proposal", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.admitPlanProposal(payload)));
+
+ipcMain.handle("world-manager:prepare-plan-execution", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.preparePlanExecution(payload)));
+
+ipcMain.handle("world-manager:authorize-plan-execution", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.authorizePlanExecution(payload)));
+
+ipcMain.handle("world-manager:complete-plan-execution", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.completePlanExecution(payload)));
+
+ipcMain.handle("world-manager:focus-project", async (event, payload) =>
+  runWorldManagerTransition(event, (service) => service.focusProject(payload)));
+
+ipcMain.handle("world-manager:inspect-project-genesis", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.inspectProjectGenesisCandidate(payload)));
+
+ipcMain.handle("world-manager:admit-project-genesis", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.admitProjectGenesisCandidate(payload)));
+
+ipcMain.handle("world-manager:provision-project-substrate", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.provisionProjectSubstrate(payload)));
+
+ipcMain.handle("world-manager:review-aro-reconstruction", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.reviewAroReconstructionCandidate(payload)));
+
+ipcMain.handle("world-manager:admit-aro-reconstruction", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.admitAroReconstructionCandidate(payload)));
+
+ipcMain.handle("world-manager:define-aro-target", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.defineAroTarget(payload)));
+
+ipcMain.handle("world-manager:retry-aro-reconstruction", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.retryAroReconstruction(payload)));
+
+ipcMain.handle("world-manager:compile-aro-mutation-contract", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.compileAroMutationContract(payload)));
+
+ipcMain.handle("world-manager:map-aro-realization-context", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.mapAroRealizationContext(payload)));
+
+ipcMain.handle("world-manager:prepare-aro-worker", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.prepareAroWorkerHandoff(payload)));
+
+ipcMain.handle("world-manager:authorize-aro-worker", async (event, payload) =>
+  runWorldManagerTransition(event, async (service) => {
+    const projectId =
+      normalizeString(
+        payload?.projectId,
+        "",
+      );
+    const project =
+      await resolveWorldManagerRuntimeProject({
+        id: projectId,
+      });
+    if (!project) {
+      const error = new Error(
+        `WorldManager worker project is unavailable: ${projectId || "<empty>"}`,
+      );
+      error.code =
+        "world_manager_aro_worker_project_unavailable";
+      throw error;
+    }
+    const surfaceSession =
+      await worldManagerWorkerSurfaceSessionFor(
+        event.sender,
+        project,
+      );
+    return service
+      .authorizeAroWorkerHandoff({
+        ...(payload || {}),
+        surfaceSession,
+      });
+  }));
+
+ipcMain.handle("world-manager:respond-aro-worker-request", async (event, payload) => {
+  requireFullCodexSurfaceBridge(
+    event.sender,
+    "world-manager:respond-aro-worker-request",
+  );
+  const requestKey =
+    normalizeString(
+      payload?.key || payload?.id,
+      "",
+    );
+  const session =
+    codexSurfaceSessions?.get(
+      event.sender.id,
+    ) || null;
+  if (
+    !requestKey ||
+    !session ||
+    session.transportKind !==
+      DIRECT_LIVE_TEXT_SURFACE_TRANSPORT ||
+    !session.hasServerRequest?.(requestKey)
+  ) {
+    const error = new Error(
+      "WorldManager has no matching pending ARO worker request.",
+    );
+    error.code =
+      "world_manager_aro_worker_request_unknown";
+    throw error;
+  }
+  return session.respond(
+    requestKey,
+    payload?.result || {},
+  );
+});
+
+ipcMain.handle("world-manager:capture-aro-execution-evidence", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.captureAroExecutionEvidence(payload)));
+
+ipcMain.handle("world-manager:verify-aro-realization", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.verifyAroRealization(payload)));
+
+ipcMain.handle("world-manager:apply-thought-brush", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.applyThoughtBrush(payload)));
+
+ipcMain.handle("world-manager:undo-context-canvas", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.undoContextCanvas(payload)));
+
+ipcMain.handle("world-manager:extract-context-canvas-insight", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.extractContextCanvasInsight(payload)));
+
+ipcMain.handle("world-manager:status", async (event) => {
+  requireFullCodexSurfaceBridge(event.sender, "world-manager:status");
+  const service =
+    await worldManagerServiceForRequest(
+      event.sender,
+    );
+  return service.status();
+});
+
 ipcMain.handle("project:select", async (_event, projectId) => {
   const config = await loadConfig();
   const selectedProjectId = config.projects.some((project) => project.id === projectId)
@@ -8952,11 +10946,26 @@ ipcMain.handle("codex-surface:respond", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:respond");
   const session = codexSurfaceSessionFor(event.sender);
   const requestKey = payload?.key || payload?.id || "";
-  const record = session.findServerRequest(requestKey);
+  const record =
+    session.findServerRequest?.(
+      requestKey,
+    ) ||
+    session.serverRequests?.get?.(
+      requestKey,
+    ) ||
+    null;
   if (record && CODEX_SURFACE_SENSITIVE_RESPONSE_RISKS.has(record.riskCategory)) {
     throw new Error("Sensitive Codex requests must be answered from the shell control plane.");
   }
-  return session.respondServerRequest(requestKey, payload?.result || {});
+  return session.respondServerRequest
+    ? session.respondServerRequest(
+        requestKey,
+        payload?.result || {},
+      )
+    : session.respond(
+        requestKey,
+        payload?.result || {},
+      );
 });
 
 ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
@@ -9665,6 +11674,10 @@ app.on("before-quit", () => {
   directImplementationProofEvidenceStore = null;
   directActivationStore = null;
   directThreadWorkbenchController = null;
+  clearWorldManagerTransitionSubscribers();
+  worldManagerService?.close();
+  worldManagerService = null;
+  worldManagerRoleRuntime = null;
     directThreadStore?.close();
     directThreadStore = null;
     directSessionStore = null;

@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:* ws://localhost:* http://localhost:*"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WorldManager Studio</title>
+    <link rel="stylesheet" href="./world-manager-surface.css" />
+  </head>
+  <body data-app-experience="world-manager-studio" data-control-plane="worldmanager-semantic">
+    <main id="worldWorkbench" class="world-workbench" data-morphic-region="bounded-worldmanager-workbench">
+      <header class="world-header" data-morphic-region="status-region">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <div>
+            <p class="eyebrow">WorldManager semantic control plane</p>
+            <h1>WorldManager Studio</h1>
+          </div>
+        </div>
+        <div class="world-posture" data-state-surface="authoritative-status-surface">
+          <span id="worldPulse" class="world-pulse" aria-hidden="true"></span>
+          <div>
+            <strong id="worldLifecycleLabel">World is calm</strong>
+            <span id="worldRevision">revision —</span>
+          </div>
+        </div>
+        <div class="header-actions">
+          <label class="mode-control">
+            <span>Reasoning path</span>
+            <select id="runtimeMode">
+              <option value="fixture">Deterministic fixture</option>
+              <option value="live_direct">Live Direct</option>
+            </select>
+          </label>
+          <details id="managerRuntimeSettings" class="manager-runtime-settings" data-morphic-region="manager-runtime-trust-boundary">
+            <summary id="managerRuntimeSettingsToggle">
+              <span>
+                <span class="runtime-settings-label">Manager runtime</span>
+                <strong id="managerRuntimeSummary">loading…</strong>
+              </span>
+              <span id="managerRuntimeState" class="runtime-settings-state">configured</span>
+            </summary>
+            <section class="manager-runtime-panel" aria-label="WorldManager model and reasoning settings">
+              <header>
+                <p class="eyebrow">Manager reasoning</p>
+                <h2>Runtime preference</h2>
+                <p>Applies to future WorldManager and Project Manager provider calls. Workers retain their project constitution.</p>
+              </header>
+              <label class="runtime-field" for="managerModelSelect">
+                <span>Model</span>
+                <select id="managerModelSelect">
+                  <option value="">Automatic</option>
+                </select>
+              </label>
+              <label class="runtime-field" for="managerEffortSelect">
+                <span>Reasoning effort</span>
+                <select id="managerEffortSelect">
+                  <option value="">Automatic · role contract</option>
+                </select>
+              </label>
+              <div class="runtime-truth-grid" data-state-surface="diagnostic-status-surface">
+                <div>
+                  <span>Effective next call</span>
+                  <strong id="managerRuntimeEffective">—</strong>
+                </div>
+                <div>
+                  <span>Last provider observation</span>
+                  <strong id="managerRuntimeObserved">No observation</strong>
+                </div>
+                <div>
+                  <span>Catalog evidence</span>
+                  <strong id="managerRuntimeCatalog">unavailable</strong>
+                </div>
+              </div>
+              <footer class="runtime-settings-actions">
+                <button id="refreshManagerModels" class="quiet-button" type="button">Refresh models</button>
+                <button id="applyManagerRuntime" class="runtime-apply-button" type="button">Apply for next turn</button>
+              </footer>
+              <p id="managerRuntimeBoundary" class="runtime-settings-boundary">
+                Changing this preference starts no provider call and does not alter an active turn.
+              </p>
+            </section>
+          </details>
+          <button id="resetButton" class="quiet-button" type="button">Reset world</button>
+        </div>
+      </header>
+
+      <section class="world-grid">
+        <section class="communications-region" data-morphic-region="primary-work-region">
+          <section class="world-overview" aria-label="Global world posture" data-morphic-region="world-posture-lane">
+            <div class="overview-copy">
+              <p class="eyebrow">Global posture</p>
+              <h2 id="overviewTitle">Quiet world, ready for direction</h2>
+              <p id="overviewSummary">One conversation governs the visible project ecology.</p>
+            </div>
+            <div id="worldMetrics" class="world-metrics"></div>
+          </section>
+
+          <section id="conversation" class="conversation" aria-label="Unified WorldManager conversation" data-morphic-region="unified-conversation-lane">
+            <div id="emptyConversation" class="empty-conversation">
+              <div class="empty-orbit" aria-hidden="true"><span></span></div>
+              <p class="eyebrow">Unified communications plane</p>
+              <h2>What should the world move toward?</h2>
+              <p>Your message reaches the WorldManager first. A bounded project role may formulate the response without creating a second chat.</p>
+              <button id="starterPrompt" class="starter-prompt" type="button">Plan the next five features for this project</button>
+            </div>
+            <div id="messageList" class="message-list" aria-live="polite"></div>
+          </section>
+
+          <details id="operationalContextRibbon" class="operational-context-ribbon" hidden data-morphic-region="operational-meta-context-ribbon">
+            <summary>
+              <span class="context-ribbon-label">Operational meta-context</span>
+              <strong id="operationalContextState">not prepared</strong>
+              <span id="operationalContextSummary">No semantic context import is active.</span>
+            </summary>
+            <div id="operationalContextChips" class="context-ribbon-chips" aria-label="Current semantic scope, lane, altitude, context, and thought operation"></div>
+            <div id="operationalContextFacts" class="context-ribbon-facts"></div>
+            <p class="context-ribbon-boundary">
+              This is read-only attention evidence. It grants no tool, transition, or canonical authority.
+            </p>
+          </details>
+
+          <form id="composerForm" class="world-composer" data-morphic-region="transition-request-region">
+            <label for="composerInput">Message the WorldManager</label>
+            <textarea id="composerInput" rows="3" placeholder="Plan, prioritize, question, or redirect the active project…"></textarea>
+            <div class="composer-footer">
+              <div class="composer-context">
+                <span id="activeProjectPill">project: —</span>
+                <span>one lineage</span>
+                <span>admission remains explicit</span>
+              </div>
+              <button id="sendButton" class="send-button" type="submit">
+                <span>Send to WorldManager</span>
+                <span aria-hidden="true">↗</span>
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="project-region" data-morphic-region="evidence-region">
+          <header class="project-region-header">
+            <div>
+              <p class="eyebrow dark">Project ecology</p>
+              <h2>Awareness without noise</h2>
+            </div>
+            <span id="projectCount" class="count-pill">0 projects</span>
+          </header>
+
+          <section id="projectList" class="project-list" aria-label="Project activity projections"></section>
+
+          <section id="decisionDock" class="decision-dock" hidden data-morphic-region="global-decision-dock">
+            <button id="openDecisionDock" class="decision-dock-header" type="button">
+              <span>
+                <span class="eyebrow dark">Decision Dock</span>
+                <strong id="decisionDockTitle">No open decisions</strong>
+              </span>
+              <span id="decisionDockCount" class="count-pill">0</span>
+            </button>
+            <div id="decisionDockEntries" class="decision-dock-entries"></div>
+            <p class="decision-dock-boundary">
+              Each entry preserves one exact semantic identity across this dock, the conversation, and semantic zoom.
+            </p>
+          </section>
+
+          <section id="projectEcologyInspector" class="semantic-card ecology-inspector" hidden data-morphic-region="same-context-project-evidence">
+            <header class="semantic-card-header">
+              <div>
+                <p class="eyebrow dark">Project ecology inspector</p>
+                <h3 id="projectEcologyTitle">Project posture</h3>
+              </div>
+              <button id="closeProjectEcologyInspector" class="inspector-close" type="button" aria-label="Close project ecology inspector">×</button>
+            </header>
+            <p id="projectEcologySummary" class="card-summary"></p>
+            <div id="projectEcologyFacts" class="settlement-facts"></div>
+            <div id="projectSeedList" class="inspector-object-list"></div>
+            <div id="projectEcologyActions" class="inspector-actions">
+              <button id="activateInspectedProject" class="evidence-button" type="button">
+                Make active context
+              </button>
+            </div>
+          </section>
+
+          <section id="decisionOutcomeInspector" class="semantic-card decision-inspector" hidden data-morphic-region="same-context-decision-evidence">
+            <header class="semantic-card-header">
+              <div>
+                <p class="eyebrow dark">Decision & outcome inspector</p>
+                <h3 id="decisionOutcomeTitle">Actionable semantic state</h3>
+              </div>
+              <button id="closeDecisionOutcomeInspector" class="inspector-close" type="button" aria-label="Close decision and outcome inspector">×</button>
+            </header>
+            <p id="decisionOutcomeSummary" class="card-summary"></p>
+            <div id="openDecisionList" class="inspector-object-list"></div>
+            <div id="splitOutcomeList" class="inspector-object-list"></div>
+            <details id="staleDecisionDetails" class="historical-remands">
+              <summary id="staleDecisionSummary">Stale decisions</summary>
+              <div id="staleDecisionList" class="inspector-object-list"></div>
+            </details>
+            <details id="historicalRemandDetails" class="historical-remands">
+              <summary id="historicalRemandSummary">Historical remands</summary>
+              <div id="historicalRemandList" class="inspector-object-list"></div>
+            </details>
+          </section>
+
+          <section id="epistemicFabricInspector" class="semantic-card epistemic-fabric-inspector" hidden data-morphic-region="epistemic-ledger-and-semantic-ci-lane">
+            <header class="semantic-card-header">
+              <div>
+                <p class="eyebrow dark">Epistemic fabric</p>
+                <h3 id="epistemicFabricTitle">Artifact lifecycles & attention routes</h3>
+              </div>
+              <button id="closeEpistemicFabricInspector" class="inspector-close" type="button" aria-label="Close epistemic fabric inspector">×</button>
+            </header>
+            <p id="epistemicFabricSummary" class="card-summary"></p>
+            <div id="epistemicFabricFacts" class="settlement-facts"></div>
+            <div class="epistemic-fabric-workbench">
+              <nav id="epistemicLifecycleList" class="inspector-object-list" aria-label="Artifact lifecycle navigator"></nav>
+              <section id="epistemicFocusedLifecycle" class="aro-focused-object" tabindex="-1" aria-live="polite" data-evidence-bearing-region="true"></section>
+            </div>
+            <details class="epistemic-fabric-details" open>
+              <summary>Material activity</summary>
+              <div id="epistemicActivityList" class="inspector-object-list"></div>
+            </details>
+            <details class="epistemic-fabric-details">
+              <summary>Delivery & wake posture</summary>
+              <div id="epistemicDeliveryList" class="inspector-object-list"></div>
+            </details>
+            <p class="decision-dock-boundary">
+              Gate-ready is not admitted. Evidence, audit standing, delivery posture, and authority receipts remain distinct; this renderer mints none of them.
+            </p>
+          </section>
+
+          <section id="contextCanvasInspector" class="semantic-card context-canvas-inspector" hidden data-morphic-region="direct-context-canvas-workbench">
+            <header class="semantic-card-header">
+              <div>
+                <p class="eyebrow dark">Temporary semantic workbench</p>
+                <h3 id="contextCanvasInspectorTitle">ContextCanvas</h3>
+              </div>
+              <button id="closeContextCanvasInspector" class="inspector-close" type="button" aria-label="Close ContextCanvas inspector">×</button>
+            </header>
+            <p id="contextCanvasInspectorSummary" class="card-summary"></p>
+            <div id="contextCanvasFacts" class="settlement-facts"></div>
+            <section class="thought-brush-palette" data-morphic-region="thought-brush-preview-and-request">
+              <header>
+                <div>
+                  <span class="inspector-object-kind">Thought brush</span>
+                  <strong>Direct attention without changing the world</strong>
+                </div>
+                <span class="state-badge candidate">temporary</span>
+              </header>
+              <div class="thought-brush-controls">
+                <label>
+                  <span>Brush</span>
+                  <select id="thoughtBrushSelect"></select>
+                </label>
+                <label>
+                  <span>Related project</span>
+                  <select id="thoughtBrushTarget"></select>
+                </label>
+                <label>
+                  <span>Altitude</span>
+                  <input id="thoughtBrushAltitude" type="text" placeholder="same as anchors" />
+                </label>
+              </div>
+              <label class="thought-brush-direction">
+                <span>Direction</span>
+                <textarea id="thoughtBrushInstruction" rows="3" placeholder="What should this brush help you see?"></textarea>
+              </label>
+              <p id="thoughtBrushPreview" class="thought-brush-preview"></p>
+              <div class="thought-brush-actions">
+                <button id="undoContextCanvas" class="evidence-button" type="button">Undo last canvas move</button>
+                <button id="applyThoughtBrush" class="greenlight-button" type="button">Apply temporary brush</button>
+              </div>
+            </section>
+            <nav id="contextCanvasLenses" class="context-canvas-lenses" aria-label="ContextCanvas views"></nav>
+            <section id="contextCanvasPanel" class="context-canvas-panel" aria-live="polite" data-evidence-bearing-region="true"></section>
+            <p class="decision-dock-boundary">
+              Brush results are reversible and non-canonical. Extracting an insight creates only a provisional ARO candidate; normal evidence review and admission remain separate.
+            </p>
+          </section>
+
+          <section id="aroInspector" class="semantic-card aro-inspector" hidden data-morphic-region="aro-reconstruction-and-registry-lane">
+            <header class="semantic-card-header">
+              <div>
+                <p class="eyebrow dark">Abstract reasoning objects</p>
+                <h3 id="aroInspectorTitle">Semantic implementation anatomy</h3>
+              </div>
+              <button id="closeAroInspector" class="inspector-close" type="button" aria-label="Close ARO inspector">×</button>
+            </header>
+            <p id="aroInspectorSummary" class="card-summary"></p>
+            <div id="aroReconstructionStatus" class="inspector-object-list" data-state-surface="provisional-status-surface"></div>
+            <div class="aro-focus-workbench" data-morphic-region="aro-navigation-and-focused-object">
+              <nav class="aro-object-navigator" aria-label="Abstract reasoning object navigator">
+                <div id="aroCandidateList" class="inspector-object-list"></div>
+                <div id="aroHistoryList" class="inspector-object-list"></div>
+                <div id="aroCurrentTargetList" class="inspector-object-list"></div>
+                <div id="aroRegistryList" class="inspector-object-list"></div>
+              </nav>
+              <section
+                id="aroFocusedObject"
+                class="aro-focused-object"
+                aria-label="Focused abstract reasoning object"
+                aria-live="polite"
+                tabindex="-1"
+                data-evidence-bearing-region="true"
+              ></section>
+            </div>
+            <p class="decision-dock-boundary">
+              Reconstruction is semantic and provisional. Review records inspection; admission writes only the semantic registry and never mutates code.
+            </p>
+          </section>
+
+          <section id="settlementPanel" class="semantic-card settlement-card" hidden data-state-surface="diagnostic-status-surface">
+            <header class="semantic-card-header">
+              <div>
+                <p class="eyebrow dark">K3 agent-world constitution</p>
+                <h3 id="settlementTitle">Task context</h3>
+              </div>
+              <span id="settlementState" class="state-badge processing">settling</span>
+            </header>
+            <p id="settlementSummary" class="card-summary"></p>
+            <div id="settlementFacts" class="settlement-facts"></div>
+            <p id="clarificationPrompt" class="clarification-prompt" hidden></p>
+            <button id="inspectSettlementButton" class="evidence-button" type="button">
+              Inspect constitution lineage
+            </button>
+          </section>
+
+          <section id="reconciliationPanel" class="semantic-card reconciliation-card" hidden data-state-surface="provisional-status-surface">
+            <header class="semantic-card-header">
+              <div>
+                <p class="eyebrow dark">WorldManager reconciliation</p>
+                <h3 id="reconciliationTitle">Candidate posture</h3>
+              </div>
+              <span id="reconciliationState" class="state-badge candidate">candidate</span>
+            </header>
+            <p id="reconciliationSummary" class="card-summary"></p>
+            <div id="blindspotList" class="semantic-list"></div>
+            <div id="continuationList" class="continuation-list"></div>
+          </section>
+
+          <section id="proposalPanel" class="semantic-card proposal-card" hidden data-morphic-region="proposal-and-admission-lane">
+            <header class="semantic-card-header">
+              <div>
+                <p class="eyebrow dark">Plan proposal</p>
+                <h3 id="proposalTitle">—</h3>
+              </div>
+              <span id="proposalState" class="state-badge candidate">candidate</span>
+            </header>
+            <p id="proposalSummary" class="card-summary"></p>
+            <div id="featureList" class="feature-list"></div>
+            <div class="proposal-actions" data-morphic-region="dual-lane-command-posture">
+              <button id="inspectEvidenceButton" class="evidence-button" type="button">
+                Inspect semantic lineage
+              </button>
+              <div class="commit-cluster">
+                <button id="greenlightButton" class="greenlight-button" type="button" disabled>
+                  Greenlight plan
+                </button>
+                <p id="greenlightGate">Inspect settlement, agent constitution, result and reconciliation first.</p>
+              </div>
+            </div>
+          </section>
+
+          <section id="projectGenesisPanel" class="semantic-card genesis-card" hidden data-morphic-region="project-genesis-admission-lane">
+            <header class="semantic-card-header">
+              <div>
+                <p class="eyebrow dark">Project constitution</p>
+                <h3 id="projectGenesisTitle">—</h3>
+              </div>
+              <span id="projectGenesisState" class="state-badge candidate">candidate</span>
+            </header>
+            <p id="projectGenesisSummary" class="card-summary"></p>
+            <div id="projectGenesisLens"></div>
+            <div id="projectGenesisLandscape"></div>
+            <div class="genesis-binding">
+              <span>Recommended default substrate</span>
+              <strong id="projectGenesisDefault">—</strong>
+            </div>
+            <div id="realizationOptionList" class="realization-option-list"></div>
+            <div id="projectSubstrateProvisioning" class="project-substrate-provisioning" hidden>
+              <label>
+                <span id="projectWorkspacePathLabel">Native workspace path</span>
+                <input id="projectWorkspacePath" type="text" autocomplete="off" spellcheck="false" />
+              </label>
+              <label id="projectWorkspaceDistroField">
+                <span>WSL distro</span>
+                <input id="projectWorkspaceDistro" type="text" autocomplete="off" spellcheck="false" />
+              </label>
+              <button id="provisionProjectSubstrateButton" class="greenlight-button" type="button">
+                Provision native substrate
+              </button>
+              <p id="projectSubstrateProvisioningGate">
+                Choose the native project workspace. The readiness probe does not mutate it.
+              </p>
+            </div>
+            <div class="proposal-actions" data-morphic-region="dual-lane-command-posture">
+              <button id="inspectGenesisEvidenceButton" class="evidence-button" type="button">
+                Inspect substrate evidence
+              </button>
+              <div class="commit-cluster">
+                <button id="admitProjectButton" class="greenlight-button" type="button" disabled>
+                  Admit project constitution
+                </button>
+                <p id="projectAdmissionGate">Inspect the recommendation and realization evidence first.</p>
+              </div>
+            </div>
+          </section>
+
+          <section id="contractPanel" class="semantic-card contract-card" hidden data-state-surface="authoritative-status-surface">
+            <header class="semantic-card-header">
+              <div>
+                <p class="eyebrow dark">Canonical implementation contract</p>
+                <h3 id="contractTitle">Contract active</h3>
+              </div>
+              <span class="state-badge canonical">canonical</span>
+            </header>
+            <p id="contractObjective" class="card-summary"></p>
+            <div class="contract-status">
+              <span class="activity-dot" aria-hidden="true"></span>
+              <div>
+                <strong id="workThreadLabel">WorkThread active</strong>
+                <span id="contractExecutionSummary">Activity is visible; completion has not been claimed.</span>
+              </div>
+            </div>
+            <div class="proposal-actions" data-morphic-region="dual-lane-command-posture">
+              <button id="preparePlanExecutionButton" class="evidence-button" type="button">
+                Compile implementation constitution
+              </button>
+              <div class="commit-cluster">
+                <button id="authorizePlanExecutionButton" class="greenlight-button" type="button" hidden>
+                  Authorize worker start
+                </button>
+                <button id="completePlanExecutionButton" class="greenlight-button" type="button" hidden>
+                  Evaluate closure
+                </button>
+                <p id="planExecutionGate">Compilation starts no provider turn and grants no workspace authority.</p>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </section>
+
+      <section id="semanticZoom" class="semantic-zoom" hidden data-morphic-region="same-context-evidence-lane">
+        <header class="semantic-zoom-header">
+          <div>
+            <p class="eyebrow dark">Semantic anatomy</p>
+            <h2 id="semanticZoomTitle">One event, progressively transparent</h2>
+            <p id="semanticZoomSummary">These are governed artifacts behind the visible response—not private chain-of-thought.</p>
+          </div>
+          <button id="closeSemanticZoom" class="zoom-close" type="button" aria-label="Close semantic zoom">×</button>
+        </header>
+        <div id="semanticZoomIdentity" class="semantic-zoom-identity" data-state-surface="provisional-status-surface"></div>
+        <nav id="semanticDepthNavigator" class="semantic-depth-navigator" aria-label="Semantic anatomy depth"></nav>
+        <div class="semantic-zoom-grid">
+          <section class="evidence-column">
+            <h3 id="semanticDepthHeading">Selected semantic depth</h3>
+            <div id="settlementEvidence" class="evidence-object"></div>
+            <div id="instantiationEvidence" class="evidence-object"></div>
+          </section>
+          <section class="evidence-column primary-evidence">
+            <h3 id="semanticWitnessHeading">Exact witnesses & gates</h3>
+            <div id="resultEvidence" class="evidence-object"></div>
+            <div id="reconciliationEvidence" class="evidence-object"></div>
+          </section>
+          <section class="lineage-column">
+            <h3>Semantic lineage</h3>
+            <div id="lineageList" class="lineage-list"></div>
+          </section>
+        </div>
+        <footer class="semantic-zoom-footer">
+          <span id="evidenceReviewStatus">Evidence is visible in the current workbench.</span>
+          <button id="markEvidenceReviewed" class="review-button" type="button">Mark evidence inspected</button>
+        </footer>
+      </section>
+
+      <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
+    </main>
+    <script src="./world-manager-surface.js"></script>
+  </body>
+</html>

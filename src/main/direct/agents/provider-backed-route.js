@@ -617,6 +617,8 @@ class DirectProviderBackedSubAgentRoute {
         providerCompleted: false,
         requestShape: request.requestShape,
         promptDigest: request.promptDigest,
+        contextDigest: request.contextDigest,
+        contextMessageCount: request.contextMessageCount,
         agentThreadId: agent.agentThreadId,
         childResultDigest: childResult.resultDigest,
         ...buildResultAdmissionArtifacts(this, {

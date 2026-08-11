@@ -13,8 +13,17 @@ custody, or new action authority.
 
 Status: canonical human-readable carryover entrypoint for the direct harness.
 
-Last updated: 2026-07-15 after local Wave 26 acceptance reconciliation; one
-combined GitHub PR is pending.
+Last updated: 2026-08-09 after implementation of the ordinary Direct native
+multi-agent reasoning pool, in addition to the first restricted
+`WM-SC11` role-governed epistemic-ledger and semantic-CI foundation, following implementation
+of the governed semantic sequence through the `WM-SC7.2` current-to-target
+bridge, provisional `WM-SC8.1` ARO
+mutation-contract compiler, read-only `WM-SC8.2` realization-mapping bridge,
+bounded `WM-SC8.3` native Direct worker handoff, and `WM-SC8.4` exact
+realization-evidence acquisition, and `WM-SC8.5` semantic verification and
+closure candidacy, plus `WM-SC9` thought brushes and the reversible
+ContextCanvas, and `WM-SC10` unified operational-context and semantic-anatomy
+projection; one combined Wave 26 GitHub PR is pending.
 
 Authoritative branch and repository:
 
@@ -100,6 +109,196 @@ compresses, exposes, authorizes, mutates, or audits.
 Root doctrine:
 [DIRECT_INFORMATION_BRIDGE_CONSTITUTION.md](./DIRECT_INFORMATION_BRIDGE_CONSTITUTION.md).
 
+## Post-Wave-26 World Manager And Unified UX Target (2026-07-26)
+
+The current product-design target is now captured in the
+[World Manager Agent-World And Unified UX spec](./DIRECT_WORLD_MANAGER_AGENT_WORLD_AND_UNIFIED_UX_SPEC.md).
+It refines the earlier expectation of separate top-level World Manager and
+Project Manager chats into one persistent World Manager-governed
+communications plane:
+
+```text
+one conversation and voice relationship at the surface
+  -> semantic World Manager routing
+  -> Project Manager or other bounded role may formulate the response
+  -> typed AgentResult renders to the user
+  -> delegated-role results enter parallel World Manager reconciliation
+  -> WorldManager-owned conversation completes without recursive reconciliation
+  -> candidate/admission/contract/execution lineage remains inspectable
+```
+
+The World Manager remains the fixed constitutional root. Other roles are
+future trusted templates compiled from settled worldstate into bounded
+`AgentInstantiation` objects. The compiled unit includes prompt, authority,
+capabilities, budget, evidence access, completion evaluator, and return
+contract.
+
+Project/user preferences are future canonical `PolicyObject` state. The World
+Manager performs semantic scope/task settlement; the harness mechanically
+computes inherited obligations and projects only the operative discriminators.
+Prompt instruction, capability gating, approval, evaluation, and audit must
+agree and must report their actual enforcement strength.
+
+The UX law is:
+
+```text
+At the surface, show coherent agency.
+At depth, reveal truthful differentiation.
+Preserve one semantic lineage through every layer.
+```
+
+The
+[Direct WorldManager Semantic Mockup](./DIRECT_WORLD_MANAGER_SEMANTIC_MOCKUP.md)
+now implements one exploratory planning vertical slice with typed lineage,
+completion relay, bounded Project Manager instantiation, reconciliation,
+evidence-gated admission, a dedicated renderer, and fixture/live-Direct role
+paths. It does not claim a production resident World Manager, general policy or
+agent-instantiation compilers, production renderer migration, worker execution,
+or voice integration.
+
+The
+[Direct WorldManager Keyboard Pipeline Integration Spec](./DIRECT_WORLD_MANAGER_KEYBOARD_PIPELINE_SPEC.md)
+now has its `WM-K1` foundation, `WM-SC1` fixed semantic-ingress slice,
+`WM-SC2` semantic-history catalog, `WM-SC2b` split orchestration, and bounded
+`WM-SC2b.1` truth/recovery stabilization, the `WM-SC3` semantic
+artifact/decision kernel, the `WM-SC4` operational semantic-context importer,
+`WM-SC5` governed decision transitions, `WM-SC6` semantic-surface compilation,
+`WM-SC7` ARO registry/reconstruction, `WM-SC7.1` automatic repository
+reconstruction, and `WM-SC7.2` governed target definition,
+`WM-K2` settlement slice, `WM-K3`
+agent-world compilation slice, `WM-K4` persisted role-runtime slice,
+`WM-K5A/K5B` plan proposal and exact semantic/control admission parity, and the
+bounded `WM-K5G`/`WM-K6G` project-genesis admission slice: a
+resident SQLite
+WAL control plane, authoritative trust-store graph binding, append-only
+semantic-event and message ledger, provider-backed native semantic discharge,
+open type/subtype expressions, mechanically adapted typed settlement,
+exact typed-binding validation and mechanical K2 settlement,
+typed routing and clarification, actual World/Project Manager profiles,
+role-indexed graph projection, ManagerTurnBootPacket, restart reconstruction,
+typed PolicyObject adaptation, deterministic obligation closure,
+ResolvedTaskConstitution, trusted role templates, AgentInstantiation manifest,
+fail-closed projection agreement, persisted Direct Project Manager and
+WorldManager sessions/turns, final-message-anchored AgentResult relay, separate
+telemetry, semantic inbox delivery, advisory reconciliation, production
+`world-manager:*` IPC, the keyboard evidence surface, grounded WSL/Windows
+realization ranking, project-constitution candidates, explicit evidence review,
+operator admission, canonical project constitutions, immutable runtime
+defaults, backend-private native workspace locators, canonical project
+workspace bindings, harmless WSL/Windows resident readiness receipts,
+immutable WorkThread environment bindings, exact step snapshots, and exact
+child-thread inheritance. Each settled turn now receives versioned event-to-lane/project/task/
+object relations and mechanically materialized shelves. System-introspection
+turns compile a bounded multi-turn semantic-history horizon with exact message,
+settlement revision, task settlement, relation, shelf, and visible AgentResult
+witnesses instead of hard-coding the immediately preceding row. Manager open
+decisions and legacy clarification/admission rows now receive canonical,
+append-only `OpenDecision` identities with typed resolution modes,
+dependencies, consequences, resolution contracts, and direct
+`project_open_decisions` shelf membership. Each settled role instantiation now
+receives a typed, budgeted `IMPORT_CONTEXT` result assembled from exact
+world/project/task shelves. Peer-project shelves are explicitly excluded,
+dependency changes stale immutable cached bundles, and the actual Direct
+request manifest is linked back to the operational meta-context. The keyboard
+surface exposes the active scope, shelf selection, omissions, token estimate,
+freshness, and request lineage without granting authority. General plan
+proposals still stop truthfully at K4. Project genesis can now provision and
+address its native Direct substrate; authoritative hierarchical project-world
+activation remains a separate unclaimed transition.
+
+The next semantic architecture is captured in
+[Direct WorldManager Semantic Context, ARO, And Thought Tools Design](./DIRECT_WORLD_MANAGER_SEMANTIC_CONTEXT_ARO_AND_THOUGHT_TOOLS_DESIGN.md).
+Its `WM-SC1` replacement of K2/K4 lexical natural-language classification with
+a fixed WorldManager semantic-ingress constitution, its `WM-SC2`
+versioned semantic-history catalog, `WM-SC2b` split child orchestration, and
+`WM-SC2b.1` truth/recovery stabilization, plus the `WM-SC3` semantic
+artifact/decision kernel, `WM-SC4` context importer, `WM-SC5` governed
+decision transitions, and `WM-SC6` semantic-surface compiler are implemented.
+The
+constitution selects a native top-level discharge action and persists open
+semantic type expressions; strict validation governs form, references, and
+authority boundaries rather than reverse-validating semantic content against
+a closed schema. A structurally complete typed discharge may receive its
+already compiled schema discriminator deterministically; missing required
+semantic fields still remand. Partial split closure now outranks older
+headline state, preserves incomplete child outcomes, and emits a distinct
+post-answer harness diagnostic. The Project Ecology and Decision/Outcome
+inspectors expose project constitutions, preserved project seeds, current
+typed decisions, their resolution contracts and shelf binding, split outcomes,
+and historical remands without treating
+inspection as runtime activation or counting historical failures as current
+decisions. Reconciled candidate-only projects now enter Project Ecology
+immediately with provisional styling and separate counts; evidence review and
+admission advance the same project identity without a duplicate card or
+premature runtime focus. Semantic corrections supersede relation state and rebuild
+affected shelves without rewriting raw interaction evidence; legacy K2-only
+rows reconstruct with explicitly provisional posture. Existing `wm_decisions`
+remain operational compatibility gates. SC5 now governs exact mechanical
+resolution and scoped semantic, evidence, and authority relays with append-only
+receipts, revision/idempotency gates, shelf rebuild, and context-cache
+invalidation. These paths grant no execution authority and do not perform
+downstream project effects. Relays now distinguish semantic project identity
+from provisioned role-runtime addressability: an exact decision attached to an
+unprovisioned project is imported as an explicit semantic object into a
+world-scoped WorldManager deliberation rather than being rejected as an
+unknown runtime project or falsely activating that project. The SC6 compiler
+now projects the same exact semantic objects through O/E/D/U landscapes,
+versioned morph resolution, inline conversation artifacts, a global Decision
+Dock, project indicators, and responsive inspectors. Exact semantic-region
+bindings travel with scoped decision input and project-genesis
+review/admission requests; a view can change foreground but cannot change
+identity, authority, or canonical standing. Transition receipts are compiled
+read-only status objects, and the UI executes no downstream effect. The
+delivered SC7-SC10 sequence extends the control plane with Abstract Reasoning
+Objects
+carrying intensional and counterfactual branches, realization coverage, and
+reversible thought-paint operators. Their canonical closure/admission boundary
+remains intentionally unavailable.
+
+The active semantic substrate is the
+[Direct WorldManager Epistemic Ledger And Semantic CI spec](./DIRECT_WORLD_MANAGER_EPISTEMIC_LEDGER_AND_SEMANTIC_CI_SPEC.md).
+`WM-SC11` turns inter-agent coordination into typed epistemic deltas,
+constitutional subscriptions, bounded event delivery, context invalidation,
+and artifact-type lifecycles with mechanical witnesses, independent semantic
+audits, remand/escalation law, and explicit scope-relative admission gates.
+It reuses the role-lane tool compiler, async wake/continuation artifacts,
+semantic context importer, SC8 evidence chain, meta-orchestrator shadow, and
+hierarchical-worldmodel trust store. `SC11.1` is implemented; the restricted
+native worker path in `SC11.2` is live; and the subscription/context,
+artifact-lifecycle, assurance, and unified-UX foundations are locally
+regression-proven. The live worker path also operates headlessly; replay is
+independent of later subscription changes; and production admission games prove
+synchronous post-gate revocation, pinned gate-time CAS vectors, and exact
+scope matching. The production Direct path now imports exact bounded ledger
+context, restores resident roles after restart, wakes idle Project Managers,
+defers active generation to a safe boundary, and persists provider-acceptance
+receipts before delivery consumption. Exact artifact-constitution plus
+assignment authorizations now start one producer WorkThread and exact-revision
+independent auditor WorkThreads without fabricating operator approval. Trusted
+provider-native producer closures are now joined to their exact persisted
+authorization/assignment/agent-run binding and registered as immutable artifact
+revisions. Registered auditors are routed automatically; typed verdicts advance
+assurance, create revision-scoped remand obligations, re-dispatch the producer,
+and raise a manager escalation after the third remand. Late verdicts after
+remand/replacement fail closed, while sibling audits remain valid across
+evidence-only lifecycle revisions. Durable lifecycle-ingestion receipts are
+projected and restart/idempotency proven. Headless producer patch and focused-
+test requests are durably planned and separately authorized rather than granted
+by the lifecycle. The harness binds their observed results and a later exact
+repository state to the producer session/turn and artifact revision, then joins
+trusted `source_digest_current` and `focused_test_exit` mechanical witnesses.
+An explicit Project Manager admission request now crosses the real
+hierarchical-worldmodel governance registry and trust store through an exact
+scope-relative CAS. Pending, admitted, failed, and stale-CAS receipts survive
+restart; work-thread admission does not widen project/world standing; and a
+commit completed before the local receipt is reconciled idempotently. Generic
+authority-bearing model ledger tools stay disabled. `SC11.8` now joins that
+complete path to a same-context lifecycle/evidence/authority workbench. Its
+two-step typed request crosses the real Electron preload/IPC/service boundary
+without letting the renderer choose an authority actor, and receipt-backed
+admission survives restart. The identical game passes in the isolated
+Docker/Xvfb stack.
+
 ## One UX, Two Runtime Paths
 
 The intended product has one UX with two backend realizations:
@@ -150,7 +349,7 @@ stock 0.144.4 fallback
   -> task_name, message, fork_turns
   -> child model/effort provider-managed
 
-active WSL 0.145.0-alpha.11 project profile
+active WSL stable 0.145.0 project profile
   -> adds canonical model/reasoning_effort fields
   -> keeps agent_type/service_tier hidden
   -> none/bounded fork only; active-backend model set
@@ -177,6 +376,26 @@ distinct from provider-accepted child runtime evidence. A live
 `gpt-5.6-sol`/Ultra app-server smoke accepted the reserved split schema, emitted
 fresh-child activity, and completed its collaboration wait; a canonical child
 runtime profile remains the required witness for effective worker effort.
+
+The stable source baseline is now `rust-v0.145.0`, tracked through the fetched
+remote ref `origin/upstream-latest-release`, and the managed WSL runtime now
+runs npm-global `@openai/codex@0.145.0`. A root real-turn probe and read-only
+app inventory/metadata probe pass on stable. Release 145 adds usable paginated
+history, explicit direct-input readiness, app and environment discovery,
+notification evidence clocks, contextual forks, stable multi-agent V2, and
+additional usage/compaction/import evidence. See the
+[release 145 impact audit](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md)
+for the source evidence, caveats, and recommended adoption sequence.
+
+The first compatibility slices are implemented: notification emission and local
+receipt clocks remain distinct through the bridge and usage ledger;
+`canAcceptDirectInput` gates composer and mutation calls; environment
+connection events plus `environment/status` project into the environment
+witness UI; and `app/installed` plus `app/read` project bounded,
+non-authoritative application evidence into the capability drawer. Explicit
+rejected/unknown eligibility fails closed, while a missing field remains a
+labeled legacy-runtime fallback. Paginated history, contextual forks/imports,
+and a stable effective child model/effort witness remain pending.
 
 ## Core ODEU World Model
 
@@ -362,6 +581,21 @@ Implemented substrate includes:
 Not every role receives every control. The default implementation-worker lane
 is intentionally narrower than an orchestrator lane.
 
+The ordinary Direct implementation lane now also has a separate native
+reasoning pool; it is not a WorldManager feature. The process-shared default is
+eight active children plus a bounded queue, configurable through
+`CODEX_DIRECT_SUB_AGENT_MAX_ACTIVE` and
+`CODEX_DIRECT_SUB_AGENT_MAX_QUEUED`. Its promoted `spawn_agent` accepts
+`fork_turns=none|all|N` independently from child model and reasoning effort,
+and `wait_agent` returns reduced terminal evidence to the resident parent tool
+loop. Focused regressions prove six and eight simultaneous children, including
+a full-history Terra/low child under a Sol/Ultra parent.
+
+This is currently reasoning-only: child workspace tools, recursive spawn,
+follow-up, and restart resume are not claimed. See the
+[Direct Native Multi-Agent Pool spec](./DIRECT_NATIVE_MULTI_AGENT_POOL_SPEC.md)
+and the [upstream 0.147 agent-runtime audit](./audits/UPSTREAM_CODEX_RELEASE_147_DIRECT_AGENT_IMPACT_2026-08-09.md).
+
 ### Environment And Async Work
 
 Wave 24 is merged:
@@ -391,6 +625,15 @@ output/outbox records, human-decision loops, resident self-report tests,
 implementation-thread tests, provider-backed sub-agent commands, agentic game
 fixtures, live opt-in games, and typed activation remands.
 
+The containerized semantic UI acceptance path now adds a distinct proof tier
+above backend headless tests. It launches the production WorldManager Electron
+surface inside independent Docker/Xvfb stacks, performs semantic-region actions,
+captures screenshots, and verifies isolated control-plane effects. The
+fixture-safe v1 forbids provider calls, network access, live-profile mounts,
+writable host workspaces, canonical project/ARO effects, and workspace
+mutation. A two-stack concurrent regression proves distinct container and
+WorldManager authority identities.
+
 Important distinction:
 
 ```text
@@ -403,6 +646,7 @@ Relevant documents:
 - [Headless runtime parity harness](./DIRECT_HEADLESS_RUNTIME_PARITY_HARNESS_SPEC.md)
 - [Headless resident test checklist](./DIRECT_HEADLESS_RESIDENT_FEATURE_TEST_CHECKLIST.md)
 - [Agentic testing game matrix](./DIRECT_AGENTIC_TESTING_GAME_MATRIX_SPEC.md)
+- [Containerized semantic UI acceptance stack](./DIRECT_CONTAINERIZED_SEMANTIC_UI_ACCEPTANCE_STACK_SPEC.md)
 
 ## Current Context And Compaction Posture
 
@@ -672,6 +916,7 @@ means only the aggregate count is known.
 - [WorkThread Foundation](./DIRECT_WORK_THREAD_FOUNDATION_SPEC.md)
 - [Role-Lane Multi-Agent Architecture](./ODEU_ROLE_LANE_MULTI_AGENT_ARCHITECTURE_SPEC.md)
 - [Worldmodel Manager And Authorization](./DIRECT_WAVE23_WORLDMODEL_MANAGER_AUTHORIZATION_SPEC.md)
+- [World Manager Agent-World And Unified UX](./DIRECT_WORLD_MANAGER_AGENT_WORLD_AND_UNIFIED_UX_SPEC.md)
 - [Resident Epistemic Access](./DIRECT_RESIDENT_AGENT_EPISTEMIC_ACCESS_SPEC.md)
 - [Sub-Agent MVP](./DIRECT_WAVE15_RESIDENT_SUB_AGENT_MVP_SPEC.md)
 - [Sub-Agent Lifecycle And Transcript](./DIRECT_WAVE16_SUB_AGENT_LIFECYCLE_FOLLOWUP_TRANSCRIPT_SPEC.md)
@@ -698,6 +943,7 @@ means only the aggregate count is known.
 ### Vanilla And Provider Grounding
 
 - [Upstream Baseline Maintenance](./UPSTREAM_CODEX_BASELINE_MAINTENANCE.md)
+- [Upstream Codex Release 145 Impact Audit](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md)
 - [Upstream Codex Release 144 Impact Audit](./audits/UPSTREAM_CODEX_RELEASE_144_IMPACT_2026-07-14.md)
 - [Codex App-Server Ontology](./CODEX_APP_SERVER_ONTOLOGY.md)
 - [OAI/Codex Upstream ODEU Profile](./OAI_CODEX_UPSTREAM_ODEU_PROFILE.md)
@@ -727,11 +973,153 @@ ODEU worldmodel/manager boundaries, role-lane tool composition, explicit
 environment topology, and witness-first gating for ordinary safe flows.
 
 Current local frontier after Wave 26 acceptance reconciliation:
+
 - the hierarchical-worldmodel substrate is accepted for its bounded
   fixture/headless gate and remains `partial / keep_guarded` in the broader
   resident-product registry;
 - the accepted manager consumer is the harness-owned headless current-graph
   path, with explicit reinstall after an authority-head change;
+- keyboard-first WorldManager `WM-K1` through `WM-K4`, fixed semantic ingress
+  `WM-SC1`, semantic history `WM-SC2`, split orchestration `WM-SC2b`,
+  truth/recovery stabilization `WM-SC2b.1`, semantic artifact/decision kernel
+  `WM-SC3`, operational semantic-context importer `WM-SC4`, governed decision
+  transitions `WM-SC5`, semantic-surface compiler `WM-SC6`, Abstract Reasoning
+  Object registry/reconstruction `WM-SC7`, automatic repository reconstruction
+  producer `WM-SC7.1`, governed current-to-target bridge `WM-SC7.2`,
+  provisional ARO mutation-contract compiler `WM-SC8.1`, bounded read-only
+  realization-context importer and ARO-to-code mapper `WM-SC8.2`,
+  reviewed worker-constitution compiler and single-use native Direct worker
+  handoff `WM-SC8.3`, and exact realization-evidence acquisition `WM-SC8.4`,
+  semantic verification and non-canonical closure candidacy `WM-SC8.5`,
+  thought brushes and reversible ContextCanvas `WM-SC9`, and the unified
+  operational ribbon, six-depth object-centered semantic anatomy, and
+  modality-neutral typed interaction projection `WM-SC10`,
+  plus the bounded `WM-K5G`/`WM-K6G` project-genesis
+  slice, are implemented and locally
+  proven for durable ingress, idempotency, canonical graph binding,
+  provider-backed semantic lane/scope/role settlement, no lexical fallback,
+  atomically persisted semantic witnesses, versioned history relations,
+  materialized shelves, provisional legacy reconstruction, durable semantic
+  child contracts, independent child constitutions and Direct role turns, one
+  parent WorldManager join, restart continuation, no-silent-terminal notices,
+  truthful partial closure, recoverable project-seed projection,
+  inspection-only unprovisioned constitutions, canonical typed decision
+  identity, append-only decision revision state, project-open-decision shelf
+  binding, non-authoritative resolution contracts, exact/idempotent decision
+  transition requests, append-only receipts, semantic-region binding,
+  versioned O/E/D/U lens projections and witnesses, compiled binary/choice/
+  comparison/scoped-composer/status morphs, inline semantic artifacts, global
+  Decision Dock and project indicators, append-only ARO reconstruction
+  candidates and reviews, canonical current/target ARO revisions,
+  required/possible/counterfactual branches, typed semantic edges,
+  many-to-many realization bindings, branch-level coverage and source-drift
+  staleness witnesses, exact-bound semantic-registry-only ARO admission,
+  live ARO comparison/tree/graph morphs, same-context reconstruction evidence
+  and contradiction inspection, substrate-native bounded repository
+  observation, secret-filtered semantic snapshots, snapshot-digest idempotent
+  bootstrap scheduling, required native Direct reconstruction discharge,
+  append-only reconstruction-run revisions, restart recovery, completed-run
+  reuse, visible failure/remand states, exact-run retry, same-object responsive identity,
+  exact current-ARO and free-form target-intent binding, required native target
+  definition, provisional target candidates, append-only target-definition
+  runs, restart recovery, explicit review/admission reuse, visible comparison
+  prerequisites, truthful candidate/canonical coverage grouping, and a
+  mechanically reachable current/target comparison,
+  exact current/comparison/target mutation binding, deterministic semantic
+  delta derivation, open-vocabulary implementation obligations and verification
+  requirements, append-only mutation-contract/run revisions, complete
+  branch-coverage validation, restart recovery, exact-run retry, and an
+  evidence-first focused contract workbench with a separate realization-review
+  boundary,
+  exact contract/snapshot/ARO lineage validation, substrate-native bounded
+  source import, immutable source-identity imports, required Direct
+  obligation-to-source mapping discharge, deterministic exact obligation and
+  line-range revalidation, candidate mapping witnesses, ambiguity/omission/
+  freshness posture, backend-only source excerpts, append-only mapping runs,
+  restart recovery, exact-run retry, and a responsive same-context mapping
+  workbench with an evidence-first SC8.3 review boundary,
+  refreshed exact-source and Direct-capability evidence, immutable reviewed
+  worker constitutions, explicit single-use start receipts, exact ARO
+  WorkThreads, native Direct implementation-worker start, non-replay of
+  uncertain interrupted starts, worker/session/turn lineage, and independent
+  per-call read/patch/command authority,
+  exact durable worker-turn observation, immutable tool-result and
+  workspace-effect witnesses, bounded repository before/after comparison,
+  mechanical required-evidence-kind presence/absence/ambiguity, append-only
+  active/terminal acquisition runs, truthful observed workspace-mutation
+  projection, and compact turn/tools/repository/coverage evidence lenses
+  followed by exact evidence-to-contract semantic assessment, explicit
+  obligation/verification/preservation/branch coverage, drift and continuation
+  artifacts, deterministic fail-closed closure candidacy, and generated scoped
+  OpenDecisions without canonical admission or closure-certification authority,
+  followed by a trusted 11-brush semantic transformation registry, exact
+  source-key and preservation validation, immutable semantic strokes,
+  append-only reversible ContextCanvas revisions, mechanical project-context
+  replacement, composition and undo, temporary counterfactuals, and explicit
+  ARO-shaped insight extraction into the existing review/admission path without
+  granting any brush canonical or workspace authority,
+  task-compiled context
+  requirements, authority/subject-scope separation for project-ecology
+  queries, bounded configured/candidate/admitted `ProjectStatus` projections,
+  exact-scope semantic imports, selection and omission witnesses,
+  attention-budget enforcement, immutable dependency-keyed cache,
+  operational meta-context manifests, Direct request-manifest linkage, typed
+  K2 settlement/routing/clarification, private project projection, graph-first
+  manager boot, deterministic policy closure, task constitution, trusted
+  role-template compilation, exact manifest, fail-closed projection agreement,
+  restart reconstruction without transcript replay, production IPC, and
+  truthful keyboard projection, persisted Direct manager turns, typed
+  AgentResult relay, semantic inbox identity, advisory WorldManager
+  reconciliation, harness-observed WSL/Windows realization options,
+  evidence-gated project-constitution admission, immutable runtime defaults,
+  restart persistence, native WSL/Windows resident-process witnesses,
+  backend-private workspace locators, canonical workspace bindings, immutable
+  WorkThread environment bindings, exact step snapshots, and exact child
+  environment inheritance;
+- the semantic mockup remains an explicitly separate exploratory store and IPC
+  namespace; production does not import its routing, proposal, or admission
+  semantics;
+- general `WM-K5A/K5B` plan-proposal revision, exact evidence review,
+  Greenlight and typed semantic admission through one graph-CAS protocol,
+  durable implementation contract, and `contract_received` WorkThread
+  creation are implemented. `WM-K6` now continues that contract through a
+  compiled local-only implementation constitution, exact single-use worker
+  start, real Direct execution, per-call effects, semantic closure assessment,
+  evidence-bound completion, Project Manager project-memory admission, and
+  upward status. For project
+  genesis specifically, native workspace provisioning and real WorkThread
+  environment inheritance are delivered by `WM-ENV1`; the active frontier is
+  authoritative hierarchical worldmodel activation and the explicit project
+  port/custody-migration operation. Automatic repository-initialization scheduling of the bounded
+  ARO semantic producer, the `WM-SC7.2` target-definition bridge, and the
+  provisional `WM-SC8.1` contract compiler, read-only `WM-SC8.2`
+  realization mapper, bounded `WM-SC8.3` worker handoff, read-only
+  `WM-SC8.4` realization-evidence acquisition, and non-authoritative
+  `WM-SC8.5` semantic verification and closure candidacy, `WM-SC9`
+  thought brushes with reversible ContextCanvas, and `WM-SC10` unified
+  operational-context/anatomy projection with keyboard/pointer and
+  voice-contract parity are delivered;
+  hierarchical-worldmodel promotion of admitted AROs, continuous
+  repository watching, canonical closure review/admission, and downstream
+  realization transitions remain open. `WM-SC11` now implements the
+  same-database ledger/recovery kernel, restricted native worker ledger acts,
+  durable subscription/context/invalidation foundations, pinned artifact
+  lifecycles, exact-revision assurance gates, and the unified inspector.
+  Native bounded import, resident-role wake/safe-boundary continuation, and
+  constitution-authenticated producer/auditor WorkThread dispatch are now
+  live and headless-regression-proven. Exact provider-native producer closure
+  and auditor-verdict consumption, automatic audit routing, producer remand
+  re-dispatch, repeated-remand manager escalation, separately authorized
+  headless workspace production, and trusted exact-revision mechanical witness
+  consumption are also live. `WM-SC11.7` real scope-relative canonical
+  admission is implemented through the hierarchical-worldmodel trust store,
+  with exact gate-time CAS, durable authority receipts, and crash-safe retry;
+  `WM-SC11.8` completes the bounded multi-agent/UX acceptance game through the
+  real Electron bridge, restart recovery, and isolated Docker/Xvfb execution;
+  the live voice transport remains
+  deferred even though it now shares the typed interaction contracts;
+  the separate real-account
+  live witness also remains pending;
 - full World Manager/Project Manager renderer UX, default production bootstrap,
   external-provider context replacement, and production/multi-process custody
   remain open;

@@ -96,9 +96,8 @@ Invariants:
   and Direct projections keep their present owners;
 - unavailable tenants are visibly unavailable; no placeholder may imply a
   terminal, browser, file tree, or diff backend exists;
-- WorldManager stores and IPC are absent from this phase and receive no implied
-  authority from the alternate surface;
-- the normal three-plane shell remains available as the default experience.
+- WorldManager stores and IPC are untouched by this experiment;
+- the normal three-plane shell and WorldManager launch modes remain available.
 
 Morphable:
 

@@ -1,6 +1,7 @@
 # Direct Workbench And WorldManager Studio Split
 
-Status: phase 1 implemented — Direct Workbench active, WorldManager Studio reserved.
+Status: phase 2 resumed — Direct Workbench and WorldManager Studio active on a
+shared reviewed Direct kernel.
 
 ## Run Stance
 
@@ -21,8 +22,8 @@ profile_lineage:
 
 ## Purpose
 
-The application is being separated into two primary experiences with different
-controlling utility hierarchies and interaction laws:
+The application has two primary experiences with different controlling utility
+hierarchies and interaction laws:
 
 ```text
 Direct Workbench
@@ -34,10 +35,9 @@ WorldManager Studio
   controlling U: the admitted world/project hierarchy
 ```
 
-This is an operational boundary, not a theme switch. Phase 1 activates Direct
-Workbench and reserves the WorldManager Studio identity without importing the
-dormant WorldManager semantic stack. A reserved experience fails closed rather
-than silently opening the legacy shell.
+This is an operational boundary, not a theme switch. Both experiences reuse the
+Direct runtime kernel, but they do not claim the same conversational identity,
+authority, or persistence semantics.
 
 ## Source Pack
 
@@ -47,6 +47,8 @@ Host sources:
 - `src/main/app-experience.js`
 - `src/renderer/t3-direct-surface.html`
 - `src/renderer/t3-direct-surface.js`
+- `src/renderer/world-manager-surface.html`
+- `src/renderer/world-manager-surface.js`
 - `scripts/run-electron.mjs`
 - `start-codex-review-shell.cmd`
 
@@ -75,15 +77,15 @@ Experience projections
     direct-thread control plane
     conventional Codex interaction law
 
-  WorldManager Studio (reserved in phase 1)
+  WorldManager Studio
     worldmanager-semantic control plane
     settlement, admission, and worldstate law
 ```
 
-When WorldManager Studio is promoted, it may delegate implementation to Direct
-runtime workers. That will not make a Direct Workbench conversation
-WorldManager-governed. Likewise, a Direct result will enter worldstate only
-through an explicit future import or promotion operation.
+WorldManager may delegate implementation to Direct runtime workers. That does
+not make a Direct Workbench conversation WorldManager-governed. Likewise, a
+Direct result enters worldstate only through an explicit future import or
+promotion operation.
 
 ## Experience Identity Contract
 
@@ -91,14 +93,14 @@ The canonical launch selector is:
 
 ```text
 CODEX_EXPERIENCE=direct-workbench
+CODEX_EXPERIENCE=world-manager-studio
 CODEX_EXPERIENCE=legacy-shell
 ```
 
-`CODEX_EXPERIENCE=world-manager-studio` is a reserved identity and returns
-`app_experience_unavailable` in phase 1. The older `CODEX_DIRECT_T3_GUI`
-variable remains a compatibility input. The main process resolves the active
-experience once into a frozen descriptor and projects a non-authoritative
-public witness into the renderer bootstrap:
+The older `CODEX_DIRECT_T3_GUI`, `CODEX_WORLD_MANAGER`, and
+`CODEX_WORLD_MANAGER_MOCKUP` variables remain compatibility inputs. The main
+process resolves them once into a frozen experience descriptor and projects a
+non-authoritative public witness into the renderer bootstrap:
 
 ```text
 appExperience {
@@ -138,7 +140,7 @@ Direct Workbench:
 - trust-boundary surface: persistent `Direct thread control plane` witness;
 - handoff boundary: future explicit import into WorldManager.
 
-WorldManager Studio (future phase):
+WorldManager Studio:
 
 - primary work region: unified WorldManager communication surface;
 - evidence region: project ecology and semantic inspectors;
@@ -173,25 +175,26 @@ Canonical development commands:
 
 ```text
 npm run dev:direct-workbench
+npm run dev:world-manager-studio
+npm run dev:world-manager-studio:mock
 ```
 
 Canonical Windows launchers:
 
 ```text
 start-direct-workbench.cmd
+start-world-manager-studio.cmd
+start-world-manager-studio-mock.cmd
 ```
 
-The previous `dev:t3` and `start-codex-review-shell-t3.cmd` names remain
-compatibility aliases.
+The previous `dev:t3`, `dev:worldmanager`, `dev:worldmanager:mock`, and
+`start-codex-review-shell-t3.cmd` names remain compatibility aliases.
 
 ## Deferred Work
 
 - implement true cross-surface thread resume where the source provider exposes
   durable resumable identity;
 - implement provenance-preserving Direct continuation capsules;
-- import the dormant WorldManager semantic stack as its own reviewed series and
-  promote the reserved `world-manager-studio` experience only with its control
-  plane and renderer present;
 - implement WorldManager semantic ingestion and admission of external threads;
 - decide whether simultaneous Direct Workbench and WorldManager Studio processes
   use separate Electron partitions while sharing canonical stores;
@@ -205,10 +208,17 @@ Observed through real Electron windows under the headless/Xvfb harness:
 npm run direct:experience-split
 npm run direct:t3-alternate-gui
 npm run direct:t3-alternate-gui:electron
+node scripts/direct-world-manager-launch-routing-regression.mjs
+node scripts/direct-world-manager-semantic-ui-regression.mjs
+node scripts/direct-world-manager-k1-ui-regression.mjs
+node scripts/direct-world-manager-k4-ui-regression.mjs
+node scripts/direct-world-manager-project-genesis-ui-regression.mjs
 npm run check:main-syntax
 ```
 
-The Direct Workbench Electron smoke verifies the bootstrap identity and visible
-control-plane witness, verifies that no WorldManager authority method is exposed
-to the trusted Direct renderer, and exercises the existing Runtime and Analytics
-tenants through the real Electron main process.
+The Direct Workbench Electron smoke verifies the bootstrap identity, visible
+control-plane witness, restored project binding, and Runtime/Analytics tenants,
+then attempts a WorldManager snapshot call from the trusted Direct renderer.
+The main process rejects it before initializing the WorldManager service. The
+WorldManager launch smoke verifies the separate production document, title,
+and semantic control-plane bootstrap envelope.

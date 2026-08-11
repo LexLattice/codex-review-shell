@@ -8,7 +8,8 @@
 - [Upstream Codex Release 144 Impact Audit](./audits/UPSTREAM_CODEX_RELEASE_144_IMPACT_2026-07-14.md) -
   prior vanilla delta, app-server caveats, and fork/Direct disposition matrix.
 - [Upstream Codex Release 145 Impact Audit](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md) -
-  stable-145 evidence, app-server implications, and bounded Direct adoption.
+  stable-145 evidence, prior-alpha distinction, app-server implications, and
+  prioritized Direct adoption matrix.
 - [Upstream Codex Release 147 Agent-Runtime Impact Audit](./audits/UPSTREAM_CODEX_RELEASE_147_DIRECT_AGENT_IMPACT_2026-08-09.md) -
   stable-147 source evidence for configurable collaboration capacity,
   orthogonal child model/effort and history handoff, and Direct dispositions.
@@ -48,6 +49,10 @@
 - [Direct Fork Preview Start Spec](./DIRECT_FORK_PREVIEW_START_SPEC.md)
 - [Direct Derived Preview Fork Start Spec](./DIRECT_DERIVED_PREVIEW_FORK_START_SPEC.md)
 - [Direct Headless Runtime Parity Harness Spec](./DIRECT_HEADLESS_RUNTIME_PARITY_HARNESS_SPEC.md)
+- [Direct Containerized Semantic UI Acceptance Stack](./DIRECT_CONTAINERIZED_SEMANTIC_UI_ACCEPTANCE_STACK_SPEC.md) -
+  fixture-safe Docker/Xvfb execution of the production Electron WorldManager,
+  semantic-region actions, visual/database evidence, and concurrent per-agent
+  isolation proof.
 - [Direct Real Usage Test Matrix](./DIRECT_REAL_USAGE_TEST_MATRIX.md)
 - [Direct Recursive ODEU Build Meta-Program](./DIRECT_RECURSIVE_ODEU_BUILD_META_PROGRAM.md)
 - [Direct Meta-Session Control Plane Spec](./DIRECT_META_SESSION_CONTROL_PLANE_SPEC.md)
@@ -75,6 +80,103 @@
 - [Direct Wave 26: Hierarchical Worldmodel, Project Managers, And Governed Idea Graph](./DIRECT_WAVE26_HIERARCHICAL_WORLDMODEL_PROJECT_MANAGER_SPEC.md) -
   guarded local hierarchical-worldmodel substrate; see the master status and
   saved audit for its exact maturity boundary.
+- [Direct World Manager Agent-World And Unified UX Spec](./DIRECT_WORLD_MANAGER_AGENT_WORLD_AND_UNIFIED_UX_SPEC.md) -
+  unified communications plane, semantic policy inheritance, compiled
+  agent-worlds, completion relay, and progressive semantic transparency.
+- [Direct WorldManager Semantic Standby Frontier](./DIRECT_WORLD_MANAGER_SEMANTIC_STANDBY_FRONTIER.md) -
+  dependency-ordered resume map recording completed K6 execution continuation
+  and the remaining K7, project-world activation and
+  porting, canonical policy admission, SC11 hardening, SC12, voice, and live
+  acceptance frontiers.
+- [T3-Informed Alternate Direct GUI Experiment](./DIRECT_T3_ALTERNATE_GUI_EXPERIMENT.md) -
+  source-grounded shell-topology import that keeps Direct as the sole runtime
+  owner and exposes an opt-in full-window alternate renderer.
+- [Direct Workbench And WorldManager Studio Split](./DIRECT_WORKBENCH_AND_WORLDMANAGER_STUDIO_SPLIT_SPEC.md) -
+  explicit application-experience and control-plane boundary over the shared
+  Direct runtime kernel, with distinct Direct-thread and WorldManager semantic
+  utility hierarchies and a three-operation thread-ingestion taxonomy.
+- [Direct WorldManager Semantic Mockup](./DIRECT_WORLD_MANAGER_SEMANTIC_MOCKUP.md) -
+  implemented exploratory planning slice with one semantic lineage, bounded
+  Project Manager response, parallel reconciliation, evidence-gated admission,
+  canonical contract creation, and a dedicated fixture/live-Direct workbench.
+- [Direct WorldManager Keyboard Pipeline Integration Spec](./DIRECT_WORLD_MANAGER_KEYBOARD_PIPELINE_SPEC.md) -
+  production integration sequence; WM-K1–K4 now implement durable keyboard
+  ingress, authoritative project graph binding, task settlement and routing,
+  graph-first manager boot, clarification, deterministic policy closure,
+  ResolvedTaskConstitution, trusted role compilation, exact manifests,
+  fail-closed agreement, restart reconstruction, persisted Direct manager
+  sessions/turns, terminal AgentResult relay, separate telemetry, semantic
+  inbox delivery, advisory WorldManager reconciliation, production IPC, and a
+  truthful unified-response workbench. WM-K5A/K5B add immutable reconciled
+  plan revisions, exact evidence review, control and semantic Greenlight
+  parity through one graph-CAS admission protocol, durable implementation
+  contracts, and a real WorkThread held at `contract_received` until separate
+  worker-start authority exists. WM-K6 now compiles the implementation
+  constitution, starts one explicitly authorized Direct worker while retaining
+  per-call effect gates, evaluates closure against exact runtime evidence, and
+  admits project memory only through the Project Manager boundary.
+- [Direct WorldManager Project Genesis And Substrate Constitution](./DIRECT_WORLD_MANAGER_PROJECT_GENESIS_AND_SUBSTRATE_SPEC.md) -
+  implemented WM-K5G/K6G vertical slice for grounded WSL/Windows realization
+  ranking, non-canonical project-constitution candidates, evidence-gated
+  operator admission, immutable project runtime defaults, restart persistence,
+  backend-private native workspace locators, harmless WSL/Windows resident
+  readiness probes, canonical workspace bindings, immutable WorkThread
+  environment bindings, exact step snapshots, exact child inheritance, and a
+  keyboard provisioning control. Authoritative project-world activation and
+  explicit project porting remain pending.
+- [Direct WorldManager Semantic Context, ARO, And Thought Tools Design](./DIRECT_WORLD_MANAGER_SEMANTIC_CONTEXT_ARO_AND_THOUGHT_TOOLS_DESIGN.md) -
+  WM-SC1 replaces lexical natural-language routing with a fixed,
+  provider-backed, typed WorldManager semantic-ingress contract; WM-SC2 adds
+  versioned semantic-settlement revisions, event relations, materialized
+  shelves, provisional legacy reconstruction, and bounded semantic-history
+  introspection; WM-SC2b adds durable split child events, independent child
+  constitutions and role turns, one parent WorldManager join, restart
+  continuation, and no-silent-terminal diagnostics; WM-SC3–SC6 add the
+  semantic decision kernel, context-import tools, governed semantic surfaces,
+  and operational meta-context; WM-SC7 adds the durable Abstract Reasoning
+  Object registry, realization coverage, and live comparison/tree/graph
+  projections; WM-SC7.1 adds substrate-native repository observation, a
+  bounded Direct reconstruction producer, durable run/retry state, and
+  provisional candidate registration; WM-SC8.1 adds exact-comparison-bound
+  semantic delta derivation, durable provisional mutation contracts, open
+  implementation/verification obligations, restart-safe compilation runs, and
+  an evidence-first focused workbench; WM-SC8.2 adds exact-contract-bound,
+  substrate-native read-only realization import, durable candidate
+  obligation-to-file/symbol/range witnesses, backend-only source excerpts,
+  freshness/ambiguity/omission posture; WM-SC8.3 adds reviewed immutable worker
+  constitutions, single-use start authorization, exact ARO WorkThreads, native
+  Direct implementation-worker handoff, visible lineage, and independently
+  gated read/patch/command requests; WM-SC8.4 adds exact worker-turn,
+  tool-result, workspace-effect, and repository-after evidence acquisition,
+  mechanical verification-kind coverage, durable active/terminal capture
+  runs, and compact semantic evidence lenses; WM-SC8.5 adds typed semantic
+  verification, drift and continuation artifacts, fail-closed non-canonical
+  closure candidacy, and generated scoped decisions; WM-SC9 adds the trusted
+  thought-brush registry and reversible ContextCanvas; WM-SC10 composes the
+  five-dimension operational ribbon and one exact event identity across six
+  object-centered semantic-anatomy depths, with same-context evidence gates
+  and modality-neutral typed interaction contracts. Live voice transport and
+  canonical closure admission remain later governed frontiers.
+- [Direct WorldManager Epistemic Ledger And Semantic CI Spec](./DIRECT_WORLD_MANAGER_EPISTEMIC_LEDGER_AND_SEMANTIC_CI_SPEC.md) -
+  implementation-grade `WM-SC11` design with a locally regression-proven
+  same-control-plane ledger, restricted native worker `ledger_*` operations,
+  durable subscriptions and bounded context delivery, artifact-type
+  lifecycles, exact-revision assurance gates, and a unified inspector. The
+  bounded `ImplementationPatch` path now composes production role
+  wake/continuation, authenticated producer/auditor WorkThreads, trusted
+  runtime-witness ingestion, automatic remand/escalation, same-context
+  evidence and authority review, and hierarchical-worldmodel canonical
+  admission through the real Electron preload/IPC/service boundary. Its
+  restart and Docker/Xvfb acceptance games are regression-proven; generic
+  manager ledger lanes, production debounce, and true suspended-provider
+  resume remain explicit hardening frontiers.
+- [Recursive ODEU Control Method for WorldManager v0.1](./RECURSIVE_ODEU_CONTROL_METHOD_FOR_WORLDMANAGER_v0.1.md) -
+  preserved operator-supplied architecture synthesis for source-slot-specific
+  back/front/up/down recursion, convergence, ancestry audit, typed joins, and
+  versioned parent return.
+- [Recursive ODEU Control Method v0.1 — Current Repo Analysis](./RECURSIVE_ODEU_CONTROL_METHOD_FOR_WORLDMANAGER_v0.1_REPO_ANALYSIS.md) -
+  repo-grounded compatibility map, current implementation delta, object-owner
+  corrections, and proposed post-SC11 `WM-SC12` sequence.
 - [Wave 26 Terra High vs. Intent - Sol Max Audit](./audits/DIRECT_WAVE26_TERRA_HIGH_VS_INTENT_SOL_MAX_AUDIT_2026-07-15.md) -
   preserved adversarial findings, remediation history, blindspot taxonomy, and
   final bounded acceptance verification.

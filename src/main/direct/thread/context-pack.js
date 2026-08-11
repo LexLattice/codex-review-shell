@@ -21,6 +21,9 @@ const {
 const {
   consumeManagerGraphContextForDirectContext,
 } = require("../worldmodel/manager-context-runtime");
+const {
+  validateOperationalMetaContextBinding,
+} = require("../worldmanager/semantic-context-kernel");
 
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND = "context_recent_dialogue";
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_VERSION = "context_recent_dialogue@1";
@@ -31,6 +34,7 @@ const DIRECT_REQUEST_MANIFEST_SCHEMA = "direct_request_manifest@1";
 const DIRECT_PROVIDER_INPUT_PROJECTION_SCHEMA = "direct_provider_input_projection@1";
 const DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID = "direct_text_turn_recent_dialogue@1";
 const DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID = "direct_text_turn_empty_context@1";
+const DIRECT_COMPILED_AGENT_TURN_POLICY_ID = "direct_compiled_agent_turn@1";
 const DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID = "direct_import_checkpoint_continuation@1";
 const DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID = "direct_readonly_tool_continuation@1";
 const DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID = "direct_patch_apply_continuation@1";
@@ -168,6 +172,20 @@ function policyDefinition(policyId) {
       historicalEvidenceAllowed: true,
     };
   }
+  if (policyId === DIRECT_COMPILED_AGENT_TURN_POLICY_ID) {
+    return {
+      ...common,
+      policyVersion: "1",
+      purpose: "direct_compiled_agent_turn",
+      sourceArtifactKind: "compiled_agent_context",
+      currentUserPromptRequired: true,
+      historicalEvidenceAllowed: false,
+      compiledAgentContextRequired: true,
+      trustedRoleTemplateRequired: true,
+      rendererSystemInstructionAllowed: false,
+      projectionAgreementRequired: true,
+    };
+  }
   if (policyId === DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID) {
     return {
       ...common,
@@ -266,6 +284,30 @@ function policySnapshot(policyId) {
     currentUserPromptRequired: definition.currentUserPromptRequired,
     historicalEvidenceAllowed: definition.historicalEvidenceAllowed,
     toolResultEvidenceAllowed: definition.toolResultEvidenceAllowed === true,
+    ...(typeof definition.compiledAgentContextRequired === "boolean"
+      ? {
+          compiledAgentContextRequired:
+            definition.compiledAgentContextRequired,
+        }
+      : {}),
+    ...(typeof definition.trustedRoleTemplateRequired === "boolean"
+      ? {
+          trustedRoleTemplateRequired:
+            definition.trustedRoleTemplateRequired,
+        }
+      : {}),
+    ...(typeof definition.rendererSystemInstructionAllowed === "boolean"
+      ? {
+          rendererSystemInstructionAllowed:
+            definition.rendererSystemInstructionAllowed,
+        }
+      : {}),
+    ...(typeof definition.projectionAgreementRequired === "boolean"
+      ? {
+          projectionAgreementRequired:
+            definition.projectionAgreementRequired,
+        }
+      : {}),
     rawRequestBodyStored: false,
   };
   return {
@@ -773,6 +815,7 @@ function buildContextPack({
   agentContextSourceRefs = [],
   agentMemoryContextProjection = null,
   managerGraphContextRuntime = null,
+  compiledAgentContext = null,
   nowMs = Date.now(),
 } = {}) {
   const safeProjectId = normalizeString(projectId, "");
@@ -797,6 +840,85 @@ function buildContextPack({
       textHash: harnessPolicy.textHash,
     },
   ];
+  if (policy.policyId === DIRECT_COMPILED_AGENT_TURN_POLICY_ID) {
+    if (
+      !isPlainObject(compiledAgentContext) ||
+      compiledAgentContext.schema !== "direct_compiled_agent_context@1" ||
+      compiledAgentContext.projectionAgreementState !== "validated" ||
+      compiledAgentContext.rendererSuppliedInstructionsAccepted !== false ||
+      compiledAgentContext.grantsAuthority !== false ||
+      !normalizeString(
+        compiledAgentContext.compiledAgentContextId,
+        "",
+      ) ||
+      !normalizeString(compiledAgentContext.digest, "") ||
+      ![
+        compiledAgentContext.agentInstantiationRef,
+        compiledAgentContext.manifestRef,
+        compiledAgentContext.taskConstitutionRef,
+        compiledAgentContext.projectionAgreementRef,
+      ].every((ref) =>
+        isPlainObject(ref) &&
+        normalizeString(ref.id, "") &&
+        normalizeString(ref.digest, "")) ||
+      !isPlainObject(compiledAgentContext.trustedInstructionPackage) ||
+      !normalizeString(
+        compiledAgentContext.trustedInstructionPackage.digest,
+        "",
+      ) ||
+      !normalizeString(
+        compiledAgentContext.trustedInstructionPackage.instructions,
+        "",
+      )
+    ) {
+      const error = new Error(
+        "Direct compiled-agent context is missing or did not pass projection agreement.",
+      );
+      error.code = "direct_compiled_agent_context_required";
+      throw error;
+    }
+    const trustedInstructions =
+      compiledAgentContext.trustedInstructionPackage.instructions;
+    if (blockingRawExposureFindings(trustedInstructions).length) {
+      const error = new Error(
+        "Direct compiled-agent instructions failed context redaction.",
+      );
+      error.code = "direct_compiled_agent_context_redaction_failed";
+      throw error;
+    }
+    messages.push({
+      role: "harness",
+      authority: "harness-policy",
+      quotedEvidence: false,
+      text: trustedInstructions,
+      textHash: sha256(trustedInstructions),
+      compiledAgentContextRef: compiledAgentContext.agentInstantiationRef,
+      manifestRef: compiledAgentContext.manifestRef,
+      taskConstitutionRef: compiledAgentContext.taskConstitutionRef,
+      projectionAgreementRef: compiledAgentContext.projectionAgreementRef,
+      rawTextIncluded: false,
+      grantsAuthority: false,
+    });
+    if (
+      compiledAgentContext.operationalMetaContextBinding
+    ) {
+      validateOperationalMetaContextBinding(
+        compiledAgentContext
+          .operationalMetaContextBinding,
+      );
+      if (
+        compiledAgentContext.operationalMetaContextBinding
+          .freshness !== "fresh"
+      ) {
+        const error = new Error(
+          "Direct operational meta-context is not fresh.",
+        );
+        error.code =
+          "direct_operational_meta_context_not_fresh";
+        throw error;
+      }
+    }
+  }
   if (policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID) {
     messages.push({
       role: "harness",
@@ -856,6 +978,89 @@ function buildContextPack({
       appPrivate: true,
     },
   ];
+  if (policy.policyId === DIRECT_COMPILED_AGENT_TURN_POLICY_ID) {
+    for (const [artifactKind, ref] of [
+      ["agent_instantiation", compiledAgentContext.agentInstantiationRef],
+      ["agent_instantiation_manifest", compiledAgentContext.manifestRef],
+      ["resolved_task_constitution", compiledAgentContext.taskConstitutionRef],
+      [
+        "agent_world_projection_agreement",
+        compiledAgentContext.projectionAgreementRef,
+      ],
+    ]) {
+      sourceArtifacts.push({
+        artifactKind,
+        artifactId: normalizeString(ref?.id, ""),
+        artifactDigest: normalizeString(ref?.digest, ""),
+        appPrivate: true,
+      });
+    }
+    const operationalBinding =
+      compiledAgentContext.operationalMetaContextBinding;
+    if (operationalBinding) {
+      for (const [artifactKind, ref] of [
+        [
+          "operational_meta_context_manifest",
+          operationalBinding.operationalMetaContextRef,
+        ],
+        [
+          "context_requirement_set",
+          operationalBinding.contextRequirementSetRef,
+        ],
+        ...operationalBinding.contextImportRefs.map(
+          (ref) => ["semantic_context_import_request", ref],
+        ),
+        ...operationalBinding.contextBundleRefs.map(
+          (ref) => ["semantic_context_bundle", ref],
+        ),
+        ...operationalBinding.selectionWitnessRefs.map(
+          (ref) => [
+            "semantic_context_selection_witness",
+            ref,
+          ],
+        ),
+      ]) {
+        sourceArtifacts.push({
+          artifactKind,
+          artifactId: normalizeString(ref?.id, ""),
+          artifactDigest: normalizeString(
+            ref?.digest,
+            "",
+          ),
+          appPrivate: true,
+        });
+      }
+      const semanticContextText =
+        operationalBinding.providerProjectionText;
+      if (
+        blockingRawExposureFindings(
+          semanticContextText,
+        ).length
+      ) {
+        const error = new Error(
+          "Direct operational meta-context failed context redaction.",
+        );
+        error.code =
+          "direct_operational_meta_context_redaction_failed";
+        throw error;
+      }
+      messages.push({
+        role: "user",
+        authority: "semantic-context-evidence",
+        quotedEvidence: true,
+        text: semanticContextText,
+        textHash: sha256(semanticContextText),
+        operationalMetaContextRef:
+          operationalBinding.operationalMetaContextRef,
+        contextBundleRefs:
+          operationalBinding.contextBundleRefs,
+        selectionWitnessRefs:
+          operationalBinding.selectionWitnessRefs,
+        rawTextIncluded: false,
+        grantsAuthority: false,
+      });
+    }
+  }
   const managerGraphContextReadback = consumeManagerGraphContextForDirectContext({
     managerGraphContextRuntime,
     projectId: safeProjectId,
@@ -1136,6 +1341,9 @@ function buildContextPack({
     governanceRefsDigest: governanceRefs?.refsDigest || "",
     maintenanceRefsDigest: maintenanceRefs?.refsDigest || "",
     managerGraphCompilationDigest: managerGraphContextReadback.compilationRef?.digest || "",
+    operationalMetaContextDigest:
+      compiledAgentContext
+        ?.operationalMetaContextBinding?.digest || "",
     sourceArtifactKinds: sourceArtifacts.map((artifact) => artifact.artifactKind),
     messageAuthorities: messages.map((message) => message.authority),
     caps: contextCaps(),
@@ -1185,6 +1393,43 @@ function buildContextPack({
     governanceRefs: isPlainObject(governanceRefs) ? governanceRefs : null,
     maintenanceRefs: isPlainObject(maintenanceRefs) ? maintenanceRefs : null,
     managerGraphContextReadback,
+    operationalMetaContext:
+      compiledAgentContext
+        ?.operationalMetaContextBinding
+        ? {
+            operationalMetaContextRef:
+              compiledAgentContext
+                .operationalMetaContextBinding
+                .operationalMetaContextRef,
+            contextRequirementSetRef:
+              compiledAgentContext
+                .operationalMetaContextBinding
+                .contextRequirementSetRef,
+            contextImportRefs:
+              compiledAgentContext
+                .operationalMetaContextBinding
+                .contextImportRefs,
+            contextBundleRefs:
+              compiledAgentContext
+                .operationalMetaContextBinding
+                .contextBundleRefs,
+            selectionWitnessRefs:
+              compiledAgentContext
+                .operationalMetaContextBinding
+                .selectionWitnessRefs,
+            sourceShelfRefs:
+              compiledAgentContext
+                .operationalMetaContextBinding
+                .sourceShelfRefs,
+            freshness:
+              compiledAgentContext
+                .operationalMetaContextBinding
+                .freshness,
+            providerProjectionTextIncluded: true,
+            rawEvidenceIncluded: false,
+            grantsAuthority: false,
+          }
+        : null,
     caps: {
       ...contextCaps(),
       charCount: totalChars,
@@ -1365,6 +1610,15 @@ function buildRequestManifest({
       adapterDigest: contextPack.agentContextSources.adapterDigest,
       providerInputMutation: false,
     } : null,
+    operationalMetaContext:
+      isPlainObject(contextPack.operationalMetaContext)
+        ? {
+            ...contextPack.operationalMetaContext,
+            providerProjectionTextIncluded: true,
+            providerProjectionIncluded: true,
+            rendererProviderInputMutationAccepted: false,
+          }
+        : null,
     providerInputProjection: providerInput.projection,
     providerInputProjectionGovernanceRefs: contextPack.governanceRefs ? {
       compiledPromptLayersDigest: normalizeString(contextPack.governanceRefs.compiledPromptLayersDigest, ""),
@@ -1413,6 +1667,14 @@ function rendererSafeContextSummary(contextPack = {}, requestManifest = null) {
     agentContextSourcesPresent: Boolean(contextPack.agentContextSources),
     agentContextSourceRefCount: Number(contextPack.agentContextSources?.sourceRefCount || 0),
     agentMemoryProjectionPresent: Boolean(contextPack.agentContextSources?.memoryProjectionRef),
+    operationalMetaContextPresent: Boolean(
+      contextPack.operationalMetaContext,
+    ),
+    operationalMetaContextFreshness:
+      normalizeString(
+        contextPack.operationalMetaContext?.freshness,
+        "",
+      ),
     contextTextExposed: false,
     requestManifestTextExposed: false,
     rawPathExposed: false,
@@ -1429,6 +1691,7 @@ module.exports = {
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
   CONTEXT_RECENT_DIALOGUE_PROJECTION_VERSION,
   DIRECT_CONTEXT_PACK_SCHEMA,
+  DIRECT_COMPILED_AGENT_TURN_POLICY_ID,
   DIRECT_CONTEXT_ROLE_MAPPING_ID,
   DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID,
   DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,

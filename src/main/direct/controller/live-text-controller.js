@@ -19,6 +19,9 @@ const {
   composeDirectToolBundle,
 } = require("../bridge/role-lane-tool-bundle-composer");
 const {
+  validateRoleLedgerToolBundle,
+} = require("../worldmanager/ledger-tool-compiler");
+const {
   buildContextRemainingResultEnvelope,
   buildDirectFirstToolCallGate,
   buildDirectFirstToolSlice,
@@ -159,6 +162,28 @@ function isPlainObject(value) {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function liveModelEvidenceBlockerReason(reason = "") {
+  const normalized = normalizeString(reason, "");
+  if ([
+    "expired",
+    "missing",
+    "scope_mismatch",
+    "candidate",
+    "unstable",
+    "rejected",
+  ].includes(normalized)) {
+    return `live_probe_evidence_${normalized}`;
+  }
+  return normalized;
+}
+
+function liveTextReadinessErrorMessage(status = {}) {
+  if (status.reason === "live_probe_evidence_expired") {
+    return "Direct live-model capability evidence expired. Run the scoped Direct live probe before starting another turn.";
+  }
+  return status.reason || status.status;
 }
 
 function normalizeDirectSurfaceRequestError(error) {
@@ -753,6 +778,10 @@ function isSafeResidentUtilityToolName(toolName = "") {
   return SAFE_RESIDENT_UTILITY_TOOL_SET.has(normalizeString(toolName, ""));
 }
 
+function isEpistemicLedgerToolName(toolName = "") {
+  return normalizeString(toolName, "").startsWith("ledger_");
+}
+
 function isReadOnlySubAgentStatusToolName(toolName = "") {
   return READ_ONLY_SUB_AGENT_STATUS_TOOL_SET.has(normalizeString(toolName, ""));
 }
@@ -873,14 +902,17 @@ function summarizeSubAgentStatusResult(toolName, result = {}) {
       activeCount: Number(projection.activeCount || 0),
       terminalCount: Number(projection.terminalCount || 0),
       agents: (Array.isArray(projection.rows) ? projection.rows : []).map((row) => ({
-        agentId: normalizeString(row.agentThreadId, ""),
+        agentId: normalizeString(row.agentThreadId || row.childAgentId, ""),
+        taskName: normalizeString(row.taskName, ""),
         label: normalizeString(row.displayLabel, ""),
         role: normalizeString(row.agentClassKind || row.role, ""),
-        lifecycleState: normalizeString(row.lifecycleState || row.nodeState, ""),
-        activityState: normalizeString(row.activityState || row.nodeState, ""),
-        terminal: row.terminal === true,
+        lifecycleState: normalizeString(row.lifecycleState || row.nodeState || row.state, ""),
+        activityState: normalizeString(row.activityState || row.nodeState || row.state, ""),
+        terminal: row.terminal === true || ["completed", "failed", "timeout", "cancelled"].includes(row.state),
         model: normalizeString(row.model, ""),
         reasoningEffort: normalizeString(row.reasoningEffort, ""),
+        contextHandoff: isPlainObject(row.contextHandoff) ? row.contextHandoff : null,
+        resultSummary: normalizeString(row.resultSummary, ""),
       })),
       readOnly: true,
       canInterfere: false,
@@ -889,18 +921,21 @@ function summarizeSubAgentStatusResult(toolName, result = {}) {
   const inspectPacket = isPlainObject(payload.inspectPacket) ? payload.inspectPacket : {};
   const agentNode = isPlainObject(inspectPacket.agent)
     ? inspectPacket.agent
-    : isPlainObject(inspectPacket.agentNode) ? inspectPacket.agentNode : {};
+    : isPlainObject(inspectPacket.agentNode) ? inspectPacket.agentNode : inspectPacket;
   return {
     kind: "inspect_agent_result",
     status: normalizeString(result?.status, "completed"),
     blockerCode: normalizeString(result?.blockerCode, ""),
-    agentId: normalizeString(agentNode.agentThreadId || inspectPacket.requestedAgentThreadId || payload.targetAgentId, ""),
+    agentId: normalizeString(agentNode.agentThreadId || agentNode.childAgentId || inspectPacket.requestedAgentThreadId || payload.targetAgentId, ""),
+    taskName: normalizeString(agentNode.taskName, ""),
     label: normalizeString(agentNode.displayLabel, ""),
     role: normalizeString(agentNode.agentClassKind || agentNode.role, ""),
-    lifecycleState: normalizeString(agentNode.lifecycleState || agentNode.nodeState, ""),
-    activityState: normalizeString(agentNode.activityState, ""),
+    lifecycleState: normalizeString(agentNode.lifecycleState || agentNode.nodeState || agentNode.state, ""),
+    activityState: normalizeString(agentNode.activityState || agentNode.state, ""),
     model: normalizeString(agentNode.model, ""),
     reasoningEffort: normalizeString(agentNode.reasoningEffort, ""),
+    contextHandoff: isPlainObject(agentNode.contextHandoff) ? agentNode.contextHandoff : null,
+    resultSummary: normalizeString(agentNode.resultSummary, ""),
     graphRevision: Number(result?.graphRevision || inspectPacket.graphRevision || 0),
     readOnly: true,
     canInterfere: false,
@@ -1102,6 +1137,11 @@ function directToolCompositionRequestShapeFields(composition = {}) {
   const providerBundle = isPlainObject(composition.providerDeclaredToolBundle) ? composition.providerDeclaredToolBundle : {};
   const catalogue = isPlainObject(composition.residentCapabilityCatalogue) ? composition.residentCapabilityCatalogue : {};
   const witness = isPlainObject(composition.witness) ? composition.witness : {};
+  const roleLedgerToolBundle = isPlainObject(
+    composition.roleLedgerToolBundle,
+  )
+    ? composition.roleLedgerToolBundle
+    : null;
   if (!providerBundle.bundleId || !witness.witnessDigest) return {};
   return {
     directToolBundleCompositionId: normalizeString(composition.compositionId, ""),
@@ -1112,6 +1152,23 @@ function directToolCompositionRequestShapeFields(composition = {}) {
     residentCapabilityCatalogueDigest: normalizeString(catalogue.catalogueDigest, ""),
     toolBundleCompositionWitnessDigest: normalizeString(witness.witnessDigest, ""),
     toolBundleCompositionWitnessAttached: true,
+    ...(roleLedgerToolBundle ? {
+      roleLedgerToolBundleId: normalizeString(
+        roleLedgerToolBundle.bundleId,
+        "",
+      ),
+      roleLedgerToolBundleDigest: normalizeString(
+        roleLedgerToolBundle.digest,
+        "",
+      ),
+      roleLedgerToolOperationCount: Number(
+        roleLedgerToolBundle.operationNames?.length || 0,
+      ),
+      unrestrictedLedgerWriteAvailable:
+        roleLedgerToolBundle.unrestrictedWriteAvailable === true,
+      canonicalLedgerAdmissionEnabled:
+        roleLedgerToolBundle.canonicalAdmissionEnabled === true,
+    } : {}),
   };
 }
 
@@ -1133,7 +1190,7 @@ function composeImplementationToolBundleForRequest(input = {}) {
     input.providerHostedToolsStatus?.activationSnapshot?.activationDigest,
     "",
   );
-  const composition = composeDirectToolBundle({
+  const baseComposition = composeDirectToolBundle({
     projectId,
     workThreadId,
     threadId: sessionId,
@@ -1170,10 +1227,104 @@ function composeImplementationToolBundleForRequest(input = {}) {
     observedAt: normalizeString(input.observedAt, nowIso()),
     requireRequestGrounding: true,
   });
+  const roleLedgerToolBundle = isPlainObject(input.roleLedgerToolBundle)
+    ? input.roleLedgerToolBundle
+    : null;
+  if (roleLedgerToolBundle) {
+    validateRoleLedgerToolBundle(roleLedgerToolBundle);
+    if (!["implementation_worker", "review_auditor"].includes(
+      roleLedgerToolBundle.roleLane,
+    )) {
+      const error = new Error(
+        "Direct implementation request received an unsupported role ledger bundle.",
+      );
+      error.code = "direct_epistemic_ledger_role_mismatch";
+      throw error;
+    }
+    if (
+      roleLedgerToolBundle.scope?.projectId &&
+      roleLedgerToolBundle.scope.projectId !== projectId
+    ) {
+      const error = new Error(
+        "Direct implementation ledger bundle project scope is stale.",
+      );
+      error.code = "direct_epistemic_ledger_project_scope_mismatch";
+      throw error;
+    }
+    if (
+      roleLedgerToolBundle.scope?.workThreadId &&
+      roleLedgerToolBundle.scope.workThreadId !== workThreadId
+    ) {
+      const error = new Error(
+        "Direct implementation ledger bundle work-thread scope is stale.",
+      );
+      error.code = "direct_epistemic_ledger_work_thread_scope_mismatch";
+      throw error;
+    }
+  }
+  const baseTools = baseComposition.providerDeclaredToolBundle.toolDeclarations;
+  const baseToolNames = baseComposition.providerDeclaredToolBundle.declaredToolNames;
+  const ledgerTools = roleLedgerToolBundle?.providerDeclarations || [];
+  const ledgerToolNames = roleLedgerToolBundle?.operationNames || [];
+  const collisions = ledgerToolNames.filter((name) =>
+    baseToolNames.includes(name));
+  if (collisions.length) {
+    const error = new Error(
+      `Direct implementation tool bundle contains ledger-name collisions: ${collisions.join(", ")}`,
+    );
+    error.code = "direct_epistemic_ledger_tool_name_collision";
+    throw error;
+  }
+  const declaredLedgerNames = ledgerTools.map((tool) =>
+    normalizeString(tool?.name, ""));
+  if (
+    ledgerToolNames.length !== declaredLedgerNames.length ||
+    ledgerToolNames.some((name, index) => name !== declaredLedgerNames[index])
+  ) {
+    const error = new Error(
+      "Direct implementation ledger declarations do not match their compiled operation order.",
+    );
+    error.code = "direct_epistemic_ledger_declaration_mismatch";
+    throw error;
+  }
+  const composition = roleLedgerToolBundle
+    ? {
+        ...baseComposition,
+        roleLedgerToolBundle,
+        roleLedgerToolBundleRef: {
+          kind: "role_ledger_tool_bundle",
+          id: roleLedgerToolBundle.bundleId,
+          digest: roleLedgerToolBundle.digest,
+        },
+        roleLedgerProviderSupplement: {
+          schema: "direct_role_ledger_provider_supplement@1",
+          baseProviderBundleRef:
+            baseComposition.providerDeclaredToolBundle.bundleId,
+          baseProviderBundleDigest:
+            baseComposition.providerDeclaredToolBundle.declarationDigest,
+          roleLedgerToolBundleRef: {
+            kind: "role_ledger_tool_bundle",
+            id: roleLedgerToolBundle.bundleId,
+            digest: roleLedgerToolBundle.digest,
+          },
+          combinedDeclaredToolNames: [
+            ...baseToolNames,
+            ...ledgerToolNames,
+          ],
+          supplementDigest: `sha256:${sha256(stableStringify({
+            baseProviderBundleDigest:
+              baseComposition.providerDeclaredToolBundle.declarationDigest,
+            roleLedgerToolBundleDigest: roleLedgerToolBundle.digest,
+            ledgerToolNames,
+          }))}`,
+          grantsAuthority: false,
+        },
+      }
+    : baseComposition;
   return {
     composition,
-    tools: composition.providerDeclaredToolBundle.toolDeclarations,
-    toolNames: composition.providerDeclaredToolBundle.declaredToolNames,
+    tools: [...baseTools, ...ledgerTools],
+    toolNames: [...baseToolNames, ...ledgerToolNames],
     requestShapeFields: directToolCompositionRequestShapeFields(composition),
   };
 }
@@ -1376,6 +1527,17 @@ class DirectLiveTextController {
       : null;
     this.externalCapabilityProfileResolver = typeof options.externalCapabilityProfileResolver === "function" ? options.externalCapabilityProfileResolver : null;
     this.providerHostedToolsStatusResolver = typeof options.providerHostedToolsStatusResolver === "function" ? options.providerHostedToolsStatusResolver : null;
+    this.compiledAgentContextResolver = typeof options.compiledAgentContextResolver === "function"
+      ? options.compiledAgentContextResolver
+      : null;
+    this.epistemicLedgerToolBundleResolver =
+      typeof options.epistemicLedgerToolBundleResolver === "function"
+        ? options.epistemicLedgerToolBundleResolver
+        : null;
+    this.epistemicLedgerToolInvoker =
+      typeof options.epistemicLedgerToolInvoker === "function"
+        ? options.epistemicLedgerToolInvoker
+        : null;
     this.fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
     this.workspaceRequest = typeof options.workspaceRequest === "function" ? options.workspaceRequest : null;
     this.endpoint = normalizeString(options.endpoint, "");
@@ -1393,6 +1555,95 @@ class DirectLiveTextController {
     this.toolDecisionClaims = new Map();
     this.toolDecisionResults = new Map();
     this.forkStartLocks = new Map();
+    this.epistemicLedgerTurnBindings = new Map();
+  }
+
+  epistemicLedgerTurnKey(sessionId, turnId) {
+    return `${normalizeString(sessionId, "")}::${normalizeString(turnId, "")}`;
+  }
+
+  rememberEpistemicLedgerTurnBinding(sessionId, turnId, binding = null) {
+    const key = this.epistemicLedgerTurnKey(sessionId, turnId);
+    if (!binding?.bundle) {
+      this.epistemicLedgerTurnBindings.delete(key);
+      return null;
+    }
+    const stored = {
+      bundle: binding.bundle,
+      visibleEvidenceRefs: Array.isArray(binding.visibleEvidenceRefs)
+        ? binding.visibleEvidenceRefs
+        : [],
+      currentRevisionByScope: isPlainObject(binding.currentRevisionByScope)
+        ? binding.currentRevisionByScope
+        : {},
+      artifactLifecycleBinding:
+        isPlainObject(binding.artifactLifecycleBinding)
+          ? binding.artifactLifecycleBinding
+          : null,
+    };
+    this.epistemicLedgerTurnBindings.set(key, stored);
+    return stored;
+  }
+
+  epistemicLedgerTurnBinding(sessionId, turnId) {
+    const inMemory = this.epistemicLedgerTurnBindings.get(
+      this.epistemicLedgerTurnKey(sessionId, turnId),
+    );
+    if (inMemory) return inMemory;
+    const turn = this.sessionStore?.readTurn?.(sessionId, turnId);
+    const persisted = isPlainObject(turn?.epistemicLedgerToolBinding)
+      ? turn.epistemicLedgerToolBinding
+      : null;
+    if (!persisted?.bundle) return null;
+    return this.rememberEpistemicLedgerTurnBinding(
+      sessionId,
+      turnId,
+      persisted,
+    );
+  }
+
+  async resolveEpistemicLedgerTurnBinding(input = {}) {
+    if (
+      !this.epistemicLedgerToolBundleResolver ||
+      !this.epistemicLedgerToolInvoker ||
+      !isPlainObject(input.compiledAgentContext)
+    ) {
+      return null;
+    }
+    const resolved = await this.epistemicLedgerToolBundleResolver(input);
+    if (!resolved) return null;
+    const bundle = resolved.bundle || resolved;
+    const expectedRoleLane = normalizeString(
+      input.roleLane,
+      "implementation_worker",
+    );
+    if (
+      !isPlainObject(bundle) ||
+      bundle.schema !== "direct_role_ledger_tool_bundle@1" ||
+      bundle.roleLane !== expectedRoleLane ||
+      !["implementation_worker", "review_auditor"].includes(
+        expectedRoleLane,
+      )
+    ) {
+      const error = new Error(
+        "Direct epistemic ledger resolver returned an invalid role bundle.",
+      );
+      error.code = "direct_epistemic_ledger_bundle_invalid";
+      throw error;
+    }
+    return {
+      bundle,
+      visibleEvidenceRefs: Array.isArray(resolved.visibleEvidenceRefs)
+        ? resolved.visibleEvidenceRefs
+        : [],
+      currentRevisionByScope: isPlainObject(resolved.currentRevisionByScope)
+        ? resolved.currentRevisionByScope
+        : {},
+      artifactLifecycleBinding:
+        isPlainObject(resolved.artifactLifecycleBinding)
+          ? resolved.artifactLifecycleBinding
+          : null,
+    };
   }
 
   hydrateWorkThreadCarrier(carrier = {}, projectId = "") {
@@ -1589,7 +1840,8 @@ class DirectLiveTextController {
     if (liveEvidence?.accepted) return liveEvidence;
     return {
       ...staticEvidence,
-      reason: liveEvidence?.reason || (staticEvidence.accepted ? "" : "accepted_text_model_required"),
+      reason: liveModelEvidenceBlockerReason(liveEvidence?.reason) ||
+        (staticEvidence.accepted ? "" : "accepted_text_model_required"),
       liveProbeEvidence: liveEvidence?.liveProbeEvidence || null,
       liveProbeEvidenceId: normalizeString(liveEvidence?.evidenceId, ""),
     };
@@ -1671,8 +1923,9 @@ class DirectLiveTextController {
   assertReady(project = {}) {
     const status = this.statusForProject(project);
     if (status.status !== "ready") {
-      const error = new Error(status.reason || status.status);
+      const error = new Error(liveTextReadinessErrorMessage(status));
       error.code = status.status;
+      error.blockerCode = status.reason || status.status;
       error.directLiveTextStatus = status;
       throw error;
     }
@@ -1773,6 +2026,10 @@ class DirectLiveTextController {
       modelEvidenceState: status.modelEvidenceState,
       modelEvidenceId: normalizeString(status.evidenceId, ""),
       profileSnapshotId: normalizeString(project.surfaceBinding?.codex?.profileId, ""),
+      agentId: normalizeString(params.agentId, ""),
+      agentRunId: normalizeString(params.agentRunId, ""),
+      parentAgentId: normalizeString(params.parentAgentId, ""),
+      parentAgentRunId: normalizeString(params.parentAgentRunId, ""),
       agentKind: normalizeString(params.agentKind, ""),
       agentThreadId: normalizeString(params.agentThreadId, ""),
       parentThreadId: normalizeString(params.parentThreadId, ""),
@@ -1787,6 +2044,14 @@ class DirectLiveTextController {
       workerContextPacketDigest: normalizeString(params.workerContextPacketDigest, ""),
       workerGraphAlignmentId: normalizeString(params.workerGraphAlignmentId, ""),
       workerGraphAlignmentDigest: normalizeString(params.workerGraphAlignmentDigest, ""),
+      artifactWorkThreadAuthorizationId: normalizeString(
+        params.artifactWorkThreadAuthorizationId,
+        "",
+      ),
+      artifactWorkThreadAuthorizationDigest: normalizeString(
+        params.artifactWorkThreadAuthorizationDigest,
+        "",
+      ),
       sourceClass: "direct-native",
       nativeDirectSession: true,
       providerContinuityAvailable: false,
@@ -3328,7 +3593,6 @@ class DirectLiveTextController {
   }
 
   async emitCommandExecutionApprovalRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
-    if (!surfaceSession || typeof surfaceSession.createCommandExecutionRequest !== "function") return 0;
     if (typeof this.workspaceRequest !== "function") {
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
         status: "unsupported",
@@ -3406,6 +3670,9 @@ class DirectLiveTextController {
     }, {
       nextTurnState: "tool_waiting",
     });
+    if (!surfaceSession || typeof surfaceSession.createCommandExecutionRequest !== "function") {
+      return 0;
+    }
     surfaceSession.createCommandExecutionRequest({
       params,
       summary: params.displayCommand || "run_command",
@@ -3414,7 +3681,6 @@ class DirectLiveTextController {
   }
 
   async emitPatchApplyApprovalRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
-    if (!surfaceSession || typeof surfaceSession.createPatchApplyRequest !== "function") return 0;
     if (typeof this.workspaceRequest !== "function") {
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
         status: "unsupported",
@@ -3492,6 +3758,9 @@ class DirectLiveTextController {
     }, {
       nextTurnState: "tool_waiting",
     });
+    if (!surfaceSession || typeof surfaceSession.createPatchApplyRequest !== "function") {
+      return 0;
+    }
     surfaceSession.createPatchApplyRequest({
       params,
       summary: params.files.map((file) => `${file.operation} ${file.path}`).join("; ") || "apply_patch",
@@ -3501,6 +3770,241 @@ class DirectLiveTextController {
 
   isSafeResidentUtilityObligation(obligation = {}) {
     return isSafeResidentUtilityToolName(obligation.name);
+  }
+
+  isEpistemicLedgerObligation(sessionId, turnId, obligation = {}) {
+    const binding = this.epistemicLedgerTurnBinding(sessionId, turnId);
+    const name = normalizeString(obligation.name, "");
+    return Boolean(
+      binding?.bundle &&
+      isEpistemicLedgerToolName(name) &&
+      binding.bundle.operationNames.includes(name),
+    );
+  }
+
+  async buildEpistemicLedgerResultEnvelope(
+    sessionId,
+    turnId,
+    obligation = {},
+    project = {},
+  ) {
+    const binding = this.epistemicLedgerTurnBinding(sessionId, turnId);
+    if (!binding?.bundle || !this.epistemicLedgerToolInvoker) {
+      const error = new Error(
+        "Direct epistemic ledger execution is unavailable for this turn.",
+      );
+      error.code = "direct_epistemic_ledger_runtime_unavailable";
+      throw error;
+    }
+    let argumentsValue;
+    try {
+      argumentsValue = JSON.parse(normalizeString(obligation.argumentsText, "{}"));
+    } catch (_error) {
+      argumentsValue = null;
+    }
+    if (!isPlainObject(argumentsValue)) {
+      const error = new Error("Direct epistemic ledger arguments are invalid JSON.");
+      error.code = "direct_epistemic_ledger_arguments_invalid";
+      throw error;
+    }
+    const projectId = normalizeString(
+      project?.id || project?.projectId || project?.name,
+      binding.bundle.scope?.projectId || "",
+    );
+    const invocation = await this.epistemicLedgerToolInvoker({
+      bundle: binding.bundle,
+      operationName: normalizeString(obligation.name, ""),
+      arguments: argumentsValue,
+      currentRevisionByScope: binding.currentRevisionByScope,
+      visibleEvidenceRefs: binding.visibleEvidenceRefs,
+      authorshipKind: "semantic_role",
+      agentRunRef: {
+        kind: "direct_agent_run",
+        id: `${sessionId}:${turnId}`,
+        digest: `sha256:${sha256(stableStringify({ sessionId, turnId, projectId }))}`,
+      },
+      artifactLifecycleBinding:
+        binding.artifactLifecycleBinding || null,
+    });
+    const result = isPlainObject(invocation?.result)
+      ? invocation.result
+      : invocation;
+    const decision = isPlainObject(result?.decision) ? result.decision : {};
+    const receipt = isPlainObject(result?.append?.receipt)
+      ? result.append.receipt
+      : null;
+    const lifecycleIngestionReceipt = isPlainObject(
+      invocation?.lifecycleIngestion?.receipt,
+    )
+      ? invocation.lifecycleIngestion.receipt
+      : null;
+    const lifecycleAutomation = isPlainObject(
+      invocation?.lifecycleAutomation,
+    )
+      ? invocation.lifecycleAutomation
+      : null;
+    const appended = decision.allowed === true && Boolean(receipt);
+    const providerOutput = {
+      kind: "epistemic_ledger_result",
+      operationName: normalizeString(obligation.name, ""),
+      status: appended
+        ? normalizeString(receipt.appendState, "appended")
+        : "blocked",
+      decision: {
+        allowed: decision.allowed === true,
+        blockerCodes: Array.isArray(decision.blockerCodes)
+          ? decision.blockerCodes
+          : [],
+        decisionId: normalizeString(decision.decisionId, ""),
+        decisionDigest: normalizeString(decision.digest, ""),
+      },
+      ledgerEventRef: receipt?.ledgerEventRef || null,
+      receiptRef: receipt
+        ? {
+            kind: "ledger_write_receipt",
+            id: normalizeString(receipt.receiptId, ""),
+            digest: normalizeString(receipt.receiptDigest, ""),
+          }
+        : null,
+      epistemicPosture: normalizeString(receipt?.epistemicPosture, ""),
+      canonicalEffect: receipt?.canonicalEffect === true,
+      lifecycleDischarge: lifecycleIngestionReceipt
+        ? {
+            ingestionState: normalizeString(
+              lifecycleIngestionReceipt.ingestionState,
+              "",
+            ),
+            transitionKind: normalizeString(
+              lifecycleIngestionReceipt.transitionKind,
+              "none",
+            ),
+            transitionRef:
+              lifecycleIngestionReceipt.transitionRef || null,
+            nextAction: normalizeString(
+              lifecycleIngestionReceipt.nextAction,
+              "none",
+            ),
+            blockerCodes: Array.isArray(
+              lifecycleIngestionReceipt.blockerCodes,
+            )
+              ? lifecycleIngestionReceipt.blockerCodes
+              : [],
+            automationState: normalizeString(
+              lifecycleAutomation?.state,
+              lifecycleAutomation ? "started" : "not_required",
+            ),
+            automationAction: normalizeString(
+              lifecycleAutomation?.action,
+              "none",
+            ),
+            automationErrorCode: normalizeString(
+              lifecycleAutomation?.errorCode,
+              "",
+            ),
+            canonicalEffect: false,
+            workspaceMutationAuthorized: false,
+          }
+        : null,
+      rendererSafeSummary: normalizeString(
+        receipt?.rendererSafeSummary,
+        appended
+          ? "The typed epistemic act was recorded."
+          : "The typed epistemic act was rejected by its compiled contract.",
+      ),
+      rawSemanticPayloadIncluded: false,
+      rawChainOfThoughtIncluded: false,
+      rawSecretIncluded: false,
+    };
+    const envelope = {
+      schema: "direct_epistemic_ledger_tool_result_envelope@1",
+      envelopeId: `epistemic_ledger_result_${sha256(stableStringify({
+        obligationId: obligation.obligationId,
+        decisionId: providerOutput.decision.decisionId,
+        receiptId: providerOutput.receiptRef?.id || "",
+      })).slice(0, 24)}`,
+      resultKind: "epistemic_ledger_act",
+      status: appended ? "ready_for_provider_continuation" : "blocked",
+      semanticEffectRecorded: appended,
+      sideEffectExecuted: false,
+      canonicalEffect: providerOutput.canonicalEffect,
+      providerOutput,
+      createdAt: nowIso(),
+      rawWorkspacePathExposed: false,
+      rawSecretExposed: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    return envelope;
+  }
+
+  async emitEpistemicLedgerRequest(
+    surfaceSession,
+    sessionId,
+    turnId,
+    obligation = {},
+    project = {},
+  ) {
+    this.sessionStore.updateToolObligation(
+      sessionId,
+      turnId,
+      obligation.obligationId,
+      {
+        status: "executing",
+        authorityState: "compiled_ledger_call_validating",
+        approvalAvailable: false,
+        executionAllowed: true,
+        continuationAllowed: false,
+      },
+      { nextTurnState: "authority_waiting" },
+    );
+    let envelope;
+    try {
+      envelope = await this.buildEpistemicLedgerResultEnvelope(
+        sessionId,
+        turnId,
+        obligation,
+        project,
+      );
+    } catch (error) {
+      envelope = {
+        schema: "direct_epistemic_ledger_tool_result_envelope@1",
+        envelopeId: `epistemic_ledger_failure_${sha256(`${obligation.obligationId}:${error.code || error.message}`).slice(0, 24)}`,
+        resultKind: "epistemic_ledger_act",
+        status: "blocked",
+        semanticEffectRecorded: false,
+        sideEffectExecuted: false,
+        canonicalEffect: false,
+        providerOutput: {
+          kind: "epistemic_ledger_result",
+          operationName: normalizeString(obligation.name, ""),
+          status: "blocked",
+          decision: {
+            allowed: false,
+            blockerCodes: [error.code || "direct_epistemic_ledger_call_failed"],
+          },
+          ledgerEventRef: null,
+          receiptRef: null,
+          canonicalEffect: false,
+          rendererSafeSummary:
+            error.message || "The typed epistemic act could not be recorded.",
+          rawSemanticPayloadIncluded: false,
+          rawChainOfThoughtIncluded: false,
+          rawSecretIncluded: false,
+        },
+        createdAt: nowIso(),
+        rawWorkspacePathExposed: false,
+        rawSecretExposed: false,
+      };
+      envelope.envelopeDigest = sha256(stableStringify(envelope));
+    }
+    await this.continueAfterSafeResidentUtilityResult(
+      surfaceSession,
+      sessionId,
+      turnId,
+      obligation,
+      envelope,
+      project,
+    );
+    return 1;
   }
 
   buildSafeResidentUtilityEnvelope(obligation = {}, options = {}) {
@@ -3625,8 +4129,12 @@ class DirectLiveTextController {
   recordSafeResidentUtilityResult(sessionId, turnId, obligation = {}, envelope = {}) {
     const continuationRequest = this.utilityContinuationRequestFromEnvelope(sessionId, turnId, obligation, envelope);
     const providerOutputText = normalizeString(continuationRequest.toolResult?.content?.[0]?.text, "{}");
+    const epistemicLedgerResult =
+      normalizeString(envelope.resultKind, "") === "epistemic_ledger_act";
     const result = {
-      schema: "direct_safe_resident_utility_result@1",
+      schema: epistemicLedgerResult
+        ? "direct_epistemic_ledger_tool_result@1"
+        : "direct_safe_resident_utility_result@1",
       resultId: normalizeString(continuationRequest.toolResult?.metadata?.resultId, ""),
       envelopeId: normalizeString(envelope.envelopeId, ""),
       envelopeDigest: normalizeString(envelope.envelopeDigest, ""),
@@ -3647,7 +4155,9 @@ class DirectLiveTextController {
     };
     const updated = this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       status: "result_recorded",
-      authorityState: "utility_result_recorded",
+      authorityState: epistemicLedgerResult
+        ? "epistemic_ledger_result_recorded"
+        : "utility_result_recorded",
       approvalAvailable: false,
       executionAllowed: false,
       sideEffectExecuted:
@@ -3692,22 +4202,48 @@ class DirectLiveTextController {
     const recorded = this.recordSafeResidentUtilityResult(sessionId, turnId, obligation, envelope);
     const continuationRequest = recorded.continuationRequest;
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
-    const nativeAgentRuntimeResult = normalizeString(envelope.resultKind, "") === "direct_sub_agent_runtime";
-    const nativeAgentToolNames = [
-      ...NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES,
-      ...READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES,
-    ];
-    const continuationToolComposition = nativeAgentRuntimeResult
+    const resultKind = normalizeString(envelope.resultKind, "");
+    const ledgerContinuation = resultKind === "epistemic_ledger_act";
+    const agentRuntimeContinuation = [
+      "direct_sub_agent_runtime",
+      "sub_agent_list_status",
+      "sub_agent_inspect_status",
+    ].includes(resultKind);
+    const residentContinuation = ledgerContinuation || agentRuntimeContinuation;
+    const directStatus = this.statusForProject(project || {});
+    const ledgerBinding = this.epistemicLedgerTurnBinding(sessionId, turnId);
+    const continuationToolNames = ledgerContinuation
+      ? implementationContinuationToolNames(
+          directStatus,
+          userPromptTextFromTurn(turn),
+        )
+      : agentRuntimeContinuation
+        ? [
+            ...NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES,
+            ...READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES,
+          ]
+        : [];
+    const continuationToolComposition = residentContinuation
       ? composeImplementationToolBundleForRequest({
-          projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
+          projectId: normalizeString(
+            project?.id || project?.projectId || project?.name,
+            ledgerBinding?.bundle?.scope?.projectId || "",
+          ),
           sessionId,
           turnId,
-          toolNames: nativeAgentToolNames,
+          toolNames: continuationToolNames,
           useLaneDefaultTools: false,
-          sourceMessageId: `${turnId}_${obligation.obligationId}_native_agent_continuation`,
+          sourceMessageId: `${turnId}_${obligation.obligationId}_${ledgerContinuation ? "ledger" : "agent_runtime"}_continuation`,
           normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligation.obligationId}_${Number(obligation.stepOrdinal || 1)}`,
-          workThreadId: directWorkThreadContextCarrier(project, turn, obligation).workThreadId,
-          runtimeFactsId: "direct_native_agent_runtime",
+          workThreadId: normalizeString(
+            ledgerBinding?.bundle?.scope?.workThreadId,
+            directWorkThreadContextCarrier(turn, project, obligation).workThreadId,
+          ),
+          runtimeFactsId:
+            directStatus.evidenceId || "direct_runtime_facts",
+          externalCapabilityProfile: directStatus.externalCapabilityProfile,
+          providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
+          roleLedgerToolBundle: ledgerContinuation ? ledgerBinding?.bundle : null,
         })
       : { tools: [], toolNames: [] };
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
@@ -3744,10 +4280,12 @@ class DirectLiveTextController {
       this.sessionStore.appendNormalizedEvents(sessionId, turnId, result.normalizedEvents, {});
     }
     const streamTerminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents || []);
-    const nestedToolCall = nativeAgentRuntimeResult && (result.normalizedEvents || []).some((event) =>
-      event?.type === "tool_call_started" ||
-      event?.type === "tool_call_delta" ||
-      event?.type === "tool_call_completed");
+    const nestedToolCall = residentContinuation && (result.normalizedEvents || []).some(
+      (event) =>
+        event?.type === "tool_call_started" ||
+        event?.type === "tool_call_delta" ||
+        event?.type === "tool_call_completed",
+    );
     let nextToolObligations = [];
     let terminal = streamTerminal;
     let continuationOutcome = terminal.state === "completed"
@@ -3770,22 +4308,30 @@ class DirectLiveTextController {
       const nextToolName = normalizeString(nextToolObligations[0]?.name, "");
       const nextToolAllowed =
         nextToolObligations.length === 1 &&
-        (isNativeSubAgentRuntimeToolName(nextToolName) || isReadOnlySubAgentStatusToolName(nextToolName));
-      const loopCapExceeded = nextStepOrdinal > MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS;
+        (ledgerContinuation
+          ? continuationToolComposition.toolNames.includes(nextToolName)
+          : isNativeSubAgentRuntimeToolName(nextToolName) ||
+            isReadOnlySubAgentStatusToolName(nextToolName));
+      const loopCap = agentRuntimeContinuation
+        ? MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS
+        : MAX_READONLY_TOOL_LOOP_STEPS;
+      const loopCapExceeded = nextStepOrdinal > loopCap;
       if (nextToolAllowed && !loopCapExceeded) {
         terminal = { state: "tool_waiting", error: null };
-        continuationOutcome = "next_native_agent_runtime_step";
+        continuationOutcome = ledgerContinuation
+          ? "next_epistemic_ledger_step"
+          : "next_native_agent_runtime_step";
       } else {
         const failureKind = loopCapExceeded
-          ? "agent_runtime_tool_loop_cap_exceeded"
-          : "unsupported_native_agent_runtime_transition";
+          ? `${ledgerContinuation ? "epistemic_ledger" : "agent_runtime"}_tool_loop_cap_exceeded`
+          : `unsupported_${ledgerContinuation ? "epistemic_ledger" : "native_agent_runtime"}_transition`;
         terminal = {
           state: "failed",
           error: {
             code: failureKind,
             message: loopCapExceeded
-              ? "Direct native-agent tool loop reached its configured step cap."
-              : "Direct native-agent continuation emitted an unsupported or ambiguous tool transition.",
+              ? `Direct ${ledgerContinuation ? "epistemic-ledger" : "native-agent"} tool loop reached its configured step cap.`
+              : `Direct ${ledgerContinuation ? "epistemic-ledger" : "native-agent"} continuation emitted an unsupported or ambiguous tool transition.`,
           },
         };
         continuationOutcome = failureKind;
@@ -3806,7 +4352,10 @@ class DirectLiveTextController {
     }
     const continuationOk =
       (result.ok === true && terminal.state === "completed") ||
-      (terminal.state === "tool_waiting" && continuationOutcome === "next_native_agent_runtime_step");
+      (
+        terminal.state === "tool_waiting" &&
+        ["next_epistemic_ledger_step", "next_native_agent_runtime_step"].includes(continuationOutcome)
+      );
     const completedTurn = this.sessionStore.updateTurnState(sessionId, turnId, terminal.state, {
       continuationResponseId: normalizeString(result.responseId, ""),
       continuationResult: {
@@ -3833,14 +4382,16 @@ class DirectLiveTextController {
         continuationOutcome,
       },
     }, {});
-    if (nativeAgentRuntimeResult) {
+    if (residentContinuation) {
       await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, {
         turnState: completedTurn.state,
         nextToolObligations,
       }, project, {
-        streamPhase: "native-agent-runtime-continuation",
-        approvalMessage: "Direct native-agent continuation advanced to another resident tool transition.",
-        unavailableMessage: "Direct native-agent continuation requested an unavailable transition.",
+        streamPhase: ledgerContinuation
+          ? "ledger-continuation"
+          : "native-agent-runtime-continuation",
+        approvalMessage: `Direct ${ledgerContinuation ? "ledger" : "native-agent"} continuation advanced to another governed tool transition.`,
+        unavailableMessage: `Direct ${ledgerContinuation ? "ledger" : "native-agent"} continuation requested an unavailable transition.`,
       });
     } else {
       this.emitNotification(surfaceSession, "turn/completed", {
@@ -4302,21 +4853,14 @@ class DirectLiveTextController {
     }
     let createdCount = 0;
     for (const obligation of obligations) {
-      if (this.isNativeSubAgentRuntimeObligation(obligation)) {
-        createdCount += await this.emitNativeSubAgentRuntimeRequest(surfaceSession, sessionId, turnId, obligation, project);
-        continue;
-      }
-      if (this.isReadOnlySubAgentStatusObligation(obligation)) {
-        createdCount += await this.emitReadOnlySubAgentStatusRequest(surfaceSession, sessionId, turnId, obligation, project);
-        continue;
-      }
-      if (!surfaceSession) return createdCount;
-      if (this.isSafeResidentUtilityObligation(obligation)) {
-        createdCount += await this.emitSafeResidentUtilityRequest(surfaceSession, sessionId, turnId, obligation, project);
-        continue;
-      }
-      if (this.isExternalPromotedObligation(obligation)) {
-        createdCount += await this.emitExternalPromotedRequest(surfaceSession, sessionId, turnId, obligation, project);
+      if (this.isEpistemicLedgerObligation(sessionId, turnId, obligation)) {
+        createdCount += await this.emitEpistemicLedgerRequest(
+          surfaceSession,
+          sessionId,
+          turnId,
+          obligation,
+          project,
+        );
         continue;
       }
       if (this.isPatchApplyObligation(obligation)) {
@@ -4325,6 +4869,38 @@ class DirectLiveTextController {
       }
       if (this.isCommandExecutionObligation(obligation)) {
         createdCount += await this.emitCommandExecutionApprovalRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
+      if (this.isNativeSubAgentRuntimeObligation(obligation)) {
+        createdCount += await this.emitNativeSubAgentRuntimeRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
+      if (this.isReadOnlySubAgentStatusObligation(obligation)) {
+        createdCount += await this.emitReadOnlySubAgentStatusRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
+      if (!surfaceSession) {
+        if (normalizeString(obligation.name, "") !== "read_file") {
+          return createdCount;
+        }
+        const params = this.readOnlyToolRequestParams(obligation, turn, project);
+        const loopCapExceeded = Number(params.stepOrdinal || 1) > MAX_READONLY_TOOL_LOOP_STEPS;
+        if (params.approvalAvailable && !loopCapExceeded) {
+          this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+            approvalAvailable: true,
+            authorityState: "approval_waiting",
+          }, {
+            nextTurnState: "tool_waiting",
+          });
+        }
+        return createdCount;
+      }
+      if (this.isSafeResidentUtilityObligation(obligation)) {
+        createdCount += await this.emitSafeResidentUtilityRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
+      if (this.isExternalPromotedObligation(obligation)) {
+        createdCount += await this.emitExternalPromotedRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
       }
       if (typeof surfaceSession.createReadOnlyToolRequest !== "function") continue;
@@ -4406,10 +4982,18 @@ class DirectLiveTextController {
         this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
       }
       const createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, continuation.nextToolObligations, project);
+      const ledgerOnly = continuation.nextToolObligations.every((obligation) =>
+        this.isEpistemicLedgerObligation(sessionId, turnId, obligation));
+      const agentRuntimeOnly = continuation.nextToolObligations.every((obligation) =>
+        this.isNativeSubAgentRuntimeObligation(obligation) || this.isReadOnlySubAgentStatusObligation(obligation));
       this.emitNotification(surfaceSession, "warning", {
         threadId: sessionId,
         turnId,
-        message: createdApprovalRequests
+        message: ledgerOnly
+          ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
+          : agentRuntimeOnly
+            ? "Direct processed a native child-agent runtime call and continued the provider turn."
+          : createdApprovalRequests
           ? normalizeString(options.approvalMessage, "Direct implementation continuation requested another tool. Local approval is required.")
           : normalizeString(options.unavailableMessage, "Direct implementation continuation requested another tool call, but it is not available for approval."),
       });
@@ -4972,6 +5556,8 @@ class DirectLiveTextController {
       runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
+      roleLedgerToolBundle:
+        this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
     const continuationTools = continuationToolComposition.tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
@@ -5120,6 +5706,9 @@ class DirectLiveTextController {
       fetchImpl: this.fetchImpl || undefined,
       allowSequentialReadOnlyToolLoop: true,
       allowSequentialImplementationRepairLoop: true,
+      allowedResidentSemanticToolNames:
+        this.epistemicLedgerTurnBinding(sessionId, turnId)
+          ?.bundle?.operationNames || [],
       continuationTools,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
@@ -5196,6 +5785,8 @@ class DirectLiveTextController {
       runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
+      roleLedgerToolBundle:
+        this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
     const continuationTools = continuationToolComposition.tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
@@ -5334,6 +5925,9 @@ class DirectLiveTextController {
       fetchImpl: this.fetchImpl || undefined,
       allowSequentialReadOnlyToolLoop: false,
       allowSequentialImplementationRepairLoop: true,
+      allowedResidentSemanticToolNames:
+        this.epistemicLedgerTurnBinding(sessionId, turnId)
+          ?.bundle?.operationNames || [],
       continuationTools,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
@@ -5445,6 +6039,8 @@ class DirectLiveTextController {
       runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
+      roleLedgerToolBundle:
+        this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
     const continuationTools = continuationToolComposition.tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
@@ -5582,6 +6178,9 @@ class DirectLiveTextController {
       fetchImpl: this.fetchImpl || undefined,
       allowSequentialReadOnlyToolLoop: false,
       allowSequentialImplementationRepairLoop: true,
+      allowedResidentSemanticToolNames:
+        this.epistemicLedgerTurnBinding(sessionId, turnId)
+          ?.bundle?.operationNames || [],
       continuationTools,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
@@ -5672,6 +6271,55 @@ class DirectLiveTextController {
       error.code = "missing_client_turn_request_id";
       throw error;
     }
+    if (
+      typeof params.instructions !== "undefined" ||
+      typeof params.systemPrompt !== "undefined" ||
+      typeof params.developerInstructions !== "undefined" ||
+      typeof params.compiledAgentContext !== "undefined"
+    ) {
+      const error = new Error(
+        "Direct compiled-agent turns do not accept renderer-supplied instruction bodies.",
+      );
+      error.code = "direct_compiled_agent_renderer_instruction_rejected";
+      throw error;
+    }
+    const compiledAgentContextRef = isPlainObject(
+      params.compiledAgentContextRef,
+    )
+      ? params.compiledAgentContextRef
+      : null;
+    let compiledAgentContext = null;
+    if (compiledAgentContextRef) {
+      if (
+        !normalizeString(compiledAgentContextRef.id, "") ||
+        !normalizeString(compiledAgentContextRef.digest, "") ||
+        !this.compiledAgentContextResolver
+      ) {
+        const error = new Error(
+          "Direct compiled-agent context reference cannot be resolved.",
+        );
+        error.code = "direct_compiled_agent_context_unavailable";
+        throw error;
+      }
+      compiledAgentContext = await this.compiledAgentContextResolver({
+        compiledAgentContextRef,
+        sessionId,
+        projectId: normalizeString(project.id, ""),
+      });
+      if (
+        !isPlainObject(compiledAgentContext) ||
+        compiledAgentContext.schema !== "direct_compiled_agent_context@1" ||
+        compiledAgentContext.compiledAgentContextId !==
+          compiledAgentContextRef.id ||
+        compiledAgentContext.digest !== compiledAgentContextRef.digest
+      ) {
+        const error = new Error(
+          "Direct compiled-agent context reference failed exact resolution.",
+        );
+        error.code = "direct_compiled_agent_context_resolution_mismatch";
+        throw error;
+      }
+    }
     const rawPrompt = this.textPrompt(params);
     const attachmentSubmit = this.directAttachmentSubmitPacket(params, context, rawPrompt);
     const prompt = buildDirectAttachmentProviderPrompt(rawPrompt, attachmentSubmit.packet);
@@ -5738,7 +6386,9 @@ class DirectLiveTextController {
           status,
         )
       : [];
-    const useRecentDialogue = existingTurnCount > 0;
+    const useRecentDialogue = compiledAgentContext
+      ? false
+      : existingTurnCount > 0;
     let frozenContextProjection = null;
     if (useRecentDialogue) {
       if (!previousTurn || !SAFE_TEXT_ONLY_FOLLOWUP_PREVIOUS_STATES.has(previousTurn.state)) {
@@ -5801,6 +6451,7 @@ class DirectLiveTextController {
       directWorkThreadContextCarrier(params, session, context),
       project.id,
     );
+    let epistemicLedgerTurnBinding = null;
     const requireControlledRouting = params.requireControlledRouting === true || params.controlledRouting?.required === true;
     const controlledRoutingRequested = Boolean(
       workThreadCarrier.workThread ||
@@ -5882,6 +6533,32 @@ class DirectLiveTextController {
             ...workThreadCarrier,
           });
         }
+        const roleLedgerLane = [
+          "implementation_worker",
+          "review_auditor",
+        ].includes(normalizeString(session.agentRole, ""))
+          ? normalizeString(session.agentRole, "")
+          : "implementation_worker";
+        epistemicLedgerTurnBinding = implementationTier && controlledRoutingResult
+          ? await this.resolveEpistemicLedgerTurnBinding({
+              roleLane: roleLedgerLane,
+              project,
+              projectId: normalizeString(project.id, session.projectId),
+              sessionId: session.sessionId,
+              turnId: turn.turnId,
+              workThreadId:
+                controlledRoutingResult.route?.selectedWorkThreadId,
+              workThread: workThreadCarrier.workThread,
+              authorityBoundary: workThreadCarrier.authorityBoundary,
+              controlledRoutingResult,
+              compiledAgentContext,
+            })
+          : null;
+        this.rememberEpistemicLedgerTurnBinding(
+          session.sessionId,
+          turn.turnId,
+          epistemicLedgerTurnBinding,
+        );
         implementationToolComposition = implementationTier
           ? composeImplementationToolBundleForRequest({
               projectId: session.projectId,
@@ -5897,6 +6574,7 @@ class DirectLiveTextController {
               runtimeFactsId: status.evidenceId || status.modelEvidenceId || "direct_runtime_facts",
               externalCapabilityProfile: status.externalCapabilityProfile,
               providerHostedToolsStatus: status.providerHostedToolsStatus,
+              roleLedgerToolBundle: epistemicLedgerTurnBinding?.bundle,
             })
           : null;
         contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
@@ -5932,6 +6610,7 @@ class DirectLiveTextController {
             ...(Array.isArray(workThreadCarrier.bridgeInformationRefs) ? workThreadCarrier.bridgeInformationRefs : []),
             ...(controlledRoutingResult?.route?.bridgeInformationRef ? [controlledRoutingResult.route.bridgeInformationRef] : []),
           ],
+          compiledAgentContext,
         });
         requestBody = implementationTier
           ? buildImplementationToolInitialRequest({
@@ -5969,6 +6648,14 @@ class DirectLiveTextController {
           rawRequestBodyStored: false,
           previousResponseIdUsed: false,
         } : {}),
+        ...(compiledAgentContext ? {
+          compiledAgentContextId:
+            compiledAgentContext.compiledAgentContextId,
+          compiledAgentContextDigest: compiledAgentContext.digest,
+          agentInstantiationId:
+            compiledAgentContext.agentInstantiationRef?.id || "",
+          rendererInstructionInputAccepted: false,
+        } : {}),
         ...(controlledRoutingResult ? {
           controlledRoutingSliceId: controlledRoutingResult.route.routeId,
           controlledRoutingSliceDigest: controlledRoutingResult.route.routeDigest,
@@ -5978,6 +6665,9 @@ class DirectLiveTextController {
       };
       this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
         requestShape,
+        ...(epistemicLedgerTurnBinding ? {
+          epistemicLedgerToolBinding: epistemicLedgerTurnBinding,
+        } : {}),
         directAttachmentSubmitPacket: attachmentSubmit.packet,
         directAttachmentTranscriptWitnesses: attachmentSubmit.packet.transcriptWitnesses,
         ...(contextResult ? {
@@ -6075,8 +6765,18 @@ class DirectLiveTextController {
       primaryThreadId: normalizeString(params.primaryThreadId || params.parentThreadId || handoffPacket.threadId, ""),
       handoffPacket,
       operatorAcceptance: params.operatorAcceptance,
+      artifactWorkThreadAuthorization:
+        params.artifactWorkThreadAuthorization,
       workerPrompt,
       contextRefs: params.contextRefs,
+      compiledAgentContextRef:
+        params.compiledAgentContextRef,
+      threadEnvironmentBindingRef:
+        params.threadEnvironmentBindingRef,
+      stepEnvironmentSnapshotRef:
+        params.stepEnvironmentSnapshotRef,
+      environmentSelection:
+        params.environmentSelection,
     });
     validateDirectWorkerStartTransition(transition);
     if (transition.startState !== "ready_to_start") {
@@ -6116,6 +6816,11 @@ class DirectLiveTextController {
       workerStartTransitionDigest: transition.transitionDigest,
       workerContextPacketId: transition.contextPacket.workerContextPacketId,
       workerContextPacketDigest: transition.contextPacket.contextPacketDigest,
+      workerStartAuthorityMode: transition.authorityMode,
+      artifactWorkThreadAuthorizationId:
+        transition.artifactWorkThreadAuthorization?.authorizationId || "",
+      artifactWorkThreadAuthorizationDigest:
+        transition.artifactWorkThreadAuthorization?.authorizationDigest || "",
       workThreadId: transition.workThreadId,
     }, context);
     let workerSession = this.sessionStore.readSession(startedThread.thread.id);
@@ -6218,6 +6923,9 @@ class DirectLiveTextController {
         workerContextPacketId: transition.contextPacket.workerContextPacketId,
         workerContextPacketDigest: transition.contextPacket.contextPacketDigest,
       },
+      compiledAgentContextRef:
+        transition.contextPacket
+          .compiledAgentContextRef,
     }, context);
     const result = buildDirectWorkerStartResult({
       projectId: transition.projectId,
@@ -6426,10 +7134,18 @@ class DirectLiveTextController {
     }
     if (obligationResult.obligations.length && !toolBlockedTextOnly) {
       const createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligationResult.obligations, project);
+      const ledgerOnly = obligationResult.obligations.every((obligation) =>
+        this.isEpistemicLedgerObligation(sessionId, turnId, obligation));
+      const agentRuntimeOnly = obligationResult.obligations.every((obligation) =>
+        this.isNativeSubAgentRuntimeObligation(obligation) || this.isReadOnlySubAgentStatusObligation(obligation));
       this.emitNotification(surfaceSession, "warning", {
         threadId: sessionId,
         turnId,
-        message: createdApprovalRequests
+        message: ledgerOnly
+          ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
+          : agentRuntimeOnly
+            ? "Direct launched or inspected native child-agent work and continued the provider turn."
+          : createdApprovalRequests
           ? "Direct live text detected a tool call. Local approval is required before local authority is used."
           : "Direct live text detected a tool call, but the required direct tool continuation evidence is not enabled.",
       });
@@ -6474,6 +7190,32 @@ class DirectLiveTextController {
       turn: turnSnapshot(finalTurn),
       result,
     };
+  }
+
+  async waitForTurnCompletion(params = {}) {
+    const sessionId = normalizeString(params.sessionId || params.threadId, "");
+    const turnId = normalizeString(params.turnId, "");
+    const turn = this.sessionStore.readTurn(sessionId, turnId);
+    if (!turn) {
+      const error = new Error(`Direct live text turn not found: ${turnId || "missing"}.`);
+      error.code = "direct_turn_not_found";
+      throw error;
+    }
+    const active = this.activeRuns.get(turnId);
+    if (active?.promise) return active.promise;
+    if (TERMINAL_TURN_STATES.has(turn.state)) {
+      return {
+        turn: turnSnapshot(turn),
+        result: null,
+        recoveredFromPersistence: true,
+      };
+    }
+    const error = new Error(
+      "Direct live text turn has no active runtime after restart.",
+    );
+    error.code = "direct_turn_runtime_interrupted";
+    error.turnState = turn.state;
+    throw error;
   }
 
   readThread(params = {}, context = {}) {
@@ -6779,5 +7521,6 @@ module.exports = {
   DirectLiveTextController,
   DirectLiveTextSurfaceSession,
   buildDirectLiveTextCapabilities,
+  composeImplementationToolBundleForRequest,
   modelEvidenceFor,
 };

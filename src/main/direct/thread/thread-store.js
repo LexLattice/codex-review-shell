@@ -17,6 +17,7 @@ const {
 } = require("./renderer-transcript-projection");
 const {
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
+  DIRECT_COMPILED_AGENT_TURN_POLICY_ID,
   DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID,
   DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
   DIRECT_FORK_START_POLICY_ID,
@@ -3503,18 +3504,26 @@ class DirectThreadStore {
       error.code = "source_projection_changed";
       throw error;
     }
-    const policyId = contextProjection
-      ? DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID
-      : DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID;
+    const compiledAgentContext = isPlainObject(input.compiledAgentContext)
+      ? input.compiledAgentContext
+      : null;
+    const policyId = compiledAgentContext
+      ? DIRECT_COMPILED_AGENT_TURN_POLICY_ID
+      : contextProjection
+        ? DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID
+        : DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID;
     const contextPack = buildContextPack({
       projectId,
       threadId,
       turnId,
-      purpose: "direct_text_turn",
+      purpose: compiledAgentContext
+        ? "direct_compiled_agent_turn"
+        : "direct_text_turn",
       policyId,
       contextProjection,
       contextItems,
       currentUserPrompt: preserveString(input.currentUserPrompt),
+      compiledAgentContext,
       governanceRefs: input.governanceRefs,
       maintenanceRefs: input.maintenanceRefs,
       maintenanceArtifacts: input.maintenanceArtifacts,
