@@ -72,6 +72,12 @@ assert.match(mainSource, /appExperience: publicAppExperience\(APP_EXPERIENCE\)/)
 assert.match(mainSource, /function requireWorldManagerStudioExperience/);
 assert.match(mainSource, /function requireDirectWorkbenchExperience/);
 assert.match(mainSource, /direct-workbench:activate-project/);
+const activationHandlerSource = mainSource.slice(mainSource.indexOf('ipcMain.handle("direct-workbench:activate-project"'));
+assert(
+  activationHandlerSource.indexOf("resolveDirectWorkbenchProjectActivationReplay") <
+    activationHandlerSource.indexOf("const config = await loadConfig()"),
+  "activation replay must be resolved before source freshness is checked",
+);
 assert.match(mainSource, /async function createDirectWorkbenchWindow/);
 assert.match(mainSource, /if \(DIRECT_WORKBENCH_MODE\)/);
 assert.match(

@@ -160,7 +160,10 @@ direct_workbench_project_directory@1
 
 The projection excludes `repoPath`, `localPath`, `linuxPath`, `windowsPath`,
 `sourceHome`, `sessionFilePath`, raw provider URLs, remote auth, and config
-mutation inputs.
+mutation inputs. `catalogRevision` nevertheless commits to an internal digest of
+the exact workspace, Codex runtime, and activation-binding configuration. A
+private authority change therefore invalidates inspected evidence without
+placing that authority-bearing value in the renderer projection.
 
 ## Activation Contract
 
@@ -173,7 +176,9 @@ targetProjectId
 expectedCatalogRevision
 ```
 
-The main process revalidates:
+The main process first resolves a known `clientActivationId` as a bounded replay
+from either the recorded source or target project. For a new activation it
+revalidates:
 
 1. the sender is the trusted Direct Workbench surface for `sourceProjectId`;
 2. the expected catalog revision is current;
@@ -187,7 +192,8 @@ Once accepted, main persists the selected project, tears down the old runtime,
 loads the target runtime using the existing activation epoch, and restores only
 the target project's configured thread binding. A failed load restores the prior
 selected-project record and attempts to restore its surface. Client activation
-IDs are idempotent and cannot be reused for a different target.
+IDs are idempotent across the surface reload and cannot be reused for a
+different target.
 
 ## State Rendering
 
@@ -208,9 +214,9 @@ Focused fixture coverage must prove:
 - WSL, Windows, and local substrate projections expose labels, not locators;
 - App Server, Direct text, and Direct implementation runtime bindings are
   distinguished;
-- stale revision, unknown target, active-turn, concurrent transition, and
-  client-ID reuse fail closed;
-- same request replay is idempotent;
+- stale revision, invisible authority change, unknown target, active-turn,
+  concurrent transition, and client-ID reuse fail closed;
+- same request replay is idempotent before and after the target surface reload;
 - renderer projections pass raw-exposure scanning;
 - the Electron surface switches between WSL and Windows fixture projects,
   restores the target binding, and renders the new authoritative selection with

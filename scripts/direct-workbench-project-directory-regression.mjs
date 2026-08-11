@@ -9,6 +9,7 @@ const {
   assertDirectWorkbenchProjectDirectoryRendererSafe,
   buildDirectWorkbenchProjectActivationReceipt,
   buildDirectWorkbenchProjectDirectory,
+  resolveDirectWorkbenchProjectActivationReplay,
   validateDirectWorkbenchProjectActivation,
 } = require("../src/main/direct/project/project-directory.js");
 
@@ -70,6 +71,15 @@ const config = {
         directTransport: "live-text",
         directTier: "text-only",
       },
+      laneBindings: [{
+        id: "binding_windows_default",
+        openOnProjectActivate: true,
+        codexThreadRef: {
+          threadId: "windows-provider-thread-private",
+          sourceHome: "C:\\Users\\Rose\\.codex",
+          sessionFilePath: "C:\\Users\\Rose\\.codex\\sessions\\private.jsonl",
+        },
+      }],
     }),
     project({
       id: "project_local",
@@ -102,6 +112,7 @@ assert.equal(directory.projects[0].restore.available, true);
 assert.equal(directory.projects[1].substrate.workspaceKind, "windows");
 assert.equal(directory.projects[1].displayName, "Unnamed project");
 assert.equal(directory.projects[1].runtime.runtimePath, "direct-text");
+assert.equal(directory.projects[1].restore.available, true);
 assert.equal(directory.projects[1].selectable, true);
 assert.equal(directory.projects[2].substrate.workspaceKind, "local");
 assert.equal(directory.projects[2].runtime.runtimePath, "direct-implementation");
@@ -115,6 +126,7 @@ for (const secret of [
   "C:\\Users\\Rose\\private-windows-project",
   "/tmp/private-local-project",
   "provider-thread-private",
+  "windows-provider-thread-private",
   "/home/rose/.codex/sessions/private.jsonl",
   "private-token",
   "Windows context menu at C:\\Users\\Rose\\private-windows-project",
@@ -127,6 +139,30 @@ const sameDirectoryDifferentTime = buildDirectWorkbenchProjectDirectory(config, 
   activeTurnCounts: {},
 });
 assert.equal(sameDirectoryDifferentTime.catalogRevision, directory.catalogRevision);
+
+for (const mutatePrivateAuthority of [
+  (next) => { next.projects[1].workspace.windowsPath = "D:\\private-relocated-workspace"; },
+  (next) => { next.projects[1].surfaceBinding.codex.remoteAuth.token = "rotated-private-token"; },
+  (next) => { next.projects[1].laneBindings[0].codexThreadRef.threadId = "different-private-thread"; },
+]) {
+  const changedConfig = structuredClone(config);
+  mutatePrivateAuthority(changedConfig);
+  const changedDirectory = buildDirectWorkbenchProjectDirectory(changedConfig, {
+    generatedAt: "2026-08-11T08:00:00.000Z",
+    activeTurnCounts: {},
+  });
+  assert.deepEqual(changedDirectory.projects, directory.projects);
+  assert.notEqual(changedDirectory.catalogRevision, directory.catalogRevision);
+  assert.throws(
+    () => validateDirectWorkbenchProjectActivation(changedDirectory, {
+      clientActivationId: "client_stale_private_authority",
+      sourceProjectId: "project_wsl",
+      targetProjectId: "project_windows",
+      expectedCatalogRevision: directory.catalogRevision,
+    }),
+    (error) => error?.code === "project_catalog_revision_stale",
+  );
+}
 
 const accepted = validateDirectWorkbenchProjectActivation(directory, {
   clientActivationId: "client_switch_windows",
@@ -196,5 +232,39 @@ assert.equal(receipt.ok, true);
 assert.equal(receipt.status, "accepted");
 assert.equal(receipt.rawPathExposed, false);
 assert.equal(JSON.stringify(receipt).includes("private"), false);
+
+const completedReceipt = buildDirectWorkbenchProjectActivationReceipt({
+  ...accepted,
+  ok: true,
+  status: "completed",
+  completedAt: "2026-08-11T08:06:00.000Z",
+});
+const operations = new Map([[
+  accepted.clientActivationId,
+  { ...accepted, receipt: completedReceipt },
+]]);
+const postCompletionReplay = resolveDirectWorkbenchProjectActivationReplay(
+  operations,
+  accepted.targetProjectId,
+  accepted,
+);
+assert.equal(postCompletionReplay.status, "completed");
+assert.equal(postCompletionReplay.duplicate, true);
+assert.throws(
+  () => resolveDirectWorkbenchProjectActivationReplay(
+    operations,
+    accepted.targetProjectId,
+    { ...accepted, targetProjectId: "project_local" },
+  ),
+  (error) => error?.code === "client_activation_id_reused",
+);
+assert.throws(
+  () => resolveDirectWorkbenchProjectActivationReplay(
+    operations,
+    "project_local",
+    accepted,
+  ),
+  (error) => error?.code === "project_activation_source_stale",
+);
 
 console.log("Direct Workbench project directory regression passed.");

@@ -113,6 +113,27 @@ function restoreProjection(project = {}) {
   };
 }
 
+function activationAuthorityDigest(project = {}) {
+  return digest({
+    projectId: normalizeString(project.id, ""),
+    repoPath: normalizeString(project.repoPath, ""),
+    workspace: isPlainObject(project.workspace) ? project.workspace : {},
+    codexRuntime: isPlainObject(project.surfaceBinding?.codex) ? project.surfaceBinding.codex : {},
+    laneBindings: Array.isArray(project.laneBindings) ? project.laneBindings : [],
+    chatActivation: {
+      activeChatThreadId: normalizeString(project.activeChatThreadId, ""),
+      lastActiveThreadId: normalizeString(project.lastActiveThreadId, ""),
+      lastActiveBindingId: normalizeString(project.lastActiveBindingId, ""),
+      threads: (Array.isArray(project.chatThreads) ? project.chatThreads : []).map((thread) => ({
+        id: normalizeString(thread?.id, ""),
+        role: normalizeString(thread?.role, ""),
+        isPrimary: thread?.isPrimary === true,
+        archived: thread?.archived === true,
+      })),
+    },
+  });
+}
+
 function normalizedTransition(input = {}) {
   const state = PROJECT_TRANSITION_STATES.has(input.state) ? input.state : "idle";
   return {
@@ -133,6 +154,9 @@ function activeTurnCount(input = {}, projectId = "") {
 
 function buildDirectWorkbenchProjectDirectory(config = {}, options = {}) {
   const projects = Array.isArray(config.projects) ? config.projects.filter(isPlainObject) : [];
+  const projectsById = new Map(
+    projects.map((project) => [normalizeString(project.id, ""), project]),
+  );
   const activeProjectId = normalizeString(
     options.activeProjectId,
     normalizeString(config.selectedProjectId, projects[0]?.id || ""),
@@ -182,6 +206,7 @@ function buildDirectWorkbenchProjectDirectory(config = {}, options = {}) {
       substrate: row.substrate,
       runtime: row.runtime,
       restore: row.restore,
+      activationAuthorityDigest: activationAuthorityDigest(projectsById.get(row.projectId)),
     })),
   };
   const projection = {
@@ -246,6 +271,30 @@ function validateDirectWorkbenchProjectActivation(directory = {}, request = {}) 
   };
 }
 
+function resolveDirectWorkbenchProjectActivationReplay(operations, authorityProjectId, request = {}) {
+  const clientActivationId = normalizeString(request.clientActivationId, "");
+  const existing = clientActivationId && operations instanceof Map
+    ? operations.get(clientActivationId)
+    : null;
+  if (!existing) return null;
+  const sourceProjectId = normalizeString(request.sourceProjectId, "");
+  const targetProjectId = normalizeString(request.targetProjectId, "");
+  if (existing.sourceProjectId !== sourceProjectId || existing.targetProjectId !== targetProjectId) {
+    throw projectDirectoryError(
+      "client_activation_id_reused",
+      "The client activation id already belongs to another project transition.",
+    );
+  }
+  const authority = normalizeString(authorityProjectId, "");
+  if (authority !== existing.sourceProjectId && authority !== existing.targetProjectId) {
+    throw projectDirectoryError(
+      "project_activation_source_stale",
+      "The activation replay does not belong to the current Direct Workbench project.",
+    );
+  }
+  return { ...existing.receipt, duplicate: true };
+}
+
 function buildDirectWorkbenchProjectActivationReceipt(input = {}) {
   return {
     schema: DIRECT_WORKBENCH_PROJECT_ACTIVATION_RECEIPT_SCHEMA,
@@ -298,5 +347,6 @@ module.exports = {
   assertDirectWorkbenchProjectDirectoryRendererSafe,
   buildDirectWorkbenchProjectActivationReceipt,
   buildDirectWorkbenchProjectDirectory,
+  resolveDirectWorkbenchProjectActivationReplay,
   validateDirectWorkbenchProjectActivation,
 };

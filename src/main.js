@@ -136,6 +136,7 @@ const {
 const {
   buildDirectWorkbenchProjectActivationReceipt,
   buildDirectWorkbenchProjectDirectory,
+  resolveDirectWorkbenchProjectActivationReplay,
   validateDirectWorkbenchProjectActivation,
 } = require("./main/direct/project/project-directory");
 const {
@@ -11749,40 +11750,31 @@ ipcMain.handle("direct-workbench:project-directory", async (event) => {
 ipcMain.handle("direct-workbench:activate-project", async (event, payload) => {
   const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:activate-project");
   requireDirectWorkbenchExperience("direct-workbench:activate-project");
-  const config = await loadConfig();
   const sourceProjectId = normalizeString(payload?.sourceProjectId, "");
   const targetProjectId = normalizeString(payload?.targetProjectId, "");
   const clientActivationId = normalizeString(payload?.clientActivationId, "");
+  const replayReceipt = resolveDirectWorkbenchProjectActivationReplay(
+    directWorkbenchProjectActivationOperations,
+    authority.projectId,
+    { clientActivationId, sourceProjectId, targetProjectId },
+  );
+  if (replayReceipt) return replayReceipt;
+  const config = await loadConfig();
   if (sourceProjectId !== normalizeString(authority.projectId, "") || sourceProjectId !== config.selectedProjectId) {
     const error = new Error("The Direct Workbench project source is stale.");
     error.code = "project_activation_source_stale";
     throw error;
   }
-  const existing = directWorkbenchProjectActivationOperations.get(clientActivationId);
-  if (existing) {
-    if (existing.sourceProjectId !== sourceProjectId || existing.targetProjectId !== targetProjectId) {
-      const error = new Error("The client activation id already belongs to another project transition.");
-      error.code = "client_activation_id_reused";
-      throw error;
-    }
-    return { ...existing.receipt, duplicate: true };
-  }
   const directory = await directWorkbenchProjectDirectoryForSender(event.sender, {
     config,
     activeProjectId: sourceProjectId,
   });
-  const concurrentExisting = directWorkbenchProjectActivationOperations.get(clientActivationId);
-  if (concurrentExisting) {
-    if (
-      concurrentExisting.sourceProjectId !== sourceProjectId ||
-      concurrentExisting.targetProjectId !== targetProjectId
-    ) {
-      const error = new Error("The client activation id already belongs to another project transition.");
-      error.code = "client_activation_id_reused";
-      throw error;
-    }
-    return { ...concurrentExisting.receipt, duplicate: true };
-  }
+  const concurrentReplayReceipt = resolveDirectWorkbenchProjectActivationReplay(
+    directWorkbenchProjectActivationOperations,
+    authority.projectId,
+    { clientActivationId, sourceProjectId, targetProjectId },
+  );
+  if (concurrentReplayReceipt) return concurrentReplayReceipt;
   if (directWorkbenchProjectTransition.state === "activating") {
     const error = new Error("Another Direct Workbench project activation is already in progress.");
     error.code = "project_activation_in_progress";
