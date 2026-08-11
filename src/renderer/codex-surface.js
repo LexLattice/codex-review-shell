@@ -2677,6 +2677,8 @@ async function refreshDirectEpistemicProjection(options = {}) {
   try {
     const projection = await bridge.readDirectEpistemicSnapshot({
       sessionId: options.sessionId || state.directEpistemicThreadSelection || "",
+      targetSessionId: state.threadId || "",
+      importId: state.directEpistemicLastPreview?.importId || "",
     });
     if (requestGeneration !== state.directEpistemicRequestGeneration) return state.directEpistemicProjection;
     if ((project?.id || "") !== requestProjectId) {
@@ -2778,6 +2780,24 @@ async function materializeDirectEpistemicPreview(subjectKind, port) {
       oRevisionId: summary?.oRevision?.oRevisionId || "",
       eRevisionId: summary?.eRevision?.eRevisionId || "",
     }), (result) => { state.directEpistemicLastPreview = result || null; });
+}
+
+function admitDirectEpistemicPreview(preview) {
+  const targetSessionId = state.threadId || "";
+  if (
+    !preview?.importId ||
+    !targetSessionId ||
+    typeof bridge?.admitDirectEpistemicContextDelivery !== "function"
+  ) return Promise.resolve(null);
+  const suffix = createClientTurnRequestId().replace(/^client_turn_/, "");
+  const actionKey = `context-delivery:${targetSessionId}:${preview.importId}`;
+  return runDirectEpistemicAction(actionKey, () =>
+    bridge.admitDirectEpistemicContextDelivery({
+      targetSessionId,
+      importId: preview.importId,
+      importDigest: preview.importDigest,
+      clientRequestId: `client_delivery_${suffix}`,
+    }));
 }
 
 function openRuntimeDrawer(tab = "runtime") {
@@ -3603,6 +3623,11 @@ function shortEpistemicId(value) {
   return `${string.slice(0, 12)}…${string.slice(-6)}`;
 }
 
+function epistemicLifecycleLabel(value, fallback = "—") {
+  const label = String(value || "").trim();
+  return label ? label.replaceAll("_", " ") : fallback;
+}
+
 function latestDirectEpistemicPreview(repository, thread) {
   const local = state.directEpistemicLastPreview;
   const repositorySubjectId = repository?.subject?.ref?.id || repository?.subject?.subjectId || "";
@@ -3833,6 +3858,12 @@ function directEpistemicDrawerSections() {
 
   const previewSelection = latestDirectEpistemicPreview(repository, thread);
   const latestPreview = previewSelection?.preview;
+  const deliverySurface = projection.contextDelivery || {};
+  const latestDelivery = deliverySurface.latest || null;
+  const deliveryMatchesPreview = Boolean(
+    latestPreview?.importId &&
+      latestDelivery?.importRef?.id === latestPreview.importId,
+  );
   if (latestPreview) {
     const records = Array.isArray(latestPreview.records) ? latestPreview.records : [];
     sections.push(drawerSection("Latest materialized context preview", [
@@ -3846,8 +3877,12 @@ function directEpistemicDrawerSections() {
       ["purpose", latestPreview.purpose || "—"],
       ["records", latestPreview.recordCount ?? records.length],
       ["freshness", latestPreview.freshness || "unknown"],
-      ["provider delivery", "none"],
-      ["Direct turn admission", "none"],
+      ["provider transport", deliveryMatchesPreview && latestDelivery.state === "provider_transport_attempted"
+        ? "attempt witnessed"
+        : "none"],
+      ["Direct turn admission", deliveryMatchesPreview
+        ? epistemicLifecycleLabel(latestDelivery.state)
+        : "none"],
       ["O witness", shortEpistemicId(latestPreview.oRevisionRef?.id)],
       ["E witness", shortEpistemicId(latestPreview.eRevisionRef?.id)],
       ["digest", shortEpistemicId(latestPreview.importDigest)],
@@ -3863,6 +3898,54 @@ function directEpistemicDrawerSections() {
         ].filter(Boolean).join(" · "),
       ])));
     }
+    const targetAvailable = deliverySurface.targetAvailable === true;
+    const pendingState = deliveryMatchesPreview && [
+      "admitted",
+      "claimed_for_turn",
+      "prepared_for_provider",
+    ].includes(latestDelivery.state);
+    const actionKey = `context-delivery:${deliverySurface.targetSessionId || state.threadId}:${latestPreview.importId}`;
+    const handoff = drawerSection("Next-turn context handoff", [
+      ["status", deliveryMatchesPreview
+        ? epistemicLifecycleLabel(latestDelivery.state)
+        : "not admitted"],
+      ["target task", shortEpistemicId(deliverySurface.targetSessionId)],
+      ["target role", deliverySurface.targetRoleLane || "unknown"],
+      ["target workthread", shortEpistemicId(deliverySurface.targetWorkThreadId)],
+      ["consumption", epistemicLifecycleLabel(
+        deliverySurface.automaticConsumption,
+        "next initial Direct turn",
+      )],
+      ["transport witness", deliveryMatchesPreview && latestDelivery.state === "provider_transport_attempted"
+        ? `attempt ${latestDelivery.attempt || 1}`
+        : "not yet witnessed"],
+      ["authority", "quoted evidence only · no capability grant"],
+      ["renderer text accepted", deliverySurface.rendererProjectionTextAccepted ? "yes" : "no"],
+      ["turn", deliveryMatchesPreview ? shortEpistemicId(latestDelivery.turnId) : "—"],
+      ["context build", deliveryMatchesPreview ? shortEpistemicId(latestDelivery.contextBuildId) : "—"],
+      ["request manifest", deliveryMatchesPreview ? shortEpistemicId(latestDelivery.requestManifestId) : "—"],
+      ["transition note", deliveryMatchesPreview
+        ? latestDelivery.reason || "none"
+        : "none"],
+      ["error", deliveryMatchesPreview
+        ? latestDelivery.errorCode || "none"
+        : "none"],
+    ]);
+    handoff.appendChild(refreshButton(
+      pendingState ? "Admitted for next Direct turn" : "Admit this preview for next Direct turn",
+      () => admitDirectEpistemicPreview(latestPreview),
+      {
+        actionKey,
+        busy: state.directEpistemicActiveActions.has(actionKey),
+        disabled: directEpistemicBusy() || !targetAvailable || pendingState,
+        description: !targetAvailable
+          ? "Open a Direct task in this project before admitting context."
+          : pendingState
+            ? "This one-shot exact binding is already waiting for or entering its target turn."
+            : "Create a durable one-shot admission. The renderer supplies only exact IDs; the main process builds the provider projection.",
+      },
+    ));
+    sections.push(handoff);
   }
   return sections;
 }
@@ -8681,6 +8764,9 @@ async function startCodexTurn(text, options = {}) {
     }
     rememberPromptTurn(turnId, text, options.retryCount || 0);
     refreshDirectSurfaceProjection({ render: false }).catch(() => {});
+    if (state.directEpistemicProjection) {
+      refreshDirectEpistemicProjection({ force: true }).catch(() => {});
+    }
     renderRuntimeConstitution();
   }
   return result;
@@ -8994,6 +9080,9 @@ function handleNotification(method, params) {
     if (!params?.willRetry) {
       clearPrimaryTurnActivityState();
       renderRuntimeConstitution();
+      if (state.directEpistemicProjection) {
+        refreshDirectEpistemicProjection({ force: true }).catch(() => {});
+      }
     }
     const error = params?.error || {};
     const message = [
@@ -9101,6 +9190,9 @@ function handleNotification(method, params) {
       renderTurnCompletionNotice(completedTurnId, params?.turn || {});
       refreshDirectSurfaceProjection({ render: false }).catch(() => {});
       refreshDirectThreadList({ showErrors: false }).catch(() => {});
+      if (state.directEpistemicProjection) {
+        refreshDirectEpistemicProjection({ force: true }).catch(() => {});
+      }
       scheduleQueuedPromptDrain("turn-completed");
     }
     return;

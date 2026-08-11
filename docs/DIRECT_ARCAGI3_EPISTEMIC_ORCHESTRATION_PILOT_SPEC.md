@@ -417,3 +417,9 @@ live provider evaluation of Luna quality and model-catalog preflight
 These are not hidden behind a generic “continuous observer” claim. The present
 pilot proves the shared language, storage, revision, port, purpose-identity,
 renderer-safety, and actual-repository boundaries first.
+
+The next vertical slice is governed by
+`docs/DIRECT_EPISTEMIC_CONTEXT_DELIVERY_SPEC.md`. It admits one exact materialized
+context result into one exact Direct initial turn while keeping preview,
+admission, provider preparation, and provider delivery as distinct durable
+states.

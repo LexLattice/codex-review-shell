@@ -353,6 +353,8 @@ if (directWorkbenchPreload) {
       ipcRenderer.invoke("direct-epistemic:transcribe-thread", payload),
     importDirectEpistemicContext: (payload = {}) =>
       ipcRenderer.invoke("direct-epistemic:import-context", payload),
+    admitDirectEpistemicContextDelivery: (payload = {}) =>
+      ipcRenderer.invoke("direct-epistemic:admit-context-delivery", payload),
     onDirectWorkbenchProjectDirectoryEvent: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("direct-workbench:project-directory-event", listener);

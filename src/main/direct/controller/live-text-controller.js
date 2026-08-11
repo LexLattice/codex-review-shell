@@ -774,6 +774,25 @@ function appendProviderHostedTools(toolNames = [], status = {}) {
   ].map((name) => normalizeString(name, "")).filter(Boolean))];
 }
 
+function implementationInitialPolicyCandidateToolNames(status = {}, prompt = "") {
+  return appendProviderHostedTools(
+    appendExternalPromotedTools(
+      appendNativeSubAgentRuntimeTools(
+        appendReadOnlySubAgentStatusTools(
+          appendSafeResidentUtilities(
+            implementationInitialToolNames(status, prompt),
+            status,
+          ),
+          status,
+        ),
+        status,
+      ),
+      status,
+    ),
+    status,
+  );
+}
+
 function isSafeResidentUtilityToolName(toolName = "") {
   return SAFE_RESIDENT_UTILITY_TOOL_SET.has(normalizeString(toolName, ""));
 }
@@ -1176,7 +1195,7 @@ function composeImplementationToolBundleForRequest(input = {}) {
   const sessionId = normalizeString(input.sessionId || input.threadId, "direct_session");
   const turnId = normalizeString(input.turnId, "turn");
   const projectId = normalizeString(input.projectId, "project_direct");
-  const toolNames = Array.isArray(input.toolNames) ? input.toolNames : ["read_file", "apply_patch", "run_command"];
+  const toolNames = Array.isArray(input.toolNames) ? input.toolNames : [];
   const contextResult = isPlainObject(input.contextResult) ? input.contextResult : null;
   const controlledRoutingResult = isPlainObject(input.controlledRoutingResult) ? input.controlledRoutingResult : null;
   const workThreadId = normalizeString(
@@ -1538,6 +1557,14 @@ class DirectLiveTextController {
       typeof options.epistemicLedgerToolInvoker === "function"
         ? options.epistemicLedgerToolInvoker
         : null;
+    this.epistemicContextDeliveryResolver =
+      typeof options.epistemicContextDeliveryResolver === "function"
+        ? options.epistemicContextDeliveryResolver
+        : null;
+    this.epistemicContextDeliveryRecorder =
+      typeof options.epistemicContextDeliveryRecorder === "function"
+        ? options.epistemicContextDeliveryRecorder
+        : null;
     this.fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
     this.workspaceRequest = typeof options.workspaceRequest === "function" ? options.workspaceRequest : null;
     this.endpoint = normalizeString(options.endpoint, "");
@@ -1556,6 +1583,29 @@ class DirectLiveTextController {
     this.toolDecisionResults = new Map();
     this.forkStartLocks = new Map();
     this.epistemicLedgerTurnBindings = new Map();
+    this.closed = false;
+  }
+
+  close(reason = "Direct live text runtime closed.") {
+    if (this.closed) return { closed: true, abortedRunCount: 0 };
+    this.closed = true;
+    this.epistemicContextDeliveryResolver = null;
+    this.epistemicContextDeliveryRecorder = null;
+    let abortedRunCount = 0;
+    for (const active of this.activeRuns.values()) {
+      if (!active?.abortController?.signal?.aborted) {
+        active.abortController.abort(reason);
+        abortedRunCount += 1;
+      }
+    }
+    return { closed: true, abortedRunCount };
+  }
+
+  assertOpen() {
+    if (!this.closed) return;
+    const error = new Error("Direct live text runtime is closed.");
+    error.code = "direct_live_text_controller_closed";
+    throw error;
   }
 
   epistemicLedgerTurnKey(sessionId, turnId) {
@@ -1921,6 +1971,7 @@ class DirectLiveTextController {
   }
 
   assertReady(project = {}) {
+    this.assertOpen();
     const status = this.statusForProject(project);
     if (status.status !== "ready") {
       const error = new Error(liveTextReadinessErrorMessage(status));
@@ -6286,6 +6337,18 @@ class DirectLiveTextController {
       error.code = "direct_compiled_agent_renderer_instruction_rejected";
       throw error;
     }
+    if (
+      typeof params.epistemicContextDelivery !== "undefined" ||
+      typeof params.epistemicContextProjection !== "undefined" ||
+      typeof params.providerProjectionText !== "undefined"
+    ) {
+      const error = new Error(
+        "Direct turns do not accept renderer-supplied epistemic context projections.",
+      );
+      error.code =
+        "direct_epistemic_context_delivery_renderer_projection_rejected";
+      throw error;
+    }
     const compiledAgentContextRef = isPlainObject(
       params.compiledAgentContextRef,
     )
@@ -6309,6 +6372,7 @@ class DirectLiveTextController {
         sessionId,
         projectId: normalizeString(project.id, ""),
       });
+      this.assertOpen();
       if (
         !isPlainObject(compiledAgentContext) ||
         compiledAgentContext.schema !== "direct_compiled_agent_context@1" ||
@@ -6372,22 +6436,7 @@ class DirectLiveTextController {
     const implementationTier = directLiveTier &&
       binding.directTier === "implementation-lane";
     const implementationToolNames = implementationTier
-      ? appendProviderHostedTools(
-          appendExternalPromotedTools(
-            appendNativeSubAgentRuntimeTools(
-              appendReadOnlySubAgentStatusTools(
-                appendSafeResidentUtilities(
-                  implementationInitialToolNames(status, prompt),
-                  status,
-                ),
-                status,
-              ),
-              status,
-            ),
-            status,
-          ),
-          status,
-        )
+      ? implementationInitialPolicyCandidateToolNames(status, prompt)
       : [];
     const useRecentDialogue = compiledAgentContext
       ? false
@@ -6519,6 +6568,7 @@ class DirectLiveTextController {
     let contextResult = null;
     let controlledRoutingResult = null;
     let requestShape = null;
+    let epistemicContextDeliveryBinding = null;
     try {
       if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForTextTurn === "function") {
         this.indexDirectThreadStoreSession(session.sessionId);
@@ -6542,6 +6592,29 @@ class DirectLiveTextController {
         ].includes(normalizeString(session.agentRole, ""))
           ? normalizeString(session.agentRole, "")
           : "implementation_worker";
+        const deliveryRoleLane = normalizeString(
+          session.agentRole,
+          "direct_assistant",
+        );
+        const deliveryWorkThreadId = normalizeString(
+          controlledRoutingResult?.route?.selectedWorkThreadId ||
+            workThreadCarrier.workThreadId ||
+            session.workThreadId,
+          "",
+        );
+        if (this.epistemicContextDeliveryResolver) {
+          const claimedDelivery = await this.epistemicContextDeliveryResolver({
+            projectId: session.projectId,
+            sessionId: session.sessionId,
+            turnId: turn.turnId,
+            roleLane: deliveryRoleLane,
+            workThreadId: deliveryWorkThreadId,
+          });
+          this.assertOpen();
+          if (claimedDelivery?.projection) {
+            epistemicContextDeliveryBinding = claimedDelivery;
+          }
+        }
         epistemicLedgerTurnBinding = implementationTier && controlledRoutingResult
           ? await this.resolveEpistemicLedgerTurnBinding({
               roleLane: roleLedgerLane,
@@ -6557,6 +6630,7 @@ class DirectLiveTextController {
               compiledAgentContext,
             })
           : null;
+        this.assertOpen();
         this.rememberEpistemicLedgerTurnBinding(
           session.sessionId,
           turn.turnId,
@@ -6614,7 +6688,43 @@ class DirectLiveTextController {
             ...(controlledRoutingResult?.route?.bridgeInformationRef ? [controlledRoutingResult.route.bridgeInformationRef] : []),
           ],
           compiledAgentContext,
+          epistemicContextDelivery:
+            epistemicContextDeliveryBinding?.projection || null,
         });
+        if (
+          epistemicContextDeliveryBinding &&
+          this.epistemicContextDeliveryRecorder
+        ) {
+          const preparedReceipt = await this.epistemicContextDeliveryRecorder({
+            projectId: session.projectId,
+            admissionId:
+              epistemicContextDeliveryBinding.admission.admissionId,
+            expectedState: "claimed_for_turn",
+            state: "prepared_for_provider",
+            turnId: turn.turnId,
+            contextBuildId: contextResult.contextPack.contextBuildId,
+            requestManifestId:
+              contextResult.requestManifest.requestManifestId,
+            providerInputProjectionId:
+              contextResult.providerInput.projection.providerInputProjectionId,
+            providerInputTextHash:
+              contextResult.providerInput.projection.providerInputTextHash,
+            reason:
+              "The admitted projection was persisted in the exact context pack and request manifest.",
+          });
+          this.assertOpen();
+          epistemicContextDeliveryBinding = {
+            ...epistemicContextDeliveryBinding,
+            preparedReceipt,
+            contextBuildId: contextResult.contextPack.contextBuildId,
+            requestManifestId:
+              contextResult.requestManifest.requestManifestId,
+            providerInputProjectionId:
+              contextResult.providerInput.projection.providerInputProjectionId,
+            providerInputTextHash:
+              contextResult.providerInput.projection.providerInputTextHash,
+          };
+        }
         requestBody = implementationTier
           ? buildImplementationToolInitialRequest({
               profileDoc: this.profileDoc,
@@ -6650,6 +6760,16 @@ class DirectLiveTextController {
           providerInputShapeHash: contextResult.providerInput.projection.providerInputShapeHash,
           rawRequestBodyStored: false,
           previousResponseIdUsed: false,
+          ...(epistemicContextDeliveryBinding ? {
+            epistemicContextDeliveryAdmissionId:
+              epistemicContextDeliveryBinding.admission.admissionId,
+            epistemicContextDeliveryImportId:
+              epistemicContextDeliveryBinding.admission.importRef.id,
+            epistemicContextDeliveryProjectionId:
+              epistemicContextDeliveryBinding.projection.projectionId,
+            epistemicContextDeliveryState: "prepared_for_provider",
+            epistemicContextRendererTextAccepted: false,
+          } : {}),
         } : {}),
         ...(compiledAgentContext ? {
           compiledAgentContextId:
@@ -6677,6 +6797,15 @@ class DirectLiveTextController {
           contextBuildId: contextResult.contextPack.contextBuildId,
           requestManifestId: contextResult.requestManifest.requestManifestId,
           contextSummary: contextResult.rendererSafeSummary,
+          ...(epistemicContextDeliveryBinding ? {
+            epistemicContextDelivery: {
+              admissionRef: epistemicContextDeliveryBinding.admission.ref,
+              importRef: epistemicContextDeliveryBinding.admission.importRef,
+              projectionRef: epistemicContextDeliveryBinding.projection.ref,
+              state: "prepared_for_provider",
+              grantsAuthority: false,
+            },
+          } : {}),
         } : {}),
         ...(controlledRoutingResult ? {
           controlledRoutingSliceId: controlledRoutingResult.route.routeId,
@@ -6684,6 +6813,27 @@ class DirectLiveTextController {
         } : {}),
       });
     } catch (error) {
+      if (
+        epistemicContextDeliveryBinding?.admission?.admissionId &&
+        this.epistemicContextDeliveryRecorder
+      ) {
+        try {
+          await this.epistemicContextDeliveryRecorder({
+            projectId: session.projectId,
+            admissionId:
+              epistemicContextDeliveryBinding.admission.admissionId,
+            expectedStates: ["claimed_for_turn", "prepared_for_provider"],
+            state: "failed",
+            turnId: turn.turnId,
+            errorCode: normalizeString(
+              error?.code,
+              "direct_epistemic_context_delivery_pre_transport_failed",
+            ),
+            reason:
+              "The turn failed before the admitted context could reach provider transport.",
+          });
+        } catch {}
+      }
       this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "failed", {
         error: {
           code: error.code || "direct_turn_pre_transport_failed",
@@ -6738,6 +6888,7 @@ class DirectLiveTextController {
       surfaceSession,
       userItem,
       abortController,
+      epistemicContextDeliveryBinding,
     }).finally(() => {
       const active = this.activeRuns.get(turn.turnId);
       if (active?.promise === run) this.activeRuns.delete(turn.turnId);
@@ -6966,6 +7117,7 @@ class DirectLiveTextController {
       surfaceSession,
       userItem,
       abortController,
+      epistemicContextDeliveryBinding,
     } = options;
     let terminalSent = false;
     const assistantItem = { id: `${turnId}_assistant`, type: "agentMessage", turnId, text: "" };
@@ -7017,7 +7169,49 @@ class DirectLiveTextController {
         });
       }
     };
+    let epistemicContextDeliveryRecorded = false;
     const callerLifecycle = (event) => {
+      if (
+        event.phase === "request_attempt" &&
+        epistemicContextDeliveryBinding &&
+        !epistemicContextDeliveryRecorded
+      ) {
+        if (!this.epistemicContextDeliveryRecorder) {
+          const error = new Error(
+            "Direct epistemic context delivery recorder is unavailable.",
+          );
+          error.code =
+            "direct_epistemic_context_delivery_recorder_unavailable";
+          throw error;
+        }
+        const receipt = this.epistemicContextDeliveryRecorder({
+          projectId: project.id,
+          admissionId:
+            epistemicContextDeliveryBinding.admission.admissionId,
+          expectedState: "prepared_for_provider",
+          state: "provider_transport_attempted",
+          turnId,
+          contextBuildId: epistemicContextDeliveryBinding.contextBuildId,
+          requestManifestId:
+            epistemicContextDeliveryBinding.requestManifestId,
+          providerInputProjectionId:
+            epistemicContextDeliveryBinding.providerInputProjectionId,
+          providerInputTextHash:
+            epistemicContextDeliveryBinding.providerInputTextHash,
+          attempt: Number(event.attempt || 1),
+          reason:
+            "Provider transport began with the exact persisted input projection.",
+        });
+        if (receipt && typeof receipt.then === "function") {
+          const error = new Error(
+            "Direct provider-attempt delivery recording must be synchronous.",
+          );
+          error.code =
+            "direct_epistemic_context_delivery_recorder_async_unsupported";
+          throw error;
+        }
+        epistemicContextDeliveryRecorded = true;
+      }
       if (event.phase === "streaming") {
         this.sessionStore.updateTurnState(sessionId, turnId, "streaming", {
           streamStartedAt: event.at,
@@ -7058,6 +7252,35 @@ class DirectLiveTextController {
           requestBody,
         })
       : await runTextOnlyDirectProbe(probeOptions);
+    if (
+      epistemicContextDeliveryBinding &&
+      !epistemicContextDeliveryRecorded &&
+      this.epistemicContextDeliveryRecorder
+    ) {
+      try {
+        this.epistemicContextDeliveryRecorder({
+          projectId: project.id,
+          admissionId:
+            epistemicContextDeliveryBinding.admission.admissionId,
+          expectedState: "prepared_for_provider",
+          state: "failed",
+          turnId,
+          contextBuildId: epistemicContextDeliveryBinding.contextBuildId,
+          requestManifestId:
+            epistemicContextDeliveryBinding.requestManifestId,
+          providerInputProjectionId:
+            epistemicContextDeliveryBinding.providerInputProjectionId,
+          providerInputTextHash:
+            epistemicContextDeliveryBinding.providerInputTextHash,
+          errorCode:
+            result?.terminal?.error?.code ||
+            result?.error?.code ||
+            "direct_epistemic_context_delivery_transport_not_started",
+          reason:
+            "Provider transport did not reach a request attempt.",
+        });
+      } catch {}
+    }
     this.sessionStore.writeDiagnostic(sessionId, "direct_live_text_turn", {
       ...result.diagnostic,
       clientTurnRequestId,
@@ -7525,5 +7748,6 @@ module.exports = {
   DirectLiveTextSurfaceSession,
   buildDirectLiveTextCapabilities,
   composeImplementationToolBundleForRequest,
+  implementationInitialPolicyCandidateToolNames,
   modelEvidenceFor,
 };

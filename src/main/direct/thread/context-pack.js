@@ -24,6 +24,9 @@ const {
 const {
   validateOperationalMetaContextBinding,
 } = require("../worldmanager/semantic-context-kernel");
+const {
+  validateContextDeliveryProjection,
+} = require("../epistemic/context-delivery");
 
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND = "context_recent_dialogue";
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_VERSION = "context_recent_dialogue@1";
@@ -816,6 +819,7 @@ function buildContextPack({
   agentMemoryContextProjection = null,
   managerGraphContextRuntime = null,
   compiledAgentContext = null,
+  epistemicContextDelivery = null,
   nowMs = Date.now(),
 } = {}) {
   const safeProjectId = normalizeString(projectId, "");
@@ -1137,6 +1141,53 @@ function buildContextPack({
     });
   }
   mergeCounts(omittedCounts, agentContextSources.omittedCounts);
+  if (epistemicContextDelivery) {
+    validateContextDeliveryProjection(epistemicContextDelivery, {
+      projectId: safeProjectId,
+      sessionId: safeThreadId,
+      turnId: safeTurnId,
+    });
+    const epistemicContextText = preserveString(
+      epistemicContextDelivery.providerProjectionText,
+    );
+    if (blockingRawExposureFindings(epistemicContextText).length) {
+      const error = new Error(
+        "Direct epistemic context delivery failed context redaction.",
+      );
+      error.code = "direct_epistemic_context_delivery_redaction_failed";
+      throw error;
+    }
+    messages.push({
+      role: "user",
+      authority: "epistemic-context-evidence",
+      quotedEvidence: true,
+      text: epistemicContextText,
+      textHash: sha256(epistemicContextText),
+      admissionRef: epistemicContextDelivery.admissionRef,
+      importRef: epistemicContextDelivery.importRef,
+      projectionRef: epistemicContextDelivery.ref,
+      recordRefs: epistemicContextDelivery.recordRefs,
+      rawTextIncluded: false,
+      grantsAuthority: false,
+    });
+    for (const [artifactKind, ref] of [
+      ["epistemic_context_delivery_admission", epistemicContextDelivery.admissionRef],
+      ["epistemic_context_import", epistemicContextDelivery.importRef],
+      ["epistemic_context_delivery_projection", epistemicContextDelivery.ref],
+      ["epistemic_subject", epistemicContextDelivery.subjectRef],
+      ["epistemic_o_revision", epistemicContextDelivery.oRevisionRef],
+      ["epistemic_e_revision", epistemicContextDelivery.eRevisionRef],
+      ["epistemic_port", epistemicContextDelivery.portRef],
+      ...epistemicContextDelivery.recordRefs.map((ref) => ["epistemic_record", ref]),
+    ]) {
+      sourceArtifacts.push({
+        artifactKind,
+        artifactId: normalizeString(ref?.id, ""),
+        artifactDigest: normalizeString(ref?.digest, ""),
+        appPrivate: true,
+      });
+    }
+  }
   if (contextProjection?.projectionId && contextItems.length) {
     const evidenceText = contextItems.map((item) => {
       const label = `${normalizeString(item.role, "evidence").toUpperCase()} ${normalizeString(item.itemKind, "message")}`;
@@ -1344,6 +1395,10 @@ function buildContextPack({
     operationalMetaContextDigest:
       compiledAgentContext
         ?.operationalMetaContextBinding?.digest || "",
+    epistemicContextDeliveryProjectionDigest:
+      epistemicContextDelivery?.projectionDigest || "",
+    epistemicContextDeliveryAdmissionDigest:
+      epistemicContextDelivery?.admissionRef?.digest || "",
     sourceArtifactKinds: sourceArtifacts.map((artifact) => artifact.artifactKind),
     messageAuthorities: messages.map((message) => message.authority),
     caps: contextCaps(),
@@ -1430,6 +1485,25 @@ function buildContextPack({
             grantsAuthority: false,
           }
         : null,
+    epistemicContextDelivery: epistemicContextDelivery
+      ? {
+          admissionRef: epistemicContextDelivery.admissionRef,
+          importRef: epistemicContextDelivery.importRef,
+          projectionRef: epistemicContextDelivery.ref,
+          subjectRef: epistemicContextDelivery.subjectRef,
+          oRevisionRef: epistemicContextDelivery.oRevisionRef,
+          eRevisionRef: epistemicContextDelivery.eRevisionRef,
+          portRef: epistemicContextDelivery.portRef,
+          recordRefs: epistemicContextDelivery.recordRefs,
+          purposeId: epistemicContextDelivery.purposeId,
+          purpose: epistemicContextDelivery.purpose,
+          requestIntent: epistemicContextDelivery.requestIntent,
+          providerProjectionTextIncluded: true,
+          rendererSuppliedTextAccepted: false,
+          rawEvidenceIncluded: false,
+          grantsAuthority: false,
+        }
+      : null,
     caps: {
       ...contextCaps(),
       charCount: totalChars,
@@ -1619,6 +1693,15 @@ function buildRequestManifest({
             rendererProviderInputMutationAccepted: false,
           }
         : null,
+    epistemicContextDelivery:
+      isPlainObject(contextPack.epistemicContextDelivery)
+        ? {
+            ...contextPack.epistemicContextDelivery,
+            providerProjectionTextIncluded: true,
+            providerProjectionIncluded: true,
+            rendererProviderInputMutationAccepted: false,
+          }
+        : null,
     providerInputProjection: providerInput.projection,
     providerInputProjectionGovernanceRefs: contextPack.governanceRefs ? {
       compiledPromptLayersDigest: normalizeString(contextPack.governanceRefs.compiledPromptLayersDigest, ""),
@@ -1675,6 +1758,17 @@ function rendererSafeContextSummary(contextPack = {}, requestManifest = null) {
         contextPack.operationalMetaContext?.freshness,
         "",
       ),
+    epistemicContextDeliveryPresent: Boolean(
+      contextPack.epistemicContextDelivery,
+    ),
+    epistemicContextDeliveryAdmissionId: normalizeString(
+      contextPack.epistemicContextDelivery?.admissionRef?.id,
+      "",
+    ),
+    epistemicContextDeliveryImportId: normalizeString(
+      contextPack.epistemicContextDelivery?.importRef?.id,
+      "",
+    ),
     contextTextExposed: false,
     requestManifestTextExposed: false,
     rawPathExposed: false,

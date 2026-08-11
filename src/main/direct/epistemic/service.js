@@ -10,6 +10,10 @@ const {
 } = require("./kernel");
 const { DirectEpistemicStore } = require("./store");
 const {
+  buildContextDeliveryAdmission,
+  safeContextDeliveryAdmission,
+} = require("./context-delivery");
+const {
   buildArcagi3RepositoryProjection,
   inspectArcagi3Repository,
   rendererSafeObservation,
@@ -625,7 +629,145 @@ class DirectEpistemicService {
     });
   }
 
+  contextDeliveryTarget(sessionId) {
+    const session = this.sessionStore?.readSession(text(sessionId));
+    if (!session) throw serviceError(
+      "direct_epistemic_context_delivery_target_unknown",
+      "The target Direct task is unavailable.",
+    );
+    return {
+      session,
+      target: {
+        sessionId: session.sessionId,
+        roleLane: text(session.agentRole, "direct_assistant"),
+        workThreadId: text(session.workThreadId),
+      },
+    };
+  }
+
+  admitContextDelivery(input = {}) {
+    this.assertOpen();
+    const projectId = text(input.projectId);
+    const { session, target } = this.contextDeliveryTarget(input.targetSessionId);
+    if (text(session.projectId) !== projectId) throw serviceError(
+      "direct_epistemic_context_delivery_target_project_mismatch",
+      "The target Direct task does not belong to this project.",
+    );
+    const contextResult = this.store.readContextImport(text(input.importId));
+    if (!contextResult) throw serviceError(
+      "direct_epistemic_context_delivery_import_unknown",
+      "The materialized context preview is unavailable.",
+    );
+    const importDigest = text(input.importDigest);
+    if (!importDigest) throw serviceError(
+      "direct_epistemic_context_delivery_import_digest_required",
+      "Admission requires the exact materialized-context digest.",
+    );
+    if (importDigest !== contextResult.importDigest) throw serviceError(
+      "direct_epistemic_context_delivery_import_digest_mismatch",
+      "The materialized context preview changed before admission.",
+    );
+    const subject = this.store.readSubject(contextResult.subjectRef?.id);
+    const head = subject ? this.store.readHead(subject.subjectId) : null;
+    if (
+      subject?.projectId !== projectId ||
+      head?.oRevision?.oRevisionId !== contextResult.oRevisionRef?.id ||
+      head?.oRevision?.revisionDigest !== contextResult.oRevisionRef?.digest ||
+      head?.eRevision?.eRevisionId !== contextResult.eRevisionRef?.id ||
+      head?.eRevision?.revisionDigest !== contextResult.eRevisionRef?.digest
+    ) throw serviceError(
+      "direct_epistemic_context_delivery_source_stale",
+      "The preview no longer names the exact current O/E revision.",
+    );
+    const now = new Date(this.now()).toISOString();
+    const admission = buildContextDeliveryAdmission({
+      projectId,
+      clientRequestId: text(input.clientRequestId),
+      importRef: {
+        kind: "direct_epistemic_context_result",
+        id: contextResult.importId,
+        digest: contextResult.importDigest,
+      },
+      subjectRef: contextResult.subjectRef,
+      oRevisionRef: contextResult.oRevisionRef,
+      eRevisionRef: contextResult.eRevisionRef,
+      portRef: contextResult.portRef,
+      target,
+      purposeId: contextResult.purposeId,
+      purpose: contextResult.purpose,
+      requestIntent: contextResult.requestIntent,
+      requestedBy: "operator",
+      deliveryPolicy: {
+        oneShot: true,
+        exactRevisionRequired: true,
+        detailDepth: "typed_records",
+        rawEvidencePolicy: "references_only",
+        providerProjection: "quoted_typed_evidence",
+      },
+      requestedAt: now,
+      admittedAt: now,
+    });
+    const holder = this.store.createContextDeliveryAdmission(admission);
+    return safeContextDeliveryAdmission(holder.admission, holder.latestEvent);
+  }
+
+  claimContextDeliveryForTurn(input = {}) {
+    this.assertOpen();
+    const projectId = text(input.projectId);
+    const { session } = this.contextDeliveryTarget(input.sessionId);
+    if (text(session.projectId) !== projectId) throw serviceError(
+      "direct_epistemic_context_delivery_target_project_mismatch",
+      "The Direct turn target does not belong to the admitted project.",
+    );
+    return this.store.claimContextDelivery({
+      projectId,
+      targetSessionId: session.sessionId,
+      targetTurnId: text(input.turnId),
+      roleLane: text(input.roleLane, text(session.agentRole, "direct_assistant")),
+      workThreadId: text(input.workThreadId, text(session.workThreadId)),
+    });
+  }
+
+  recordContextDelivery(input = {}) {
+    this.assertOpen();
+    const admissionId = text(input.admissionId);
+    const holder = this.store.readContextDeliveryAdmission(admissionId);
+    if (!holder) throw serviceError(
+      "direct_epistemic_context_delivery_unknown",
+      "The context-delivery admission is unavailable.",
+    );
+    if (text(holder.admission.projectId) !== text(input.projectId)) throw serviceError(
+      "direct_epistemic_context_delivery_project_mismatch",
+      "The delivery receipt does not belong to this project.",
+    );
+    const updated = this.store.transitionContextDelivery(admissionId, {
+      expectedStates: Array.isArray(input.expectedStates)
+        ? input.expectedStates
+        : [input.expectedState],
+      state: text(input.state),
+      turnId: text(input.turnId),
+      contextBuildId: text(input.contextBuildId),
+      requestManifestId: text(input.requestManifestId),
+      providerInputProjectionId: text(input.providerInputProjectionId),
+      providerInputTextHash: text(input.providerInputTextHash),
+      attempt: Number(input.attempt || 0),
+      errorCode: text(input.errorCode),
+      reason: text(input.reason),
+    });
+    return safeContextDeliveryAdmission(updated.admission, updated.latestEvent);
+  }
+
+  contextDeliveryProjection(projectId, targetSessionId, importId = "") {
+    if (!targetSessionId) return null;
+    const latest = importId
+      ? this.store.latestContextDeliveryForImport(importId, targetSessionId)
+      : this.store.latestContextDeliveryForTarget(projectId, targetSessionId);
+    if (!latest || latest.admission.projectId !== projectId) return null;
+    return safeContextDeliveryAdmission(latest.admission, latest.latestEvent);
+  }
+
   snapshot(project = {}, options = {}) {
+    this.assertOpen();
     const projectId = text(project.id);
     const rootDir = workspaceRoot(project);
     const repository = this.repositoryProjection(projectId);
@@ -633,6 +775,13 @@ class DirectEpistemicService {
       (rootDir ? "resident_probe_required" : "unavailable");
     const threads = this.threadProjectionsForProject(projectId);
     const thread = threads.find((summary) => summary.subject?.externalId === text(options.sessionId)) || threads[0] || null;
+    const targetSessionId = text(options.targetSessionId, text(options.sessionId));
+    const targetSession = targetSessionId
+      ? this.sessionStore?.readSession(targetSessionId)
+      : null;
+    const contextDelivery = targetSession?.projectId === projectId
+      ? this.contextDeliveryProjection(projectId, targetSessionId, text(options.importId))
+      : null;
     return {
       schema: DIRECT_EPISTEMIC_PROJECTION_SCHEMA,
       projectId,
@@ -649,6 +798,16 @@ class DirectEpistemicService {
         syncStatus: text(summary.syncStatus, "current"),
         syncFailure: summary.syncFailure || null,
       })),
+      contextDelivery: {
+        targetSessionId,
+        targetAvailable: Boolean(targetSession && targetSession.projectId === projectId),
+        targetRoleLane: text(targetSession?.agentRole, targetSession ? "direct_assistant" : ""),
+        targetWorkThreadId: text(targetSession?.workThreadId),
+        latest: contextDelivery,
+        automaticConsumption: "next_initial_direct_turn_only",
+        rendererProjectionTextAccepted: false,
+        grantsAuthority: false,
+      },
       transcriber: {
         ...(() => {
           let runtime = {};

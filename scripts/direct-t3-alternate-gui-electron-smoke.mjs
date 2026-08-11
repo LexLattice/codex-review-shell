@@ -262,9 +262,25 @@ try {
   await page.waitForFunction(() => /Latest materialized context preview/.test(document.querySelector("#runtimeDrawerBody")?.textContent || ""));
   assert.match(await epistemicBody.innerText(), /subject\s+thread\s+·/i);
   assert.match(await epistemicBody.innerText(), /port\s+thread\./i);
-  assert.match(await epistemicBody.innerText(), /provider delivery\s+none/i);
+  assert.match(await epistemicBody.innerText(), /provider transport\s+none/i);
   assert.match(await epistemicBody.innerText(), /Direct turn admission\s+none/i);
   assert.equal(await localPreviewButton.isDisabled(), false);
+  assert.match(await epistemicBody.innerText(), /Next-turn context handoff/);
+  assert.match(await epistemicBody.innerText(), /quoted evidence only · no capability grant/);
+  const contextDeliveryButton = page.locator('[data-epistemic-action^="context-delivery:"]').first();
+  await contextDeliveryButton.waitFor({ state: "visible" });
+  assert.equal(
+    await contextDeliveryButton.innerText(),
+    "Admit this preview for next Direct turn",
+  );
+  await contextDeliveryButton.click();
+  await page.waitForFunction(() =>
+    /status\s+admitted/i.test(
+      document.querySelector("#runtimeDrawerBody")?.innerText || "",
+    ));
+  assert.equal(await contextDeliveryButton.isDisabled(), true);
+  assert.match(await epistemicBody.innerText(), /transport witness\s+not yet witnessed/i);
+  assert.match(await epistemicBody.innerText(), /provider transport\s+none/i);
   assert.equal(
     await page.locator('.t3-utility-rail [data-runtime-tab="epistemic"]').getAttribute("aria-pressed"),
     "true",

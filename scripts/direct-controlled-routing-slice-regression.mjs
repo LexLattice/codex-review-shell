@@ -19,6 +19,8 @@ const {
 const {
   DirectLiveTextController,
   DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+  composeImplementationToolBundleForRequest,
+  implementationInitialPolicyCandidateToolNames,
 } = require("../src/main/direct/controller/live-text-controller");
 const {
   DirectSessionStore,
@@ -494,10 +496,27 @@ try {
     },
   };
   const implementationLaneThread = controller.startThread({ model: "gpt-5.4" }, { project: implementationLaneProject, surfaceSession });
+  const implementationLanePrompt = "continue controlled routing fixture";
+  const implementationLaneStatus = controller.statusForProject(implementationLaneProject);
+  const upstreamPolicyToolComposition = composeImplementationToolBundleForRequest({
+    projectId,
+    sessionId: implementationLaneThread.thread.id,
+    turnId: "upstream_policy_expectation",
+    toolNames: implementationInitialPolicyCandidateToolNames(
+      implementationLaneStatus,
+      implementationLanePrompt,
+    ),
+    useLaneDefaultTools: false,
+    workThreadId: workThread.workThreadId,
+    runtimeFactsId: implementationLaneStatus.evidenceId || "direct_runtime_facts",
+    externalCapabilityProfile: implementationLaneStatus.externalCapabilityProfile,
+    providerHostedToolsStatus: implementationLaneStatus.providerHostedToolsStatus,
+  });
+  const upstreamPolicyToolNames = upstreamPolicyToolComposition.toolNames;
   const providerRequestsBeforeImplementationLane = providerRequestCount;
   const implementationLaneAck = await controller.startTurn({
     threadId: implementationLaneThread.thread.id,
-    promptText: "continue controlled routing fixture",
+    promptText: implementationLanePrompt,
     clientTurnRequestId: "client_req_controlled_route_implementation_lane",
     model: "gpt-5.4",
     requireControlledRouting: true,
@@ -512,9 +531,13 @@ try {
   assert.equal(capturedProviderBody.parallel_tool_calls, false);
   assert.deepEqual(
     capturedProviderBody.tools.map((tool) => tool.name),
-    ["read_file", "apply_patch", "run_command"],
+    upstreamPolicyToolNames,
   );
   const implementationLaneTurn = sessionStore.readTurn(implementationLaneThread.thread.id, implementationLaneAck.turn.id);
+  assert.deepEqual(
+    implementationLaneTurn.requestShape.declaredToolNames,
+    upstreamPolicyToolNames,
+  );
   assert.equal(implementationLaneTurn.controlledRoutingGateState, "ready_for_direct_implementation_turn");
   assert.equal(implementationLaneTurn.requestShape.controlledRoutingProviderScope, "direct_implementation_tool_initial_turn_start");
   const implementationLaneManifest = directThreadStore.readRequestManifest(implementationLaneTurn.requestManifestId);

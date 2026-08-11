@@ -3460,6 +3460,11 @@ function closeDirectEpistemicService() {
   directEpistemicService = null;
 }
 
+function closeDirectLiveTextController(reason = "Direct runtime closed.") {
+  directLiveTextController?.close?.(reason);
+  directLiveTextController = null;
+}
+
 function closeDirectNativeAgentPool(reason = "Direct runtime closed.") {
   directNativeAgentPool?.close?.({
     reason,
@@ -3816,6 +3821,10 @@ function ensureDirectLiveTextController() {
     providerHostedToolsStatusResolver: (context) => buildDirectProviderHostedToolsStatusForProject(context),
     compiledAgentContextResolver: (input) =>
       worldManagerRoleRuntime?.resolveCompiledAgentContext(input) || null,
+    epistemicContextDeliveryResolver: (input) =>
+      ensureDirectEpistemicService().claimContextDeliveryForTurn(input),
+    epistemicContextDeliveryRecorder: (input) =>
+      ensureDirectEpistemicService().recordContextDelivery(input),
     epistemicLedgerToolBundleResolver: (input = {}) => {
       if (
         !worldManagerService ||
@@ -10699,7 +10708,7 @@ async function createDirectWorkbenchWindow() {
     threadAnalyticsStore?.close();
     threadAnalyticsStore = null;
     directFixtureController = null;
-    directLiveTextController = null;
+    closeDirectLiveTextController("Direct Workbench window closed.");
     directLiveProbeEvidenceStore = null;
     directImplementationProofEvidenceStore = null;
     directActivationStore = null;
@@ -10941,7 +10950,7 @@ async function createWindow() {
     threadAnalyticsStore?.close();
     threadAnalyticsStore = null;
     directFixtureController = null;
-    directLiveTextController = null;
+    closeDirectLiveTextController("Main window closed.");
     directLiveProbeEvidenceStore = null;
     directImplementationProofEvidenceStore = null;
     directActivationStore = null;
@@ -12236,6 +12245,8 @@ ipcMain.handle("direct-epistemic:snapshot", async (event, payload) => {
   );
   return service.snapshot(project, {
     sessionId: normalizeString(payload?.sessionId, ""),
+    targetSessionId: normalizeString(payload?.targetSessionId, ""),
+    importId: normalizeString(payload?.importId, ""),
   });
 });
 
@@ -12302,6 +12313,22 @@ ipcMain.handle("direct-epistemic:import-context", async (event, payload) => {
     detailDepth: normalizeString(payload?.detailDepth, "typed_records"),
     sinceRevision: normalizeString(payload?.sinceRevision, ""),
     tokenBudget: 0,
+  });
+});
+
+ipcMain.handle("direct-epistemic:admit-context-delivery", async (event, payload) => {
+  const { project, service } = await directEpistemicProjectForSender(
+    event.sender,
+    "direct-epistemic:admit-context-delivery",
+  );
+  const targetSessionId = normalizeString(payload?.targetSessionId, "");
+  assertDirectEpistemicSessionOwnership(service, project.id, targetSessionId);
+  return service.admitContextDelivery({
+    projectId: project.id,
+    targetSessionId,
+    importId: normalizeString(payload?.importId, ""),
+    importDigest: normalizeString(payload?.importDigest, ""),
+    clientRequestId: normalizeString(payload?.clientRequestId, ""),
   });
 });
 
@@ -12683,7 +12710,7 @@ app.on("before-quit", () => {
   directAuthLoginCoordinator = null;
   directCodexCliAuthStore = null;
   directFixtureController = null;
-  directLiveTextController = null;
+  closeDirectLiveTextController("Application quit.");
   directLiveProbeEvidenceStore = null;
   directImplementationProofEvidenceStore = null;
   directActivationStore = null;
