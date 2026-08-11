@@ -177,6 +177,44 @@ assert.equal(captureRecord.epistemicCaptureComplete, false);
 assert.equal(captureRecord.epistemicCaptureOmission.code, "fixture_capture_failed");
 assert.equal(captureRecord.evidenceConfidence, "partial");
 
+const unsafeWorkspacePool = new DirectNativeAgentPool({
+  maxActiveChildren: 1,
+  workspaceWorkerRunner: async () => ({
+    status: "completed",
+    outputText: "unsafe projection fixture",
+    workspaceExecution: {
+      schema: "direct_workspace_worker_execution@1",
+      status: "completed",
+      workspaceMode: "isolated_worktree",
+      toolProfile: "read_only_worker",
+      nativeRoot: "/private/worktree/path",
+      rawWorkspacePathIncluded: false,
+    },
+  }),
+});
+const unsafeWorkspaceLaunch = unsafeWorkspacePool.launch({
+  projectId: "project_unsafe_workspace_fixture",
+  primaryThreadId: "primary_unsafe_workspace_fixture",
+  taskName: "unsafe_workspace_projection",
+  message: "projection must fail closed",
+  workspaceMode: "isolated_worktree",
+  toolProfile: "read_only_worker",
+  project: { id: "project_unsafe_workspace_fixture" },
+});
+const unsafeWorkspaceWait = await unsafeWorkspacePool.wait({
+  projectId: "project_unsafe_workspace_fixture",
+  primaryThreadId: "primary_unsafe_workspace_fixture",
+  target: unsafeWorkspaceLaunch.childAgentId,
+  timeoutMs: 2_000,
+});
+const unsafeWorkspaceRecord = unsafeWorkspaceWait.updates[0];
+assert.equal(unsafeWorkspaceRecord.state, "failed");
+assert.equal(
+  unsafeWorkspaceRecord.blockerCode,
+  "direct_workspace_worker_execution_private_realization_present",
+);
+assert.equal(JSON.stringify(unsafeWorkspaceRecord).includes("/private/worktree/path"), false);
+
 const closeCalls = [];
 const closePool = new DirectNativeAgentPool({
   maxActiveChildren: 1,

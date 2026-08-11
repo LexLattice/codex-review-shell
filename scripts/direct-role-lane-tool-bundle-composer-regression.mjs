@@ -368,7 +368,22 @@ assert.equal(spawnAgentRow.toolFamily, "agent_runtime_control");
 assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.fork_turns.type, "string");
 assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.model.type, "string");
 assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.reasoning_effort.type, "string");
+assert.deepEqual(
+  spawnAgentRow.providerToolSchema.parameters.properties.workspace_mode.enum,
+  ["reasoning_only", "isolated_worktree"],
+);
+assert.deepEqual(
+  spawnAgentRow.providerToolSchema.parameters.properties.tool_profile.enum,
+  ["read_only_worker", "implementation_worker"],
+);
+assert.equal(
+  spawnAgentRow.providerToolSchema.parameters.required.includes("tool_profile"),
+  false,
+  "reasoning-only children must not inherit a workspace tool profile implicitly",
+);
+assert.equal(spawnAgentRow.providerToolSchema.parameters.additionalProperties, false);
 assert(spawnAgentRow.providerToolSchema.description.includes("independent"));
+assert(spawnAgentRow.providerToolSchema.description.includes("isolated_worktree"));
 
 const reviewLaneSelection = buildDirectRoleLaneSelection({
   registry,

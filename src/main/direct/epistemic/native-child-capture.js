@@ -61,6 +61,18 @@ function captureDigest(input = {}, result = {}) {
     terminalState: terminalTurnState(result),
     terminalEvidence: terminalEvidence(result),
     events: (Array.isArray(result.normalizedEvents) ? result.normalizedEvents : []).map(sourceEvent),
+    workspaceWorkerContractDigest: text(result.workspaceWorkerContract?.contractDigest),
+    workspaceWorkerToolResults: (Array.isArray(result.workspaceWorkerToolResults)
+      ? result.workspaceWorkerToolResults
+      : []).map((toolResult) => ({
+        schema: text(toolResult?.schema),
+        stepOrdinal: Number(toolResult?.stepOrdinal || 0),
+        tool: text(toolResult?.tool),
+        callId: text(toolResult?.callId),
+        status: text(toolResult?.status),
+        resultDigest: text(toolResult?.resultDigest),
+        workspaceBindingDigest: text(toolResult?.workspaceBindingDigest),
+      })),
   });
 }
 
@@ -82,6 +94,20 @@ function terminalTurnState(result = {}) {
   return result.error || result.terminal?.error ? "failed" : "response_incomplete";
 }
 
+function capturedWorkspaceToolResult(result = {}) {
+  const providerOutputText = typeof result?.providerOutputText === "string"
+    ? result.providerOutputText
+    : "";
+  const { providerOutputText: _providerOutputText, ...typed } = result || {};
+  return {
+    ...typed,
+    providerOutputDigest: providerOutputText ? digestFor(providerOutputText) : "",
+    providerOutputCharacterCount: providerOutputText.length,
+    rawOutputPersisted: false,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
 function persistNativeChildProviderTurn(sessionStore, input = {}, result = {}) {
   if (!sessionStore) throw new Error("Native child capture requires a Direct session store.");
   const projectId = text(input.projectId, "project_direct_agents");
@@ -89,6 +115,10 @@ function persistNativeChildProviderTurn(sessionStore, input = {}, result = {}) {
   if (!childAgentId) throw new Error("Native child capture requires a child agent identity.");
   const sessionId = nativeChildSessionId(input);
   const expectedCaptureDigest = captureDigest(input, result);
+  const workspaceWorkerContract = result.workspaceWorkerContract || null;
+  const workspaceWorkerToolResults = Array.isArray(result.workspaceWorkerToolResults)
+    ? result.workspaceWorkerToolResults.map(capturedWorkspaceToolResult)
+    : [];
   let session = sessionStore.readSession(sessionId);
   if (!session) {
     session = sessionStore.createSession({
@@ -98,14 +128,17 @@ function persistNativeChildProviderTurn(sessionStore, input = {}, result = {}) {
       model: text(input.requestBody?.model || input.agent?.model),
       reasoningEffort: text(input.requestBody?.reasoning?.effort || input.agent?.reasoningEffort),
       agentId: childAgentId,
-      agentKind: "native_sub_agent",
+      agentKind: workspaceWorkerContract ? "native_workspace_sub_agent" : "native_sub_agent",
       agentThreadId: childAgentId,
       parentThreadId: text(input.primaryThreadId),
       primaryThreadId: text(input.primaryThreadId),
       agentLabel: text(input.agent?.displayLabel),
       agentRole: text(input.agent?.role, "sub_agent_worker"),
       workThreadId: text(input.workThreadId),
-      sourceClass: "native_child_provider_turn",
+      workThreadBindingDigest: text(workspaceWorkerContract?.binding?.bindingDigest),
+      sourceClass: workspaceWorkerContract
+        ? "native_workspace_child_provider_turn"
+        : "native_child_provider_turn",
       nativeDirectSession: true,
     });
   }
@@ -130,7 +163,17 @@ function persistNativeChildProviderTurn(sessionStore, input = {}, result = {}) {
       sessionStore.appendNormalizedEvents(sessionId, turnId, expectedEvents.slice(persistedEvents.length));
     }
     const state = terminalTurnState(result);
-    const repaired = existingTurn.state !== state || persistedEvents.length < expectedEvents.length;
+    const existingToolResultDigests = (Array.isArray(existingTurn.toolResults) ? existingTurn.toolResults : [])
+      .map((entry) => text(entry?.resultDigest));
+    const expectedToolResultDigests = workspaceWorkerToolResults.map((entry) => text(entry?.resultDigest));
+    const toolResultsMatch = digestFor(existingToolResultDigests) === digestFor(expectedToolResultDigests);
+    const repaired = existingTurn.state !== state || persistedEvents.length < expectedEvents.length || !toolResultsMatch;
+    if (!toolResultsMatch) {
+      sessionStore.writeTurn({
+        ...existingTurn,
+        toolResults: workspaceWorkerToolResults,
+      });
+    }
     if (repaired) sessionStore.updateTurnState(
       sessionId,
       turnId,
@@ -153,13 +196,16 @@ function persistNativeChildProviderTurn(sessionStore, input = {}, result = {}) {
     model: text(input.requestBody?.model || input.agent?.model),
     reasoningEffort: text(input.requestBody?.reasoning?.effort || input.agent?.reasoningEffort),
     agentId: childAgentId,
-    agentKind: "native_sub_agent",
+    agentKind: workspaceWorkerContract ? "native_workspace_sub_agent" : "native_sub_agent",
     agentThreadId: childAgentId,
     parentThreadId: text(input.primaryThreadId),
     agentLabel: text(input.agent?.displayLabel),
     agentRole: text(input.agent?.role, "sub_agent_worker"),
-    sourceClass: "native_child_provider_turn",
+    sourceClass: workspaceWorkerContract
+      ? "native_workspace_child_provider_turn"
+      : "native_child_provider_turn",
     nativeDirectSession: true,
+    toolResults: workspaceWorkerToolResults,
     requestShape: {
       model: text(input.requestBody?.model),
       reasoningEffort: text(input.requestBody?.reasoning?.effort),
@@ -168,8 +214,20 @@ function persistNativeChildProviderTurn(sessionStore, input = {}, result = {}) {
       contextMessageCount: Number(input.contextMessageCount || 0),
       attemptId: text(input.attemptId || input.callId),
       captureDigest: expectedCaptureDigest,
+      workspaceWorkerContractId: text(workspaceWorkerContract?.contractId),
+      workspaceWorkerContractDigest: text(workspaceWorkerContract?.contractDigest),
+      workspaceBindingId: text(workspaceWorkerContract?.binding?.bindingId),
+      workspaceBindingDigest: text(workspaceWorkerContract?.binding?.bindingDigest),
+      workspaceMode: text(workspaceWorkerContract?.workspaceMode),
+      toolProfile: text(workspaceWorkerContract?.authority?.toolProfile),
+      declaredTools: Array.isArray(workspaceWorkerContract?.authority?.declaredTools)
+        ? [...workspaceWorkerContract.authority.declaredTools]
+        : [],
+      contextAdmissionDigest: text(workspaceWorkerContract?.contextAdmission?.admissionDigest),
+      workspaceWorkerToolResultCount: workspaceWorkerToolResults.length,
       rawPromptIncluded: false,
       rawContextIncluded: false,
+      rawWorkspacePathIncluded: false,
     },
   });
   const events = Array.isArray(result.normalizedEvents) ? result.normalizedEvents : [];

@@ -53,6 +53,9 @@ const DIRECT_EPISTEMIC_UNTRACKED_FILE_LIMIT = 2000;
 const DIRECT_EPISTEMIC_UNTRACKED_FILE_BYTES = 16 * 1024 * 1024;
 const DIRECT_EPISTEMIC_UNTRACKED_TOTAL_BYTES = 128 * 1024 * 1024;
 const DIRECT_EPISTEMIC_PROFILE_SOURCE_BYTES = 8 * 1024 * 1024;
+const DIRECT_WORKSPACE_WORKER_TIMEOUT_MS = 120 * 1000;
+const DIRECT_WORKSPACE_WORKER_TARGET_LIMIT = 16;
+const DIRECT_WORKSPACE_WORKER_TARGET_CHARS = 500;
 const ARO_REALIZATION_CONTEXT_FILE_LIMIT = 12;
 const ARO_REALIZATION_CONTEXT_EXCERPT_BYTES = 12 * 1024;
 const ARO_REALIZATION_CONTEXT_TOTAL_BYTES = 96 * 1024;
@@ -81,6 +84,7 @@ const SENSITIVE_READ_FILE_PATTERNS = [
   /(?:^|\/)\.git\/config$/i,
 ];
 let reviewShellIgnorePromise = null;
+let gitWorktreeMutationQueue = Promise.resolve();
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -1919,7 +1923,14 @@ async function listMatchingFiles(params = {}) {
       return;
     }
 
-    for (const dirent of dirents) {
+    // Admit files at the current semantic entry point before descending. A
+    // large early directory (for example local runtime state) must not exhaust
+    // the walk budget and hide canonical root files such as README.md.
+    const orderedDirents = [
+      ...dirents.filter((dirent) => direntType(dirent) !== "dir"),
+      ...dirents.filter((dirent) => direntType(dirent) === "dir"),
+    ];
+    for (const dirent of orderedDirents) {
       if (scanned >= MATCH_WALK_LIMIT || entries.length >= MATCH_SCAN_LIMIT) return;
       const type = direntType(dirent);
       if (type === "dir" && SKIPPED_DIR_NAMES.has(dirent.name)) {
@@ -2352,6 +2363,307 @@ function captureProcess(command, args, options = {}) {
       });
     });
   });
+}
+
+function safeWorkspaceWorkerKey(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,79}$/.test(text)) {
+    const error = new Error("Workspace worker key must use only lowercase letters, digits, underscores, and hyphens.");
+    error.code = "workspace_worker_key_invalid";
+    throw error;
+  }
+  return text;
+}
+
+function safeWorkspaceWorkerBranch(value) {
+  const text = String(value || "").trim();
+  if (
+    !/^codex\/worker\/[a-z0-9][a-z0-9._/-]{0,150}$/.test(text) ||
+    text.includes("..") ||
+    text.endsWith(".") ||
+    text.endsWith("/") ||
+    text.includes("//") ||
+    /[~^:?*\[\\\s]/.test(text)
+  ) {
+    const error = new Error("Workspace worker branch must be a safe local codex/worker/* branch.");
+    error.code = "workspace_worker_branch_invalid";
+    throw error;
+  }
+  return text;
+}
+
+async function exactGitWorkspace() {
+  const result = await captureProcess("git", ["rev-parse", "--show-toplevel", "--git-dir"], {
+    cwd: root,
+    timeoutMs: 10_000,
+  });
+  if (result.exitCode !== 0) {
+    const error = new Error("Workspace root is not an attached Git worktree.");
+    error.code = "workspace_worker_git_unavailable";
+    throw error;
+  }
+  const lines = String(result.stdout || "").split(/\r?\n/).filter(Boolean);
+  const topLevel = path.resolve(lines[0] || "");
+  const realRoot = await fs.realpath(root);
+  const realTopLevel = await fs.realpath(topLevel);
+  const rootsMatch = process.platform === "win32"
+    ? realRoot.toLowerCase() === realTopLevel.toLowerCase()
+    : realRoot === realTopLevel;
+  if (!rootsMatch) {
+    const error = new Error("Workspace worker provisioning requires the configured workspace root to be the Git top level.");
+    error.code = "workspace_worker_git_root_mismatch";
+    throw error;
+  }
+  return {
+    topLevel: realTopLevel,
+    gitDir: lines[1] || "",
+  };
+}
+
+function workspaceWorkerRootFor(topLevel, workerKey) {
+  return path.join(
+    path.dirname(topLevel),
+    ".codex-worktrees",
+    path.basename(topLevel),
+    safeWorkspaceWorkerKey(workerKey),
+  );
+}
+
+async function provisionGitWorktree(params = {}) {
+  const workerKey = safeWorkspaceWorkerKey(params.workerKey);
+  const branch = safeWorkspaceWorkerBranch(params.branch);
+  const baseRef = String(params.baseRef || "HEAD").trim();
+  if (!baseRef || /[\0\r\n]/.test(baseRef) || baseRef.startsWith("-")) {
+    const error = new Error("Workspace worker base ref is invalid.");
+    error.code = "workspace_worker_base_ref_invalid";
+    throw error;
+  }
+  const git = await exactGitWorkspace();
+  const statusResult = await captureProcess("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+    cwd: git.topLevel,
+    timeoutMs: 10_000,
+  });
+  if (statusResult.exitCode !== 0) {
+    const error = new Error("Git could not verify the parent workspace state before worker provisioning.");
+    error.code = "workspace_worker_parent_status_unavailable";
+    throw error;
+  }
+  if (Buffer.byteLength(String(statusResult.stdout || ""), "utf8") > 0) {
+    const error = new Error("Workspace worker provisioning requires a clean committed parent checkout in EXEC1.");
+    error.code = "workspace_worker_parent_worktree_dirty";
+    throw error;
+  }
+  const commitResult = await captureProcess("git", ["rev-parse", "--verify", `${baseRef}^{commit}`], {
+    cwd: git.topLevel,
+    timeoutMs: 10_000,
+  });
+  const baseCommit = String(commitResult.stdout || "").trim();
+  if (commitResult.exitCode !== 0 || !/^[a-f0-9]{40,64}$/i.test(baseCommit)) {
+    const error = new Error("Workspace worker base ref did not resolve to one commit.");
+    error.code = "workspace_worker_base_ref_unresolved";
+    throw error;
+  }
+  const branchResult = await captureProcess("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
+    cwd: git.topLevel,
+    timeoutMs: 10_000,
+  });
+  if (branchResult.exitCode === 0) {
+    const error = new Error("Workspace worker branch already exists.");
+    error.code = "workspace_worker_branch_collision";
+    throw error;
+  }
+  const worktreePath = workspaceWorkerRootFor(git.topLevel, workerKey);
+  if (await pathExists(worktreePath)) {
+    const error = new Error("Workspace worker directory already exists.");
+    error.code = "workspace_worker_directory_collision";
+    throw error;
+  }
+  await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+  const add = await captureProcess("git", ["worktree", "add", "-b", branch, worktreePath, baseCommit], {
+    cwd: git.topLevel,
+    timeoutMs: 30_000,
+  });
+  if (add.exitCode !== 0) {
+    const error = new Error("Git could not provision the workspace worker worktree.");
+    error.code = "workspace_worker_provision_failed";
+    throw error;
+  }
+  const rootEvidenceDigest = sha256Digest(await fs.realpath(worktreePath));
+  const bindingBase = {
+    schema: "direct_workspace_worker_binding@1",
+    projectId,
+    workerKey,
+    workspaceKind,
+    branch,
+    baseCommit,
+    rootEvidenceDigest,
+    retainedAfterCompletion: true,
+    rawWorkspacePathIncluded: false,
+  };
+  const bindingDigest = sha256Digest(canonicalJson(bindingBase));
+  return {
+    ...bindingBase,
+    bindingId: `workspace_worker_binding_${bindingDigest.slice(7, 31)}`,
+    bindingDigest,
+    worktreePath,
+  };
+}
+
+async function removeGitWorktree(params = {}) {
+  const workerKey = safeWorkspaceWorkerKey(params.workerKey);
+  const branch = safeWorkspaceWorkerBranch(params.branch);
+  const git = await exactGitWorkspace();
+  const worktreePath = workspaceWorkerRootFor(git.topLevel, workerKey);
+  const remove = await captureProcess("git", ["worktree", "remove", "--force", worktreePath], {
+    cwd: git.topLevel,
+    timeoutMs: 30_000,
+  });
+  if (remove.exitCode !== 0 && await pathExists(worktreePath)) {
+    const error = new Error("Git could not remove the workspace worker worktree.");
+    error.code = "workspace_worker_remove_failed";
+    throw error;
+  }
+  let branchRemoved = false;
+  if (params.deleteBranch === true) {
+    const deleted = await captureProcess("git", ["branch", "-D", branch], {
+      cwd: git.topLevel,
+      timeoutMs: 10_000,
+    });
+    branchRemoved = deleted.exitCode === 0;
+  }
+  return {
+    schema: "direct_workspace_worker_cleanup@1",
+    workerKey,
+    branch,
+    worktreeRemoved: !(await pathExists(worktreePath)),
+    branchRemoved,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+function serializeGitWorktreeMutation(operation) {
+  const pending = gitWorktreeMutationQueue.then(operation, operation);
+  gitWorktreeMutationQueue = pending.catch(() => {});
+  return pending;
+}
+
+async function directTestProfile() {
+  const packageJsonPath = path.join(root, "package.json");
+  if (await pathExists(packageJsonPath)) {
+    try {
+      const packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
+      if (typeof packageJson?.scripts?.test === "string" && packageJson.scripts.test.trim()) {
+        const base = {
+          schema: "direct_workspace_worker_test_profile@1",
+          profileId: "node_package_test",
+          command: "npm",
+          baseArgs: ["test"],
+          targetsAllowed: false,
+          workspaceKind,
+        };
+        return { ...base, profileDigest: sha256Digest(canonicalJson(base)), available: true };
+      }
+    } catch {}
+  }
+  const pythonMarkers = ["pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini"];
+  if ((await Promise.all(pythonMarkers.map((name) => pathExists(path.join(root, name))))).some(Boolean)) {
+    const base = {
+      schema: "direct_workspace_worker_test_profile@1",
+      profileId: "python_pytest",
+      command: process.platform === "win32" ? "python" : "python3",
+      baseArgs: ["-m", "pytest"],
+      targetsAllowed: true,
+      workspaceKind,
+    };
+    return { ...base, profileDigest: sha256Digest(canonicalJson(base)), available: true };
+  }
+  const makefilePath = path.join(root, "Makefile");
+  if (await pathExists(makefilePath)) {
+    const body = await fs.readFile(makefilePath, "utf8").catch(() => "");
+    if (/^test\s*:/m.test(body)) {
+      const base = {
+        schema: "direct_workspace_worker_test_profile@1",
+        profileId: "make_test",
+        command: "make",
+        baseArgs: ["test"],
+        targetsAllowed: false,
+        workspaceKind,
+      };
+      return { ...base, profileDigest: sha256Digest(canonicalJson(base)), available: true };
+    }
+  }
+  return {
+    schema: "direct_workspace_worker_test_profile@1",
+    profileId: "",
+    profileDigest: "",
+    available: false,
+    targetsAllowed: false,
+    workspaceKind,
+  };
+}
+
+function safeTestTargets(values = []) {
+  const source = Array.isArray(values) ? values : [];
+  if (source.length > DIRECT_WORKSPACE_WORKER_TARGET_LIMIT) {
+    const error = new Error("Workspace worker test target count exceeded the compiled limit.");
+    error.code = "workspace_worker_test_targets_exceeded";
+    throw error;
+  }
+  return source.map((value) => {
+    const target = String(value || "").trim();
+    if (
+      !target ||
+      target.length > DIRECT_WORKSPACE_WORKER_TARGET_CHARS ||
+      target.startsWith("-") ||
+      /[\0\r\n|&;`$<>]/.test(target)
+    ) {
+      const error = new Error("Workspace worker test target is invalid.");
+      error.code = "workspace_worker_test_target_invalid";
+      throw error;
+    }
+    const filePart = target.split("::", 1)[0];
+    resolveWithinRoot(filePart);
+    return target.replace(/\\/g, "/");
+  });
+}
+
+async function runDirectTest(params = {}) {
+  const profile = await directTestProfile();
+  if (!profile.available) {
+    const error = new Error("No bounded test profile is available in this workspace.");
+    error.code = "workspace_worker_test_profile_unavailable";
+    throw error;
+  }
+  if (!params.profileDigest || params.profileDigest !== profile.profileDigest) {
+    const error = new Error("Workspace worker test profile changed after constitution compilation.");
+    error.code = "workspace_worker_test_profile_drift";
+    throw error;
+  }
+  const targets = safeTestTargets(params.targets);
+  if (targets.length && profile.targetsAllowed !== true) {
+    const error = new Error("The compiled test profile does not permit provider-selected targets.");
+    error.code = "workspace_worker_test_targets_not_allowed";
+    throw error;
+  }
+  const timeoutMs = Number.isFinite(Number(params.timeoutMs))
+    ? Math.max(1000, Math.min(Number(params.timeoutMs), DIRECT_WORKSPACE_WORKER_TIMEOUT_MS))
+    : DIRECT_WORKSPACE_WORKER_TIMEOUT_MS;
+  const result = await runDirectCommand({
+    command: profile.command,
+    args: [...profile.baseArgs, ...targets],
+    cwdRelPath: "",
+    timeoutMs,
+  });
+  return {
+    ...result,
+    schema: "direct_workspace_worker_test_result@1",
+    command: profile.profileId,
+    args: targets,
+    testProfileId: profile.profileId,
+    testProfileDigest: profile.profileDigest,
+    rawCommandIncluded: false,
+    rawWorkspacePathIncluded: false,
+  };
 }
 
 function toGitExcludePatternPath(value) {
@@ -4114,6 +4426,10 @@ async function handleRequest(method, params = {}) {
         repositoryRealizationContext: true,
         runCommand: true,
         runDirectCommand: true,
+        provisionGitWorktree: true,
+        removeGitWorktree: true,
+        directTestProfile: true,
+        runDirectTest: true,
         ensureCodexSandboxArtifactIgnored: true,
         listMatchingFiles: true,
         resolvePath: true,
@@ -4149,6 +4465,14 @@ async function handleRequest(method, params = {}) {
   if (method === "resolvePath") return resolvePathPreview(params);
   if (method === "runCommand") return runCommand(params);
   if (method === "runDirectCommand") return runDirectCommand(params);
+  if (method === "provisionGitWorktree") {
+    return serializeGitWorktreeMutation(() => provisionGitWorktree(params));
+  }
+  if (method === "removeGitWorktree") {
+    return serializeGitWorktreeMutation(() => removeGitWorktree(params));
+  }
+  if (method === "directTestProfile") return directTestProfile(params);
+  if (method === "runDirectTest") return runDirectTest(params);
   if (method === "ensureCodexSandboxArtifactIgnored") return ensureCodexSandboxArtifactIgnored(params);
   if (method === "watchStatus") return watchStatus(params);
   if (method === "listCodexThreads") return listCodexThreads(params);
@@ -4178,7 +4502,7 @@ async function handleLine(line) {
     const result = await handleRequest(request.method, request.params || {});
     send({ id, result });
   } catch (error) {
-    send({ id, error: { message: error.message, stack: error.stack } });
+    send({ id, error: { message: error.message, code: error.code || "", stack: error.stack } });
   } finally {
     activeRequests -= 1;
     if (stdinClosed && activeRequests === 0) requestShutdown();

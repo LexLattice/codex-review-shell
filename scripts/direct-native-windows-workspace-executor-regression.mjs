@@ -11,6 +11,7 @@ const {
   WorkspaceBackendManager,
   workspaceLabel,
   workspaceRoot,
+  workspaceRootIsAbsolute,
   workspaceSessionKey,
 } = require("../src/main/workspace-backend");
 const {
@@ -21,6 +22,12 @@ const discovery = discoverRealizationOptions({
   platform: process.platform,
   env: process.env,
 });
+assert.equal(workspaceRootIsAbsolute("C:\\Users\\Rose\\project", "local", "win32"), true);
+assert.equal(workspaceRootIsAbsolute("home\\rose\\project", "local", "win32"), false);
+assert.equal(workspaceRootIsAbsolute("/home/rose/project", "local", "linux"), true);
+assert.equal(workspaceRootIsAbsolute("C:\\Users\\Rose\\project", "local", "linux"), false);
+assert.equal(workspaceRootIsAbsolute("C:\\Users\\Rose\\project", "windows", "linux"), true);
+assert.equal(workspaceRootIsAbsolute("/home/rose/project", "wsl", "win32"), true);
 const windowsOption = discovery.snapshot.options.find((entry) =>
   entry.environmentId === "env_windows_native");
 assert.ok(windowsOption, "Windows realization option is missing.");

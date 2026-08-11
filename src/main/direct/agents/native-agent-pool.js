@@ -6,6 +6,13 @@ const {
   createDirectProviderBackedSubAgentRoute,
   normalizeEpistemicCapture,
 } = require("./provider-backed-route");
+const {
+  WORKSPACE_MODE_ISOLATED_WORKTREE,
+  WORKSPACE_MODE_REASONING_ONLY,
+  normalizeToolProfile,
+  normalizeWorkspaceMode,
+  safeWorkspaceExecutionProjection,
+} = require("./workspace-worker-contract");
 
 const DIRECT_NATIVE_AGENT_POOL_SCHEMA = "direct_native_agent_pool@1";
 const DIRECT_NATIVE_AGENT_LAUNCH_SCHEMA = "direct_native_agent_launch@1";
@@ -98,6 +105,9 @@ class DirectNativeAgentPool extends EventEmitter {
     this.providerTurnRunner = typeof options.providerTurnRunner === "function"
       ? options.providerTurnRunner
       : null;
+    this.workspaceWorkerRunner = typeof options.workspaceWorkerRunner === "function"
+      ? options.workspaceWorkerRunner
+      : null;
     this.now = typeof options.now === "function" ? options.now : Date.now;
     this.routes = new Map();
     this.jobs = new Map();
@@ -117,6 +127,9 @@ class DirectNativeAgentPool extends EventEmitter {
       queuedChildren: this.queue.length,
       totalChildren: this.jobs.size,
       providerTransportAvailable: Boolean(this.providerTurnRunner),
+      workspaceWorkerRuntimeAvailable: Boolean(this.workspaceWorkerRunner),
+      supportedWorkspaceModes: [WORKSPACE_MODE_REASONING_ONLY, WORKSPACE_MODE_ISOLATED_WORKTREE],
+      supportedWorkspaceToolProfiles: ["read_only_worker", "implementation_worker"],
       closed: this.closed,
       acceptingNewChildren: !this.closed,
       capacityScope: "direct_runtime_process_shared_across_agent_tree",
@@ -149,8 +162,35 @@ class DirectNativeAgentPool extends EventEmitter {
   launch(input = {}) {
     if (this.closed) return this.launchResult(null, "blocked", "direct_agent_pool_closed");
     if (input.signal?.aborted) return this.launchResult(null, "blocked", "direct_agent_launch_aborted");
-    if (!this.providerTurnRunner) {
+    let workspaceMode;
+    let toolProfile;
+    try {
+      workspaceMode = normalizeWorkspaceMode(input.workspaceMode || input.workspace_mode);
+      const requestedToolProfile = normalizeString(input.toolProfile || input.tool_profile, "");
+      if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && !requestedToolProfile) {
+        const error = new Error("isolated_worktree requires one explicit tool_profile");
+        error.code = "direct_workspace_worker_tool_profile_missing";
+        throw error;
+      }
+      if (workspaceMode === WORKSPACE_MODE_REASONING_ONLY && requestedToolProfile) {
+        const error = new Error("reasoning_only children cannot request a workspace tool_profile");
+        error.code = "direct_workspace_worker_tool_profile_without_workspace";
+        throw error;
+      }
+      toolProfile = workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
+        ? normalizeToolProfile(requestedToolProfile)
+        : "reasoning_only";
+    } catch (error) {
+      return this.launchResult(null, "blocked", normalizeString(error?.code, "direct_workspace_worker_request_invalid"));
+    }
+    if (workspaceMode === WORKSPACE_MODE_REASONING_ONLY && !this.providerTurnRunner) {
       return this.launchResult(null, "blocked", "provider_runner_missing");
+    }
+    if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && !this.workspaceWorkerRunner) {
+      return this.launchResult(null, "blocked", "workspace_worker_runner_missing");
+    }
+    if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && !isPlainObject(input.project)) {
+      return this.launchResult(null, "blocked", "workspace_worker_project_binding_missing");
     }
     const task = normalizeString(input.message || input.prompt || input.task, "");
     if (!task) return this.launchResult(null, "blocked", "missing_spawn_prompt");
@@ -188,6 +228,17 @@ class DirectNativeAgentPool extends EventEmitter {
       parentAgentId,
       role: normalizeString(input.agentType || input.agent_type || input.role, "sub_agent_worker"),
       displayLabel: normalizeString(input.displayLabel, taskName),
+      workspaceMode,
+      toolProfile,
+      workspaceExecution: workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
+        ? {
+            schema: "direct_workspace_worker_execution@1",
+            status: "provisioning_pending",
+            workspaceMode,
+            toolProfile,
+            rawWorkspacePathIncluded: false,
+          }
+        : null,
       state: this.activeCount < this.maxActiveChildren ? "accepted" : "queued",
       model,
       reasoningEffort,
@@ -218,6 +269,7 @@ class DirectNativeAgentPool extends EventEmitter {
       rawContextPersisted: false,
       _task: task,
       _contextMessages: contextMessages,
+      _project: workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE ? input.project : null,
       _waiters: new Set(),
       _settled: false,
       _leaseActive: false,
@@ -251,6 +303,11 @@ class DirectNativeAgentPool extends EventEmitter {
       state: normalizeString(record?.state, status),
       model: normalizeString(record?.model, ""),
       reasoningEffort: normalizeString(record?.reasoningEffort, ""),
+      workspaceMode: normalizeString(record?.workspaceMode, WORKSPACE_MODE_REASONING_ONLY),
+      toolProfile: normalizeString(record?.toolProfile, "reasoning_only"),
+      workspaceExecution: record?.workspaceExecution
+        ? safeWorkspaceExecutionProjection(record.workspaceExecution)
+        : null,
       contextHandoff: record?.contextHandoff || null,
       contextMessageCount: Number(record?.contextMessageCount || 0),
       runtimeProfileIndependentOfContext: record?.runtimeProfileIndependentOfContext === true,
@@ -279,8 +336,7 @@ class DirectNativeAgentPool extends EventEmitter {
     this.activeCount += 1;
     Promise.resolve().then(async () => {
       if (record._settled || this.closed) return;
-      const route = this.routeFor(record);
-      const result = await route.spawnAndRun({
+      const commonInput = {
         childAgentId: record.childAgentId,
         displayLabel: record.displayLabel,
         role: record.role,
@@ -289,18 +345,30 @@ class DirectNativeAgentPool extends EventEmitter {
         reasoningEffort: record.reasoningEffort,
         contextHandoffMode: record.contextHandoff.mode,
         contextMessages: record._contextMessages,
+        projectId: record.projectId,
+        workThreadId: record.workThreadId,
+        primaryThreadId: record.primaryThreadId,
         signal: record._abortController.signal,
-      });
+      };
+      const result = record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
+        ? await this.workspaceWorkerRunner({
+            ...commonInput,
+            workspaceMode: record.workspaceMode,
+            toolProfile: record.toolProfile,
+            project: record._project,
+          })
+        : await this.routeFor(record).spawnAndRun(commonInput);
       this.settleRecord(record, {
         state: TERMINAL_STATES.has(result.status) ? result.status : "failed",
         blockerCode: normalizeString(result.blockerCode, ""),
         resultSummary: normalizeString(
-          result.reducedSummary?.summaryText || result.childResultPreview || result.blockerCode,
+          result.reducedSummary?.summaryText || result.childResultPreview || result.outputText || result.blockerCode,
           result.status === "completed" ? "Child agent completed." : `Child agent ${result.status || "failed"}.`,
         ),
         resultDigest: normalizeString(result.resultDigest, ""),
         epistemicCapture: result.epistemicCapture,
         evidenceConfidence: normalizeString(result.resultEnvelope?.confidence, "unknown"),
+        workspaceExecution: result.workspaceExecution,
       });
     }).catch((error) => {
       const aborted = record._abortController?.signal.aborted || error?.name === "AbortError";
@@ -322,6 +390,26 @@ class DirectNativeAgentPool extends EventEmitter {
 
   settleRecord(record, patch = {}) {
     if (!record || record._settled) return false;
+    let workspaceExecution = null;
+    if (isPlainObject(patch.workspaceExecution)) {
+      try {
+        workspaceExecution = safeWorkspaceExecutionProjection(patch.workspaceExecution);
+      } catch (error) {
+        patch = {
+          ...patch,
+          state: "failed",
+          blockerCode: normalizeString(error?.code, "direct_workspace_worker_execution_projection_unsafe"),
+          resultSummary: "Workspace worker execution evidence was rejected at the public projection boundary.",
+        };
+        workspaceExecution = {
+          schema: "direct_workspace_worker_execution@1",
+          status: "failed",
+          workspaceMode: record.workspaceMode,
+          toolProfile: record.toolProfile,
+          rawWorkspacePathIncluded: false,
+        };
+      }
+    }
     record._settled = true;
     record.state = TERMINAL_STATES.has(patch.state) ? patch.state : "failed";
     record.blockerCode = normalizeString(patch.blockerCode, "");
@@ -330,6 +418,7 @@ class DirectNativeAgentPool extends EventEmitter {
       record.state === "completed" ? "Child agent completed." : `Child agent ${record.state}.`,
     );
     record.resultDigest = normalizeString(patch.resultDigest, record.resultDigest);
+    if (workspaceExecution) record.workspaceExecution = workspaceExecution;
     const capture = normalizeEpistemicCapture(patch.epistemicCapture || record.epistemicCapture);
     record.epistemicCapture = {
       status: capture.status,
@@ -347,6 +436,7 @@ class DirectNativeAgentPool extends EventEmitter {
     record.completedAt = nowIso(this.now);
     record._task = "";
     record._contextMessages = [];
+    record._project = null;
     this.queue = this.queue.filter((childAgentId) => childAgentId !== record.childAgentId);
     if (record._leaseActive) {
       record._leaseActive = false;
@@ -416,6 +506,11 @@ class DirectNativeAgentPool extends EventEmitter {
       state: record.state,
       model: record.model,
       reasoningEffort: record.reasoningEffort,
+      workspaceMode: record.workspaceMode,
+      toolProfile: record.toolProfile,
+      workspaceExecution: record.workspaceExecution
+        ? safeWorkspaceExecutionProjection(record.workspaceExecution)
+        : null,
       contextHandoff: record.contextHandoff,
       contextMessageCount: record.contextMessageCount,
       contextDigest: record.contextDigest,

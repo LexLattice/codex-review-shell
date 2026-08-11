@@ -60,6 +60,17 @@ function normalizeLinuxPath(value, fallback = "/home") {
   return text.startsWith("/") ? text : `/${text}`;
 }
 
+function workspaceRootIsAbsolute(value, workspaceKind = "local", hostPlatform = process.platform) {
+  const root = normalizeString(value, "");
+  if (!root) return false;
+  const kind = normalizeString(workspaceKind, "local");
+  if (kind === "windows") return path.win32.isAbsolute(root);
+  if (kind === "wsl") return path.posix.isAbsolute(root);
+  return hostPlatform === "win32"
+    ? path.win32.isAbsolute(root)
+    : path.posix.isAbsolute(root);
+}
+
 function shellSingleQuote(value) {
   return `'${String(value ?? "").replace(/'/g, `'\"'\"'`)}'`;
 }
@@ -251,6 +262,7 @@ class NdjsonTransport extends EventEmitter {
       clearTimeout(pending.timer);
       if (message.error) {
         const error = new Error(message.error.message || "Workspace backend request failed.");
+        error.code = normalizeString(message.error.code, "");
         error.backendStack = message.error.stack;
         pending.reject(error);
       } else {
@@ -520,6 +532,15 @@ class WorkspaceBackendManager extends EventEmitter {
     return this.sessionForProject(project).snapshot();
   }
 
+  disposeForProject(project) {
+    const key = workspaceSessionKey(project, this.options.fallbackRoot);
+    const session = this.sessions.get(key);
+    if (!session) return false;
+    session.dispose();
+    this.sessions.delete(key);
+    return true;
+  }
+
   disposeAll() {
     for (const session of this.sessions.values()) session.dispose();
     this.sessions.clear();
@@ -531,5 +552,6 @@ module.exports = {
   normalizeWorkspace,
   workspaceLabel,
   workspaceRoot,
+  workspaceRootIsAbsolute,
   workspaceSessionKey,
 };
