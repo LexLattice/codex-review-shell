@@ -20,8 +20,20 @@ const {
   digestFor,
   text,
 } = require("./kernel");
+const {
+  DIRECT_EPISTEMIC_CONTEXT_DELIVERY_ADMISSION_SCHEMA,
+  DIRECT_EPISTEMIC_CONTEXT_DELIVERY_EVENT_SCHEMA,
+  DIRECT_EPISTEMIC_CONTEXT_DELIVERY_TERMINAL_STATES,
+  buildContextDeliveryAdmission,
+  buildContextDeliveryEvent,
+  buildContextDeliveryProjection,
+  validateImportForAdmission,
+} = require("./context-delivery");
 
-const DIRECT_EPISTEMIC_STORE_SCHEMA = "direct_epistemic_store@2";
+const DIRECT_EPISTEMIC_STORE_SCHEMA = "direct_epistemic_store@3";
+const DIRECT_EPISTEMIC_STORE_MIGRATABLE_SCHEMAS = new Set([
+  "direct_epistemic_store@2",
+]);
 const DIRECT_EPISTEMIC_STORE_FILE = "direct-epistemic-context-v2.sqlite";
 
 function json(value) {
@@ -89,6 +101,7 @@ class DirectEpistemicStore {
       this.ensureSchema();
       this.verifyPersistedIntegrity();
       this.recoverInterruptedTranscriptionJobs();
+      this.recoverInterruptedContextDeliveries();
     } catch (error) {
       if (this.ownsDatabase) {
         try { this.db?.close(); } catch {}
@@ -209,6 +222,37 @@ class DirectEpistemicStore {
         result_json text not null,
         created_at text not null
       );
+      create table if not exists direct_epistemic_context_delivery_admissions (
+        admission_id text primary key,
+        project_id text not null,
+        target_session_id text not null,
+        client_request_id text not null,
+        import_id text not null,
+        admission_digest text not null,
+        current_state text not null,
+        claimed_turn_id text not null,
+        admission_json text not null,
+        created_at text not null,
+        updated_at text not null,
+        unique(project_id, target_session_id, client_request_id),
+        foreign key(import_id) references direct_epistemic_context_imports(import_id)
+      );
+      create index if not exists direct_epistemic_delivery_target_idx
+        on direct_epistemic_context_delivery_admissions(
+          project_id, target_session_id, current_state, updated_at
+        );
+      create table if not exists direct_epistemic_context_delivery_events (
+        event_id text primary key,
+        admission_id text not null,
+        sequence integer not null,
+        state text not null,
+        event_digest text not null,
+        event_json text not null,
+        created_at text not null,
+        unique(admission_id, sequence),
+        foreign key(admission_id)
+          references direct_epistemic_context_delivery_admissions(admission_id)
+      );
       create table if not exists direct_epistemic_transcription_jobs (
         job_id text primary key,
         subject_id text not null,
@@ -224,12 +268,17 @@ class DirectEpistemicStore {
       );
     `);
     const existingSchema = this.db.prepare("select value from direct_epistemic_meta where key = ?").get("schema");
-    if (existingSchema && existingSchema.value !== DIRECT_EPISTEMIC_STORE_SCHEMA) {
+    if (
+      existingSchema &&
+      existingSchema.value !== DIRECT_EPISTEMIC_STORE_SCHEMA &&
+      !DIRECT_EPISTEMIC_STORE_MIGRATABLE_SCHEMAS.has(existingSchema.value)
+    ) {
       const error = new Error("direct_epistemic_store_schema_mismatch");
       error.code = "direct_epistemic_store_schema_mismatch";
       throw error;
     }
-    this.db.prepare("insert or ignore into direct_epistemic_meta(key, value) values (?, ?)")
+    this.db.prepare(`insert into direct_epistemic_meta(key, value) values (?, ?)
+      on conflict(key) do update set value = excluded.value`)
       .run("schema", DIRECT_EPISTEMIC_STORE_SCHEMA);
     const integrity = this.db.prepare("pragma quick_check").all();
     if (!integrity.length || integrity.some((row) => !Object.values(row).includes("ok"))) {
@@ -362,6 +411,7 @@ class DirectEpistemicStore {
       ) fail("direct_epistemic_port_integrity_failed");
       ports.set(rebuilt.portId, rebuilt);
     }
+    const contextImports = new Map();
     for (const row of this.db.prepare(`select import_id, subject_id, o_revision_id, e_revision_id,
       port_id, import_digest, result_json, created_at from direct_epistemic_context_imports`).all()) {
       const value = parse(row.result_json, "context_import");
@@ -403,6 +453,79 @@ class DirectEpistemicStore {
         port?.subjectId !== subject?.subjectId ||
         !recordBodiesMatch
       ) fail("direct_epistemic_context_import_integrity_failed");
+      contextImports.set(rebuilt.importId, rebuilt);
+    }
+    const deliveryAdmissions = new Map();
+    for (const row of this.db.prepare(`select admission_id, project_id,
+      target_session_id, client_request_id, import_id, admission_digest,
+      current_state, claimed_turn_id, admission_json, created_at, updated_at
+      from direct_epistemic_context_delivery_admissions`).all()) {
+      const value = parse(row.admission_json, "context_delivery_admission");
+      const rebuilt = buildContextDeliveryAdmission(value);
+      const contextImport = contextImports.get(row.import_id);
+      const subject = subjects.get(contextImport?.subjectRef?.id);
+      if (
+        rebuilt.admissionId !== row.admission_id ||
+        rebuilt.projectId !== row.project_id ||
+        rebuilt.target?.sessionId !== row.target_session_id ||
+        rebuilt.clientRequestId !== row.client_request_id ||
+        rebuilt.importRef?.id !== row.import_id ||
+        rebuilt.admissionDigest !== row.admission_digest ||
+        rebuilt.requestedAt !== row.created_at ||
+        canonicalJson(value) !== canonicalJson(rebuilt) ||
+        !contextImport ||
+        subject?.projectId !== rebuilt.projectId ||
+        rebuilt.importRef?.digest !== contextImport.importDigest ||
+        canonicalJson(rebuilt.subjectRef) !== canonicalJson(contextImport.subjectRef) ||
+        canonicalJson(rebuilt.oRevisionRef) !== canonicalJson(contextImport.oRevisionRef) ||
+        canonicalJson(rebuilt.eRevisionRef) !== canonicalJson(contextImport.eRevisionRef) ||
+        canonicalJson(rebuilt.portRef) !== canonicalJson(contextImport.portRef)
+      ) fail("direct_epistemic_context_delivery_admission_integrity_failed");
+      deliveryAdmissions.set(rebuilt.admissionId, {
+        admission: rebuilt,
+        currentState: row.current_state,
+        claimedTurnId: row.claimed_turn_id,
+        updatedAt: row.updated_at,
+        events: [],
+      });
+    }
+    for (const row of this.db.prepare(`select event_id, admission_id,
+      sequence, state, event_digest, event_json, created_at
+      from direct_epistemic_context_delivery_events
+      order by admission_id, sequence`).all()) {
+      const holder = deliveryAdmissions.get(row.admission_id);
+      const value = parse(row.event_json, "context_delivery_event");
+      const prior = holder?.events?.length
+        ? holder.events[holder.events.length - 1]
+        : null;
+      const rebuilt = holder && buildContextDeliveryEvent({
+        ...value,
+        admission: holder.admission,
+        previousEventRef: prior?.ref || null,
+      });
+      if (
+        !holder ||
+        !rebuilt ||
+        row.sequence !== holder.events.length + 1 ||
+        rebuilt.eventId !== row.event_id ||
+        rebuilt.admissionId !== row.admission_id ||
+        rebuilt.sequence !== row.sequence ||
+        rebuilt.state !== row.state ||
+        rebuilt.eventDigest !== row.event_digest ||
+        rebuilt.createdAt !== row.created_at ||
+        canonicalJson(value) !== canonicalJson(rebuilt)
+      ) fail("direct_epistemic_context_delivery_event_integrity_failed");
+      holder.events.push(rebuilt);
+    }
+    for (const holder of deliveryAdmissions.values()) {
+      const latest = holder.events[holder.events.length - 1];
+      if (
+        holder.events.length < 2 ||
+        holder.events[0]?.state !== "requested" ||
+        holder.events[1]?.state !== "admitted" ||
+        holder.currentState !== latest?.state ||
+        holder.claimedTurnId !== text(latest?.turnId)
+      ) fail("direct_epistemic_context_delivery_state_integrity_failed");
     }
     for (const row of this.db.prepare(`select subject_id, o_revision_id, e_revision_id
       from direct_epistemic_heads`).all()) {
@@ -428,6 +551,21 @@ class DirectEpistemicStore {
         status: "failed",
         errorCode: "direct_epistemic_transcription_interrupted",
         updatedAt: new Date(this.now()).toISOString(),
+      });
+    }
+  }
+
+  recoverInterruptedContextDeliveries() {
+    const rows = this.db.prepare(`select admission_id
+      from direct_epistemic_context_delivery_admissions
+      where current_state in ('claimed_for_turn', 'prepared_for_provider')`).all();
+    for (const row of rows) {
+      this.transitionContextDelivery(row.admission_id, {
+        expectedStates: ["claimed_for_turn", "prepared_for_provider"],
+        state: "failed",
+        errorCode: "direct_epistemic_context_delivery_interrupted",
+        reason: "The process stopped after the one-shot admission was claimed and before a provider transport attempt was witnessed.",
+        recovery: true,
       });
     }
   }
@@ -868,6 +1006,368 @@ class DirectEpistemicStore {
       result.createdAt,
     );
     return result;
+  }
+
+  readContextImport(importId) {
+    const row = this.db.prepare(`select result_json
+      from direct_epistemic_context_imports where import_id = ?`)
+      .get(text(importId));
+    return row ? parse(row.result_json, "context_import") : null;
+  }
+
+  contextDeliveryEvents(admissionId) {
+    return this.db.prepare(`select event_json
+      from direct_epistemic_context_delivery_events
+      where admission_id = ? order by sequence`)
+      .all(text(admissionId))
+      .map((row) => parse(row.event_json, "context_delivery_event"));
+  }
+
+  readContextDeliveryAdmission(admissionId) {
+    const row = this.db.prepare(`select admission_json, current_state,
+      claimed_turn_id, created_at, updated_at
+      from direct_epistemic_context_delivery_admissions
+      where admission_id = ?`).get(text(admissionId));
+    if (!row) return null;
+    const events = this.contextDeliveryEvents(admissionId);
+    return {
+      admission: parse(row.admission_json, "context_delivery_admission"),
+      currentState: row.current_state,
+      claimedTurnId: row.claimed_turn_id,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      latestEvent: events[events.length - 1] || null,
+      events,
+    };
+  }
+
+  latestContextDeliveryForTarget(projectId, targetSessionId) {
+    const row = this.db.prepare(`select admission_id
+      from direct_epistemic_context_delivery_admissions
+      where project_id = ? and target_session_id = ?
+      order by updated_at desc, admission_id desc limit 1`)
+      .get(text(projectId), text(targetSessionId));
+    return row ? this.readContextDeliveryAdmission(row.admission_id) : null;
+  }
+
+  latestContextDeliveryForImport(importId, targetSessionId = "") {
+    const sessionId = text(targetSessionId);
+    const row = sessionId
+      ? this.db.prepare(`select admission_id
+          from direct_epistemic_context_delivery_admissions
+          where import_id = ? and target_session_id = ?
+          order by updated_at desc, admission_id desc limit 1`)
+          .get(text(importId), sessionId)
+      : this.db.prepare(`select admission_id
+          from direct_epistemic_context_delivery_admissions
+          where import_id = ?
+          order by updated_at desc, admission_id desc limit 1`)
+          .get(text(importId));
+    return row ? this.readContextDeliveryAdmission(row.admission_id) : null;
+  }
+
+  appendContextDeliveryEventInTransaction(admission, input = {}) {
+    const priorRow = this.db.prepare(`select event_json
+      from direct_epistemic_context_delivery_events
+      where admission_id = ? order by sequence desc limit 1`)
+      .get(admission.admissionId);
+    const prior = priorRow
+      ? parse(priorRow.event_json, "context_delivery_event")
+      : null;
+    const sequence = Number(prior?.sequence || 0) + 1;
+    const event = buildContextDeliveryEvent({
+      admission,
+      sequence,
+      previousEventRef: prior?.ref || null,
+      state: input.state,
+      turnId: Object.prototype.hasOwnProperty.call(input, "turnId")
+        ? text(input.turnId)
+        : text(prior?.turnId),
+      contextBuildId: Object.prototype.hasOwnProperty.call(input, "contextBuildId")
+        ? text(input.contextBuildId)
+        : text(prior?.contextBuildId),
+      requestManifestId: Object.prototype.hasOwnProperty.call(input, "requestManifestId")
+        ? text(input.requestManifestId)
+        : text(prior?.requestManifestId),
+      providerInputProjectionId: Object.prototype.hasOwnProperty.call(input, "providerInputProjectionId")
+        ? text(input.providerInputProjectionId)
+        : text(prior?.providerInputProjectionId),
+      providerInputTextHash: Object.prototype.hasOwnProperty.call(input, "providerInputTextHash")
+        ? text(input.providerInputTextHash)
+        : text(prior?.providerInputTextHash),
+      attempt: Object.prototype.hasOwnProperty.call(input, "attempt")
+        ? Number(input.attempt || 0)
+        : Number(prior?.attempt || 0),
+      errorCode: text(input.errorCode),
+      reason: text(input.reason),
+      recovery: input.recovery === true,
+      createdAt: text(input.createdAt, new Date(this.now()).toISOString()),
+    });
+    this.db.prepare(`insert into direct_epistemic_context_delivery_events(
+      event_id, admission_id, sequence, state, event_digest, event_json, created_at
+    ) values (?, ?, ?, ?, ?, ?, ?)`).run(
+      event.eventId,
+      admission.admissionId,
+      event.sequence,
+      event.state,
+      event.eventDigest,
+      json(event),
+      event.createdAt,
+    );
+    this.db.prepare(`update direct_epistemic_context_delivery_admissions
+      set current_state = ?, claimed_turn_id = ?, updated_at = ?
+      where admission_id = ?`).run(
+      event.state,
+      event.turnId,
+      event.createdAt,
+      admission.admissionId,
+    );
+    return event;
+  }
+
+  createContextDeliveryAdmission(input = {}) {
+    const candidate = buildContextDeliveryAdmission(input);
+    const contextResult = this.readContextImport(candidate.importRef.id);
+    validateImportForAdmission(candidate, contextResult);
+    const subject = this.readSubject(candidate.subjectRef.id);
+    if (!subject || subject.projectId !== candidate.projectId) {
+      fail("direct_epistemic_context_delivery_project_mismatch");
+    }
+    return this.withImmediateTransaction(() => {
+      const existingRow = this.db.prepare(`select admission_id, admission_digest
+        from direct_epistemic_context_delivery_admissions
+        where project_id = ? and target_session_id = ? and client_request_id = ?`)
+        .get(candidate.projectId, candidate.target.sessionId, candidate.clientRequestId);
+      if (existingRow) {
+        if (existingRow.admission_digest !== candidate.admissionDigest) {
+          fail("direct_epistemic_context_delivery_idempotency_conflict");
+        }
+        return this.readContextDeliveryAdmission(existingRow.admission_id);
+      }
+
+      const pendingRows = this.db.prepare(`select admission_id, admission_json
+        from direct_epistemic_context_delivery_admissions
+        where project_id = ? and target_session_id = ?
+          and current_state in ('requested', 'admitted')
+        order by updated_at, admission_id`).all(
+        candidate.projectId,
+        candidate.target.sessionId,
+      );
+      for (const row of pendingRows) {
+        const pending = parse(row.admission_json, "context_delivery_admission");
+        this.appendContextDeliveryEventInTransaction(pending, {
+          state: "superseded",
+          reason: `Superseded by ${candidate.admissionId}.`,
+        });
+      }
+
+      this.db.prepare(`insert into direct_epistemic_context_delivery_admissions(
+        admission_id, project_id, target_session_id, client_request_id,
+        import_id, admission_digest, current_state, claimed_turn_id,
+        admission_json, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        candidate.admissionId,
+        candidate.projectId,
+        candidate.target.sessionId,
+        candidate.clientRequestId,
+        candidate.importRef.id,
+        candidate.admissionDigest,
+        "requested",
+        "",
+        json(candidate),
+        candidate.requestedAt,
+        candidate.requestedAt,
+      );
+      this.appendContextDeliveryEventInTransaction(candidate, {
+        state: "requested",
+        createdAt: candidate.requestedAt,
+        reason: "Operator requested a one-shot context handoff.",
+      });
+      this.appendContextDeliveryEventInTransaction(candidate, {
+        state: "admitted",
+        createdAt: candidate.admittedAt,
+        reason: "Exact import and target binding were admitted locally.",
+      });
+      return this.readContextDeliveryAdmission(candidate.admissionId);
+    });
+  }
+
+  transitionContextDelivery(admissionId, input = {}) {
+    return this.withImmediateTransaction(() => {
+      const holder = this.readContextDeliveryAdmission(admissionId);
+      if (!holder) fail("direct_epistemic_context_delivery_unknown");
+      const expectedStates = new Set(
+        (Array.isArray(input.expectedStates)
+          ? input.expectedStates
+          : [input.expectedState])
+          .map((value) => text(value))
+          .filter(Boolean),
+      );
+      if (expectedStates.size && !expectedStates.has(holder.currentState)) {
+        fail("direct_epistemic_context_delivery_state_conflict");
+      }
+      if (DIRECT_EPISTEMIC_CONTEXT_DELIVERY_TERMINAL_STATES.includes(holder.currentState)) {
+        fail("direct_epistemic_context_delivery_already_terminal");
+      }
+      const allowed = {
+        requested: new Set(["admitted", "superseded", "failed"]),
+        admitted: new Set(["claimed_for_turn", "stale", "superseded", "failed"]),
+        claimed_for_turn: new Set(["prepared_for_provider", "failed"]),
+        prepared_for_provider: new Set(["provider_transport_attempted", "failed"]),
+      };
+      if (!allowed[holder.currentState]?.has(text(input.state))) {
+        fail("direct_epistemic_context_delivery_transition_invalid");
+      }
+      const nextState = text(input.state);
+      const prior = holder.latestEvent || {};
+      const effectiveText = (field) =>
+        Object.prototype.hasOwnProperty.call(input, field)
+          ? text(input[field])
+          : text(prior[field]);
+      for (const field of [
+        "turnId",
+        "contextBuildId",
+        "requestManifestId",
+        "providerInputProjectionId",
+        "providerInputTextHash",
+      ]) {
+        if (text(prior[field]) && effectiveText(field) !== text(prior[field])) {
+          fail("direct_epistemic_context_delivery_binding_mismatch");
+        }
+      }
+      if (nextState === "claimed_for_turn" && !effectiveText("turnId")) {
+        fail("direct_epistemic_context_delivery_turn_binding_required");
+      }
+      if (nextState === "prepared_for_provider") {
+        if (
+          !effectiveText("turnId") ||
+          !effectiveText("contextBuildId") ||
+          !effectiveText("requestManifestId") ||
+          !effectiveText("providerInputProjectionId") ||
+          !effectiveText("providerInputTextHash")
+        ) fail("direct_epistemic_context_delivery_preparation_witness_required");
+      }
+      const transportAttempt = Number(input.attempt);
+      if (
+        nextState === "provider_transport_attempted" &&
+        (!Number.isInteger(transportAttempt) || transportAttempt < 1)
+      ) fail("direct_epistemic_context_delivery_transport_attempt_required");
+      const event = this.appendContextDeliveryEventInTransaction(
+        holder.admission,
+        input,
+      );
+      return {
+        ...holder,
+        currentState: event.state,
+        claimedTurnId: event.turnId,
+        updatedAt: event.createdAt,
+        latestEvent: event,
+        events: [...holder.events, event],
+      };
+    });
+  }
+
+  claimContextDelivery(input = {}) {
+    const projectId = text(input.projectId);
+    const targetSessionId = text(input.targetSessionId || input.sessionId);
+    const targetTurnId = text(input.targetTurnId || input.turnId);
+    const roleLane = text(input.roleLane, "direct_assistant");
+    const workThreadId = text(input.workThreadId);
+    if (!projectId || !targetSessionId || !targetTurnId) {
+      fail("direct_epistemic_context_delivery_claim_target_invalid");
+    }
+    return this.withImmediateTransaction(() => {
+      const row = this.db.prepare(`select admission_id
+        from direct_epistemic_context_delivery_admissions
+        where project_id = ? and target_session_id = ? and current_state = 'admitted'
+        order by updated_at desc, admission_id desc limit 1`)
+        .get(projectId, targetSessionId);
+      if (!row) return null;
+      const holder = this.readContextDeliveryAdmission(row.admission_id);
+      const admission = holder.admission;
+      let staleReason = "";
+      if (
+        admission.target.roleLane !== roleLane ||
+        admission.target.workThreadId !== workThreadId
+      ) {
+        staleReason = "The target role lane or workthread changed before the next turn claimed the admission.";
+      }
+      const subject = this.readSubject(admission.subjectRef.id);
+      const head = subject ? this.readHead(subject.subjectId) : null;
+      if (
+        !staleReason &&
+        (
+          subject?.projectId !== projectId ||
+          head?.oRevision?.oRevisionId !== admission.oRevisionRef.id ||
+          head?.oRevision?.revisionDigest !== admission.oRevisionRef.digest ||
+          head?.eRevision?.eRevisionId !== admission.eRevisionRef.id ||
+          head?.eRevision?.revisionDigest !== admission.eRevisionRef.digest
+        )
+      ) {
+        staleReason = "The admitted O/E revision is no longer the exact subject head.";
+      }
+      const contextResult = this.readContextImport(admission.importRef.id);
+      try {
+        if (!staleReason) validateImportForAdmission(admission, contextResult);
+      } catch {
+        staleReason = "The admitted immutable context import no longer validates.";
+      }
+      if (staleReason) {
+        const event = this.appendContextDeliveryEventInTransaction(admission, {
+          state: "stale",
+          reason: staleReason,
+        });
+        return {
+          admission,
+          contextResult: null,
+          projection: null,
+          currentState: event.state,
+          latestEvent: event,
+          stale: true,
+        };
+      }
+      let projection;
+      try {
+        projection = buildContextDeliveryProjection({
+          admission,
+          contextResult,
+          targetTurnId,
+        });
+      } catch (error) {
+        const event = this.appendContextDeliveryEventInTransaction(admission, {
+          state: "failed",
+          turnId: targetTurnId,
+          errorCode: text(
+            error?.code,
+            "direct_epistemic_context_delivery_projection_failed",
+          ),
+          reason:
+            "The admitted context could not be compiled into a safe provider projection.",
+        });
+        return {
+          admission,
+          contextResult: null,
+          projection: null,
+          currentState: event.state,
+          latestEvent: event,
+          stale: false,
+          failed: true,
+        };
+      }
+      const event = this.appendContextDeliveryEventInTransaction(admission, {
+        state: "claimed_for_turn",
+        turnId: targetTurnId,
+        reason: "The exact next Direct turn claimed the one-shot admission.",
+      });
+      return {
+        admission,
+        contextResult,
+        projection,
+        currentState: event.state,
+        latestEvent: event,
+        stale: false,
+      };
+    });
   }
 
   admitProjection(input = {}) {
