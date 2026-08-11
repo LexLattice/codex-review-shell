@@ -31,7 +31,7 @@ if (process.platform === "linux" && !process.env.DISPLAY && process.env.CODEX_T3
   process.exit(exitCode);
 }
 
-const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-t3-gui-electron-"));
+const testRoot = fs.mkdtempSync(path.join(process.platform === "linux" ? "/tmp" : os.tmpdir(), "direct-t3-gui-electron-"));
 const userDataRoot = path.join(testRoot, "profile");
 const screenshotPath = process.env.CODEX_T3_GUI_SCREENSHOT || path.join(testRoot, "t3-direct-gui.png");
 const intakeScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-intake.png");
@@ -321,6 +321,29 @@ try {
   assert.equal(await page.locator("#directProjectLifecycleRestore").isDisabled(), true);
   assert.equal(await page.locator("#directProjectLifecycleDelete").isDisabled(), true);
   await page.screenshot({ path: projectLifecycleScreenshotPath, fullPage: true });
+  const configPath = path.join(userDataRoot, "workspace-config.json");
+  const configFailureBackupPath = path.join(userDataRoot, "workspace-config.failure-backup.json");
+  fs.renameSync(configPath, configFailureBackupPath);
+  fs.mkdirSync(configPath);
+  try {
+    await page.locator("#directProjectLifecycleArchive").click();
+    await page.waitForFunction(() => document.querySelector("#directProjectLifecycleStatus")?.dataset?.state === "failed");
+    const directoryAfterFailedArchive = await page.evaluate(
+      () => window.codexSurfaceBridge.readDirectWorkbenchProjectDirectory(),
+    );
+    assert.equal(
+      directoryAfterFailedArchive.projects.find((project) => project.displayName === "Local Direct GUI Fixture")?.lifecycle?.state,
+      "active",
+    );
+    const persistedAfterFailedArchive = JSON.parse(fs.readFileSync(configFailureBackupPath, "utf8"));
+    assert.equal(
+      persistedAfterFailedArchive.projects.find((project) => project.id === createdProject.id)?.lifecycle?.state,
+      "active",
+    );
+  } finally {
+    fs.rmdirSync(configPath);
+    fs.renameSync(configFailureBackupPath, configPath);
+  }
   await page.locator("#directProjectLifecycleArchive").click();
   await page.locator("#directProjectLifecyclePanel").waitFor({ state: "hidden" });
   await page.waitForFunction(

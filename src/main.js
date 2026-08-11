@@ -6514,8 +6514,11 @@ async function performDirectWorkbenchProjectBindingMutation(operation = {}) {
 
 async function performDirectWorkbenchProjectLifecycleMutation(operation = {}) {
   const sourceProjectId = normalizeString(operation.sourceProjectId, "");
+  let sourceConfig = null;
+  let persistedConfig = null;
   try {
     const config = await loadConfig();
+    sourceConfig = config;
     if (normalizeString(config.selectedProjectId, "") !== sourceProjectId) {
       const error = new Error("The selected project changed before the lifecycle mutation started.");
       error.code = "project_binding_source_stale";
@@ -6560,6 +6563,7 @@ async function performDirectWorkbenchProjectLifecycleMutation(operation = {}) {
     }
 
     const saved = await saveConfig({ ...config, projects });
+    persistedConfig = saved;
     const receipt = buildDirectWorkbenchProjectLifecycleReceipt({
       ...operation,
       ok: true,
@@ -6575,6 +6579,7 @@ async function performDirectWorkbenchProjectLifecycleMutation(operation = {}) {
     });
     emitDirectWorkbenchProjectDirectoryEvent({ lifecycleReceipt: receipt, directory: completedDirectory });
   } catch (error) {
+    if (sourceConfig && !persistedConfig) configCache = sourceConfig;
     const reason = normalizeString(error?.code, "project_lifecycle_mutation_failed");
     const receipt = buildDirectWorkbenchProjectLifecycleReceipt({
       ...operation,
@@ -6584,7 +6589,7 @@ async function performDirectWorkbenchProjectLifecycleMutation(operation = {}) {
     });
     rememberDirectWorkbenchProjectLifecycleMutation(operation.clientLifecycleId, { ...operation, receipt });
     directWorkbenchProjectBindingMutation = { state: "failed", mutationId: operation.lifecycleId, reason };
-    const config = await loadConfig().catch(() => null);
+    const config = persistedConfig || sourceConfig || await loadConfig().catch(() => null);
     const failedDirectory = config ? buildDirectWorkbenchProjectDirectory(config, {
       activeProjectId: sourceProjectId,
       activeTurnCounts: directWorkbenchActiveTurnCounts(config, codexView?.webContents),

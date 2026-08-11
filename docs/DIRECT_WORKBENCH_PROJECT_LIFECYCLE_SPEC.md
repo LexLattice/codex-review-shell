@@ -275,6 +275,10 @@ Electron/Xvfb must prove:
   entirely archived and never selects an archived binding;
 - main exposes revision-bound lifecycle drafts and idempotent archive, restore,
   and delete receipts through Direct-Workbench-only IPC;
+- lifecycle draft responses are request-gated so stale target evidence cannot
+  replace a newer Manage selection or a closed dock;
+- failed atomic persistence restores the exact pre-mutation in-memory catalog
+  before the failed receipt and directory projection are emitted;
 - archive and restore retain the same project identity and complete binding;
 - delete removes only an archived config binding after exact phrase
   confirmation;
@@ -294,6 +298,11 @@ create inactive binding
   -> reject incomplete confirmation
   -> delete archived binding
   -> verify config-only removal
+
+forced atomic persistence failure
+  -> emit failed lifecycle receipt
+  -> retain active binding in memory and on disk
+  -> retry successfully after persistence recovers
 ```
 
 Commands:

@@ -65,6 +65,7 @@
     lifecycleLoading: false,
     lifecycleWorking: false,
     lifecycleError: "",
+    lifecycleDraftRequestId: 0,
   };
 
   function createElement(tagName, className = "", text = "") {
@@ -234,6 +235,7 @@
 
   function closeLifecyclePanel() {
     if (view.lifecycleWorking) return;
+    view.lifecycleDraftRequestId += 1;
     if (lifecyclePanel) lifecyclePanel.hidden = true;
     shell?.removeAttribute("data-t3-project-lifecycle-open");
     view.lifecycleDraft = null;
@@ -286,6 +288,8 @@
 
   async function openLifecyclePanel(projectId) {
     if (!lifecyclePanel || typeof bridge?.readDirectWorkbenchProjectLifecycleDraft !== "function") return;
+    const requestId = view.lifecycleDraftRequestId + 1;
+    view.lifecycleDraftRequestId = requestId;
     document.getElementById("runtimeDrawerClose")?.click();
     document.getElementById("threadAnalyticsPanelClose")?.click();
     const intake = document.getElementById("directThreadIntakePanel");
@@ -301,13 +305,16 @@
     renderLifecyclePanel();
     try {
       const draft = await bridge.readDirectWorkbenchProjectLifecycleDraft({ projectId });
+      if (requestId !== view.lifecycleDraftRequestId || lifecyclePanel.hidden) return;
       if (draft?.schema !== "direct_workbench_project_lifecycle_draft@1") {
         throw new Error("project_lifecycle_draft_invalid");
       }
       view.lifecycleDraft = draft;
     } catch (error) {
+      if (requestId !== view.lifecycleDraftRequestId || lifecyclePanel.hidden) return;
       view.lifecycleError = error?.code || error?.message || "project_lifecycle_draft_unavailable";
     } finally {
+      if (requestId !== view.lifecycleDraftRequestId || lifecyclePanel.hidden) return;
       view.lifecycleLoading = false;
       renderLifecyclePanel();
     }

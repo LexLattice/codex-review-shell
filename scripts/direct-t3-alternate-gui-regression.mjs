@@ -67,6 +67,30 @@ assert.match(projectDirectoryJs, /direct_workbench_project_lifecycle_draft@1/);
 assert.match(projectDirectoryJs, /readDirectWorkbenchProjectLifecycleDraft/);
 assert.match(projectDirectoryJs, /mutateDirectWorkbenchProjectLifecycle/);
 assert.match(projectDirectoryJs, /requiredConfirmation/);
+assert.match(projectDirectoryJs, /lifecycleDraftRequestId/);
+assert.match(projectDirectoryJs, /requestId !== view\.lifecycleDraftRequestId \|\| lifecyclePanel\.hidden/);
+assert.match(mainSource, /if \(sourceConfig && !persistedConfig\) configCache = sourceConfig;/);
+const lifecycleOpenStart = projectDirectoryJs.indexOf("async function openLifecyclePanel");
+const lifecycleDraftAssignment = projectDirectoryJs.indexOf("view.lifecycleDraft = draft", lifecycleOpenStart);
+const lifecycleRequestGuard = projectDirectoryJs.lastIndexOf(
+  "requestId !== view.lifecycleDraftRequestId || lifecyclePanel.hidden",
+  lifecycleDraftAssignment,
+);
+assert.ok(lifecycleOpenStart >= 0 && lifecycleRequestGuard > lifecycleOpenStart);
+assert.ok(lifecycleDraftAssignment > lifecycleRequestGuard);
+const lifecycleMutationStart = mainSource.indexOf("async function performDirectWorkbenchProjectLifecycleMutation");
+const lifecyclePersistenceMarker = mainSource.indexOf("let persistedConfig = null", lifecycleMutationStart);
+const lifecycleCacheRollback = mainSource.indexOf(
+  "if (sourceConfig && !persistedConfig) configCache = sourceConfig",
+  lifecycleMutationStart,
+);
+const lifecycleFailedReceipt = mainSource.indexOf(
+  "const reason = normalizeString(error?.code, \"project_lifecycle_mutation_failed\")",
+  lifecycleMutationStart,
+);
+assert.ok(lifecycleMutationStart >= 0 && lifecyclePersistenceMarker > lifecycleMutationStart);
+assert.ok(lifecycleCacheRollback > lifecyclePersistenceMarker);
+assert.ok(lifecycleFailedReceipt > lifecycleCacheRollback);
 assert.match(projectDirectoryJs, /expectedCatalogRevision/);
 assert.match(projectDirectoryJs, /sourceProjectId/);
 assert.match(projectDirectoryJs, /targetProjectId/);
