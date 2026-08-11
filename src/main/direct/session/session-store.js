@@ -87,6 +87,12 @@ function newId(prefix) {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }
 
+function normalizedEventEnvelopeDigest(envelope = {}) {
+  return crypto.createHash("sha256")
+    .update(JSON.stringify({ at: normalizeString(envelope.at, ""), event: envelope.event }))
+    .digest("hex");
+}
+
 function normalizeId(value, fallbackPrefix) {
   const text = normalizeString(value, "");
   if (SAFE_ID_PATTERN.test(text)) return text;
@@ -466,6 +472,28 @@ class DirectSessionStore {
     if (!rootDir) throw new Error("DirectSessionStore requires an explicit rootDir.");
     this.rootDir = path.resolve(rootDir);
     this._index = null;
+    this._epistemicObservers = new Set();
+    if (typeof options.epistemicObserver === "function") {
+      this._epistemicObservers.add(options.epistemicObserver);
+    }
+  }
+
+  subscribeEpistemicEvents(observer) {
+    if (typeof observer !== "function") throw new Error("Direct epistemic observer must be a function.");
+    this._epistemicObservers.add(observer);
+    return () => this._epistemicObservers.delete(observer);
+  }
+
+  notifyEpistemicObservers(event) {
+    for (const observer of this._epistemicObservers) {
+      try {
+        const pending = observer(event);
+        if (pending && typeof pending.catch === "function") pending.catch(() => {});
+      } catch {
+        // Epistemic indexing is a rebuildable projection and cannot break the
+        // canonical Direct rollout persistence path.
+      }
+    }
   }
 
   indexPath() {
@@ -885,6 +913,51 @@ class DirectSessionStore {
     return turn;
   }
 
+  readNormalizedEvents(sessionId, turnId) {
+    const filePath = this.eventPath(sessionId, turnId);
+    let body = "";
+    try {
+      body = fs.readFileSync(filePath, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    }
+    const events = [];
+    for (const [index, line] of body.split(/\r?\n/).entries()) {
+      if (!line.trim()) continue;
+      try {
+        const envelope = JSON.parse(line);
+        if (isPlainObject(envelope?.event)) {
+          const sourceEnvelopeDigest = normalizedEventEnvelopeDigest(envelope);
+          if (envelope.sourceEnvelopeDigest && envelope.sourceEnvelopeDigest !== sourceEnvelopeDigest) {
+            const error = new Error(`Normalized event envelope digest mismatch at line ${index + 1}.`);
+            error.code = "direct_normalized_event_envelope_digest_mismatch";
+            throw error;
+          }
+          events.push({
+            ...envelope.event,
+            persistedIndex: events.length,
+            persistedAt: normalizeString(envelope.at, ""),
+            sourceEnvelopeDigest,
+          });
+        } else {
+          const error = new Error(`Normalized event envelope is missing an event object at line ${index + 1}.`);
+          error.code = "direct_normalized_event_envelope_invalid";
+          throw error;
+        }
+      } catch (cause) {
+        if ([
+          "direct_normalized_event_envelope_digest_mismatch",
+          "direct_normalized_event_envelope_invalid",
+        ].includes(cause?.code)) throw cause;
+        const error = new Error(`Invalid normalized event JSONL at line ${index + 1}.`);
+        error.code = "direct_normalized_event_jsonl_invalid";
+        throw error;
+      }
+    }
+    return events;
+  }
+
   writeTurn(turn) {
     if (!isPlainObject(turn) || turn.schema !== DIRECT_TURN_SCHEMA) {
       throw new Error("Direct turn must use direct_codex_turn@1.");
@@ -1169,7 +1242,15 @@ class DirectSessionStore {
         ),
       });
     }
-    return { turn: nextTurn, obligation: nextObligation };
+    const result = { turn: nextTurn, obligation: nextObligation };
+    this.notifyEpistemicObservers({
+      kind: "tool_obligation_updated",
+      sessionId,
+      turnId,
+      obligationId,
+      toolResultRecorded: isPlainObject(patch.result),
+    });
+    return result;
   }
 
   recoverInterruptedTurns(options = {}) {
@@ -1250,7 +1331,10 @@ class DirectSessionStore {
     const normalizedEvents = Array.isArray(events) ? events : [];
     if (!normalizedEvents.length) return turn;
     const at = nowIso(options.nowMs);
-    const lines = normalizedEvents.map((event) => JSON.stringify({ at, event })).join("\n");
+    const lines = normalizedEvents.map((event) => {
+      const envelope = { at, event };
+      return JSON.stringify({ ...envelope, sourceEnvelopeDigest: normalizedEventEnvelopeDigest(envelope) });
+    }).join("\n");
     ensureDirectory(path.dirname(this.eventPath(sessionId, turnId)));
     fs.appendFileSync(this.eventPath(sessionId, turnId), `${lines}\n`, "utf8");
     const session = this.readSession(sessionId);
@@ -1264,10 +1348,18 @@ class DirectSessionStore {
       model: turn.model,
       reasoningEffort: turn.reasoningEffort,
     });
-    return this.updateTurnState(sessionId, turnId, turn.state, {
+    const updatedTurn = this.updateTurnState(sessionId, turnId, turn.state, {
       normalizedEventCount: turn.normalizedEventCount + normalizedEvents.length,
       usageAttribution,
     }, options);
+    this.notifyEpistemicObservers({
+      kind: "normalized_events_appended",
+      sessionId,
+      turnId,
+      eventCount: normalizedEvents.length,
+      events: normalizedEvents,
+    });
+    return updatedTurn;
   }
 
   writeDiagnostic(sessionId, fixtureId, record, options = {}) {

@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const { EventEmitter } = require("node:events");
 const {
   createDirectProviderBackedSubAgentRoute,
+  normalizeEpistemicCapture,
 } = require("./provider-backed-route");
 
 const DIRECT_NATIVE_AGENT_POOL_SCHEMA = "direct_native_agent_pool@1";
@@ -104,6 +105,7 @@ class DirectNativeAgentPool extends EventEmitter {
     this.queue = [];
     this.activeCount = 0;
     this.sequence = 0;
+    this.closed = false;
   }
 
   descriptor() {
@@ -115,6 +117,8 @@ class DirectNativeAgentPool extends EventEmitter {
       queuedChildren: this.queue.length,
       totalChildren: this.jobs.size,
       providerTransportAvailable: Boolean(this.providerTurnRunner),
+      closed: this.closed,
+      acceptingNewChildren: !this.closed,
       capacityScope: "direct_runtime_process_shared_across_agent_tree",
       capacityIncludesPrimaryAgent: false,
       contextHandoffIndependentOfModel: true,
@@ -143,6 +147,8 @@ class DirectNativeAgentPool extends EventEmitter {
   }
 
   launch(input = {}) {
+    if (this.closed) return this.launchResult(null, "blocked", "direct_agent_pool_closed");
+    if (input.signal?.aborted) return this.launchResult(null, "blocked", "direct_agent_launch_aborted");
     if (!this.providerTurnRunner) {
       return this.launchResult(null, "blocked", "provider_runner_missing");
     }
@@ -198,14 +204,37 @@ class DirectNativeAgentPool extends EventEmitter {
       resultSummary: "",
       blockerCode: "",
       resultDigest: "",
+      epistemicCapture: {
+        status: "pending",
+        errorCode: "",
+        receiptDigest: "",
+        sessionId: "",
+        turnId: "",
+      },
+      epistemicCaptureComplete: false,
+      epistemicCaptureOmission: null,
+      evidenceConfidence: "unknown",
       rawTaskPersisted: false,
       rawContextPersisted: false,
       _task: task,
       _contextMessages: contextMessages,
       _waiters: new Set(),
+      _settled: false,
+      _leaseActive: false,
+      _abortController: null,
+      _externalSignal: input.signal || null,
+      _externalAbortListener: null,
     };
     this.jobs.set(childAgentId, record);
     this.taskIndex.set(taskKey, childAgentId);
+    if (record._externalSignal?.addEventListener) {
+      record._externalAbortListener = () => this.cancelRecord(record, "direct_agent_launch_aborted");
+      record._externalSignal.addEventListener("abort", record._externalAbortListener, { once: true });
+    }
+    if (record._externalSignal?.aborted) {
+      this.cancelRecord(record, "direct_agent_launch_aborted");
+      return this.launchResult(record, record.state, record.blockerCode);
+    }
     if (record.state === "queued") this.queue.push(childAgentId);
     else this.startRecord(record);
     this.emit("changed", this.publicRecord(record));
@@ -234,10 +263,22 @@ class DirectNativeAgentPool extends EventEmitter {
   }
 
   startRecord(record) {
+    if (!record || record._settled) return;
+    if (this.closed) {
+      this.cancelRecord(record, "direct_agent_pool_closed");
+      return;
+    }
+    if (record._externalSignal?.aborted) {
+      this.cancelRecord(record, "direct_agent_launch_aborted");
+      return;
+    }
     record.state = "running";
     record.startedAt = nowIso(this.now);
+    record._leaseActive = true;
+    record._abortController = new AbortController();
     this.activeCount += 1;
     Promise.resolve().then(async () => {
+      if (record._settled || this.closed) return;
       const route = this.routeFor(record);
       const result = await route.spawnAndRun({
         childAgentId: record.childAgentId,
@@ -248,32 +289,111 @@ class DirectNativeAgentPool extends EventEmitter {
         reasoningEffort: record.reasoningEffort,
         contextHandoffMode: record.contextHandoff.mode,
         contextMessages: record._contextMessages,
+        signal: record._abortController.signal,
       });
-      record.state = TERMINAL_STATES.has(result.status) ? result.status : "failed";
-      record.blockerCode = normalizeString(result.blockerCode, "");
-      record.resultSummary = normalizeString(
-        result.reducedSummary?.summaryText || result.childResultPreview || record.blockerCode,
-        record.state === "completed" ? "Child agent completed." : `Child agent ${record.state}.`,
-      );
-      record.resultDigest = normalizeString(result.resultDigest, "");
-      record.completedAt = nowIso(this.now);
+      this.settleRecord(record, {
+        state: TERMINAL_STATES.has(result.status) ? result.status : "failed",
+        blockerCode: normalizeString(result.blockerCode, ""),
+        resultSummary: normalizeString(
+          result.reducedSummary?.summaryText || result.childResultPreview || result.blockerCode,
+          result.status === "completed" ? "Child agent completed." : `Child agent ${result.status || "failed"}.`,
+        ),
+        resultDigest: normalizeString(result.resultDigest, ""),
+        epistemicCapture: result.epistemicCapture,
+        evidenceConfidence: normalizeString(result.resultEnvelope?.confidence, "unknown"),
+      });
     }).catch((error) => {
-      record.state = "failed";
-      record.blockerCode = normalizeString(error?.code, "direct_agent_runtime_exception");
-      record.resultSummary = record.blockerCode;
-      record.completedAt = nowIso(this.now);
-    }).finally(() => {
-      record._task = "";
-      record._contextMessages = [];
-      this.activeCount = Math.max(0, this.activeCount - 1);
-      for (const waiter of record._waiters) waiter(this.publicRecord(record));
-      record._waiters.clear();
-      this.emit("changed", this.publicRecord(record));
-      this.drain();
+      const aborted = record._abortController?.signal.aborted || error?.name === "AbortError";
+      const blockerCode = aborted
+        ? "direct_agent_provider_aborted"
+        : normalizeString(error?.code, "direct_agent_runtime_exception");
+      this.settleRecord(record, {
+        state: aborted ? "cancelled" : "failed",
+        blockerCode,
+        resultSummary: blockerCode,
+        epistemicCapture: {
+          status: "unavailable",
+          errorCode: blockerCode,
+        },
+        evidenceConfidence: "partial",
+      });
     });
   }
 
+  settleRecord(record, patch = {}) {
+    if (!record || record._settled) return false;
+    record._settled = true;
+    record.state = TERMINAL_STATES.has(patch.state) ? patch.state : "failed";
+    record.blockerCode = normalizeString(patch.blockerCode, "");
+    record.resultSummary = normalizeString(
+      patch.resultSummary || record.blockerCode,
+      record.state === "completed" ? "Child agent completed." : `Child agent ${record.state}.`,
+    );
+    record.resultDigest = normalizeString(patch.resultDigest, record.resultDigest);
+    const capture = normalizeEpistemicCapture(patch.epistemicCapture || record.epistemicCapture);
+    record.epistemicCapture = {
+      status: capture.status,
+      errorCode: capture.errorCode,
+      receiptDigest: capture.receiptDigest,
+      sessionId: capture.sessionId,
+      turnId: capture.turnId,
+    };
+    record.epistemicCaptureComplete = capture.complete;
+    record.epistemicCaptureOmission = capture.omission;
+    record.evidenceConfidence = normalizeString(
+      patch.evidenceConfidence,
+      capture.complete ? "exact" : "partial",
+    );
+    record.completedAt = nowIso(this.now);
+    record._task = "";
+    record._contextMessages = [];
+    this.queue = this.queue.filter((childAgentId) => childAgentId !== record.childAgentId);
+    if (record._leaseActive) {
+      record._leaseActive = false;
+      this.activeCount = Math.max(0, this.activeCount - 1);
+    }
+    if (record._externalSignal?.removeEventListener && record._externalAbortListener) {
+      record._externalSignal.removeEventListener("abort", record._externalAbortListener);
+    }
+    record._externalAbortListener = null;
+    const publicRecord = this.publicRecord(record);
+    for (const waiter of record._waiters) waiter(publicRecord);
+    record._waiters.clear();
+    this.emit("changed", publicRecord);
+    if (!this.closed) this.drain();
+    return true;
+  }
+
+  cancelRecord(record, blockerCode = "direct_agent_pool_closed") {
+    if (!record || record._settled) return false;
+    if (record._abortController && !record._abortController.signal.aborted) {
+      record._abortController.abort(blockerCode);
+    }
+    return this.settleRecord(record, {
+      state: "cancelled",
+      blockerCode,
+      resultSummary: blockerCode,
+      epistemicCapture: {
+        status: "unavailable",
+        errorCode: blockerCode,
+      },
+      evidenceConfidence: "partial",
+    });
+  }
+
+  close(options = {}) {
+    if (this.closed) return this.descriptor();
+    this.closed = true;
+    const blockerCode = normalizeString(options.reasonCode, "direct_agent_pool_closed");
+    const pending = [...this.jobs.values()].filter((record) => !record._settled);
+    this.queue = [];
+    for (const record of pending) this.cancelRecord(record, blockerCode);
+    this.routes.clear();
+    return this.descriptor();
+  }
+
   drain() {
+    if (this.closed) return;
     while (this.activeCount < this.maxActiveChildren && this.queue.length) {
       const childAgentId = this.queue.shift();
       const record = this.jobs.get(childAgentId);
@@ -307,6 +427,12 @@ class DirectNativeAgentPool extends EventEmitter {
       resultSummary: record.resultSummary,
       blockerCode: record.blockerCode,
       resultDigest: record.resultDigest,
+      epistemicCapture: { ...record.epistemicCapture },
+      epistemicCaptureComplete: record.epistemicCaptureComplete === true,
+      epistemicCaptureOmission: record.epistemicCaptureOmission
+        ? { ...record.epistemicCaptureOmission }
+        : null,
+      evidenceConfidence: record.evidenceConfidence,
       rawTaskIncluded: false,
       rawContextIncluded: false,
     };

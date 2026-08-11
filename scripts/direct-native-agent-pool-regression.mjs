@@ -133,10 +133,107 @@ const records = pool.records({ projectId: "project_pool_fixture", primaryThreadI
 assert.equal(records.length, 10);
 assert(records.every((record) => record.state === "completed"));
 assert(records.every((record) => record.rawTaskIncluded === false && record.rawContextIncluded === false));
+assert(records.every((record) => record.epistemicCapture.status === "unavailable"));
+assert(records.every((record) => record.epistemicCaptureComplete === false));
+assert(records.every((record) => record.epistemicCaptureOmission?.schema === "sub_agent_epistemic_capture_omission@1"));
+assert(records.every((record) => record.evidenceConfidence === "partial"));
 assert.equal(pool.statusSurface({
   projectId: "project_pool_fixture",
   primaryThreadId: "primary_pool_fixture",
 }).listAgents().result.listProjection.rowCount, 10);
+
+const capturePool = new DirectNativeAgentPool({
+  maxActiveChildren: 1,
+  providerTurnRunner: async () => ({
+    ok: true,
+    terminalState: "completed",
+    outputText: "provider completed while capture failed",
+    epistemicCapture: {
+      status: "failed",
+      errorCode: "fixture_capture_failed",
+      receiptDigest: "",
+      sessionId: "",
+      turnId: "",
+    },
+  }),
+});
+const captureLaunch = capturePool.launch({
+  projectId: "project_capture_fixture",
+  primaryThreadId: "primary_capture_fixture",
+  taskName: "capture_failure",
+  message: "capture failure propagation",
+});
+const captureWait = await capturePool.wait({
+  projectId: "project_capture_fixture",
+  primaryThreadId: "primary_capture_fixture",
+  target: captureLaunch.childAgentId,
+  timeoutMs: 2_000,
+});
+const captureRecord = captureWait.updates[0];
+assert.equal(captureRecord.state, "completed", "capture failure must not rewrite provider completion");
+assert.equal(captureRecord.epistemicCapture.status, "failed");
+assert.equal(captureRecord.epistemicCapture.errorCode, "fixture_capture_failed");
+assert.equal(captureRecord.epistemicCaptureComplete, false);
+assert.equal(captureRecord.epistemicCaptureOmission.code, "fixture_capture_failed");
+assert.equal(captureRecord.evidenceConfidence, "partial");
+
+const closeCalls = [];
+const closePool = new DirectNativeAgentPool({
+  maxActiveChildren: 1,
+  maxQueuedChildren: 4,
+  providerTurnRunner: ({ signal }) => new Promise((_resolve, reject) => {
+    closeCalls.push({ signal });
+    signal.addEventListener("abort", () => {
+      const error = new Error("closed fixture provider turn");
+      error.name = "AbortError";
+      reject(error);
+    }, { once: true });
+  }),
+});
+const runningAtClose = closePool.launch({
+  projectId: "project_close_fixture",
+  primaryThreadId: "primary_close_fixture",
+  taskName: "running_at_close",
+  message: "running child",
+});
+const queuedAtClose = closePool.launch({
+  projectId: "project_close_fixture",
+  primaryThreadId: "primary_close_fixture",
+  taskName: "queued_at_close",
+  message: "queued child",
+});
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(closeCalls.length, 1, "only the active child may reach the provider before close");
+const runningWait = closePool.wait({
+  projectId: "project_close_fixture",
+  primaryThreadId: "primary_close_fixture",
+  target: runningAtClose.childAgentId,
+  timeoutMs: 2_000,
+});
+const queuedWait = closePool.wait({
+  projectId: "project_close_fixture",
+  primaryThreadId: "primary_close_fixture",
+  target: queuedAtClose.childAgentId,
+  timeoutMs: 2_000,
+});
+const closedDescriptor = closePool.close({ reasonCode: "fixture_runtime_closed" });
+assert.equal(closedDescriptor.closed, true);
+assert.equal(closedDescriptor.acceptingNewChildren, false);
+assert.equal(closedDescriptor.activeChildren, 0);
+assert.equal(closedDescriptor.queuedChildren, 0);
+assert.equal(closeCalls[0].signal.aborted, true, "pool close must abort the running provider contract");
+const [closedRunning, closedQueued] = await Promise.all([runningWait, queuedWait]);
+assert.equal(closedRunning.updates[0].state, "cancelled");
+assert.equal(closedRunning.updates[0].blockerCode, "fixture_runtime_closed");
+assert.equal(closedQueued.updates[0].state, "cancelled");
+assert.equal(closedQueued.updates[0].blockerCode, "fixture_runtime_closed");
+await new Promise((resolve) => setImmediate(resolve));
+closePool.drain();
+assert.equal(closeCalls.length, 1, "close must prevent queued children from draining into the provider");
+const postCloseLaunch = closePool.launch({ message: "must not launch" });
+assert.equal(postCloseLaunch.status, "blocked");
+assert.equal(postCloseLaunch.blockerCode, "direct_agent_pool_closed");
+assert.equal(closePool.close().closed, true, "pool close must be idempotent");
 
 console.log(JSON.stringify({
   ok: true,

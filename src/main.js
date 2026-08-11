@@ -28,6 +28,12 @@ const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-serve
 const { createCodexCliAuthStore, createDirectAuthCompositeStore } = require("./main/direct/auth/codex-cli-auth");
 const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-loader");
 const { DirectSessionStore } = require("./main/direct/session/session-store");
+const { DirectEpistemicService } = require("./main/direct/epistemic/service");
+const {
+  profile: directEpistemicRepositoryProfile,
+  validateResidentRepositoryObservation,
+} = require("./main/direct/epistemic/repository-runtime");
+const { persistNativeChildProviderTurn } = require("./main/direct/epistemic/native-child-capture");
 const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectWorkThreadRegistryStore } = require("./main/direct/bridge/work-thread-registry");
@@ -457,6 +463,7 @@ let directAuthLoginCoordinator = null;
 let directCodexCliAuthStore = null;
 let directCodexProfileDoc = null;
 let directSessionStore = null;
+let directEpistemicService = null;
 let directThreadStore = null;
 let directWorkThreadStore = null;
 let directAgentRegistryStore = null;
@@ -3360,6 +3367,107 @@ function ensureDirectSessionStore() {
   return directSessionStore;
 }
 
+async function runDirectEpistemicLunaTranscription(request = {}, runtime = {}) {
+  const result = await runTextOnlyDirectProbe({
+    authStore: directRuntimeAuthStore(),
+    refreshCredentials: () => refreshDirectRuntimeCredentials(),
+    profileDoc: ensureDirectCodexProfileDoc(),
+    model: normalizeString(request.model, "gpt-5.6-luna"),
+    reasoningEffort: normalizeString(request.reasoningEffort, "low"),
+    instructions: normalizeString(request.instructions, ""),
+    prompt: normalizeString(request.prompt, ""),
+    outputSchema: request.outputSchema,
+    textFormatName: normalizeString(request.textFormatName, "direct_epistemic_thread_transcription"),
+    textFormatStrict: true,
+    signal: runtime.signal,
+  });
+  if (result?.terminal?.state !== "completed") {
+    const error = new Error(
+      normalizeString(
+        result?.terminal?.error?.message || result?.error?.message,
+        `Luna transcription ended in ${normalizeString(result?.terminal?.state, "unknown")} state.`,
+      ),
+    );
+    error.code = normalizeString(
+      result?.terminal?.error?.code || result?.error?.code,
+      "direct_epistemic_luna_transcription_failed",
+    );
+    throw error;
+  }
+  const outputText = assistantTextFromDirectProviderResult(result);
+  try {
+    return JSON.parse(outputText);
+  } catch {
+    const error = new Error("Luna transcription returned invalid structured output.");
+    error.code = "direct_epistemic_luna_output_invalid";
+    throw error;
+  }
+}
+
+function ensureDirectEpistemicService() {
+  if (directEpistemicService) return directEpistemicService;
+  directEpistemicService = new DirectEpistemicService({
+    rootDir: directSessionRootDir(),
+    sessionStore: ensureDirectSessionStore(),
+    transcriber: (request, runtime) => runDirectEpistemicLunaTranscription(request, runtime),
+    transcriberStatus: () => {
+      const status = directRuntimeAuthStore().readStatus();
+      const authReady = status?.status === "authenticated";
+      return {
+        authReady,
+        readiness: authReady ? "invoke_to_verify_model" : "authentication_required",
+        blocker: authReady ? "" : "Direct authentication is required.",
+      };
+    },
+  });
+  return directEpistemicService;
+}
+
+async function observeDirectEpistemicRepository(project) {
+  try {
+    const backendSession = await ensureWorkspaceBackendManager().ensureForProject(project, {
+      workspaceHygiene: false,
+    });
+    const observation = await backendSession.request(
+      "directEpistemicRepositoryObservation",
+      {
+        profile: {
+          profileId: directEpistemicRepositoryProfile.profileId,
+          revision: directEpistemicRepositoryProfile.revision,
+          markers: directEpistemicRepositoryProfile.markers,
+          sources: directEpistemicRepositoryProfile.sources,
+        },
+      },
+      180_000,
+    );
+    return validateResidentRepositoryObservation(observation, {
+      profile: directEpistemicRepositoryProfile,
+      projectId: project.id,
+    });
+  } catch (error) {
+    console.warn(
+      "[direct-epistemic] resident repository observation failed",
+      normalizeString(error?.code || error?.message, "unknown"),
+    );
+    const safeError = new Error("The resident workspace backend could not produce a bounded repository observation.");
+    safeError.code = "direct_epistemic_repository_observation_failed";
+    throw safeError;
+  }
+}
+
+function closeDirectEpistemicService() {
+  directEpistemicService?.close();
+  directEpistemicService = null;
+}
+
+function closeDirectNativeAgentPool(reason = "Direct runtime closed.") {
+  directNativeAgentPool?.close?.({
+    reason,
+    reasonCode: "direct_runtime_closed",
+  });
+  directNativeAgentPool = null;
+}
+
 function ensureDirectThreadStore() {
   if (directThreadStore) return directThreadStore;
   directThreadStore = new DirectThreadStore({
@@ -3604,7 +3712,39 @@ async function runDirectNativeChildProviderTurn(input = {}) {
     refreshCredentials: () => refreshDirectRuntimeCredentials(),
     profileDoc: ensureDirectCodexProfileDoc(),
     requestBody: input.requestBody,
+    signal: input.signal,
   });
+  let epistemicCapture;
+  if (input.signal?.aborted === true) {
+    epistemicCapture = {
+      status: "unavailable",
+      errorCode: "direct_native_agent_pool_closed",
+      receiptDigest: "",
+      sessionId: "",
+      turnId: "",
+    };
+  } else {
+    try {
+      const receipt = persistNativeChildProviderTurn(ensureDirectSessionStore(), input, result);
+      epistemicCapture = {
+        status: "captured",
+        errorCode: "",
+        receiptDigest: normalizeString(receipt.captureDigest, ""),
+        sessionId: normalizeString(receipt.sessionId, ""),
+        turnId: normalizeString(receipt.turnId, ""),
+      };
+    } catch (error) {
+      const errorCode = normalizeString(error?.code, "direct_epistemic_native_child_capture_failed");
+      console.warn("[direct-epistemic] native child capture failed", errorCode);
+      epistemicCapture = {
+        status: "failed",
+        errorCode,
+        receiptDigest: "",
+        sessionId: "",
+        turnId: "",
+      };
+    }
+  }
   const terminal = result.terminal || {};
   const usageEvent = [...(Array.isArray(result.normalizedEvents) ? result.normalizedEvents : [])]
     .reverse()
@@ -3631,6 +3771,7 @@ async function runDirectNativeChildProviderTurn(input = {}) {
           totalTokens: Number(usage.totalTokens || 0),
         }
       : {},
+    epistemicCapture,
   };
 }
 
@@ -10568,6 +10709,8 @@ async function createDirectWorkbenchWindow() {
     directWorkbenchProjectLifecycleOperations.clear();
     directWorkbenchProjectBindingMutation = { state: "idle" };
     directThreadWorkbenchController = null;
+    closeDirectNativeAgentPool("Direct Workbench window closed.");
+    closeDirectEpistemicService();
     directThreadStore?.close();
     directThreadStore = null;
     directSessionStore = null;
@@ -10803,6 +10946,8 @@ async function createWindow() {
     directImplementationProofEvidenceStore = null;
     directActivationStore = null;
     directThreadWorkbenchController = null;
+    closeDirectNativeAgentPool("Main window closed.");
+    closeDirectEpistemicService();
     directThreadStore?.close();
     directThreadStore = null;
     directSessionStore = null;
@@ -12055,6 +12200,111 @@ ipcMain.handle("direct-import:start-checkpoint-continuation", async (_event, pay
   return result;
 });
 
+async function directEpistemicProjectForSender(sender, channel) {
+  const authority = requireFullCodexSurfaceBridge(sender, channel);
+  requireDirectWorkbenchExperience(channel);
+  const projectId = normalizeString(authority.projectId, "");
+  const config = await loadConfig();
+  if (!projectId || projectId !== normalizeString(config.selectedProjectId, "")) {
+    const error = new Error("The Direct epistemic project source is stale.");
+    error.code = "direct_epistemic_project_source_stale";
+    throw error;
+  }
+  const project = config.projects.find((item) => normalizeString(item?.id, "") === projectId);
+  if (!project) {
+    const error = new Error("The Direct epistemic project is unavailable.");
+    error.code = "direct_epistemic_project_unavailable";
+    throw error;
+  }
+  return { authority, project, service: ensureDirectEpistemicService() };
+}
+
+function assertDirectEpistemicSessionOwnership(service, projectId, sessionId) {
+  const session = service.sessionStore?.readSession(normalizeString(sessionId, ""));
+  if (!session || normalizeString(session.projectId, "") !== normalizeString(projectId, "")) {
+    const error = new Error("The Direct epistemic thread does not belong to the active project.");
+    error.code = "direct_epistemic_thread_project_mismatch";
+    throw error;
+  }
+  return session;
+}
+
+ipcMain.handle("direct-epistemic:snapshot", async (event, payload) => {
+  const { project, service } = await directEpistemicProjectForSender(
+    event.sender,
+    "direct-epistemic:snapshot",
+  );
+  return service.snapshot(project, {
+    sessionId: normalizeString(payload?.sessionId, ""),
+  });
+});
+
+ipcMain.handle("direct-epistemic:initialize-repository", async (event) => {
+  const { project, service } = await directEpistemicProjectForSender(
+    event.sender,
+    "direct-epistemic:initialize-repository",
+  );
+  const observation = await observeDirectEpistemicRepository(project);
+  return service.initializeRepository(project, { observation });
+});
+
+ipcMain.handle("direct-epistemic:refresh-repository", async (event) => {
+  const { project, service } = await directEpistemicProjectForSender(
+    event.sender,
+    "direct-epistemic:refresh-repository",
+  );
+  const observation = await observeDirectEpistemicRepository(project);
+  return service.refreshRepository(project, { observation });
+});
+
+ipcMain.handle("direct-epistemic:sync-thread", async (event, payload) => {
+  const { project, service } = await directEpistemicProjectForSender(
+    event.sender,
+    "direct-epistemic:sync-thread",
+  );
+  const sessionId = normalizeString(payload?.sessionId, "");
+  assertDirectEpistemicSessionOwnership(service, project.id, sessionId);
+  return service.syncThread(sessionId);
+});
+
+ipcMain.handle("direct-epistemic:transcribe-thread", async (event, payload) => {
+  const { project, service } = await directEpistemicProjectForSender(
+    event.sender,
+    "direct-epistemic:transcribe-thread",
+  );
+  const sessionId = normalizeString(payload?.sessionId, "");
+  assertDirectEpistemicSessionOwnership(service, project.id, sessionId);
+  return service.transcribeThread({
+    sessionId,
+    turnId: normalizeString(payload?.turnId, ""),
+    model: "gpt-5.6-luna",
+    reasoningEffort: "low",
+  });
+});
+
+ipcMain.handle("direct-epistemic:import-context", async (event, payload) => {
+  const { project, service } = await directEpistemicProjectForSender(
+    event.sender,
+    "direct-epistemic:import-context",
+  );
+  if (payload?.subjectKind === "thread" && payload?.sessionId) {
+    assertDirectEpistemicSessionOwnership(service, project.id, payload.sessionId);
+  }
+  return service.importContext({
+    projectId: project.id,
+    subjectKind: payload?.subjectKind === "thread" ? "thread" : "repository",
+    sessionId: normalizeString(payload?.sessionId, ""),
+    portName: normalizeString(payload?.portName, ""),
+    purpose: normalizeString(payload?.purpose, ""),
+    facets: Array.isArray(payload?.facets) ? payload.facets : [],
+    oRevisionId: normalizeString(payload?.oRevisionId, ""),
+    eRevisionId: normalizeString(payload?.eRevisionId, ""),
+    detailDepth: normalizeString(payload?.detailDepth, "typed_records"),
+    sinceRevision: normalizeString(payload?.sinceRevision, ""),
+    tokenBudget: 0,
+  });
+});
+
 ipcMain.handle("direct-workbench:project-directory", async (event) => {
   return directWorkbenchProjectDirectoryForSender(event.sender);
 });
@@ -12438,6 +12688,8 @@ app.on("before-quit", () => {
   directImplementationProofEvidenceStore = null;
   directActivationStore = null;
   directThreadWorkbenchController = null;
+  closeDirectNativeAgentPool("Application quit.");
+  closeDirectEpistemicService();
   clearWorldManagerTransitionSubscribers();
   worldManagerService?.close();
   worldManagerService = null;
