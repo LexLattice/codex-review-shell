@@ -11,6 +11,7 @@ const DIRECT_IMPORT_CHECKPOINT_SEED_SCHEMA = "direct_import_checkpoint_seed@1";
 const DIRECT_IMPORT_CHECKPOINT_CONTINUATION_SCHEMA = "direct_import_checkpoint_continuation@1";
 const DIRECT_IMPORT_CHECKPOINT_SEED_BUILDER_VERSION = "direct-import-checkpoint-seed-builder@1";
 const DIRECT_IMPORT_CHECKPOINT_REQUEST_SHAPE = "direct_import_checkpoint_continuation_request_shape@1";
+const DIRECT_IMPORT_CHECKPOINT_REQUEST_BUILDER_VERSION = "direct-import-checkpoint-request-builder@1";
 const FIXED_IMPORT_CHECKPOINT_PROMPT_CLASS = "fixed-import-checkpoint-continue";
 const USER_SUPPLIED_IMPORT_CHECKPOINT_PROMPT_CLASS = "user-supplied-import-checkpoint-followup";
 const MAX_CHECKPOINT_SEED_MESSAGES = 120;
@@ -220,7 +221,7 @@ function seedShapeInput(seed = {}, options = {}) {
 function checkpointContinuationRequestShapeHash(options = {}) {
   return sha256Hex(stableStringify({
     schema: DIRECT_IMPORT_CHECKPOINT_REQUEST_SHAPE,
-    requestBuilderVersion: normalizeString(options.requestBuilderVersion, "direct-import-checkpoint-request-builder@1"),
+    requestBuilderVersion: normalizeString(options.requestBuilderVersion, DIRECT_IMPORT_CHECKPOINT_REQUEST_BUILDER_VERSION),
     seedBuilderVersion: DIRECT_IMPORT_CHECKPOINT_SEED_BUILDER_VERSION,
     stream: true,
     store: false,
@@ -327,7 +328,7 @@ function buildDirectImportCheckpointSeed(input = {}, options = {}) {
     versions: {
       seedSchemaVersion: 1,
       seedBuilderVersion: DIRECT_IMPORT_CHECKPOINT_SEED_BUILDER_VERSION,
-      requestBuilderVersion: normalizeString(options.requestBuilderVersion, "direct-import-checkpoint-request-builder@1"),
+      requestBuilderVersion: normalizeString(options.requestBuilderVersion, DIRECT_IMPORT_CHECKPOINT_REQUEST_BUILDER_VERSION),
       normalizerVersion: normalizeString(options.normalizerVersion, "direct-event-normalizer@1"),
       redactionVersion: normalizeString(options.redactionVersion, "direct-import-redaction@1"),
       profileId: normalizeString(options.profileId, ""),
@@ -442,6 +443,7 @@ function checkpointTerminalFromEvents(normalizedEvents = [], terminal = {}) {
 module.exports = {
   ALLOWED_CHECKPOINT_NORMALIZED_EVENTS,
   DIRECT_IMPORT_CHECKPOINT_CONTINUATION_SCHEMA,
+  DIRECT_IMPORT_CHECKPOINT_REQUEST_BUILDER_VERSION,
   DIRECT_IMPORT_CHECKPOINT_REQUEST_SHAPE,
   DIRECT_IMPORT_CHECKPOINT_SEED_BUILDER_VERSION,
   DIRECT_IMPORT_CHECKPOINT_SEED_SCHEMA,

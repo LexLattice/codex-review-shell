@@ -1,7 +1,7 @@
 # Direct Workbench And WorldManager Studio Split
 
-Status: phase 2 resumed — Direct Workbench and WorldManager Studio active on a
-shared reviewed Direct kernel.
+Status: phase 2 active — Direct Workbench and WorldManager Studio share a
+reviewed Direct kernel; DW-I1 thread intake is implemented.
 
 ## Run Stance
 
@@ -55,6 +55,7 @@ Host sources:
 Related specifications:
 
 - `DIRECT_T3_ALTERNATE_GUI_EXPERIMENT.md`
+- `DIRECT_WORKBENCH_THREAD_INTAKE_SPEC.md`
 - `DIRECT_WORLD_MANAGER_AGENT_WORLD_AND_UNIFIED_UX_SPEC.md`
 - `DIRECT_WORLD_MANAGER_SEMANTIC_STANDBY_FRONTIER.md`
 
@@ -154,8 +155,8 @@ defined by each surface.
 
 ## Thread Ingestion Taxonomy
 
-The split prepares three future operations but does not collapse them into one
-generic import:
+The split defines three operations and does not collapse them into one generic
+import:
 
 ```text
 Direct Workbench
@@ -168,6 +169,8 @@ WorldManager Studio
 
 Shared transcript acquisition and normalization may be reused. Identity,
 context compilation, admission, and target U diverge after normalization.
+DW-I1 now implements Direct operations 1 and 2 through one typed, renderer-safe
+intake projection. WorldManager operation 3 remains deferred.
 
 ## Launch Surfaces
 
@@ -192,9 +195,8 @@ The previous `dev:t3`, `dev:worldmanager`, `dev:worldmanager:mock`, and
 
 ## Deferred Work
 
-- implement true cross-surface thread resume where the source provider exposes
-  durable resumable identity;
-- implement provenance-preserving Direct continuation capsules;
+- add provider-specific resume adapters beyond the current App Server durable
+  thread identity path;
 - implement WorldManager semantic ingestion and admission of external threads;
 - decide whether simultaneous Direct Workbench and WorldManager Studio processes
   use separate Electron partitions while sharing canonical stores;
@@ -206,6 +208,7 @@ Observed through real Electron windows under the headless/Xvfb harness:
 
 ```text
 npm run direct:experience-split
+npm run direct:thread-intake
 npm run direct:t3-alternate-gui
 npm run direct:t3-alternate-gui:electron
 node scripts/direct-world-manager-launch-routing-regression.mjs
@@ -217,8 +220,9 @@ npm run check:main-syntax
 ```
 
 The Direct Workbench Electron smoke verifies the bootstrap identity, visible
-control-plane witness, restored project binding, and Runtime/Analytics tenants,
-then attempts a WorldManager snapshot call from the trusted Direct renderer.
+control-plane witness, restored project binding, Runtime/Analytics tenants, and
+the project-bound thread-intake evidence dock, then attempts a WorldManager
+snapshot call from the trusted Direct renderer.
 The main process rejects it before initializing the WorldManager service. The
 WorldManager launch smoke verifies the separate production document, title,
 and semantic control-plane bootstrap envelope.

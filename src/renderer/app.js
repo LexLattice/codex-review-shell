@@ -6859,7 +6859,7 @@ async function materializeSelectedDirectImportSource(handleId) {
     });
     if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     const safeSession = result?.rendererSafeSession || {};
-    state.directImportWorkbench.selectedImportId = safeSession.importId || result?.session?.importLineage?.importId || "";
+    state.directImportWorkbench.selectedImportId = safeSession.importId || result?.importId || "";
     state.directImportWorkbench.selectedSessionId = safeSession.sessionId || result?.sessionId || "";
     state.directImportWorkbench.selectedHandleId = "";
     state.directImportWorkbench.report = null;

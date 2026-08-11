@@ -34,6 +34,7 @@ if (process.platform === "linux" && !process.env.DISPLAY && process.env.CODEX_T3
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-t3-gui-electron-"));
 const userDataRoot = path.join(testRoot, "profile");
 const screenshotPath = process.env.CODEX_T3_GUI_SCREENSHOT || path.join(testRoot, "t3-direct-gui.png");
+const intakeScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-intake.png");
 fs.mkdirSync(userDataRoot, { recursive: true, mode: 0o700 });
 
 fs.writeFileSync(path.join(userDataRoot, "workspace-config.json"), `${JSON.stringify({
@@ -155,6 +156,23 @@ try {
     "true",
   );
 
+  await page.locator('.t3-utility-rail [data-t3-action="intake"]').click();
+  await page.locator("#directThreadIntakePanel:not([hidden])").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#threadAnalyticsPanel").isHidden(), true);
+  assert.equal(
+    await page.locator('.t3-utility-rail [data-t3-action="intake"]').getAttribute("aria-pressed"),
+    "true",
+  );
+  assert.match(await page.locator("#directThreadIntakeBinding").innerText(), /Direct thread control plane/);
+  assert.match(await page.locator("#directThreadIntakeBinding").innerText(), /env_local_native/);
+  assert.equal(await page.locator(".direct-intake-mode-card").count(), 2);
+  assert.match(await page.locator("#directThreadIntakeModes").innerText(), /Resume original thread/);
+  assert.match(await page.locator("#directThreadIntakeModes").innerText(), /Continue as a new Direct thread/);
+  assert.match(await page.locator("#directThreadIntakeEvidence").innerText(), /Raw paths, raw records/);
+  await page.screenshot({ path: intakeScreenshotPath, fullPage: true });
+  await page.locator("#directThreadIntakeClose").click();
+  assert.equal(await page.locator("#directThreadIntakePanel").isHidden(), true);
+
   await page.locator("#t3SidebarToggle").click();
   assert.equal(await page.locator("#codexShell").getAttribute("data-t3-sidebar"), "collapsed");
   await page.locator('.t3-utility-rail [data-t3-action="threads"]').click();
@@ -171,6 +189,7 @@ try {
     controlPlane: "direct-thread",
     worldManagerAuthorityExposed: false,
     screenshotPath,
+    intakeScreenshotPath,
   }, null, 2));
 } finally {
   await app.close().catch(() => {});

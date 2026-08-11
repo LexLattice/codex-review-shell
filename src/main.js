@@ -32,7 +32,14 @@ const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectWorkThreadRegistryStore } = require("./main/direct/bridge/work-thread-registry");
 const { DirectAgentRegistryStore } = require("./main/direct/bridge/agent-registry");
-const { DirectImportController } = require("./main/direct/import/import-controller");
+const {
+  DirectImportController,
+  rendererSafeMaterializationResult,
+} = require("./main/direct/import/import-controller");
+const {
+  buildCheckpointContinuationEvidenceScope,
+  resolvePromotedCheckpointContinuationEvidence,
+} = require("./main/direct/import/checkpoint-continuation-evidence");
 const {
   DirectMetaSessionStore,
   assertMetaSessionRendererSafe,
@@ -3461,14 +3468,50 @@ function ensureDirectImportController() {
     sessionStore: ensureDirectSessionStore(),
     projectResolver: (projectId) => getProjectById(projectId),
     liveTextController: () => ensureDirectLiveTextController(),
-    checkpointContinuationEvidenceResolver: () => ({
-      accepted: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1",
-      status: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "runtime_probed" : "profile_required",
-      evidenceState: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "runtime_probed" : "unknown",
-      reason: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "" : "checkpoint_request_shape_unaccepted",
-    }),
+    checkpointContinuationEvidenceResolver: ({ project, params }) => {
+      const liveController = ensureDirectLiveTextController();
+      const liveStatus = liveController.statusForProject(project);
+      const credentials = directRuntimeAuthStore().readCredentials() || {};
+      const scope = buildCheckpointContinuationEvidenceScope({
+        profileDoc: ensureDirectCodexProfileDoc(),
+        credentials,
+        accountEvidenceId: liveStatus.auth?.accountId,
+        endpoint: liveController.endpoint,
+        model: normalizeString(params?.model || liveStatus.model, ""),
+      });
+      return resolvePromotedCheckpointContinuationEvidence(scope);
+    },
   });
   return directImportController;
+}
+
+function directThreadIntakeRuntimeWitness(project = {}) {
+  const projectId = normalizeString(project.id, "");
+  const connectionProjectId = normalizeString(activeCodexSurfaceConnection?.projectId, "");
+  const projectBound = Boolean(projectId && projectId === connectionProjectId);
+  const transport = projectBound
+    ? codexSurfaceSessionKindForConnection(activeCodexSurfaceConnection || {})
+    : "unavailable";
+  const capabilities = projectBound && isPlainObject(activeCodexSurfaceConnection?.capabilities)
+    ? activeCodexSurfaceConnection.capabilities
+    : {};
+  const liveStatus = ensureDirectLiveTextController().statusForProject(project);
+  const freshDirectCapability = projectBound &&
+    transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT &&
+    (liveStatus?.status === "ready" || liveStatus?.turnRunnable === true);
+  return {
+    transport,
+    runtimePath: transport === "codex-app-server"
+      ? "app-server"
+      : transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT
+        ? "direct-implementation"
+        : transport,
+    projectBound,
+    providerResumeCapability: transport === "codex-app-server" && capabilities.threads?.canResume === true,
+    providerReadCapability: transport === "codex-app-server" && capabilities.threads?.canRead === true,
+    freshDirectCapability,
+    evidenceState: projectBound ? "active_runtime_projection" : "unavailable",
+  };
 }
 
 function ensureDirectLiveProbeEvidenceStore() {
@@ -11460,7 +11503,8 @@ ipcMain.handle("direct-import:build-checkpoint", async (_event, payload) => {
 
 ipcMain.handle("direct-import:materialize", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
-  return ensureDirectImportController().materialize(project, payload || {});
+  const materialized = await ensureDirectImportController().materialize(project, payload || {});
+  return rendererSafeMaterializationResult(materialized);
 });
 
 ipcMain.handle("direct-import:read-report", async (_event, payload) => {
@@ -11476,6 +11520,14 @@ ipcMain.handle("direct-import:read-session", async (_event, payload) => {
 ipcMain.handle("direct-import:list-imports", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return ensureDirectImportController().listImports(project, payload || {});
+});
+
+ipcMain.handle("direct-import:thread-intake-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().threadIntakeProjection(project, {
+    ...(payload || {}),
+    runtimeWitness: directThreadIntakeRuntimeWitness(project),
+  });
 });
 
 ipcMain.handle("direct-import:hide", async (_event, payload) => {
@@ -11500,7 +11552,10 @@ ipcMain.handle("direct-import:preview-checkpoint-continuation", async (_event, p
 
 ipcMain.handle("direct-import:start-checkpoint-continuation", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
-  const result = await ensureDirectImportController().startCheckpointContinuation(project, payload || {});
+  const result = await ensureDirectImportController().startCheckpointContinuation(project, {
+    ...(payload || {}),
+    runtimeWitness: directThreadIntakeRuntimeWitness(project),
+  });
   emitDirectRuntimeStatus(project);
   return result;
 });

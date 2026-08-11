@@ -186,7 +186,17 @@ function importSourceIdentity(records, options = {}) {
     if (threadId) threadIds.add(threadId);
   }
   timestamps.sort();
-  const threadId = firstString(options.threadId, [...threadIds][0], `thread_${stableDigest(sourceFileSha256)}`);
+  const explicitProviderThreadId = normalizeString(options.providerThreadId, "");
+  const extractedProviderThreadId = threadIds.size === 1 ? [...threadIds][0] : "";
+  const providerThreadId = firstString(explicitProviderThreadId, extractedProviderThreadId);
+  const threadId = firstString(options.threadId, providerThreadId, `thread_${stableDigest(sourceFileSha256)}`);
+  const providerThreadIdProvenance = explicitProviderThreadId
+    ? "explicit_provider_identity"
+    : extractedProviderThreadId
+      ? "source_record"
+      : threadIds.size > 1
+        ? "ambiguous_source_records"
+        : "unavailable";
   const sourceRootId = safeIdPart(options.sourceRootId || `source_${stableDigest(sourceRoot || sourceFileSha256)}`, "source");
   return {
     sourceClass: normalizeString(options.sourceClass, "codex-cli-jsonl"),
@@ -198,6 +208,9 @@ function importSourceIdentity(records, options = {}) {
     sourceFileSha256,
     sourceFileMtimeMs: Number(options.sourceFileMtimeMs ?? stat?.mtimeMs ?? 0) || undefined,
     threadId,
+    providerThreadId,
+    providerThreadIdProvenance,
+    providerThreadIdDurable: Boolean(providerThreadId),
     timestampStart: timestamps[0] || "",
     timestampEnd: timestamps[timestamps.length - 1] || "",
     recordCount: Array.isArray(records) ? records.length : 0,
@@ -868,6 +881,9 @@ function buildRendererSafeImportSession(session = {}) {
       sourceDisplayName: normalizeString(source.sourceDisplayName, ""),
       sourceRootDisplayName: normalizeString(source.sourceRootDisplayName, ""),
       sourceClass: normalizeString(source.sourceClass, ""),
+      providerThreadId: normalizeString(source.providerThreadId, ""),
+      providerThreadIdProvenance: normalizeString(source.providerThreadIdProvenance, "unavailable"),
+      providerThreadIdDurable: source.providerThreadIdDurable === true,
       recordCount: Number(source.recordCount || 0),
       timestampStart: normalizeString(source.timestampStart, ""),
       timestampEnd: normalizeString(source.timestampEnd, ""),

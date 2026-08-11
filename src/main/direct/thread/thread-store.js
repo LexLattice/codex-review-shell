@@ -635,7 +635,7 @@ function sourceClassForSession(session = {}) {
 function continuityStateForSession(session = {}, sourceClass = sourceClassForSession(session)) {
   if (session.providerContinuityAvailable === true) return "provider_continuity_available";
   if (["imported-readonly", "derived-projection", "merged-projection"].includes(sourceClass)) return "non_runnable_projection";
-  if (sourceClass === "import-checkpoint-continuation" || sourceClass === "forked-direct-native" || sourceClass === "direct-native") {
+  if (sourceClass === "import-checkpoint-continuation" || sourceClass === "direct-import-checkpoint-continuation" || sourceClass === "forked-direct-native" || sourceClass === "direct-native") {
     return "fresh_session_only";
   }
   return "unknown";

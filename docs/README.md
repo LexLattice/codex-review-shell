@@ -95,6 +95,10 @@
   explicit application-experience and control-plane boundary over the shared
   Direct runtime kernel, with distinct Direct-thread and WorldManager semantic
   utility hierarchies and a three-operation thread-ingestion taxonomy.
+- [Direct Workbench Thread Intake](./DIRECT_WORKBENCH_THREAD_INTAKE_SPEC.md) -
+  implemented identity-preserving provider resume and provenance-preserving
+  fresh Direct continuation with project substrate inheritance and explicit
+  authority boundaries.
 - [Direct WorldManager Semantic Mockup](./DIRECT_WORLD_MANAGER_SEMANTIC_MOCKUP.md) -
   implemented exploratory planning slice with one semantic lineage, bounded
   Project Manager response, parallel reconciliation, evidence-gated admission,
