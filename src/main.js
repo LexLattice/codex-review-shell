@@ -10708,9 +10708,9 @@ ipcMain.handle("world-manager:authorize-aro-worker", async (event, payload) =>
         "",
       );
     const project =
-      currentProject?.id === projectId
-        ? currentProject
-        : await getProjectById(projectId);
+      await resolveWorldManagerRuntimeProject({
+        id: projectId,
+      });
     if (!project) {
       const error = new Error(
         `WorldManager worker project is unavailable: ${projectId || "<empty>"}`,
