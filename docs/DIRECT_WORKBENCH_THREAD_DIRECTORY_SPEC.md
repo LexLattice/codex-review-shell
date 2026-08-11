@@ -92,8 +92,9 @@ Invariants:
 - Direct listing remains scoped by the main-owned project context;
 - App Server focus uses provider resume/read authority; Direct focus uses the
   Direct controller's project-scoped read contract;
-- an active turn or unresolved provider request blocks focus away from the
-  current thread;
+- an active turn or unresolved provider request belonging to the current thread
+  identity blocks focus away from it;
+- a rendered/requested thread ID without live attachment remains retryable;
 - the renderer may request a thread transition but may not mint thread identity,
   provider continuity, or mutation authority;
 - configured, loading, available, opening, active, blocked, failed, and partial
@@ -271,6 +272,8 @@ Focused fixtures must prove:
   rendered without `cwd`, path, or cursor exposure;
 - Direct deck blockers remain binding;
 - current active work and pending provider requests block focus away;
+- pending requests from background threads do not block focus, and an
+  unattached matching thread ID remains eligible for provider recovery;
 - Direct fixture list/read stays project-scoped;
 - App Server requests include the exact active workspace filter;
 - the Electron surface lists, creates, and switches deterministic Direct fixture

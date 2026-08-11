@@ -126,12 +126,32 @@ assert.deepEqual(directoryModel.resolveThreadFocusPosture(focusable, {
 });
 assert.deepEqual(directoryModel.resolveThreadFocusPosture(focusable, {
   activeThreadId: focusable.threadId,
+  activeThreadAttached: true,
 }), {
   selected: true,
   enabled: false,
   state: "active",
   blockerCodes: ["thread_already_active"],
 });
+assert.deepEqual(directoryModel.resolveThreadFocusPosture(focusable, {
+  activeThreadId: focusable.threadId,
+  activeThreadAttached: false,
+}), {
+  selected: false,
+  enabled: true,
+  state: "available",
+  blockerCodes: [],
+});
+assert.equal(directoryModel.pendingProviderRequestCount([
+  { threadId: "active-thread", status: "pending" },
+  { threadId: "background-thread", status: "pending" },
+  { params: { sessionId: "active-thread" }, status: "responding" },
+  { params: { threadId: "active-thread" }, status: "resolved" },
+  { status: "pending" },
+], "active-thread"), 2);
+assert.equal(directoryModel.pendingProviderRequestCount([
+  { threadId: "background-thread", status: "pending" },
+], "active-thread"), 0);
 for (const [options, expectedCode] of [
   [{ currentTurnActive: true }, "active_turn_in_current_thread"],
   [{ pendingProviderRequestCount: 1 }, "pending_provider_request_in_current_thread"],

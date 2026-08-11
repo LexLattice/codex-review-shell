@@ -5152,10 +5152,10 @@ function threadDirectoryEnabled() {
 }
 
 function pendingProviderRequestCount() {
-  return [...state.serverRequests.values()].filter((request) => {
-    const status = String(request?.status || "pending").toLowerCase();
-    return status === "pending" || status === "responding";
-  }).length;
+  return threadDirectoryModel.pendingProviderRequestCount(
+    [...state.serverRequests.values()],
+    state.threadId,
+  );
 }
 
 function threadDirectoryBlockerLabel(code) {
@@ -5178,6 +5178,7 @@ function threadDirectoryBlockerLabel(code) {
 function threadFocusPosture(row) {
   return threadDirectoryModel.resolveThreadFocusPosture(row, {
     activeThreadId: state.threadId,
+    activeThreadAttached: state.liveAttached,
     currentTurnActive: turnIsActive(),
     pendingProviderRequestCount: pendingProviderRequestCount(),
     transitionState: state.directThreadFocusTransition.state,

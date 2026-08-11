@@ -188,10 +188,37 @@
     return projection;
   }
 
+  function providerRequestThreadId(request = {}) {
+    const params = isPlainObject(request.params) ? request.params : {};
+    return text(
+      request.threadId ||
+      request.sessionId ||
+      request.conversationId ||
+      params.threadId ||
+      params.sessionId ||
+      params.conversationId,
+      "",
+    );
+  }
+
+  function pendingProviderRequestCount(requests = [], activeThreadId = "") {
+    const threadId = text(activeThreadId, "");
+    if (!threadId) return 0;
+    return (Array.isArray(requests) ? requests : []).filter((request) => {
+      const status = text(request?.status, "pending").toLowerCase();
+      if (status !== "pending" && status !== "responding") return false;
+      return providerRequestThreadId(request) === threadId;
+    }).length;
+  }
+
   function resolveThreadFocusPosture(row = {}, options = {}) {
     const activeThreadId = text(options.activeThreadId, "");
     const targetThreadId = text(row.threadId, "");
-    const selected = Boolean(targetThreadId && targetThreadId === activeThreadId);
+    const selected = Boolean(
+      targetThreadId &&
+      targetThreadId === activeThreadId &&
+      options.activeThreadAttached !== false,
+    );
     const blockers = [...(Array.isArray(row.blockerCodes) ? row.blockerCodes : [])];
     if (selected) blockers.push("thread_already_active");
     if (!selected && options.currentTurnActive === true) blockers.push("active_turn_in_current_thread");
@@ -241,6 +268,7 @@
     ROW_SCHEMA,
     assertRendererSafe,
     normalizeThreadDirectory,
+    pendingProviderRequestCount,
     resolveThreadFocusPosture,
   });
 });
