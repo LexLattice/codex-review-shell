@@ -331,6 +331,10 @@ if (directWorkbenchPreload) {
   Object.assign(codexSurfaceApi, {
     readDirectWorkbenchProjectDirectory: () =>
       ipcRenderer.invoke("direct-workbench:project-directory"),
+    readDirectWorkbenchProjectBindingDraft: (payload = {}) =>
+      ipcRenderer.invoke("direct-workbench:project-binding-draft", payload),
+    mutateDirectWorkbenchProjectBinding: (payload = {}) =>
+      ipcRenderer.invoke("direct-workbench:mutate-project-binding", payload),
     activateDirectWorkbenchProject: (payload = {}) =>
       ipcRenderer.invoke("direct-workbench:activate-project", payload),
     onDirectWorkbenchProjectDirectoryEvent: (callback) => {

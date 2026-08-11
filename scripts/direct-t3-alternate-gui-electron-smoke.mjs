@@ -36,6 +36,7 @@ const userDataRoot = path.join(testRoot, "profile");
 const screenshotPath = process.env.CODEX_T3_GUI_SCREENSHOT || path.join(testRoot, "t3-direct-gui.png");
 const intakeScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-intake.png");
 const projectDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-project-directory.png");
+const projectBindingEditorScreenshotPath = screenshotPath.replace(/\.png$/i, "-project-binding-editor.png");
 const threadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-directory.png");
 const narrowThreadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-directory-narrow.png");
 fs.mkdirSync(userDataRoot, { recursive: true, mode: 0o700 });
@@ -278,11 +279,49 @@ try {
   assert.equal(JSON.stringify(safeDirectory).includes("/home/rose/work/direct-gui-fixture"), false);
   assert.equal(JSON.stringify(safeDirectory).includes("C:\\Fixtures\\direct-gui"), false);
 
+  await page.locator("#directProjectBindingNew").click();
+  await page.locator("#directProjectBindingEditor:not([hidden])").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#runtimeDrawer").isHidden(), true);
+  assert.equal(await page.locator("#threadAnalyticsPanel").isHidden(), true);
+  assert.equal(await page.locator("#directThreadIntakePanel").isHidden(), true);
+  assert.match(await page.locator("#directProjectBindingEditorTitle").innerText(), /New project binding/);
+  assert.match(await page.locator("#directProjectBindingEvidence").innerText(), /Main assigns project identity/);
+  await page.locator("#directProjectBindingName").fill("Local Direct GUI Fixture");
+  await page.locator("#directProjectBindingWorkspaceKind").selectOption("local");
+  await page.locator("#directProjectBindingWorkspaceLabel").fill("Local fixture workspace");
+  await page.locator("#directProjectBindingLocalPath").fill(path.join(testRoot, "local-fixture"));
+  await page.locator("#directProjectBindingRuntimePath").selectOption("app-server");
+  await page.screenshot({ path: projectBindingEditorScreenshotPath, fullPage: true });
+  await page.locator("#directProjectBindingCommit").click();
+  await page.locator("#directProjectBindingEditor").waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.querySelectorAll(".direct-project-row").length === 3);
+  assert.match(await page.locator("#directProjectDirectoryList").innerText(), /Local Direct GUI Fixture/);
+  const configAfterCreate = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
+  const createdProject = configAfterCreate.projects.find((project) => project.name === "Local Direct GUI Fixture");
+  assert.ok(createdProject?.id?.startsWith("project_"));
+  assert.notEqual(createdProject.id, "");
+  assert.equal(configAfterCreate.selectedProjectId, "project_t3_gui_fixture");
+
+  await page.locator('[data-project-binding-target="project_t3_windows_fixture"]').click();
+  await page.locator("#directProjectBindingEditor:not([hidden])").waitFor({ state: "visible" });
+  assert.match(await page.locator("#directProjectBindingEditorTitle").innerText(), /Edit project binding/);
+  assert.equal(await page.locator("#directProjectBindingWorkspaceKind").inputValue(), "windows");
+  assert.equal(await page.locator("#directProjectBindingWindowsPath").inputValue(), "C:\\Fixtures\\direct-gui");
+  await page.locator("#directProjectBindingName").fill("Windows Direct GUI Fixture Edited");
+  await page.locator("#directProjectBindingWorkspaceLabel").fill("Windows edited workspace");
+  await page.locator("#directProjectBindingCommit").click();
+  await page.locator("#directProjectBindingEditor").waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.querySelector('[data-project-id="project_t3_windows_fixture"]')?.textContent?.includes("Edited"));
+  assert.match(
+    await page.locator('.direct-project-row[data-project-id="project_t3_windows_fixture"]').innerText(),
+    /Windows edited workspace/,
+  );
+
   const sourcePageUrl = page.url();
-  await page.locator('.direct-project-row[data-project-id="project_t3_windows_fixture"] button').click();
+  await page.locator('[data-project-activation-target="project_t3_windows_fixture"]').click();
   await page.waitForFunction((url) => window.location.href !== url, sourcePageUrl, { timeout: 30_000 });
   await page.waitForSelector('body[data-direct-gui="direct-workbench"][data-experience-state="verified"]', { timeout: 30_000 });
-  await page.waitForFunction(() => document.getElementById("projectName")?.textContent?.includes("Windows Direct GUI Fixture"));
+  await page.waitForFunction(() => document.getElementById("projectName")?.textContent?.includes("Windows Direct GUI Fixture Edited"));
   assert.match(page.url(), /\/t3-direct-surface\.html/);
   const switchedBootstrapPayload = JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8"));
   assert.equal(switchedBootstrapPayload.project.id, "project_t3_windows_fixture");
@@ -297,14 +336,26 @@ try {
 
   await page.locator('.t3-utility-rail [data-t3-action="projects"]').click();
   await page.locator("#directProjectDirectory:not([hidden])").waitFor({ state: "visible" });
-  await page.waitForFunction(() => document.querySelectorAll(".direct-project-row").length === 2);
+  await page.waitForFunction(() => document.querySelectorAll(".direct-project-row").length === 3);
   assert.equal(await page.locator('.direct-project-row[data-project-id="project_t3_windows_fixture"]').getAttribute("data-state"), "active");
   assert.match(await page.locator("#directProjectDirectoryStatus").innerText(), /authoritative active selection/);
   await page.screenshot({ path: projectDirectoryScreenshotPath, fullPage: true });
-  await page.locator("#directProjectDirectoryClose").click();
+
+  await page.locator('[data-project-binding-target="project_t3_windows_fixture"]').click();
+  await page.locator("#directProjectBindingEditor:not([hidden])").waitFor({ state: "visible" });
+  assert.match(await page.locator("#directProjectBindingEvidence").innerText(), /active project/);
+  await page.locator("#directProjectBindingName").fill("Windows Direct GUI Fixture Active");
+  const preEditPageUrl = page.url();
+  await page.locator("#directProjectBindingCommit").click();
+  await page.waitForFunction((url) => window.location.href !== url, preEditPageUrl, { timeout: 30_000 });
+  await page.waitForSelector('body[data-direct-gui="direct-workbench"][data-experience-state="verified"]', { timeout: 30_000 });
+  const activeEditBootstrapPayload = JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8"));
+  assert.equal(activeEditBootstrapPayload.project.name, "Windows Direct GUI Fixture Active");
+  await page.waitForFunction(() => document.querySelectorAll("#morphicThreadRailList .morphic-thread-tab").length === 1);
 
   const switchedConfig = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
   assert.equal(switchedConfig.selectedProjectId, "project_t3_windows_fixture");
+  assert.equal(switchedConfig.projects.find((project) => project.id === "project_t3_windows_fixture")?.name, "Windows Direct GUI Fixture Active");
   assert.match(switchedConfig.projects[1].laneBindings[0].lastActivatedAt, /^\d{4}-\d{2}-\d{2}T/);
 
   await page.locator("#t3SidebarToggle").click();
@@ -351,6 +402,7 @@ try {
     narrowThreadDirectoryScreenshotPath,
     intakeScreenshotPath,
     projectDirectoryScreenshotPath,
+    projectBindingEditorScreenshotPath,
   }, null, 2));
 } finally {
   await app.close().catch(() => {});

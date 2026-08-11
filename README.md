@@ -16,7 +16,7 @@ The shell remains the source of truth for project bindings. Each project stores:
 
 Current implementation baseline:
 
-- Explicit `workspace.kind` in project config: `local` or `wsl`.
+- Explicit `workspace.kind` in project config: `local`, `windows`, or `wsl`.
 - WSL-native workspace config fields: distro + canonical Linux path.
 - Resident backend session manager in the Electron host.
 - WSL backend agent at `src/backend/wsl-agent.js`.
@@ -29,6 +29,8 @@ Current implementation baseline:
 
 Current workflow surfaces:
 
+- Direct Workbench project directory plus revision-bound create/edit binding
+  dock for project identity, substrate, and default runtime.
 - Project-bound ChatGPT thread deck instead of one hard-coded review URL.
 - Thread roles: review, brainstorming, architecture, research, debugging, planning, custom.
 - Add/edit/remove/archive thread bindings per project.

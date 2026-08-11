@@ -8,10 +8,17 @@ const {
   DIRECT_WORKBENCH_PROJECT_DIRECTORY_SCHEMA,
   assertDirectWorkbenchProjectDirectoryRendererSafe,
   buildDirectWorkbenchProjectActivationReceipt,
+  buildDirectWorkbenchProjectBindingDraft,
+  buildDirectWorkbenchProjectBindingReceipt,
   buildDirectWorkbenchProjectDirectory,
+  resolveDirectWorkbenchProjectBindingReplay,
   resolveDirectWorkbenchProjectActivationReplay,
+  validateDirectWorkbenchProjectBindingMutation,
   validateDirectWorkbenchProjectActivation,
 } = require("../src/main/direct/project/project-directory.js");
+const {
+  alignCodexHostRuntimeWithWorkspace,
+} = require("../src/main/direct/runtime/runtime-path-selection.js");
 
 function project({ id, name, workspace, codex, laneBindings = [] }) {
   return {
@@ -266,5 +273,224 @@ assert.throws(
   ),
   (error) => error?.code === "project_activation_source_stale",
 );
+
+const editDraft = buildDirectWorkbenchProjectBindingDraft(config, {
+  sourceProjectId: "project_wsl",
+  projectId: "project_windows",
+  catalogRevision: directory.catalogRevision,
+});
+assert.equal(editDraft.schema, "direct_workbench_project_binding_draft@1");
+assert.equal(editDraft.mode, "edit");
+assert.equal(editDraft.projectId, "project_windows");
+assert.equal(editDraft.fields.workspace.kind, "windows");
+assert.equal(editDraft.fields.workspace.windowsPath, "C:\\Users\\Rose\\private-windows-project");
+assert.equal(editDraft.fields.runtimePath, "direct-text");
+assert.equal(editDraft.authorityBoundary.rendererMayAssignProjectIdentity, false);
+assert.equal(editDraft.authorityBoundary.rendererMayPersistConfig, false);
+assert.equal(JSON.stringify(editDraft).includes("private-token"), false);
+assert.equal(JSON.stringify(editDraft).includes("/private/bin/codex"), false);
+
+const createDraft = buildDirectWorkbenchProjectBindingDraft(config, {
+  sourceProjectId: "project_wsl",
+  catalogRevision: directory.catalogRevision,
+  defaults: {
+    displayName: "New bounded project",
+    workspace: { kind: "wsl", distro: "Ubuntu", linuxPath: "/home/rose/work/new-project", label: "New WSL project" },
+    codexBinding: { runtimeMode: "legacy-app-server" },
+  },
+});
+assert.equal(createDraft.mode, "create");
+assert.equal(createDraft.projectId, "");
+assert.equal(createDraft.evidence.projectIdentityAssignedByMain, true);
+
+const editMutation = validateDirectWorkbenchProjectBindingMutation(directory, config, {
+  clientMutationId: "client_edit_windows",
+  mode: "edit",
+  sourceProjectId: "project_wsl",
+  projectId: "project_windows",
+  expectedCatalogRevision: directory.catalogRevision,
+  expectedProjectRevision: editDraft.expectedProjectRevision,
+  fields: {
+    displayName: "Windows context menu",
+    workspace: {
+      kind: "windows",
+      windowsPath: "D:\\Work\\windows-context-menu",
+      label: "Windows native workspace",
+    },
+    runtimePath: "direct-implementation",
+  },
+});
+assert.match(editMutation.mutationId, /^project_binding_[a-f0-9]{24}$/);
+assert.equal(editMutation.workspace.windowsPath, "D:\\Work\\windows-context-menu");
+assert.equal(editMutation.runtimePath, "direct-implementation");
+
+const createMutation = validateDirectWorkbenchProjectBindingMutation(directory, config, {
+  clientMutationId: "client_create_project",
+  mode: "create",
+  sourceProjectId: "project_wsl",
+  projectId: "",
+  expectedCatalogRevision: directory.catalogRevision,
+  expectedProjectRevision: "",
+  fields: {
+    displayName: "New WSL project",
+    workspace: { kind: "wsl", distro: "Ubuntu", linuxPath: "/home/rose/work/new-wsl", label: "WSL native" },
+    runtimePath: "app-server",
+  },
+});
+assert.equal(createMutation.projectId, "");
+
+assert.throws(
+  () => validateDirectWorkbenchProjectBindingMutation(directory, config, {
+    ...editMutation,
+    fields: { displayName: "Windows", workspace: editMutation.workspace, runtimePath: editMutation.runtimePath },
+    expectedProjectRevision: "stale",
+  }),
+  (error) => error?.code === "project_binding_revision_stale",
+);
+assert.throws(
+  () => validateDirectWorkbenchProjectBindingMutation(busyDirectory, config, {
+    clientMutationId: "client_edit_active_busy",
+    mode: "edit",
+    sourceProjectId: "project_wsl",
+    projectId: "project_wsl",
+    expectedCatalogRevision: busyDirectory.catalogRevision,
+    expectedProjectRevision: buildDirectWorkbenchProjectBindingDraft(config, {
+      projectId: "project_wsl",
+      catalogRevision: busyDirectory.catalogRevision,
+    }).expectedProjectRevision,
+    fields: {
+      displayName: "Busy WSL",
+      workspace: { kind: "wsl", distro: "Ubuntu", linuxPath: "/home/rose/work/busy", label: "WSL" },
+      runtimePath: "app-server",
+    },
+  }),
+  (error) => error?.code === "active_turn_in_current_project",
+);
+const busyTargetDirectory = buildDirectWorkbenchProjectDirectory(config, {
+  activeTurnCounts: { project_windows: 1 },
+});
+assert.throws(
+  () => validateDirectWorkbenchProjectBindingMutation(busyTargetDirectory, config, {
+    clientMutationId: "client_edit_inactive_busy",
+    mode: "edit",
+    sourceProjectId: "project_wsl",
+    projectId: "project_windows",
+    expectedCatalogRevision: busyTargetDirectory.catalogRevision,
+    expectedProjectRevision: editDraft.expectedProjectRevision,
+    fields: {
+      displayName: "Busy Windows",
+      workspace: { kind: "windows", windowsPath: "D:\\Work\\busy", label: "Windows" },
+      runtimePath: "direct-text",
+    },
+  }),
+  (error) => error?.code === "active_turn_in_target_project",
+);
+assert.throws(
+  () => validateDirectWorkbenchProjectBindingMutation(directory, config, {
+    clientMutationId: "client_invalid_windows_path",
+    mode: "create",
+    sourceProjectId: "project_wsl",
+    expectedCatalogRevision: directory.catalogRevision,
+    fields: {
+      displayName: "Invalid",
+      workspace: { kind: "windows", windowsPath: "relative\\path" },
+      runtimePath: "app-server",
+    },
+  }),
+  (error) => error?.code === "project_binding_windows_path_invalid",
+);
+assert.throws(
+  () => validateDirectWorkbenchProjectBindingMutation(directory, config, {
+    clientMutationId: "client_create_supplied_id",
+    mode: "create",
+    sourceProjectId: "project_wsl",
+    projectId: "renderer_assigned_id",
+    expectedCatalogRevision: directory.catalogRevision,
+    fields: {
+      displayName: "Invalid identity",
+      workspace: { kind: "local", localPath: "/tmp/project" },
+      runtimePath: "app-server",
+    },
+  }),
+  (error) => error?.code === "project_binding_create_identity_forbidden",
+);
+
+const bindingReceipt = buildDirectWorkbenchProjectBindingReceipt({
+  ...editMutation,
+  ok: true,
+  status: "completed",
+  completedAt: "2026-08-11T08:10:00.000Z",
+});
+const bindingOperations = new Map([[
+  editMutation.clientMutationId,
+  { ...editMutation, receipt: bindingReceipt },
+]]);
+const replayedBindingReceipt = resolveDirectWorkbenchProjectBindingReplay(
+  bindingOperations,
+  "project_wsl",
+  editMutation,
+);
+assert.equal(replayedBindingReceipt.status, "completed");
+assert.equal(replayedBindingReceipt.duplicate, true);
+assert.throws(
+  () => resolveDirectWorkbenchProjectBindingReplay(
+    bindingOperations,
+    "project_wsl",
+    { ...editMutation, projectId: "project_local" },
+  ),
+  (error) => error?.code === "client_mutation_id_reused",
+);
+
+const preservedHostRuntime = alignCodexHostRuntimeWithWorkspace(
+  { runtime: "host", binaryPath: "codex" },
+  {
+    mode: "edit",
+    currentWorkspace: { kind: "windows" },
+    nextWorkspace: { kind: "windows" },
+    platform: "win32",
+  },
+);
+assert.equal(preservedHostRuntime.runtime, "host");
+const windowsToWslRuntime = alignCodexHostRuntimeWithWorkspace(
+  { runtime: "host", binaryPath: "codex" },
+  {
+    mode: "edit",
+    currentWorkspace: { kind: "windows" },
+    nextWorkspace: { kind: "wsl" },
+    platform: "win32",
+  },
+);
+assert.equal(windowsToWslRuntime.runtime, "wsl");
+assert.equal(windowsToWslRuntime.binaryPath, "codex");
+const wslToWindowsRuntime = alignCodexHostRuntimeWithWorkspace(
+  { runtime: "wsl" },
+  {
+    mode: "edit",
+    currentWorkspace: { kind: "wsl" },
+    nextWorkspace: { kind: "windows" },
+    platform: "win32",
+  },
+);
+assert.equal(wslToWindowsRuntime.runtime, "auto");
+const createdWslRuntime = alignCodexHostRuntimeWithWorkspace(
+  { runtime: "host" },
+  {
+    mode: "create",
+    currentWorkspace: { kind: "windows" },
+    nextWorkspace: { kind: "wsl" },
+    platform: "win32",
+  },
+);
+assert.equal(createdWslRuntime.runtime, "wsl");
+const nativeWslProcessRuntime = alignCodexHostRuntimeWithWorkspace(
+  { runtime: "host" },
+  {
+    mode: "create",
+    currentWorkspace: { kind: "local" },
+    nextWorkspace: { kind: "wsl" },
+    platform: "linux",
+  },
+);
+assert.equal(nativeWslProcessRuntime.runtime, "auto");
 
 console.log("Direct Workbench project directory regression passed.");

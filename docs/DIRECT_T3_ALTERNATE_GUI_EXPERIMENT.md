@@ -113,6 +113,7 @@ Morphable:
 | --- | --- | --- | --- |
 | selected project | signed/encoded main-process bootstrap payload | left sidebar/header | display only |
 | project directory | typed renderer-safe main-process projection | bounded sidebar reveal | evidence-gated main-owned activation |
+| project binding editor | revision-bound typed draft and main mutation receipt | right dock | provisional create/edit request; main owns identity, persistence, reload, and rollback |
 | Direct thread directory | bounded normalization of Direct thread deck or App Server `thread/list` | left sidebar | runtime-specific read/resume focus gate and existing new-thread action |
 | transcript and turn state | existing `codex-surface:event` stream | central workspace | existing composer/turn protocol |
 | model, effort, access, quota, context | existing Direct runtime witness and preference APIs | composer/header | existing controls only |

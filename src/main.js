@@ -128,15 +128,21 @@ const {
   normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
 } = require("./main/direct/runtime/runtime-status");
 const {
+  alignCodexHostRuntimeWithWorkspace,
   bindingForDirectRuntimePath,
+  defaultCodexHostRuntimeForWorkspace,
   directRuntimePathFromBinding,
   normalizeDirectRuntimePath,
   resolveCodexThreadOpenRuntime,
 } = require("./main/direct/runtime/runtime-path-selection");
 const {
   buildDirectWorkbenchProjectActivationReceipt,
+  buildDirectWorkbenchProjectBindingDraft,
+  buildDirectWorkbenchProjectBindingReceipt,
   buildDirectWorkbenchProjectDirectory,
+  resolveDirectWorkbenchProjectBindingReplay,
   resolveDirectWorkbenchProjectActivationReplay,
+  validateDirectWorkbenchProjectBindingMutation,
   validateDirectWorkbenchProjectActivation,
 } = require("./main/direct/project/project-directory");
 const {
@@ -467,6 +473,8 @@ const worldManagerTransitionSubscribers =
 const directActivationLocks = new Map();
 const directWorkbenchProjectActivationOperations = new Map();
 let directWorkbenchProjectTransition = { state: "idle" };
+const directWorkbenchProjectBindingOperations = new Map();
+let directWorkbenchProjectBindingMutation = { state: "idle" };
 const directAgentRegistryBackfillStateByProject = new Map();
 let chatgptDownloadHandler = null;
 let pendingChatgptDownloadMacroRequests = [];
@@ -1630,7 +1638,7 @@ function defaultProjectRepoPath(workspace = defaultProjectWorkspaceConfig()) {
 }
 
 function defaultCodexRuntimeForWorkspace(workspace) {
-  return workspace?.kind === "wsl" && process.platform === "win32" ? "wsl" : "auto";
+  return defaultCodexHostRuntimeForWorkspace(workspace, process.platform);
 }
 
 function defaultConfig() {
@@ -6293,6 +6301,185 @@ function emitDirectWorkbenchProjectDirectoryEvent(payload = {}) {
   return true;
 }
 
+function rememberDirectWorkbenchProjectBindingMutation(clientMutationId, record) {
+  directWorkbenchProjectBindingOperations.set(clientMutationId, record);
+  while (directWorkbenchProjectBindingOperations.size > 128) {
+    const oldest = directWorkbenchProjectBindingOperations.keys().next().value;
+    if (!oldest) break;
+    directWorkbenchProjectBindingOperations.delete(oldest);
+  }
+  return record;
+}
+
+function projectRepoPathFromWorkspace(workspace = {}) {
+  if (workspace.kind === "wsl") return `wsl:${workspace.distro || "default"}:${workspace.linuxPath}`;
+  if (workspace.kind === "windows") return workspace.windowsPath;
+  return workspace.localPath;
+}
+
+function projectWithDirectWorkbenchBinding(project = {}, operation = {}, index = 0) {
+  const now = nowIso();
+  const existingCodexBinding = project.surfaceBinding?.codex || {};
+  const runtimePathBinding = directRuntimePathFromBinding(existingCodexBinding) === operation.runtimePath
+    ? existingCodexBinding
+    : bindingForDirectRuntimePath(existingCodexBinding, operation.runtimePath);
+  const codexBinding = alignCodexHostRuntimeWithWorkspace(runtimePathBinding, {
+    mode: operation.mode,
+    currentWorkspace: project.workspace,
+    nextWorkspace: operation.workspace,
+    platform: process.platform,
+  });
+  return normalizeProject({
+    ...project,
+    id: project.id,
+    name: operation.displayName,
+    repoPath: projectRepoPathFromWorkspace(operation.workspace),
+    workspace: operation.workspace,
+    surfaceBinding: {
+      ...(project.surfaceBinding || {}),
+      codex: codexBinding,
+    },
+    createdAt: normalizeString(project.createdAt, now),
+    updatedAt: now,
+  }, index);
+}
+
+function newDirectWorkbenchProject(operation = {}, config = {}) {
+  const projects = Array.isArray(config.projects) ? config.projects : [];
+  const knownIds = new Set(projects.map((project) => normalizeString(project?.id, "")));
+  let projectId = newId("project");
+  while (knownIds.has(projectId)) projectId = newId("project");
+  const template = defaultConfig().projects[0];
+  return projectWithDirectWorkbenchBinding({
+    ...template,
+    id: projectId,
+    name: operation.displayName,
+    repoPath: projectRepoPathFromWorkspace(operation.workspace),
+    workspace: operation.workspace,
+    laneBindings: [],
+    lastActiveBindingId: "",
+    handoffs: [],
+    ignoredWatchedArtifactPaths: [],
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  }, operation, projects.length);
+}
+
+async function performDirectWorkbenchProjectBindingMutation(operation = {}) {
+  const sourceProjectId = normalizeString(operation.sourceProjectId, "");
+  let sourceConfig = null;
+  let assignedProjectId = normalizeString(operation.projectId, "");
+  try {
+    const config = await loadConfig();
+    sourceConfig = config;
+    if (normalizeString(config.selectedProjectId, "") !== sourceProjectId) {
+      const error = new Error("The selected project changed before the binding mutation started.");
+      error.code = "project_binding_source_stale";
+      throw error;
+    }
+    const directory = buildDirectWorkbenchProjectDirectory(config, {
+      activeProjectId: sourceProjectId,
+      activeTurnCounts: directWorkbenchActiveTurnCounts(config, codexView?.webContents),
+      transition: directWorkbenchProjectTransition,
+    });
+    validateDirectWorkbenchProjectBindingMutation(directory, config, {
+      ...operation,
+      fields: {
+        displayName: operation.displayName,
+        workspace: operation.workspace,
+        runtimePath: operation.runtimePath,
+      },
+    });
+
+    let projects = [...config.projects];
+    let reboundProject = null;
+    let reboundBinding = null;
+    if (operation.mode === "create") {
+      const created = newDirectWorkbenchProject(operation, config);
+      assignedProjectId = created.id;
+      projects.push(created);
+    } else {
+      const index = projects.findIndex((project) => project.id === operation.projectId);
+      if (index < 0) {
+        const error = new Error("The project binding no longer exists.");
+        error.code = "project_binding_target_unknown";
+        throw error;
+      }
+      const updated = projectWithDirectWorkbenchBinding(projects[index], operation, index);
+      if (updated.id === sourceProjectId) {
+        const activation = applyProjectActivationBinding(updated);
+        reboundProject = activation.project || updated;
+        reboundBinding = activation.binding || null;
+      }
+      projects[index] = reboundProject || updated;
+    }
+
+    const saved = await saveConfig({ ...config, projects });
+    if (reboundProject) {
+      const selected = saved.projects.find((project) => project.id === sourceProjectId);
+      const binding = reboundBinding?.id
+        ? selected?.laneBindings?.find((entry) => entry.id === reboundBinding.id) || reboundBinding
+        : null;
+      currentProject = selected;
+      await loadCodexSurface(currentProject, {
+        ...codexSurfaceOptionsForBinding(binding),
+        activationEpoch: nextSurfaceActivationEpoch("direct-workbench-project-binding-edit"),
+      });
+    }
+
+    const completedAt = nowIso();
+    const receipt = buildDirectWorkbenchProjectBindingReceipt({
+      ...operation,
+      projectId: assignedProjectId,
+      ok: true,
+      status: "completed",
+      completedAt,
+    });
+    rememberDirectWorkbenchProjectBindingMutation(operation.clientMutationId, { ...operation, receipt });
+    directWorkbenchProjectBindingMutation = { state: "completed", mutationId: operation.mutationId };
+    const completedDirectory = buildDirectWorkbenchProjectDirectory(saved, {
+      activeProjectId: sourceProjectId,
+      activeTurnCounts: directWorkbenchActiveTurnCounts(saved, codexView?.webContents),
+      transition: directWorkbenchProjectTransition,
+    });
+    emitDirectWorkbenchProjectDirectoryEvent({ bindingReceipt: receipt, directory: completedDirectory });
+  } catch (error) {
+    const reason = normalizeString(error?.code, "project_binding_mutation_failed");
+    if (sourceConfig && operation.mode === "edit" && operation.projectId === sourceProjectId) {
+      try {
+        const restored = await saveConfig(sourceConfig);
+        const source = restored.projects.find((project) => project.id === sourceProjectId);
+        if (source) {
+          const activation = applyProjectActivationBinding(source);
+          currentProject = activation.project || source;
+          await loadCodexSurface(currentProject, {
+            ...codexSurfaceOptionsForBinding(activation.binding),
+            activationEpoch: nextSurfaceActivationEpoch("direct-workbench-project-binding-rollback"),
+          });
+        }
+      } catch {
+        // The failed receipt remains inspectable; restart restores the persisted source binding.
+      }
+    }
+    const receipt = buildDirectWorkbenchProjectBindingReceipt({
+      ...operation,
+      projectId: assignedProjectId,
+      ok: false,
+      status: "failed",
+      reason,
+    });
+    rememberDirectWorkbenchProjectBindingMutation(operation.clientMutationId, { ...operation, receipt });
+    directWorkbenchProjectBindingMutation = { state: "failed", mutationId: operation.mutationId, reason };
+    const config = await loadConfig().catch(() => sourceConfig);
+    const failedDirectory = config ? buildDirectWorkbenchProjectDirectory(config, {
+      activeProjectId: sourceProjectId,
+      activeTurnCounts: directWorkbenchActiveTurnCounts(config, codexView?.webContents),
+      transition: directWorkbenchProjectTransition,
+    }) : null;
+    emitDirectWorkbenchProjectDirectoryEvent({ bindingReceipt: receipt, directory: failedDirectory });
+  }
+}
+
 async function performDirectWorkbenchProjectActivation(operation = {}) {
   const sourceProjectId = normalizeString(operation.sourceProjectId, "");
   const targetProjectId = normalizeString(operation.targetProjectId, "");
@@ -10183,6 +10370,8 @@ async function listChatgptRecentThreads(limit = 40, options = {}) {
 async function createDirectWorkbenchWindow() {
   directWorkbenchProjectActivationOperations.clear();
   directWorkbenchProjectTransition = { state: "idle" };
+  directWorkbenchProjectBindingOperations.clear();
+  directWorkbenchProjectBindingMutation = { state: "idle" };
   Menu.setApplicationMenu(null);
   console.log(
     `[Direct Workbench] launch experience=${APP_EXPERIENCE.id} ` +
@@ -10255,6 +10444,8 @@ async function createDirectWorkbenchWindow() {
     directActivationStore = null;
     directWorkbenchProjectActivationOperations.clear();
     directWorkbenchProjectTransition = { state: "idle" };
+    directWorkbenchProjectBindingOperations.clear();
+    directWorkbenchProjectBindingMutation = { state: "idle" };
     directThreadWorkbenchController = null;
     directThreadStore?.close();
     directThreadStore = null;
@@ -11747,6 +11938,84 @@ ipcMain.handle("direct-workbench:project-directory", async (event) => {
   return directWorkbenchProjectDirectoryForSender(event.sender);
 });
 
+ipcMain.handle("direct-workbench:project-binding-draft", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:project-binding-draft");
+  requireDirectWorkbenchExperience("direct-workbench:project-binding-draft");
+  const config = await loadConfig();
+  const sourceProjectId = normalizeString(authority.projectId, "");
+  if (!sourceProjectId || sourceProjectId !== normalizeString(config.selectedProjectId, "")) {
+    const error = new Error("The Direct Workbench project source is stale.");
+    error.code = "project_binding_source_stale";
+    throw error;
+  }
+  const directory = await directWorkbenchProjectDirectoryForSender(event.sender, {
+    config,
+    activeProjectId: sourceProjectId,
+  });
+  return buildDirectWorkbenchProjectBindingDraft(config, {
+    sourceProjectId,
+    projectId: normalizeString(payload?.projectId, ""),
+    catalogRevision: directory.catalogRevision,
+    defaults: {
+      displayName: "New project",
+      workspace: defaultProjectWorkspaceConfig(),
+      codexBinding: defaultConfig().projects[0].surfaceBinding.codex,
+    },
+  });
+});
+
+ipcMain.handle("direct-workbench:mutate-project-binding", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:mutate-project-binding");
+  requireDirectWorkbenchExperience("direct-workbench:mutate-project-binding");
+  const sourceProjectId = normalizeString(payload?.sourceProjectId, "");
+  const replayReceipt = resolveDirectWorkbenchProjectBindingReplay(
+    directWorkbenchProjectBindingOperations,
+    authority.projectId,
+    payload || {},
+  );
+  if (replayReceipt) return replayReceipt;
+  const config = await loadConfig();
+  if (sourceProjectId !== normalizeString(authority.projectId, "") || sourceProjectId !== config.selectedProjectId) {
+    const error = new Error("The Direct Workbench project source is stale.");
+    error.code = "project_binding_source_stale";
+    throw error;
+  }
+  if (directWorkbenchProjectBindingMutation.state === "applying") {
+    const error = new Error("Another project binding mutation is already in progress.");
+    error.code = "project_binding_mutation_in_progress";
+    throw error;
+  }
+  if (directWorkbenchProjectTransition.state === "activating") {
+    const error = new Error("Project activation is in progress.");
+    error.code = "project_activation_in_progress";
+    throw error;
+  }
+  const directory = await directWorkbenchProjectDirectoryForSender(event.sender, {
+    config,
+    activeProjectId: sourceProjectId,
+  });
+  const operation = validateDirectWorkbenchProjectBindingMutation(directory, config, payload || {});
+  const acceptedAt = nowIso();
+  directWorkbenchProjectBindingMutation = {
+    state: "applying",
+    mutationId: operation.mutationId,
+    sourceProjectId,
+    projectId: operation.projectId,
+    mode: operation.mode,
+  };
+  const receipt = buildDirectWorkbenchProjectBindingReceipt({
+    ...operation,
+    ok: true,
+    status: "accepted",
+    acceptedAt,
+  });
+  rememberDirectWorkbenchProjectBindingMutation(operation.clientMutationId, { ...operation, receipt });
+  setTimeout(() => {
+    performDirectWorkbenchProjectBindingMutation(operation).catch(() => {});
+  }, 0);
+  return receipt;
+});
+
 ipcMain.handle("direct-workbench:activate-project", async (event, payload) => {
   const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:activate-project");
   requireDirectWorkbenchExperience("direct-workbench:activate-project");
@@ -11778,6 +12047,11 @@ ipcMain.handle("direct-workbench:activate-project", async (event, payload) => {
   if (directWorkbenchProjectTransition.state === "activating") {
     const error = new Error("Another Direct Workbench project activation is already in progress.");
     error.code = "project_activation_in_progress";
+    throw error;
+  }
+  if (directWorkbenchProjectBindingMutation.state === "applying") {
+    const error = new Error("A project binding mutation is in progress.");
+    error.code = "project_binding_mutation_in_progress";
     throw error;
   }
   const operation = validateDirectWorkbenchProjectActivation(directory, payload || {});

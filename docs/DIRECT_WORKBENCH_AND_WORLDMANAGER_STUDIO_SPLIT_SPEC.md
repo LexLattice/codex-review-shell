@@ -1,8 +1,9 @@
 # Direct Workbench And WorldManager Studio Split
 
 Status: phase 2 active — Direct Workbench and WorldManager Studio share a
-reviewed Direct kernel; DW-I1 thread intake, DW-P1 project directory, and DW-T1
-runtime-neutral thread directory are implemented.
+reviewed Direct kernel; DW-I1 thread intake, DW-P1 project directory, DW-P2
+project binding editor, and DW-T1 runtime-neutral thread directory are
+implemented.
 
 ## Run Stance
 
@@ -181,6 +182,11 @@ project-scoped `thread/read`; App Server focus preflights provider resume/read
 before replacing the active transcript. Active turns, pending provider
 requests, and concurrent focus transitions remain visible blockers.
 
+DW-P2 adds revision-bound create/edit drafts and a main-owned binding mutation
+transaction. New identity is main-generated, inactive edits preserve the
+current thread, and active-project edits reload or roll back the runtime and
+config as one bounded transition.
+
 ## Launch Surfaces
 
 Canonical development commands:
@@ -204,8 +210,8 @@ The previous `dev:t3`, `dev:worldmanager`, `dev:worldmanager:mock`, and
 
 ## Deferred Work
 
-- add Direct-native create/edit project binding flows after the project
-  directory activation contract;
+- add delete/archive binding governance, substrate discovery, and port
+  operations after the DW-P2 create/edit contract;
 - add provider-specific resume adapters beyond the current App Server durable
   thread identity path;
 - implement WorldManager semantic ingestion and admission of external threads;
