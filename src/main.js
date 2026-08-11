@@ -128,7 +128,9 @@ const {
   normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
 } = require("./main/direct/runtime/runtime-status");
 const {
+  alignCodexHostRuntimeWithWorkspace,
   bindingForDirectRuntimePath,
+  defaultCodexHostRuntimeForWorkspace,
   directRuntimePathFromBinding,
   normalizeDirectRuntimePath,
   resolveCodexThreadOpenRuntime,
@@ -1636,7 +1638,7 @@ function defaultProjectRepoPath(workspace = defaultProjectWorkspaceConfig()) {
 }
 
 function defaultCodexRuntimeForWorkspace(workspace) {
-  return workspace?.kind === "wsl" && process.platform === "win32" ? "wsl" : "auto";
+  return defaultCodexHostRuntimeForWorkspace(workspace, process.platform);
 }
 
 function defaultConfig() {
@@ -6318,9 +6320,15 @@ function projectRepoPathFromWorkspace(workspace = {}) {
 function projectWithDirectWorkbenchBinding(project = {}, operation = {}, index = 0) {
   const now = nowIso();
   const existingCodexBinding = project.surfaceBinding?.codex || {};
-  const codexBinding = directRuntimePathFromBinding(existingCodexBinding) === operation.runtimePath
+  const runtimePathBinding = directRuntimePathFromBinding(existingCodexBinding) === operation.runtimePath
     ? existingCodexBinding
     : bindingForDirectRuntimePath(existingCodexBinding, operation.runtimePath);
+  const codexBinding = alignCodexHostRuntimeWithWorkspace(runtimePathBinding, {
+    mode: operation.mode,
+    currentWorkspace: project.workspace,
+    nextWorkspace: operation.workspace,
+    platform: process.platform,
+  });
   return normalizeProject({
     ...project,
     id: project.id,

@@ -79,6 +79,9 @@ Invariants:
 - provider secrets, remote auth, binary paths, and unrelated project settings
   never enter the editor projection;
 - active work blocks edits to either the current or an inactive target project;
+- changing workspace kind recomputes the hidden host-runtime selector so WSL
+  bindings cannot remain forced onto Windows and Windows/local bindings cannot
+  remain forced through WSL;
 - a successful active-project edit reloads the runtime from the admitted
   binding; failure restores the previous config and runtime;
 - create and inactive edit preserve the current active project and thread;
@@ -217,6 +220,8 @@ Focused contract coverage proves:
   targets, and client-ID reuse fail closed;
 - receipts are idempotent and WorldManager-neutral;
 - unchanged test/provider bindings are preserved rather than silently rewritten.
+- same-kind edits preserve an explicit host-runtime choice, while create and
+  cross-substrate edits derive a compatible `wsl` or `auto` runtime.
 
 The Electron/Xvfb smoke proves:
 

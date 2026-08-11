@@ -71,6 +71,23 @@ function directRuntimePathLabel(runtimePath) {
   return "App Server";
 }
 
+function defaultCodexHostRuntimeForWorkspace(workspace = {}, platform = process.platform) {
+  return workspace?.kind === "wsl" && platform === "win32" ? "wsl" : "auto";
+}
+
+function alignCodexHostRuntimeWithWorkspace(binding = {}, options = {}) {
+  const raw = isPlainObject(binding) ? binding : {};
+  const currentWorkspaceKind = normalizeString(options.currentWorkspace?.kind, "").toLowerCase();
+  const nextWorkspace = isPlainObject(options.nextWorkspace) ? options.nextWorkspace : {};
+  const nextWorkspaceKind = normalizeString(nextWorkspace.kind, "").toLowerCase();
+  const substrateChanged = options.mode === "create" || currentWorkspaceKind !== nextWorkspaceKind;
+  if (!substrateChanged) return { ...raw };
+  return {
+    ...raw,
+    runtime: defaultCodexHostRuntimeForWorkspace(nextWorkspace, options.platform || process.platform),
+  };
+}
+
 function normalizeCodexThreadNativeRuntime(value) {
   const candidate = normalizeString(value, "").toLowerCase();
   if (["app-server", "app_server", "appserver", "codex", "vanilla-codex"].includes(candidate)) {
@@ -117,10 +134,12 @@ function resolveCodexThreadOpenRuntime(binding, threadRef = {}) {
 
 module.exports = {
   DIRECT_RUNTIME_PATHS,
+  alignCodexHostRuntimeWithWorkspace,
   bindingForDirectRuntimePath,
   codexThreadNativeRuntime,
   directRuntimePathFromBinding,
   directRuntimePathLabel,
+  defaultCodexHostRuntimeForWorkspace,
   normalizeDirectRuntimePath,
   resolveCodexThreadOpenRuntime,
 };

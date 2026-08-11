@@ -16,6 +16,9 @@ const {
   validateDirectWorkbenchProjectBindingMutation,
   validateDirectWorkbenchProjectActivation,
 } = require("../src/main/direct/project/project-directory.js");
+const {
+  alignCodexHostRuntimeWithWorkspace,
+} = require("../src/main/direct/runtime/runtime-path-selection.js");
 
 function project({ id, name, workspace, codex, laneBindings = [] }) {
   return {
@@ -437,5 +440,57 @@ assert.throws(
   ),
   (error) => error?.code === "client_mutation_id_reused",
 );
+
+const preservedHostRuntime = alignCodexHostRuntimeWithWorkspace(
+  { runtime: "host", binaryPath: "codex" },
+  {
+    mode: "edit",
+    currentWorkspace: { kind: "windows" },
+    nextWorkspace: { kind: "windows" },
+    platform: "win32",
+  },
+);
+assert.equal(preservedHostRuntime.runtime, "host");
+const windowsToWslRuntime = alignCodexHostRuntimeWithWorkspace(
+  { runtime: "host", binaryPath: "codex" },
+  {
+    mode: "edit",
+    currentWorkspace: { kind: "windows" },
+    nextWorkspace: { kind: "wsl" },
+    platform: "win32",
+  },
+);
+assert.equal(windowsToWslRuntime.runtime, "wsl");
+assert.equal(windowsToWslRuntime.binaryPath, "codex");
+const wslToWindowsRuntime = alignCodexHostRuntimeWithWorkspace(
+  { runtime: "wsl" },
+  {
+    mode: "edit",
+    currentWorkspace: { kind: "wsl" },
+    nextWorkspace: { kind: "windows" },
+    platform: "win32",
+  },
+);
+assert.equal(wslToWindowsRuntime.runtime, "auto");
+const createdWslRuntime = alignCodexHostRuntimeWithWorkspace(
+  { runtime: "host" },
+  {
+    mode: "create",
+    currentWorkspace: { kind: "windows" },
+    nextWorkspace: { kind: "wsl" },
+    platform: "win32",
+  },
+);
+assert.equal(createdWslRuntime.runtime, "wsl");
+const nativeWslProcessRuntime = alignCodexHostRuntimeWithWorkspace(
+  { runtime: "host" },
+  {
+    mode: "create",
+    currentWorkspace: { kind: "local" },
+    nextWorkspace: { kind: "wsl" },
+    platform: "linux",
+  },
+);
+assert.equal(nativeWslProcessRuntime.runtime, "auto");
 
 console.log("Direct Workbench project directory regression passed.");
