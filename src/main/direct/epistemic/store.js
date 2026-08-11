@@ -895,6 +895,14 @@ class DirectEpistemicStore {
     return row ? parse(row.port_json, "port") : null;
   }
 
+  portRefIsCurrent(subjectId, name, portRef = {}) {
+    const currentPort = this.readPort(subjectId, name);
+    return Boolean(
+      currentPort?.portId === text(portRef.id) &&
+      currentPort?.portDigest === text(portRef.digest),
+    );
+  }
+
   importContext(input = {}) {
     const subject = this.readSubject(input.subjectId);
     const head = subject ? this.readHead(subject.subjectId) : null;
@@ -1144,6 +1152,13 @@ class DirectEpistemicStore {
         }
         return this.readContextDeliveryAdmission(existingRow.admission_id);
       }
+      if (!this.portRefIsCurrent(
+        candidate.subjectRef.id,
+        contextResult.purposeId,
+        candidate.portRef,
+      )) {
+        fail("direct_epistemic_context_delivery_port_stale");
+      }
 
       const pendingRows = this.db.prepare(`select admission_id, admission_json
         from direct_epistemic_context_delivery_admissions
@@ -1308,7 +1323,17 @@ class DirectEpistemicStore {
       }
       const contextResult = this.readContextImport(admission.importRef.id);
       try {
-        if (!staleReason) validateImportForAdmission(admission, contextResult);
+        if (!staleReason) {
+          validateImportForAdmission(admission, contextResult);
+          if (!this.portRefIsCurrent(
+            admission.subjectRef.id,
+            contextResult.purposeId,
+            admission.portRef,
+          )) {
+            staleReason =
+              "The admitted semantic port is no longer the exact current port for this subject and purpose.";
+          }
+        }
       } catch {
         staleReason = "The admitted immutable context import no longer validates.";
       }

@@ -108,7 +108,8 @@ Admission fails closed unless all of the following remain true:
 2. the import id and digest resolve exactly;
 3. the import subject belongs to the active project;
 4. the subject O and E heads still equal the import refs;
-5. the port ref remains exact;
+5. the port ref remains the subject's current port id and digest for the
+   imported purpose;
 6. the target session role lane and WorkThread still match the admission;
 7. the import uses `freshness=exact`, `detailDepth=typed_records`, and
    `rawEvidencePolicy=references_only`;
@@ -234,12 +235,13 @@ Negative evidence:
 1. wrong-project target session;
 2. import id/digest mismatch;
 3. stale O or E head;
-4. role-lane or WorkThread drift;
-5. duplicate consumption;
-6. renderer-supplied projection text;
-7. raw path or secret exposure in generated context text;
-8. interrupted claimed/prepared delivery;
-9. context-pack or request-manifest persistence failure before transport.
+4. current semantic-port id or digest drift with unchanged O/E heads;
+5. role-lane or WorkThread drift;
+6. duplicate consumption;
+7. renderer-supplied projection text;
+8. raw path or secret exposure in generated context text;
+9. interrupted claimed/prepared delivery;
+10. context-pack or request-manifest persistence failure before transport.
 
 The acceptance claim is deliberately narrow:
 

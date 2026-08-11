@@ -243,6 +243,14 @@ const roleDriftSession = createSession(
   { agentRole: "implementation_worker", workThreadId: "work_arcagi3" },
 );
 const staleSession = createSession(sessionStore, "direct_delivery_stale");
+const stalePortSession = createSession(
+  sessionStore,
+  "direct_delivery_stale_port",
+);
+const stalePortAdmissionSession = createSession(
+  sessionStore,
+  "direct_delivery_stale_port_admission",
+);
 const supersedeSession = createSession(
   sessionStore,
   "direct_delivery_supersede",
@@ -580,6 +588,57 @@ assert.equal(recoveredInterrupted.latestEvent.recovery, true);
 
 epistemicService.admitContextDelivery({
   projectId: PROJECT_ID,
+  targetSessionId: stalePortSession.sessionId,
+  importId: contextImport.importId,
+  importDigest: contextImport.importDigest,
+  clientRequestId: "client_delivery_stale_port",
+});
+const revisedPort = buildSemanticPort({
+  subject,
+  name: port.name,
+  label: "Repository architecture revised",
+  purpose: "Inspect only the revised ArcAGI3 architectural boundary.",
+  version: port.version + 1,
+  facets: ["architecture"],
+  standings: ["validated"],
+  traversal: ["architecture"],
+});
+assert.notEqual(revisedPort.portId, port.portId);
+assert.notEqual(revisedPort.portDigest, port.portDigest);
+epistemicStore.putPort(revisedPort);
+const unchangedPortDriftHead = epistemicStore.readHead(subject.subjectId);
+assert.equal(
+  unchangedPortDriftHead.oRevision.oRevisionId,
+  contextImport.oRevisionRef.id,
+);
+assert.equal(
+  unchangedPortDriftHead.eRevision.eRevisionId,
+  contextImport.eRevisionRef.id,
+);
+await rejectsCode(
+  async () => epistemicService.admitContextDelivery({
+    projectId: PROJECT_ID,
+    targetSessionId: stalePortAdmissionSession.sessionId,
+    importId: contextImport.importId,
+    importDigest: contextImport.importDigest,
+    clientRequestId: "client_delivery_already_stale_port",
+  }),
+  "direct_epistemic_context_delivery_port_stale",
+);
+const stalePortClaim = epistemicStore.claimContextDelivery({
+  projectId: PROJECT_ID,
+  targetSessionId: stalePortSession.sessionId,
+  targetTurnId: "turn_stale_port",
+  roleLane: "direct_assistant",
+  workThreadId: "",
+});
+assert.equal(stalePortClaim.stale, true);
+assert.equal(stalePortClaim.currentState, "stale");
+assert.match(stalePortClaim.latestEvent.reason, /semantic port/i);
+epistemicStore.putPort(port);
+
+epistemicService.admitContextDelivery({
+  projectId: PROJECT_ID,
   targetSessionId: staleSession.sessionId,
   importId: contextImport.importId,
   importDigest: contextImport.importDigest,
@@ -796,6 +855,7 @@ console.log(JSON.stringify({
   oneShotDelivery: true,
   pendingAdmissionSupersession: true,
   exactRevisionFailClosed: true,
+  currentPortRevisionFailClosed: true,
   unsafeProjectionRetired: true,
   restartRecovery: true,
   runtimeClosurePreventsLateTransport: true,
