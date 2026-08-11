@@ -12,6 +12,8 @@ const alternateCss = read("src/renderer/t3-direct-surface.css");
 const alternateJs = read("src/renderer/t3-direct-surface.js");
 const projectDirectoryJs = read("src/renderer/direct-project-directory-surface.js");
 const intakeJs = read("src/renderer/direct-thread-intake-surface.js");
+const codexSurfaceJs = read("src/renderer/codex-surface.js");
+const threadDirectoryJs = read("src/renderer/direct-thread-directory-model.js");
 const packageJson = JSON.parse(read("package.json"));
 
 function htmlIds(source) {
@@ -42,6 +44,8 @@ assert.match(alternateHtml, /data-morphic-region="project-directory"/);
 assert.match(alternateHtml, /src="\.\/direct-project-directory-surface\.js"/);
 assert.match(alternateHtml, /data-morphic-region="direct-thread-intake-evidence"/);
 assert.match(alternateHtml, /src="\.\/direct-thread-intake-surface\.js"/);
+assert.match(alternateHtml, /id="morphicThreadDirectoryStatus"/);
+assert.match(alternateHtml, /src="\.\/direct-thread-directory-model\.js"/);
 assert.match(alternateHtml, /data-runtime-tab="runtime"/);
 assert.match(alternateHtml, /data-app-experience="direct-workbench"/);
 assert.match(alternateHtml, /Direct thread control plane/);
@@ -64,12 +68,28 @@ assert.match(intakeJs, /workspaceConfirmationKey/);
 assert.match(intakeJs, /workspaceConfirmedForSelection/);
 assert.match(intakeJs, /setSelection\("source", result\.source\.handleId\)/);
 assert.doesNotMatch(intakeJs, /result\?\.session\?\.importLineage/);
+assert.match(threadDirectoryJs, /direct_workbench_thread_directory@1/);
+assert.match(threadDirectoryJs, /Array\.isArray\(response\?\.data\)/);
+assert.match(threadDirectoryJs, /rawCursorExposed:\s*false/);
+assert.match(threadDirectoryJs, /pending_provider_request_in_current_thread/);
+assert.match(threadDirectoryJs, /providerRequestThreadId/);
+assert.match(threadDirectoryJs, /options\.activeThreadAttached !== false/);
+assert.match(codexSurfaceJs, /sortKey:\s*"updated_at"/);
+assert.match(codexSurfaceJs, /cwd:\s*workspaceRootText\(\) \|\| null/);
+assert.match(codexSurfaceJs, /threadDirectoryModel\.normalizeThreadDirectory/);
+assert.match(codexSurfaceJs, /activeThreadAttached:\s*state\.liveAttached/);
+assert.match(codexSurfaceJs, /requestId !== state\.directThreadListRequestId/);
+assert.match(codexSurfaceJs, /await openThreadHybrid\(threadId,[\s\S]*requireProviderAttach:\s*true/);
+assert.match(codexSurfaceJs, /skipReadFallback:\s*options\.requireProviderResume === true/);
+assert.match(codexSurfaceJs, /project\?\.workspace\?\.windowsPath/);
 assert.match(alternateCss, /grid-template-areas:[\s\S]*"sidebar thread-bar utility"/);
 assert.match(alternateCss, /@media \(max-width: 720px\)/);
 assert.match(alternateCss, /\.direct-thread-intake-panel/);
 assert.match(alternateCss, /\.direct-project-directory/);
 assert.match(alternateCss, /data-t3-projects-open/);
 assert.match(alternateCss, /\.t3-project-sidebar:has\(\.morphic-thread-rail:not\(\[hidden\]\)\)/);
+assert.match(alternateCss, /\.morphic-thread-tab-evidence/);
+assert.match(alternateCss, /\.morphic-thread-tab\.opening/);
 assert.equal(
   packageJson.scripts["dev:t3"],
   "npm run dev:direct-workbench",

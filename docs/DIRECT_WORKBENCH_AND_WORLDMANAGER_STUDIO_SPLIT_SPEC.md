@@ -1,8 +1,8 @@
 # Direct Workbench And WorldManager Studio Split
 
 Status: phase 2 active — Direct Workbench and WorldManager Studio share a
-reviewed Direct kernel; DW-I1 thread intake and DW-P1 project directory are
-implemented.
+reviewed Direct kernel; DW-I1 thread intake, DW-P1 project directory, and DW-T1
+runtime-neutral thread directory are implemented.
 
 ## Run Stance
 
@@ -174,6 +174,12 @@ Shared transcript acquisition and normalization may be reused. Identity,
 context compilation, admission, and target U diverge after normalization.
 DW-I1 now implements Direct operations 1 and 2 through one typed, renderer-safe
 intake projection. WorldManager operation 3 remains deferred.
+
+DW-T1 aligns the existing Direct thread deck and App Server `thread/list`
+protocol behind one bounded renderer directory. Direct focus remains a
+project-scoped `thread/read`; App Server focus preflights provider resume/read
+before replacing the active transcript. Active turns, pending provider
+requests, and concurrent focus transitions remain visible blockers.
 
 ## Launch Surfaces
 

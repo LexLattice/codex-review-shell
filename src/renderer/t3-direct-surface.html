@@ -48,10 +48,11 @@
         <section id="morphicThreadRail" class="morphic-thread-rail" hidden aria-label="Direct thread directory" data-morphic-region="direct-thread-rail">
           <div id="morphicThreadRailList" class="morphic-thread-rail-list"></div>
           <div class="morphic-thread-rail-actions">
+            <span id="morphicThreadDirectoryStatus" class="morphic-thread-directory-status">Directory idle</span>
             <button id="morphicThreadDirectoryButton" class="morphic-rail-action" type="button">Refresh directory</button>
           </div>
         </section>
-        <p class="t3-sidebar-empty">The Direct thread directory becomes available when the selected runtime exposes native Direct threads.</p>
+        <p class="t3-sidebar-empty">The thread directory becomes available when the selected runtime exposes project-scoped thread listing.</p>
         <footer class="t3-sidebar-footer">
           <span class="t3-runtime-owner-dot" aria-hidden="true"></span>
           <span id="t3ExperienceWitness">Direct thread control plane</span>
@@ -200,6 +201,7 @@
     </main>
     <script src="./typed-markdown-projection.js"></script>
     <script src="./codex-app-server-evidence.js"></script>
+    <script src="./direct-thread-directory-model.js"></script>
     <script src="./codex-surface.js"></script>
     <script src="./t3-direct-surface.js"></script>
     <script src="./direct-project-directory-surface.js"></script>

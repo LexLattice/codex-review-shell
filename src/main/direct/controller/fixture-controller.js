@@ -5,6 +5,7 @@ const path = require("node:path");
 const { EventEmitter } = require("node:events");
 const { loadFixtureFile, NORMALIZED_FIXTURE_DIR } = require("../fixtures/fixture-loader");
 const { toolTranscriptItemFromObligation } = require("../session/session-store");
+const { buildDirectThreadDeckProjection } = require("../thread/thread-deck");
 const {
   assertDirectAttachmentCapabilityProjectionSafe,
   assertDirectAttachmentSubmitPacketSafe,
@@ -68,9 +69,9 @@ function buildDirectFixtureCapabilities() {
     },
     threads: {
       canStart: true,
-      canRead: false,
+      canRead: true,
       canResume: false,
-      canList: false,
+      canList: true,
       canFork: false,
       canPersistExtendedHistory: true,
     },
@@ -196,6 +197,66 @@ class DirectFixtureController {
     return {
       thread: threadSnapshotFromSession(session, model),
       model,
+    };
+  }
+
+  listThreads(params = {}, context = {}) {
+    const projectId = normalizeString(context.project?.id, "");
+    const requestedLimit = Number(params.limit || 40);
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(200, requestedLimit)) : 40;
+    const index = this.sessionStore.readIndex();
+    const sessions = (Array.isArray(index?.sessions) ? index.sessions : [])
+      .filter((entry) => entry && normalizeString(entry.projectId, "") === projectId)
+      .sort((left, right) => Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || ""))
+      .slice(0, limit)
+      .map((entry) => {
+        const session = this.sessionStore.readSession(entry.sessionId) || entry;
+        return {
+          id: normalizeString(entry.sessionId, ""),
+          threadId: normalizeString(entry.sessionId, ""),
+          projectId,
+          title: normalizeString(entry.title, fixtureThreadTitle(context.project || {})),
+          preview: normalizeString(entry.title, fixtureThreadTitle(context.project || {})),
+          status: normalizeString(entry.status, "created"),
+          createdAt: normalizeString(entry.createdAt, ""),
+          updatedAt: normalizeString(entry.updatedAt, ""),
+          model: normalizeString(entry.model, this.defaultModel(context.project || {})),
+          turnCount: Number(entry.turnCount || session.turns?.length || 0),
+          activeTurnCount: Number(entry.activeTurnCount || 0),
+          turns: Array.isArray(session.turns) ? session.turns : [],
+          runtimeMode: "direct-experimental",
+          directTransport: DIRECT_FIXTURE_SURFACE_TRANSPORT,
+          rawPathExposed: false,
+        };
+      });
+    return {
+      schema: "direct_thread_list@1",
+      runtime: DIRECT_FIXTURE_SURFACE_TRANSPORT,
+      projectId,
+      threads: sessions,
+      count: sessions.length,
+      limit,
+      deck: buildDirectThreadDeckProjection({
+        projectId,
+        runtime: DIRECT_FIXTURE_SURFACE_TRANSPORT,
+        threads: sessions,
+        defaultModel: this.defaultModel(context.project || {}),
+        canStart: true,
+      }),
+      rawPathsExposed: false,
+    };
+  }
+
+  readThread(params = {}, context = {}) {
+    const threadId = normalizeString(params.threadId || params.sessionId, "");
+    const session = this.sessionStore.readSession(threadId);
+    if (!session) throw new Error(`Direct fixture session not found: ${threadId || "missing"}.`);
+    if (normalizeString(session.projectId, "") !== normalizeString(context.project?.id, "")) {
+      throw new Error("Direct fixture session does not belong to the active project.");
+    }
+    return {
+      thread: threadSnapshotFromSession(session, session.model),
+      model: normalizeString(session.model, this.defaultModel(context.project || {})),
     };
   }
 
@@ -448,6 +509,8 @@ class DirectFixtureController {
     if (method === "account/read") return this.accountRead(params, context);
     if (method === "configRequirements/read") return this.configRequirementsRead(params, context);
     if (method === "thread/start") return this.startThread(params, context);
+    if (method === "thread/list") return this.listThreads(params, context);
+    if (method === "thread/read") return this.readThread(params, context);
     if (method === "turn/start") return this.startTurn(params, context);
     throw new Error(`Direct fixture controller does not support ${method}.`);
   }

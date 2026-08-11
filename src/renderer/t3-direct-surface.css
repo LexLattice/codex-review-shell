@@ -345,6 +345,7 @@ body {
 }
 
 .t3-project-sidebar .morphic-thread-rail {
+  grid-area: auto;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -371,9 +372,12 @@ body {
 .t3-project-sidebar .morphic-thread-tab {
   width: 100%;
   max-width: none;
-  min-height: 34px;
-  justify-content: space-between;
-  padding: 0 9px;
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
   border-color: transparent;
   border-radius: 8px;
   background: transparent;
@@ -392,8 +396,81 @@ body {
   color: #f0f0f4;
 }
 
+.t3-project-sidebar .morphic-thread-tab.opening {
+  border-color: rgba(240, 191, 116, 0.2);
+  background: rgba(240, 191, 116, 0.07);
+}
+
+.t3-project-sidebar .morphic-thread-tab.blocked {
+  opacity: 0.68;
+}
+
+.t3-project-sidebar .morphic-thread-tab-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.t3-project-sidebar .morphic-thread-tab-title {
+  display: -webkit-box;
+  overflow: hidden;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.t3-project-sidebar .morphic-thread-tab-evidence {
+  overflow: hidden;
+  color: #71747a;
+  font-size: 9px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.t3-project-sidebar .morphic-thread-tab-state {
+  padding: 2px 5px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+  color: #777a80;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.t3-project-sidebar .morphic-thread-tab.active .morphic-thread-tab-state {
+  border-color: rgba(166, 176, 255, 0.18);
+  color: #b8bfff;
+}
+
+.t3-project-sidebar .morphic-thread-tab.running .morphic-thread-tab-state,
+.t3-project-sidebar .morphic-thread-tab.opening .morphic-thread-tab-state {
+  border-color: rgba(240, 191, 116, 0.2);
+  color: var(--warning);
+}
+
 .t3-project-sidebar .morphic-thread-rail-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
   padding: 2px 0 0;
+}
+
+.t3-project-sidebar .morphic-thread-directory-status {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 4px;
+  color: #676a70;
+  font-size: 9px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .t3-project-sidebar .morphic-rail-action {
@@ -444,7 +521,7 @@ body {
 .t3-direct-shell[data-t3-sidebar="collapsed"] .t3-sidebar-section-label button,
 .t3-direct-shell[data-t3-sidebar="collapsed"] .t3-sidebar-empty,
 .t3-direct-shell[data-t3-sidebar="collapsed"] .t3-sidebar-footer span,
-.t3-direct-shell[data-t3-sidebar="collapsed"] .morphic-thread-tab-title,
+.t3-direct-shell[data-t3-sidebar="collapsed"] .morphic-thread-tab-copy,
 .t3-direct-shell[data-t3-sidebar="collapsed"] .morphic-thread-rail-actions {
   display: none;
 }
@@ -757,12 +834,13 @@ body {
 
   .t3-project-sidebar .morphic-thread-tab {
     width: auto;
-    max-width: 190px;
+    max-width: 230px;
+    min-height: 42px;
     flex: 0 0 auto;
   }
 
-  .t3-direct-shell[data-t3-sidebar="collapsed"] .morphic-thread-tab-title {
-    display: inline;
+  .t3-direct-shell[data-t3-sidebar="collapsed"] .morphic-thread-tab-copy {
+    display: grid;
   }
 
   .t3-utility-rail {
@@ -789,8 +867,15 @@ body {
   }
 
   .compact-thread-bar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
     min-height: 54px;
     padding-inline: 10px;
+  }
+
+  .compact-thread-actions {
+    flex-wrap: nowrap;
+    justify-content: flex-end;
   }
 
   .compact-thread-chip.runtime,
