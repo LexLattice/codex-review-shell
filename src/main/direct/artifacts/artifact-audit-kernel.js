@@ -3,14 +3,15 @@
 const crypto = require("node:crypto");
 
 const ARTIFACT_AUDIT_POLICY_SCHEMA = "direct_artifact_audit_policy@2";
-const ARTIFACT_AUDIT_EVENT_SCHEMA = "direct_artifact_audit_event@2";
+const ARTIFACT_AUDIT_EVENT_SCHEMA = "direct_artifact_audit_event@3";
 const ARTIFACT_AUDIT_EVIDENCE_SCHEMA = "direct_artifact_audit_evidence@1";
+const ARTIFACT_AUDIT_EVIDENCE_RECEIPT_SCHEMA = "direct_artifact_audit_evidence_receipt@1";
 const ARTIFACT_AUDIT_PRINCIPAL_SCHEMA = "direct_artifact_audit_principal@1";
 const ARTIFACT_AUDIT_ROUTE_PLAN_SCHEMA = "direct_artifact_audit_route_plan@2";
 const ARTIFACT_AUDIT_PROJECTION_SCHEMA = "direct_artifact_audit_projection@1";
 
 const RIGHTS = Object.freeze(["read", "propose", "challenge", "admit", "subscribe"]);
-const PRINCIPAL_PURPOSES = Object.freeze(["declare", "act", "register_evidence"]);
+const PRINCIPAL_PURPOSES = Object.freeze(["declare", "act", "admin_read", "register_evidence"]);
 const STATES = Object.freeze([
   "requested", "under_production", "candidate", "under_audit", "supported",
   "requires_revision", "contradicted", "admitted", "rejected", "remanded",
@@ -25,6 +26,8 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const PRINCIPAL_RECORDS = new WeakMap();
 const AUTHORITY_RECORDS = new WeakMap();
+const EVIDENCE_RECEIPT_AUTHORITY_RECORDS = new WeakMap();
+const EVIDENCE_RECEIPT_RECORDS = new WeakMap();
 
 function fail(code, detail = "") {
   const error = new Error(detail ? `${code}:${detail}` : code);
@@ -349,6 +352,55 @@ function validateEvidenceRecord(input) {
   return rebuilt;
 }
 
+function createArtifactAuditEvidenceReceiptAuthority(input = {}) {
+  exactObject(input, ["authorityId", "adapter"], "artifact_audit_evidence_authority_invalid");
+  const authorityId = requiredId(input.authorityId, "evidenceAuthorityId");
+  const adapter = deepFreeze(normalizeActor(input.adapter));
+  const authorityDigest = digestFor("direct_artifact_audit_evidence_authority@1", { authorityId, adapter });
+  const authority = Object.freeze({
+    schema: "direct_artifact_audit_evidence_authority@1",
+    authorityId,
+    authorityDigest,
+    issue(evidenceInput = {}) {
+      const evidence = buildEvidenceRecord(evidenceInput);
+      const receipt = deepFreeze({
+        schema: ARTIFACT_AUDIT_EVIDENCE_RECEIPT_SCHEMA,
+        authorityId,
+        receiptId: `aer_${evidence.evidenceDigest.slice(7, 31)}`,
+        evidence,
+        receiptDigest: digestFor(ARTIFACT_AUDIT_EVIDENCE_RECEIPT_SCHEMA, {
+          authorityId,
+          authorityDigest,
+          evidenceDigest: evidence.evidenceDigest,
+        }),
+      });
+      EVIDENCE_RECEIPT_RECORDS.set(receipt, { authority, evidence });
+      return receipt;
+    },
+  });
+  EVIDENCE_RECEIPT_AUTHORITY_RECORDS.set(authority, { authorityId, authorityDigest, adapter });
+  return authority;
+}
+
+function validateArtifactAuditEvidenceReceiptAuthority(authority) {
+  const record = EVIDENCE_RECEIPT_AUTHORITY_RECORDS.get(authority);
+  if (!record) fail("artifact_audit_evidence_authority_untrusted");
+  return deepFreeze({
+    authorityId: record.authorityId,
+    authorityDigest: record.authorityDigest,
+    adapter: record.adapter,
+  });
+}
+
+function verifyArtifactAuditEvidenceReceipt(authority, receipt) {
+  if (!EVIDENCE_RECEIPT_AUTHORITY_RECORDS.has(authority)) {
+    fail("artifact_audit_evidence_authority_untrusted");
+  }
+  const record = EVIDENCE_RECEIPT_RECORDS.get(receipt);
+  if (!record || record.authority !== authority) fail("artifact_audit_evidence_receipt_untrusted");
+  return record.evidence;
+}
+
 function normalizeEvidenceRefs(values, expectedScope, policyDigest, allowedKinds) {
   if (!Array.isArray(values) || !values.length) fail("artifact_audit_evidence_missing");
   const refs = values.map(validateEvidenceRecord);
@@ -430,6 +482,23 @@ function compileArtifactRoutingPlan(policyInput, scopeInput) {
   return deepFreeze(plan);
 }
 
+function normalizeAuditAssignment(input) {
+  if (!Array.isArray(input) || !input.length) fail("artifact_audit_assignment_missing");
+  const assignment = input.map((entry) => {
+    exactObject(entry, ["requirementId", "actorId", "roleId"], "artifact_audit_assignment_invalid");
+    return {
+      requirementId: requiredId(entry.requirementId, "assignment.requirementId"),
+      actorId: requiredId(entry.actorId, "assignment.actorId"),
+      roleId: requiredId(entry.roleId, "assignment.roleId"),
+    };
+  }).sort((a, b) => a.requirementId.localeCompare(b.requirementId));
+  if (new Set(assignment.map((entry) => entry.requirementId)).size !== assignment.length ||
+      new Set(assignment.map((entry) => entry.actorId)).size !== assignment.length) {
+    fail("artifact_audit_assignment_invalid");
+  }
+  return deepFreeze(assignment);
+}
+
 function buildEvent(input) {
   assertNoRawExposure(input, "event");
   const fields = [
@@ -438,6 +507,7 @@ function buildEvent(input) {
   ];
   if (input.audit !== undefined) fields.push("audit");
   if (input.decision !== undefined) fields.push("decision");
+  if (input.assignment !== undefined) fields.push("assignment");
   exactObject(input, fields, "artifact_audit_event_input_invalid");
   const policyRef = exactObject(input.policyRef, ["id", "digest"], "artifact_audit_policy_ref_invalid");
   const event = {
@@ -464,6 +534,7 @@ function buildEvent(input) {
     if (!["admitted", "rejected", "remanded"].includes(input.decision.disposition)) fail("artifact_audit_decision_invalid");
     event.decision = { disposition: input.decision.disposition };
   }
+  if (input.assignment !== undefined) event.assignment = normalizeAuditAssignment(input.assignment);
   event.eventDigest = digestFor(ARTIFACT_AUDIT_EVENT_SCHEMA, event);
   return deepFreeze(event);
 }
@@ -475,6 +546,7 @@ function validateEvent(input) {
   ];
   if (input?.audit !== undefined) base.push("audit");
   if (input?.decision !== undefined) base.push("decision");
+  if (input?.assignment !== undefined) base.push("assignment");
   exactObject(input, base, "artifact_audit_event_invalid");
   if (input.schema !== ARTIFACT_AUDIT_EVENT_SCHEMA || input.authorityDomain !== "direct_workbench_artifact_audit" ||
       input.canonicalProjectTruth !== false) fail("artifact_audit_event_schema_invalid");
@@ -484,6 +556,7 @@ function validateEvent(input) {
     stateFrom: input.stateFrom, stateTo: input.stateTo, evidenceRefs: input.evidenceRefs,
     occurredAt: input.occurredAt, ...(input.audit === undefined ? {} : { audit: input.audit }),
     ...(input.decision === undefined ? {} : { decision: input.decision }),
+    ...(input.assignment === undefined ? {} : { assignment: input.assignment }),
   });
   if (canonicalJson(rebuilt) !== canonicalJson(input)) fail("artifact_audit_event_integrity_failed");
   return rebuilt;
@@ -519,6 +592,7 @@ function safeTransitionProjection(subscription, events) {
 module.exports = {
   ARTIFACT_AUDIT_EVENT_SCHEMA,
   ARTIFACT_AUDIT_EVIDENCE_SCHEMA,
+  ARTIFACT_AUDIT_EVIDENCE_RECEIPT_SCHEMA,
   ARTIFACT_AUDIT_POLICY_SCHEMA,
   ARTIFACT_AUDIT_PRINCIPAL_SCHEMA,
   ARTIFACT_AUDIT_PROJECTION_SCHEMA,
@@ -535,17 +609,21 @@ module.exports = {
   buildPolicySnapshot,
   canonicalJson,
   compileArtifactRoutingPlan,
+  createArtifactAuditEvidenceReceiptAuthority,
   createArtifactAuditPrincipalAuthority,
   deepFreeze,
   digestFor,
   fail,
   normalizeActor,
   normalizeEvidenceRefs,
+  normalizeAuditAssignment,
   normalizeScope,
   safeTransitionProjection,
   validateEvent,
   validateEvidenceRecord,
   validateArtifactAuditPrincipalAuthority,
+  validateArtifactAuditEvidenceReceiptAuthority,
   validatePolicySnapshot,
+  verifyArtifactAuditEvidenceReceipt,
   verifyArtifactAuditPrincipal,
 };

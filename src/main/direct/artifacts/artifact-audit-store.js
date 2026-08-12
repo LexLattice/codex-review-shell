@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const {
   AUDIT_VERDICTS,
@@ -9,7 +10,6 @@ const {
   assertAuthorized,
   assertNoRawExposure,
   buildEvent,
-  buildEvidenceRecord,
   buildPolicySnapshot,
   canonicalJson,
   compileArtifactRoutingPlan,
@@ -17,16 +17,19 @@ const {
   digestFor,
   fail,
   normalizeEvidenceRefs,
+  normalizeAuditAssignment,
   normalizeScope,
   safeTransitionProjection,
   validateArtifactAuditPrincipalAuthority,
+  validateArtifactAuditEvidenceReceiptAuthority,
   validateEvent,
   validateEvidenceRecord,
   validatePolicySnapshot,
+  verifyArtifactAuditEvidenceReceipt,
   verifyArtifactAuditPrincipal,
 } = require("./artifact-audit-kernel");
 
-const STORE_SCHEMA = "direct_artifact_audit_store@2";
+const STORE_SCHEMA = "direct_artifact_audit_store@3";
 const EVENT_TYPES = Object.freeze([
   "artifact_requested", "production_started", "candidate_recorded", "audit_started",
   "audit_verdict_recorded", "artifact_admitted", "artifact_rejected", "artifact_remanded",
@@ -65,6 +68,7 @@ const DB_OBJECTS = Object.freeze([
 ]);
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
+const AUTH_TAG = /^hmac-sha256:[a-f0-9]{64}$/;
 
 function parseJson(value, label) {
   try {
@@ -109,17 +113,78 @@ function sameScalar(actual, expected, code = "artifact_audit_store_integrity_fai
   if (actual !== expected) fail(code);
 }
 
+function assertNoSymlinkComponents(targetPath, code = "artifact_audit_store_path_unsafe") {
+  const absolute = path.resolve(targetPath);
+  const parsed = path.parse(absolute);
+  let current = parsed.root;
+  for (const component of absolute.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) fail(code);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+}
+
+function assertContained(parentPath, childPath) {
+  const relative = path.relative(parentPath, childPath);
+  if (!relative || relative === ".") return;
+  if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
+    fail("artifact_audit_store_path_escape");
+  }
+}
+
+function loadSecureKeyFile(keyFilePath) {
+  if (typeof keyFilePath !== "string" || !path.isAbsolute(keyFilePath)) {
+    fail("artifact_audit_store_key_file_required");
+  }
+  assertNoSymlinkComponents(keyFilePath, "artifact_audit_store_key_file_unsafe");
+  if (!fs.existsSync(keyFilePath)) fail("artifact_audit_store_key_file_required");
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  let fd;
+  try {
+    fd = fs.openSync(keyFilePath, flags);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size < 32 || stat.size > 4096) {
+      fail("artifact_audit_store_key_file_unsafe");
+    }
+    if (process.platform !== "win32") {
+      if ((stat.mode & 0o077) !== 0) fail("artifact_audit_store_key_file_permissions_unsafe");
+      if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+        fail("artifact_audit_store_key_file_owner_unsafe");
+      }
+    }
+    return Buffer.from(fs.readFileSync(fd));
+  } catch (error) {
+    if (["ELOOP", "EMLINK"].includes(error?.code)) fail("artifact_audit_store_key_file_unsafe");
+    throw error;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function timingSafeStringEqual(left, right) {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 class DirectArtifactAuditStore {
   #db = null;
   #dbPath;
   #authority;
+  #evidenceReceiptAuthority;
+  #evidenceAuthorityIdentity;
+  #authKey;
   #now;
   #transactionDepth = 0;
   #storeId;
   #storeIdentity;
 
   constructor(options = {}) {
-    const allowed = ["rootDir", "storeId", "authority", "now"];
+    const allowed = ["rootDir", "storeId", "authority", "evidenceReceiptAuthority", "keyFilePath", "now"];
     if (!options || typeof options !== "object" || Array.isArray(options) ||
         Object.keys(options).some((entry) => !allowed.includes(entry))) {
       fail("artifact_audit_store_options_invalid");
@@ -130,24 +195,44 @@ class DirectArtifactAuditStore {
     this.#storeId = key(options.storeId, "storeId");
     this.#authority = options.authority;
     const authorityIdentity = validateArtifactAuditPrincipalAuthority(this.#authority);
+    this.#evidenceReceiptAuthority = options.evidenceReceiptAuthority;
+    this.#evidenceAuthorityIdentity = validateArtifactAuditEvidenceReceiptAuthority(this.#evidenceReceiptAuthority);
+    this.#authKey = loadSecureKeyFile(options.keyFilePath);
+    const keyId = `sha256:${crypto.createHash("sha256").update(this.#authKey).digest("hex")}`;
     this.#now = typeof options.now === "function" ? options.now : Date.now;
-    const storeDir = path.join(path.resolve(options.rootDir), "direct-artifact-audit");
+    const requestedRoot = path.resolve(options.rootDir);
+    assertNoSymlinkComponents(requestedRoot);
+    fs.mkdirSync(requestedRoot, { recursive: true, mode: 0o700 });
+    assertNoSymlinkComponents(requestedRoot);
+    const realRoot = fs.realpathSync(requestedRoot);
+    const storeDir = path.join(realRoot, "direct-artifact-audit");
     fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
+    assertNoSymlinkComponents(storeDir);
     const realStoreDir = fs.realpathSync(storeDir);
+    assertContained(realRoot, realStoreDir);
     this.#dbPath = path.join(realStoreDir, `${this.#storeId}.sqlite`);
-    if (fs.existsSync(this.#dbPath)) {
+    assertNoSymlinkComponents(this.#dbPath);
+    const databaseExisted = fs.existsSync(this.#dbPath);
+    if (databaseExisted) {
       const stat = fs.lstatSync(this.#dbPath);
       if (stat.isSymbolicLink() || !stat.isFile()) fail("artifact_audit_store_path_unsafe");
+      if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+        fail("artifact_audit_store_file_permissions_unsafe");
+      }
     }
     this.#storeIdentity = deepFreeze({
       schema: STORE_SCHEMA,
       storeId: this.#storeId,
       pathDigest: digestFor("direct_artifact_audit_store_path@1", { dbPath: this.#dbPath }),
+      keyId,
       authorityId: authorityIdentity.authorityId,
       authorityDigest: authorityIdentity.authorityDigest,
+      evidenceAuthorityId: this.#evidenceAuthorityIdentity.authorityId,
+      evidenceAuthorityDigest: this.#evidenceAuthorityIdentity.authorityDigest,
     });
     try {
       this.#db = new DatabaseSync(this.#dbPath);
+      if (!databaseExisted && process.platform !== "win32") fs.chmodSync(this.#dbPath, 0o600);
       const existing = this.#assertPreDdlCustody();
       this.#ensurePragmas();
       if (!existing) this.#ensureSchema();
@@ -155,12 +240,24 @@ class DirectArtifactAuditStore {
     } catch (error) {
       try { this.#db?.close(); } catch {}
       this.#db = null;
+      this.#authKey?.fill(0);
       throw error;
     }
   }
 
   #ensureOpen() {
     if (!this.#db) fail("artifact_audit_store_closed");
+  }
+
+  #authTag(domain, value) {
+    return `hmac-sha256:${crypto.createHmac("sha256", this.#authKey)
+      .update(`${domain}\n${canonicalJson(value)}`).digest("hex")}`;
+  }
+
+  #assertAuthTag(domain, value, actual, code) {
+    if (!AUTH_TAG.test(String(actual || "")) || !timingSafeStringEqual(this.#authTag(domain, value), actual)) {
+      fail(code);
+    }
   }
 
   #databaseObjects() {
@@ -216,6 +313,7 @@ class DirectArtifactAuditStore {
         declared_role_id text not null,
         declared_at text not null,
         declaration_digest text not null unique,
+        declaration_auth_tag text not null unique,
         primary key (project_id, artifact_class_id)
       );
       create table direct_artifact_audit_evidence (
@@ -232,6 +330,7 @@ class DirectArtifactAuditStore {
         evidence_json text not null,
         registered_at text not null,
         registration_digest text not null unique,
+        registration_auth_tag text not null unique,
         foreign key (policy_digest) references direct_artifact_audit_policies(policy_digest)
       );
       create table direct_artifact_audit_heads (
@@ -270,6 +369,7 @@ class DirectArtifactAuditStore {
         state_to text not null,
         event_digest text not null unique,
         event_json text not null,
+        event_auth_tag text not null unique,
         occurred_at text not null,
         unique (actor_id, operation, idempotency_key),
         foreign key (policy_digest) references direct_artifact_audit_policies(policy_digest)
@@ -302,6 +402,7 @@ class DirectArtifactAuditStore {
         subscriber_role_id text not null,
         event_types_json text not null,
         subscription_digest text not null unique,
+        subscription_auth_tag text not null unique,
         created_at text not null,
         foreign key (policy_digest) references direct_artifact_audit_policies(policy_digest)
       );
@@ -335,11 +436,15 @@ class DirectArtifactAuditStore {
       store_schema: STORE_SCHEMA,
       store_id: this.#storeIdentity.storeId,
       path_digest: this.#storeIdentity.pathDigest,
+      key_id: this.#storeIdentity.keyId,
       authority_id: this.#storeIdentity.authorityId,
       authority_digest: this.#storeIdentity.authorityDigest,
+      evidence_authority_id: this.#storeIdentity.evidenceAuthorityId,
+      evidence_authority_digest: this.#storeIdentity.evidenceAuthorityDigest,
       genesis_digest: genesis,
       schema_digest: this.#schemaDigest(),
     };
+    rows.custody_auth_tag = this.#authTag("direct_artifact_audit_store_custody@1", rows);
     const insert = this.#db.prepare("insert into direct_artifact_audit_meta(key, value) values (?, ?)");
     for (const [metaKey, value] of Object.entries(rows)) insert.run(metaKey, value);
   }
@@ -349,18 +454,27 @@ class DirectArtifactAuditStore {
       store_schema: STORE_SCHEMA,
       store_id: this.#storeIdentity.storeId,
       path_digest: this.#storeIdentity.pathDigest,
+      key_id: this.#storeIdentity.keyId,
       authority_id: this.#storeIdentity.authorityId,
       authority_digest: this.#storeIdentity.authorityDigest,
+      evidence_authority_id: this.#storeIdentity.evidenceAuthorityId,
+      evidence_authority_digest: this.#storeIdentity.evidenceAuthorityDigest,
       genesis_digest: digestFor("direct_artifact_audit_event_genesis@1", this.#storeIdentity),
       schema_digest: this.#schemaDigest(),
     };
-    if (canonicalJson(meta) !== canonicalJson(expected)) fail("artifact_audit_store_identity_conflict");
+    const actualAuthTag = meta.custody_auth_tag;
+    const actual = { ...meta };
+    delete actual.custody_auth_tag;
+    if (canonicalJson(actual) !== canonicalJson(expected)) fail("artifact_audit_store_identity_conflict");
+    this.#assertAuthTag("direct_artifact_audit_store_custody@1", expected, actualAuthTag,
+      "artifact_audit_store_custody_authentication_failed");
   }
 
   close() {
     if (!this.#db) return;
     this.#db.close();
     this.#db = null;
+    this.#authKey?.fill(0);
   }
 
   #transaction(action) {
@@ -410,12 +524,15 @@ class DirectArtifactAuditStore {
       const declarationDigest = digestFor("direct_artifact_audit_declaration@1", {
         policyDigest: policy.policyDigest, actor, declaredAt,
       });
+      const declarationAuthTag = this.#authTag("direct_artifact_audit_declaration_auth@1", {
+        policy, actor, declaredAt, declarationDigest,
+      });
       this.#db.prepare(`insert into direct_artifact_audit_policies(
         project_id, artifact_class_id, policy_revision, policy_digest, policy_json,
-        declared_by, declared_role_id, declared_at, declaration_digest
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        declared_by, declared_role_id, declared_at, declaration_digest, declaration_auth_tag
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         policy.projectId, policy.artifactClassId, policy.revision, policy.policyDigest,
-        canonicalJson(policy), actor.actorId, actor.roleId, declaredAt, declarationDigest,
+        canonicalJson(policy), actor.actorId, actor.roleId, declaredAt, declarationDigest, declarationAuthTag,
       );
       return deepFreeze({ policy, changed: true });
     });
@@ -435,12 +552,16 @@ class DirectArtifactAuditStore {
     sameScalar(Number(row.policy_revision), policy.revision);
     sameScalar(row.policy_digest, policy.policyDigest);
     if (canonicalJson(policy) !== row.policy_json) fail("artifact_audit_policy_integrity_failed");
+    const actor = { actorId: row.declared_by, roleId: row.declared_role_id };
     if (!Number.isFinite(Date.parse(row.declared_at)) || row.declaration_digest !==
         digestFor("direct_artifact_audit_declaration@1", {
           policyDigest: policy.policyDigest,
-          actor: { actorId: row.declared_by, roleId: row.declared_role_id },
+          actor,
           declaredAt: row.declared_at,
         })) fail("artifact_audit_policy_integrity_failed");
+    this.#assertAuthTag("direct_artifact_audit_declaration_auth@1", {
+      policy, actor, declaredAt: row.declared_at, declarationDigest: row.declaration_digest,
+    }, row.declaration_auth_tag, "artifact_audit_policy_authentication_failed");
     return policy;
   }
 
@@ -464,12 +585,12 @@ class DirectArtifactAuditStore {
 
   registerEvidence(input = {}) {
     assertNoRawExposure(input, "evidence-registration");
-    exactObject(input, ["evidence", "principal"], "artifact_audit_evidence_registration_invalid");
-    const evidence = buildEvidenceRecord(input.evidence);
+    exactObject(input, ["receipt", "principal"], "artifact_audit_evidence_registration_invalid");
+    const evidence = verifyArtifactAuditEvidenceReceipt(this.#evidenceReceiptAuthority, input.receipt);
     const actor = this.#principal(input.principal, "register_evidence", evidence.projectId,
       evidence.artifactClassId, evidence.policyDigest);
     const policy = this.#policyFor(evidence, evidence.policyDigest);
-    this.#assertEvidenceRegistrar(policy, actor);
+    this.#assertEvidenceRegistrar(actor);
     return this.#transaction(() => {
       const existing = this.#db.prepare("select * from direct_artifact_audit_evidence where evidence_id = ?")
         .get(evidence.evidenceId);
@@ -482,31 +603,27 @@ class DirectArtifactAuditStore {
       const registrationDigest = digestFor("direct_artifact_audit_evidence_registration@1", {
         evidenceDigest: evidence.evidenceDigest, actor, registeredAt,
       });
+      const registrationAuthTag = this.#authTag("direct_artifact_audit_evidence_registration_auth@1", {
+        evidence, actor, registeredAt, registrationDigest,
+      });
       this.#db.prepare(`insert into direct_artifact_audit_evidence(
         evidence_id, evidence_digest, project_id, work_thread_id, artifact_id, artifact_class_id,
         artifact_revision, policy_digest, registered_by, registered_role_id, evidence_json, registered_at,
-        registration_digest
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        registration_digest, registration_auth_tag
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         evidence.evidenceId, evidence.evidenceDigest, evidence.projectId, evidence.workThreadId,
         evidence.artifactId, evidence.artifactClassId, evidence.revision, evidence.policyDigest,
         actor.actorId, actor.roleId, canonicalJson(evidence), registeredAt, registrationDigest,
+        registrationAuthTag,
       );
       return deepFreeze({ evidence, ref: this.#evidencePointer(evidence), changed: true });
     });
   }
 
-  #assertEvidenceRegistrar(policy, actor) {
-    let permitted = false;
-    for (const right of ["propose", "challenge"]) {
-      try {
-        assertAuthorized(policy, actor, right);
-        permitted = true;
-        break;
-      } catch (error) {
-        if (!["artifact_audit_right_denied", "artifact_audit_role_forgery"].includes(error?.code)) throw error;
-      }
+  #assertEvidenceRegistrar(actor) {
+    if (canonicalJson(actor) !== canonicalJson(this.#evidenceAuthorityIdentity.adapter)) {
+      fail("artifact_audit_evidence_registration_denied");
     }
-    if (!permitted) fail("artifact_audit_evidence_registration_denied");
   }
 
   #evidencePointer(evidence) {
@@ -523,12 +640,16 @@ class DirectArtifactAuditStore {
     };
     for (const [field, expected] of Object.entries(bindings)) sameScalar(field === "artifact_revision" ? Number(row[field]) : row[field], expected);
     if (row.evidence_json !== canonicalJson(evidence)) fail("artifact_audit_evidence_integrity_failed");
+    const actor = { actorId: row.registered_by, roleId: row.registered_role_id };
     if (!Number.isFinite(Date.parse(row.registered_at)) || row.registration_digest !==
         digestFor("direct_artifact_audit_evidence_registration@1", {
           evidenceDigest: evidence.evidenceDigest,
-          actor: { actorId: row.registered_by, roleId: row.registered_role_id },
+          actor,
           registeredAt: row.registered_at,
         })) fail("artifact_audit_evidence_integrity_failed");
+    this.#assertAuthTag("direct_artifact_audit_evidence_registration_auth@1", {
+      evidence, actor, registeredAt: row.registered_at, registrationDigest: row.registration_digest,
+    }, row.registration_auth_tag, "artifact_audit_evidence_authentication_failed");
     return evidence;
   }
 
@@ -554,6 +675,18 @@ class DirectArtifactAuditStore {
       ) || null;
   }
 
+  #boundAuditAssignment(scope, revision) {
+    const row = this.#db.prepare(`select * from direct_artifact_audit_events
+      where project_id = ? and work_thread_id = ? and artifact_id = ?
+        and artifact_revision = ? and operation = 'begin_audit'`).get(
+      scope.projectId, scope.workThreadId, scope.artifactId, revision,
+    );
+    if (!row) fail("artifact_audit_assignment_missing");
+    const event = validateEvent(parseJson(row.event_json, "audit-assignment"));
+    this.#verifyEventRow(row, event);
+    return normalizeAuditAssignment(event.assignment);
+  }
+
   #inputBinding(operation, input, actor) {
     const bound = { ...input, actor };
     delete bound.idempotencyKey;
@@ -566,11 +699,13 @@ class DirectArtifactAuditStore {
   }
 
   #replay(actor, operation, idempotencyKey, inputDigest) {
-    const row = this.#db.prepare(`select input_digest, event_json from direct_artifact_audit_events
+    const row = this.#db.prepare(`select * from direct_artifact_audit_events
       where actor_id = ? and operation = ? and idempotency_key = ?`).get(actor.actorId, operation, idempotencyKey);
     if (!row) return null;
     if (row.input_digest !== inputDigest) fail("artifact_audit_idempotency_input_conflict");
-    return validateEvent(parseJson(row.event_json, "event-replay"));
+    const event = validateEvent(parseJson(row.event_json, "event-replay"));
+    this.#verifyEventRow(row, event);
+    return event;
   }
 
   #assertExpected(head, input) {
@@ -581,14 +716,18 @@ class DirectArtifactAuditStore {
   }
 
   #chainTip() {
-    const row = this.#db.prepare("select sequence, event_digest from direct_artifact_audit_events order by sequence desc limit 1").get();
-    if (row) return { sequence: Number(row.sequence) + 1, previousEventDigest: row.event_digest };
+    const row = this.#db.prepare("select * from direct_artifact_audit_events order by sequence desc limit 1").get();
+    if (row) {
+      const event = validateEvent(parseJson(row.event_json, "event-chain-tip"));
+      this.#verifyEventRow(row, event);
+      return { sequence: Number(row.sequence) + 1, previousEventDigest: row.event_digest };
+    }
     const genesis = this.#db.prepare("select value from direct_artifact_audit_meta where key = 'genesis_digest'").get();
     return { sequence: 1, previousEventDigest: genesis.value };
   }
 
   #appendEvent({ operation, eventType, actor, scope, policy, idempotencyKey, inputDigest,
-    inputJson, revision, stateFrom, stateTo, evidenceRefs = [], audit, decision }) {
+    inputJson, revision, stateFrom, stateTo, evidenceRefs = [], audit, decision, assignment }) {
     assertAuthorizedForOperation(policy, actor, operation, audit?.requirementId, scope);
     const { sequence, previousEventDigest } = this.#chainTip();
     const eventId = `dae_${digestFor("direct_artifact_audit_event_id@2", {
@@ -599,17 +738,22 @@ class DirectArtifactAuditStore {
       policyRef: { id: policy.artifactClassId, digest: policy.policyDigest }, actor,
       stateFrom, stateTo, evidenceRefs, occurredAt: nowIso(this.#now),
       ...(audit === undefined ? {} : { audit }), ...(decision === undefined ? {} : { decision }),
+      ...(assignment === undefined ? {} : { assignment }),
     });
     assertNoRawExposure(event, "event-final");
+    const eventAuthTag = this.#authTag("direct_artifact_audit_event_auth@1", {
+      event, operation, idempotencyKey, inputDigest, inputJson,
+    });
     this.#db.prepare(`insert into direct_artifact_audit_events(
       sequence, event_id, previous_event_digest, project_id, work_thread_id, artifact_id,
       artifact_class_id, artifact_revision, policy_digest, operation, actor_id, actor_role_id,
-      event_type, idempotency_key, input_digest, input_json, state_from, state_to, event_digest, event_json, occurred_at
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      event_type, idempotency_key, input_digest, input_json, state_from, state_to, event_digest, event_json,
+      event_auth_tag, occurred_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       sequence, event.eventId, previousEventDigest, scope.projectId, scope.workThreadId, scope.artifactId,
       scope.artifactClassId, revision, policy.policyDigest, operation, actor.actorId, actor.roleId,
       eventType, idempotencyKey, inputDigest, inputJson, stateFrom, stateTo,
-      event.eventDigest, canonicalJson(event), event.occurredAt,
+      event.eventDigest, canonicalJson(event), eventAuthTag, event.occurredAt,
     );
     return event;
   }
@@ -664,6 +808,7 @@ class DirectArtifactAuditStore {
         operation: config.operation, eventType: config.eventType(input), actor, scope, policy,
         idempotencyKey, inputDigest, inputJson, revision, stateFrom: head.state, stateTo: prepared.stateTo,
         evidenceRefs: prepared.evidenceRefs, audit: prepared.audit, decision: prepared.decision,
+        assignment: prepared.assignment,
       });
       if (prepared.beforeHeadCas) prepared.beforeHeadCas(event);
       const result = this.#db.prepare(`update direct_artifact_audit_heads set
@@ -708,14 +853,21 @@ class DirectArtifactAuditStore {
   beginAudit(input = {}) {
     return this.#transition(input, {
       operation: "begin_audit", fields: [], eventType: () => "audit_started",
-      prepare: ({ policy, head, actor }) => {
+      prepare: ({ policy, head, actor, scope }) => {
         const eligible = [...new Set(policy.auditRequirements.flatMap((entry) => entry.auditorRoleIds))];
         assertAuthorized(policy, actor, "challenge", eligible);
         if (head.state !== "candidate") fail("artifact_audit_transition_denied");
         if (policy.auditRequirements.some((entry) => entry.separationRequired) && head.producer_actor_id === actor.actorId) {
           fail("artifact_audit_self_audit_denied");
         }
-        return { stateTo: "under_audit" };
+        const route = compileArtifactRoutingPlan(policy, scope);
+        const witness = route.feasibleAssignments.find((entry) => entry.producer.actorId === head.producer_actor_id);
+        if (!witness) fail("artifact_audit_assignment_missing");
+        const assignment = normalizeAuditAssignment(witness.audits);
+        if (!assignment.some((entry) => entry.actorId === actor.actorId && entry.roleId === actor.roleId)) {
+          fail("artifact_audit_assignment_actor_ineligible");
+        }
+        return { stateTo: "under_audit", assignment };
       },
     });
   }
@@ -729,6 +881,11 @@ class DirectArtifactAuditStore {
         const requirement = policy.auditRequirements.find((entry) => entry.requirementId === value.requirementId);
         if (!requirement) fail("artifact_audit_requirement_unknown");
         assertAuthorized(policy, actor, "challenge", requirement.auditorRoleIds);
+        const assignment = this.#boundAuditAssignment(scope, head.artifact_revision);
+        const assigned = assignment.find((entry) => entry.requirementId === value.requirementId);
+        if (!assigned || assigned.actorId !== actor.actorId || assigned.roleId !== actor.roleId) {
+          fail("artifact_audit_assignment_actor_mismatch");
+        }
         if (requirement.separationRequired && head.producer_actor_id === actor.actorId) fail("artifact_audit_self_audit_denied");
         if (!AUDIT_VERDICTS.includes(value.verdict)) fail("artifact_audit_verdict_invalid");
         const evidenceRefs = this.#resolveEvidenceRefs(value.evidenceRefs,
@@ -809,6 +966,7 @@ class DirectArtifactAuditStore {
       policyDigest: policy.policyDigest, actor, eventTypes, createdAt: nowIso(this.#now),
     };
     subscription.subscriptionDigest = subscriptionDigest(subscription);
+    const subscriptionAuthTag = this.#authTag("direct_artifact_audit_subscription_auth@1", subscription);
     return this.#transaction(() => {
       const row = this.#db.prepare("select * from direct_artifact_audit_subscriptions where subscription_id = ?")
         .get(subscription.subscriptionId);
@@ -819,11 +977,11 @@ class DirectArtifactAuditStore {
       this.#db.prepare(`insert into direct_artifact_audit_subscriptions(
         subscription_id, project_id, work_thread_id, artifact_id, artifact_class_id,
         policy_digest, subscriber_actor_id, subscriber_role_id, event_types_json,
-        subscription_digest, created_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        subscription_digest, subscription_auth_tag, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         subscription.subscriptionId, projectId, subscription.workThreadId, subscription.artifactId,
         artifactClassId, policy.policyDigest, actor.actorId, actor.roleId,
-        canonicalJson(eventTypes), subscription.subscriptionDigest, subscription.createdAt,
+        canonicalJson(eventTypes), subscription.subscriptionDigest, subscriptionAuthTag, subscription.createdAt,
       );
       return deepFreeze(subscription);
     });
@@ -842,6 +1000,8 @@ class DirectArtifactAuditStore {
         subscriptionDigest(subscription) !== subscription.subscriptionDigest) {
       fail("artifact_audit_subscription_integrity_failed");
     }
+    this.#assertAuthTag("direct_artifact_audit_subscription_auth@1", subscription,
+      row.subscription_auth_tag, "artifact_audit_subscription_authentication_failed");
     return deepFreeze(subscription);
   }
 
@@ -869,20 +1029,51 @@ class DirectArtifactAuditStore {
     if (subscription.workThreadId) { scopeClauses.push("work_thread_id = ?"); parameters.push(subscription.workThreadId); }
     if (subscription.artifactId) { scopeClauses.push("artifact_id = ?"); parameters.push(subscription.artifactId); }
     parameters.push(limit + 1);
-    const events = this.#db.prepare(`select event_json from direct_artifact_audit_events
+    const events = this.#db.prepare(`select * from direct_artifact_audit_events
       where ${scopeClauses.join(" and ")} order by sequence limit ?`).all(...parameters)
-      .map((entry) => validateEvent(parseJson(entry.event_json, "event-projection")));
+      .map((entry) => {
+        const event = validateEvent(parseJson(entry.event_json, "event-projection"));
+        this.#verifyEventRow(entry, event);
+        return event;
+      });
     return safeTransitionProjection({ ...subscription, afterSequence, limit }, events);
   }
 
   inspectHead(input = {}) {
     assertNoRawExposure(input, "inspect");
-    exactObject(input, ["scope", "policyDigest", "principal"], "artifact_audit_inspect_invalid");
+    exactObject(input, ["scope", "policyDigest", "principal", "subscriptionId"], "artifact_audit_inspect_invalid");
     const scope = normalizeScope(input.scope);
     const policy = this.#policyFor(scope, input.policyDigest);
     const actor = this.#principal(input.principal, "act", scope.projectId,
       scope.artifactClassId, input.policyDigest);
+    const subscriptionRow = this.#db.prepare(`select * from direct_artifact_audit_subscriptions
+      where subscription_id = ?`).get(key(input.subscriptionId, "subscriptionId"));
+    if (!subscriptionRow) fail("artifact_audit_subscription_missing");
+    const subscription = this.#subscriptionFromRow(subscriptionRow);
+    if (subscription.projectId !== scope.projectId || subscription.artifactClassId !== scope.artifactClassId ||
+        subscription.policyDigest !== input.policyDigest ||
+        (subscription.workThreadId && subscription.workThreadId !== scope.workThreadId) ||
+        (subscription.artifactId && subscription.artifactId !== scope.artifactId) ||
+        canonicalJson(subscription.actor) !== canonicalJson(actor)) {
+      fail("artifact_audit_subscription_scope_mismatch");
+    }
+    assertAuthorized(policy, actor, "subscribe");
     assertAuthorized(policy, actor, "read");
+    return this.#headProjection(scope, policy);
+  }
+
+  inspectHeadAdministrative(input = {}) {
+    assertNoRawExposure(input, "administrative-inspect");
+    exactObject(input, ["scope", "policyDigest", "principal"], "artifact_audit_inspect_invalid");
+    const scope = normalizeScope(input.scope);
+    const policy = this.#policyFor(scope, input.policyDigest);
+    const actor = this.#principal(input.principal, "admin_read", scope.projectId,
+      scope.artifactClassId, input.policyDigest);
+    assertAuthorized(policy, actor, "read", [policy.managerRoleId]);
+    return this.#headProjection(scope, policy);
+  }
+
+  #headProjection(scope, policy) {
     const head = this.#head(scope);
     if (!head) return null;
     return deepFreeze({
@@ -952,7 +1143,7 @@ class DirectArtifactAuditStore {
         policyDigest: evidence.policyDigest, actorId: row.registered_by,
         roleId: row.registered_role_id, purpose: "register_evidence",
       });
-      this.#assertEvidenceRegistrar(policy, { actorId: row.registered_by, roleId: row.registered_role_id });
+      this.#assertEvidenceRegistrar({ actorId: row.registered_by, roleId: row.registered_role_id });
       evidenceRegistry.set(evidence.evidenceId, evidence);
     }
 
@@ -1015,6 +1206,10 @@ class DirectArtifactAuditStore {
     }
     if (row.event_json !== canonicalJson(event) || EVENT_OPERATION[event.eventType] !== row.operation ||
         !DIGEST.test(row.input_digest) || !ID.test(row.idempotency_key)) fail("artifact_audit_event_integrity_failed");
+    this.#assertAuthTag("direct_artifact_audit_event_auth@1", {
+      event, operation: row.operation, idempotencyKey: row.idempotency_key,
+      inputDigest: row.input_digest, inputJson: row.input_json,
+    }, row.event_auth_tag, "artifact_audit_event_authentication_failed");
     const expectedId = `dae_${digestFor("direct_artifact_audit_event_id@2", {
       operation: row.operation, actor: event.actor,
       scope: { projectId: event.scope.projectId, workThreadId: event.scope.workThreadId,
@@ -1028,15 +1223,18 @@ class DirectArtifactAuditStore {
     const keyValue = scopeKey(event.scope);
     const prior = heads.get(keyValue) || null;
     let producerActorId = prior?.producerActorId || "";
+    let assignment = prior?.assignment || [];
     let expectedState;
     let expectedRevision;
     if (operation === "record_audit_verdict") {
-      if (!event.audit || event.decision || !event.evidenceRefs.length) fail("artifact_audit_history_invalid");
+      if (!event.audit || event.decision || event.assignment || !event.evidenceRefs.length) fail("artifact_audit_history_invalid");
     } else if (operation === "decide_artifact") {
-      if (!event.decision || event.audit || event.evidenceRefs.length) fail("artifact_audit_history_invalid");
+      if (!event.decision || event.audit || event.assignment || event.evidenceRefs.length) fail("artifact_audit_history_invalid");
     } else if (operation === "submit_candidate") {
-      if (event.audit || event.decision || !event.evidenceRefs.length) fail("artifact_audit_history_invalid");
-    } else if (event.audit || event.decision || event.evidenceRefs.length) {
+      if (event.audit || event.decision || event.assignment || !event.evidenceRefs.length) fail("artifact_audit_history_invalid");
+    } else if (operation === "begin_audit") {
+      if (event.audit || event.decision || !event.assignment || event.evidenceRefs.length) fail("artifact_audit_history_invalid");
+    } else if (event.audit || event.decision || event.assignment || event.evidenceRefs.length) {
       fail("artifact_audit_history_invalid");
     }
     if (operation === "request") {
@@ -1050,6 +1248,7 @@ class DirectArtifactAuditStore {
         if (!["requested", "remanded"].includes(prior.state)) fail("artifact_audit_history_invalid");
         expectedRevision = prior.state === "remanded" ? prior.revision + 1 : prior.revision;
         producerActorId = event.actor.actorId;
+        assignment = [];
         expectedState = "under_production";
       } else if (operation === "submit_candidate") {
         if (prior.state !== "under_production" || producerActorId !== event.actor.actorId || !event.evidenceRefs.length) {
@@ -1060,11 +1259,26 @@ class DirectArtifactAuditStore {
       } else if (operation === "begin_audit") {
         if (prior.state !== "candidate" || (policy.auditRequirements.some((entry) => entry.separationRequired) &&
             producerActorId === event.actor.actorId)) fail("artifact_audit_history_invalid");
+        const route = compileArtifactRoutingPlan(policy, {
+          projectId: event.scope.projectId, workThreadId: event.scope.workThreadId,
+          artifactId: event.scope.artifactId, artifactClassId: event.scope.artifactClassId,
+        });
+        const witness = route.feasibleAssignments.find((entry) => entry.producer.actorId === producerActorId);
+        const expectedAssignment = witness ? normalizeAuditAssignment(witness.audits) : null;
+        if (!expectedAssignment || canonicalJson(expectedAssignment) !== canonicalJson(event.assignment) ||
+            !expectedAssignment.some((entry) => entry.actorId === event.actor.actorId && entry.roleId === event.actor.roleId)) {
+          fail("artifact_audit_history_invalid");
+        }
+        assignment = expectedAssignment;
         expectedState = "under_audit";
       } else if (operation === "record_audit_verdict") {
         if (prior.state !== "under_audit" || !event.audit) fail("artifact_audit_history_invalid");
         const requirement = policy.auditRequirements.find((entry) => entry.requirementId === event.audit.requirementId);
         if (!requirement || (requirement.separationRequired && producerActorId === event.actor.actorId)) {
+          fail("artifact_audit_history_invalid");
+        }
+        const assigned = assignment.find((entry) => entry.requirementId === event.audit.requirementId);
+        if (!assigned || assigned.actorId !== event.actor.actorId || assigned.roleId !== event.actor.roleId) {
           fail("artifact_audit_history_invalid");
         }
         normalizeEvidenceRefs(event.evidenceRefs, event.scope, policy.policyDigest, requirement.evidenceKinds);
@@ -1099,7 +1313,7 @@ class DirectArtifactAuditStore {
         artifactId: event.scope.artifactId, artifactClassId: event.scope.artifactClassId },
       policyDigest: event.policyRef.digest, revision: expectedRevision, state: expectedState,
       headVersion: (prior?.headVersion || 0) + 1, producerActorId, headEventId: event.eventId,
-      updatedAt: event.occurredAt,
+      updatedAt: event.occurredAt, assignment,
     });
   }
 

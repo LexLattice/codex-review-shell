@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,10 +17,14 @@ const {
   buildPolicySnapshot,
   buildEvent,
   compileArtifactRoutingPlan,
+  createArtifactAuditEvidenceReceiptAuthority,
   createArtifactAuditPrincipalAuthority,
+  canonicalJson,
+  digestFor,
 } = require("../src/main/direct/artifacts/artifact-audit-kernel.js");
 
 const digest = (char) => `sha256:${char.repeat(64)}`;
+const temporaryRoot = process.platform === "win32" ? os.tmpdir() : "/tmp";
 const actor = (actorId, roleId) => ({ actorId, roleId });
 const manager = actor("manager-1", "manager");
 const producer = actor("producer-1", "producer");
@@ -27,6 +32,8 @@ const auditorA = actor("auditor-a", "static-auditor");
 const auditorB = actor("auditor-b", "behavior-auditor");
 const authorityActor = actor("authority-1", "admission-authority");
 const parent = actor("parent-1", "observer");
+const readOnlyParent = actor("read-parent-1", "read-observer");
+const evidenceAdapter = actor("evidence-adapter-1", "trusted-evidence-adapter");
 const sharedProducer = actor("shared-actor", "producer");
 const sharedAuditor = actor("shared-actor", "static-auditor");
 const scope = {
@@ -47,6 +54,7 @@ const policyInput = {
     { roleId: "behavior-auditor", actors: [auditorB.actorId], rights: ["challenge", "read"] },
     { roleId: "admission-authority", actors: [authorityActor.actorId], rights: ["admit", "read"] },
     { roleId: "observer", actors: [parent.actorId], rights: ["read", "subscribe"] },
+    { roleId: "read-observer", actors: [readOnlyParent.actorId], rights: ["read"] },
   ],
   producerRoleIds: ["producer"],
   auditRequirements: [
@@ -77,8 +85,9 @@ function expectAnyCode(codes, action) {
 }
 
 const policy = buildPolicySnapshot(policyInput);
-const pinnedActors = [manager, producer, auditorA, auditorB, authorityActor, parent, sharedProducer, sharedAuditor];
-const authorityBindings = pinnedActors.map((entry) => ({
+const pinnedActors = [manager, producer, auditorA, auditorB, authorityActor, parent, readOnlyParent,
+  sharedProducer, sharedAuditor];
+const authorityBindings = [...pinnedActors.map((entry) => ({
     projectId: scope.projectId,
     artifactClassId: scope.artifactClassId,
     policyDigest: policy.policyDigest,
@@ -87,12 +96,20 @@ const authorityBindings = pinnedActors.map((entry) => ({
     purposes: [
       ...(entry === manager ? ["declare"] : []),
       "act",
-      ...([producer, auditorA, auditorB, sharedProducer, sharedAuditor].includes(entry) ? ["register_evidence"] : []),
+      ...(entry === manager ? ["admin_read"] : []),
     ],
-  }));
+  })), {
+    projectId: scope.projectId, artifactClassId: scope.artifactClassId,
+    policyDigest: policy.policyDigest, actorId: evidenceAdapter.actorId,
+    roleId: evidenceAdapter.roleId, purposes: ["register_evidence"],
+  }];
 const authority = createArtifactAuditPrincipalAuthority({
   authorityId: "artifact-harness",
   bindings: authorityBindings,
+});
+const evidenceReceiptAuthority = createArtifactAuditEvidenceReceiptAuthority({
+  authorityId: "workspace-capture-service",
+  adapter: evidenceAdapter,
 });
 const principal = (entry, purpose = "act") => authority.issue({
   projectId: scope.projectId,
@@ -104,29 +121,35 @@ const principal = (entry, purpose = "act") => authority.issue({
 });
 const principals = {
   manager: principal(manager), declaration: principal(manager, "declare"), producer: principal(producer),
-  producerEvidence: principal(producer, "register_evidence"), auditorA: principal(auditorA),
-  auditorAEvidence: principal(auditorA, "register_evidence"), auditorB: principal(auditorB),
-  auditorBEvidence: principal(auditorB, "register_evidence"), authority: principal(authorityActor),
+  managerAdmin: principal(manager, "admin_read"), auditorA: principal(auditorA),
+  auditorB: principal(auditorB), authority: principal(authorityActor),
   parent: principal(parent), sharedProducer: principal(sharedProducer), sharedAuditor: principal(sharedAuditor),
-  sharedEvidence: principal(sharedProducer, "register_evidence"),
+  readOnlyParent: principal(readOnlyParent),
+  evidenceAdapter: principal(evidenceAdapter, "register_evidence"),
 };
 
 let tick = Date.parse("2026-08-12T00:00:00.000Z");
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "direct-artifact-audit-"));
+const root = fs.mkdtempSync(path.join(temporaryRoot, "direct-artifact-audit-"));
 const storeId = "artifact-audit-regression";
 const dbPath = path.join(root, "direct-artifact-audit", `${storeId}.sqlite`);
-let store = createDirectArtifactAuditStore({ rootDir: root, storeId, authority, now: () => tick++ });
+const keyFilePath = path.join(root, "artifact-audit.key");
+fs.writeFileSync(keyFilePath, crypto.randomBytes(32), { mode: 0o600 });
+const storeOptions = (overrides = {}) => ({
+  rootDir: root, storeId, authority, evidenceReceiptAuthority, keyFilePath, ...overrides,
+});
+let store = createDirectArtifactAuditStore(storeOptions({ now: () => tick++ }));
 
-function registerEvidence(targetStore, targetScope, revision, kind, evidenceId, char, registrar) {
+function registerEvidence(targetStore, targetScope, revision, kind, evidenceId, char) {
+  const receipt = evidenceReceiptAuthority.issue({
+    kind, evidenceId, projectId: targetScope.projectId, workThreadId: targetScope.workThreadId,
+    artifactId: targetScope.artifactId, artifactClassId: targetScope.artifactClassId,
+    revision, policyDigest: policy.policyDigest, sourceCaptureId: `capture-${evidenceId}`,
+    sourceSessionId: `session-${revision}`, sourceTurnId: `turn-${evidenceId}`,
+    canonicalEnvelopeDigest: digest(char),
+  });
   return targetStore.registerEvidence({
-    principal: registrar,
-    evidence: {
-      kind, evidenceId, projectId: targetScope.projectId, workThreadId: targetScope.workThreadId,
-      artifactId: targetScope.artifactId, artifactClassId: targetScope.artifactClassId,
-      revision, policyDigest: policy.policyDigest, sourceCaptureId: `capture-${evidenceId}`,
-      sourceSessionId: `session-${revision}`, sourceTurnId: `turn-${evidenceId}`,
-      canonicalEnvelopeDigest: digest(char),
-    },
+    principal: principals.evidenceAdapter,
+    receipt,
   }).ref;
 }
 
@@ -199,6 +222,19 @@ try {
   expectCode("artifact_audit_route_unfillable", () => store.declareArtifactClass({
     policy: impossiblePolicy, principal: principals.declaration,
   }));
+  expectCode("artifact_audit_principal_not_pinned", () => principal(producer, "register_evidence"));
+  const sealedProbe = evidenceReceiptAuthority.issue({
+    kind: "artifact_blob", evidenceId: "sealed-probe", ...scope, revision: 1,
+    policyDigest: policy.policyDigest, sourceCaptureId: "capture-sealed-probe",
+    sourceSessionId: "session-sealed-probe", sourceTurnId: "turn-sealed-probe",
+    canonicalEnvelopeDigest: digest("8"),
+  });
+  expectCode("artifact_audit_evidence_receipt_untrusted", () => store.registerEvidence({
+    receipt: structuredClone(sealedProbe), principal: principals.evidenceAdapter,
+  }));
+  expectCode("artifact_audit_principal_scope_mismatch", () => store.registerEvidence({
+    receipt: sealedProbe, principal: principals.producer,
+  }));
 
   const requested = request(store, scope, "request-1");
   assert.equal(requested.stateTo, "requested");
@@ -216,7 +252,7 @@ try {
     scope, policyDigest: policy.policyDigest, principal: principals.producer,
     idempotencyKey: "produce-r1", expectedRevision: 1, expectedState: "requested",
   });
-  const terminalR1 = registerEvidence(store, scope, 1, "workspace_worker_terminal", "terminal-r1", "a", principals.producerEvidence);
+  const terminalR1 = registerEvidence(store, scope, 1, "workspace_worker_terminal", "terminal-r1", "a");
   expectCode("artifact_audit_evidence_pointer_invalid", () => store.submitCandidate({
     scope, policyDigest: policy.policyDigest, principal: principals.producer,
     idempotencyKey: "caller-minted", expectedRevision: 1, expectedState: "under_production",
@@ -228,7 +264,7 @@ try {
     evidenceRefs: [{ evidenceId: "made-up", evidenceDigest: digest("a") }],
   }));
   const otherScope = { ...scope, artifactId: "other-artifact" };
-  const wrongScopeEvidence = registerEvidence(store, otherScope, 1, "artifact_blob", "other-evidence", "b", principals.producerEvidence);
+  const wrongScopeEvidence = registerEvidence(store, otherScope, 1, "artifact_blob", "other-evidence", "b");
   expectCode("artifact_audit_cross_scope_ref", () => store.submitCandidate({
     scope, policyDigest: policy.policyDigest, principal: principals.producer,
     idempotencyKey: "cross-scope", expectedRevision: 1, expectedState: "under_production",
@@ -248,8 +284,8 @@ try {
 
   store.beginAudit({ scope, policyDigest: policy.policyDigest, principal: principals.auditorA,
     idempotencyKey: "audit-r1", expectedRevision: 1, expectedState: "candidate" });
-  const staticR1 = registerEvidence(store, scope, 1, "test_report", "static-r1", "c", principals.auditorAEvidence);
-  const behaviorR1 = registerEvidence(store, scope, 1, "audit_observation", "behavior-r1", "d", principals.auditorBEvidence);
+  const staticR1 = registerEvidence(store, scope, 1, "test_report", "static-r1", "c");
+  const behaviorR1 = registerEvidence(store, scope, 1, "audit_observation", "behavior-r1", "d");
   assert.equal(store.recordAuditVerdict({
     scope, policyDigest: policy.policyDigest, principal: principals.auditorA,
     idempotencyKey: "static-r1", expectedRevision: 1, expectedState: "under_audit",
@@ -269,7 +305,7 @@ try {
     scope, policyDigest: policy.policyDigest, principal: principals.sharedProducer,
     idempotencyKey: "produce-r2", expectedRevision: 1, expectedState: "remanded",
   }).scope.revision, 2);
-  const terminalR2 = registerEvidence(store, scope, 2, "workspace_worker_terminal", "terminal-r2", "e", principals.sharedEvidence);
+  const terminalR2 = registerEvidence(store, scope, 2, "workspace_worker_terminal", "terminal-r2", "e");
   store.submitCandidate({
     scope, policyDigest: policy.policyDigest, principal: principals.sharedProducer,
     idempotencyKey: "candidate-r2", expectedRevision: 2, expectedState: "under_production", evidenceRefs: [terminalR2],
@@ -280,8 +316,8 @@ try {
   }));
   store.beginAudit({ scope, policyDigest: policy.policyDigest, principal: principals.auditorA,
     idempotencyKey: "audit-r2", expectedRevision: 2, expectedState: "candidate" });
-  const staticR2 = registerEvidence(store, scope, 2, "test_report", "static-r2", "f", principals.auditorAEvidence);
-  const behaviorR2 = registerEvidence(store, scope, 2, "test_report", "behavior-r2", "1", principals.auditorBEvidence);
+  const staticR2 = registerEvidence(store, scope, 2, "test_report", "static-r2", "f");
+  const behaviorR2 = registerEvidence(store, scope, 2, "test_report", "behavior-r2", "1");
   store.recordAuditVerdict({
     scope, policyDigest: policy.policyDigest, principal: principals.auditorA,
     idempotencyKey: "static-r2", expectedRevision: 2, expectedState: "under_audit",
@@ -311,8 +347,22 @@ try {
   assert.equal(projection.activeWorkerMessageCount, 0);
   assert.equal(projection.transitions.at(-1).stateTo, "admitted");
   assert.equal(projection.transitions.every((event) => !Object.hasOwn(event, "actor")), true);
+  assert.equal(projection.transitions.every((event) => !Object.hasOwn(event, "assignment")), true);
   assert.equal(JSON.stringify(projection).includes("/home/"), false);
-  assert.equal(store.inspectHead({ scope, policyDigest: policy.policyDigest, principal: principals.parent }).state, "admitted");
+  expectCode("artifact_audit_inspect_invalid", () => store.inspectHead({
+    scope, policyDigest: policy.policyDigest, principal: principals.parent,
+  }));
+  expectCode("artifact_audit_subscription_scope_mismatch", () => store.inspectHead({
+    scope, policyDigest: policy.policyDigest, principal: principals.readOnlyParent,
+    subscriptionId: subscription.subscriptionId,
+  }));
+  assert.equal(store.inspectHead({
+    scope, policyDigest: policy.policyDigest, principal: principals.parent,
+    subscriptionId: subscription.subscriptionId,
+  }).state, "admitted");
+  assert.equal(store.inspectHeadAdministrative({
+    scope, policyDigest: policy.policyDigest, principal: principals.managerAdmin,
+  }).state, "admitted");
   const diagnostics = store.diagnostics({
     projectId: scope.projectId, artifactClassId: scope.artifactClassId,
     policyDigest: policy.policyDigest, principal: principals.manager,
@@ -324,7 +374,7 @@ try {
   assert.equal(typeof store.transaction, "undefined");
   assert.equal(typeof store._appendEvent, "undefined");
   expectCode("artifact_audit_store_options_invalid", () => new DirectArtifactAuditStore({
-    rootDir: root, storeId: "borrowed", authority, db: new DatabaseSync(":memory:"),
+    ...storeOptions({ storeId: "borrowed" }), db: new DatabaseSync(":memory:"),
   }));
 
   store.close();
@@ -333,9 +383,15 @@ try {
     bindings: [{ projectId: scope.projectId, artifactClassId: scope.artifactClassId,
       policyDigest: policy.policyDigest, actorId: manager.actorId, roleId: manager.roleId, purposes: ["declare"] }],
   });
-  expectCode("artifact_audit_store_identity_conflict", () => createDirectArtifactAuditStore({
-    rootDir: root, storeId, authority: changedAuthority,
-  }));
+  expectCode("artifact_audit_store_identity_conflict", () => createDirectArtifactAuditStore(
+    storeOptions({ authority: changedAuthority }),
+  ));
+  const wrongKeyFile = path.join(root, "wrong-artifact-audit.key");
+  fs.writeFileSync(wrongKeyFile, crypto.randomBytes(32), { mode: 0o600 });
+  expectCode("artifact_audit_store_identity_conflict", () => createDirectArtifactAuditStore(
+    storeOptions({ keyFilePath: wrongKeyFile }),
+  ));
+  fs.rmSync(wrongKeyFile, { force: true });
   const restartedAuthority = createArtifactAuditPrincipalAuthority({
     authorityId: "artifact-harness", bindings: structuredClone(authorityBindings),
   });
@@ -343,8 +399,16 @@ try {
     projectId: scope.projectId, artifactClassId: scope.artifactClassId,
     policyDigest: policy.policyDigest, actorId: parent.actorId, roleId: parent.roleId, purpose: "act",
   });
-  store = createDirectArtifactAuditStore({ rootDir: root, storeId, authority: restartedAuthority });
-  assert.equal(store.inspectHead({ scope, policyDigest: policy.policyDigest, principal: restartedParent }).state, "admitted");
+  const restartedEvidenceAuthority = createArtifactAuditEvidenceReceiptAuthority({
+    authorityId: "workspace-capture-service", adapter: evidenceAdapter,
+  });
+  store = createDirectArtifactAuditStore(storeOptions({
+    authority: restartedAuthority, evidenceReceiptAuthority: restartedEvidenceAuthority,
+  }));
+  assert.equal(store.inspectHead({
+    scope, policyDigest: policy.policyDigest, principal: restartedParent,
+    subscriptionId: subscription.subscriptionId,
+  }).state, "admitted");
   assert.deepEqual(store.pollSubscription({
     subscriptionId: subscription.subscriptionId, principal: restartedParent,
     afterSequence: projection.nextSequence, limit: 10,
@@ -362,7 +426,7 @@ try {
     restore();
     const corrupt = new DatabaseSync(dbPath);
     try { corrupt.exec(sql); } finally { corrupt.close(); }
-    expectAnyCode(codes, () => createDirectArtifactAuditStore({ rootDir: root, storeId, authority }));
+    expectAnyCode(codes, () => createDirectArtifactAuditStore(storeOptions()));
   };
 
   corruptAndReject(["artifact_audit_policy_integrity_failed"], `
@@ -417,19 +481,54 @@ try {
   corruptChain.exec(`create trigger direct_artifact_audit_events_no_update before update on direct_artifact_audit_events
     begin select raise(abort, 'artifact_audit_append_only'); end;`);
   corruptChain.close();
-  expectCode("artifact_audit_event_chain_invalid", () => createDirectArtifactAuditStore({ rootDir: root, storeId, authority }));
+  expectCode("artifact_audit_event_chain_invalid", () => createDirectArtifactAuditStore(storeOptions()));
+
+  restore();
+  const coherentRewrite = new DatabaseSync(dbPath);
+  const admittedRow = coherentRewrite.prepare(`select * from direct_artifact_audit_events
+    where event_type = 'artifact_admitted'`).get();
+  const admittedEvent = JSON.parse(admittedRow.event_json);
+  const rejectedInput = { ...JSON.parse(admittedRow.input_json), decision: "rejected" };
+  const rejectedInputDigest = digestFor("direct_artifact_audit_decide_artifact_input@2", rejectedInput);
+  const rejectedEventId = `dae_${digestFor("direct_artifact_audit_event_id@2", {
+    operation: "decide_artifact", actor: admittedEvent.actor, scope,
+    idempotencyKey: admittedRow.idempotency_key, inputDigest: rejectedInputDigest,
+  }).slice(7, 31)}`;
+  const rejectedEvent = buildEvent({
+    eventId: rejectedEventId, sequence: admittedEvent.sequence,
+    previousEventDigest: admittedEvent.previousEventDigest, eventType: "artifact_rejected",
+    scope: admittedEvent.scope, policyRef: admittedEvent.policyRef, actor: admittedEvent.actor,
+    stateFrom: "supported", stateTo: "rejected", evidenceRefs: [],
+    occurredAt: admittedEvent.occurredAt, decision: { disposition: "rejected" },
+  });
+  coherentRewrite.exec("drop trigger direct_artifact_audit_events_no_update");
+  coherentRewrite.prepare(`update direct_artifact_audit_events set
+    event_id = ?, event_type = ?, input_digest = ?, input_json = ?, state_to = ?,
+    event_digest = ?, event_json = ? where sequence = ?`).run(
+    rejectedEventId, "artifact_rejected", rejectedInputDigest, canonicalJson(rejectedInput),
+    "rejected", rejectedEvent.eventDigest, canonicalJson(rejectedEvent), admittedEvent.sequence,
+  );
+  coherentRewrite.prepare(`update direct_artifact_audit_heads set state = 'rejected', head_event_id = ?
+    where project_id = ? and work_thread_id = ? and artifact_id = ?`).run(
+    rejectedEventId, scope.projectId, scope.workThreadId, scope.artifactId,
+  );
+  coherentRewrite.exec(`create trigger direct_artifact_audit_events_no_update
+    before update on direct_artifact_audit_events
+    begin select raise(abort, 'artifact_audit_append_only'); end;`);
+  coherentRewrite.close();
+  expectCode("artifact_audit_event_authentication_failed", () => createDirectArtifactAuditStore(storeOptions()));
 
   restore();
   const addTable = new DatabaseSync(dbPath);
   addTable.exec("create table unrelated_borrowed_table(id text primary key)");
   addTable.close();
-  expectCode("artifact_audit_store_schema_tampered", () => createDirectArtifactAuditStore({
-    rootDir: root, storeId, authority,
-  }));
+  expectCode("artifact_audit_store_schema_tampered", () => createDirectArtifactAuditStore(storeOptions()));
 
   restore();
 
-  const reentrantRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-artifact-reentrant-"));
+  const reentrantRoot = fs.mkdtempSync(path.join(temporaryRoot, "direct-artifact-reentrant-"));
+  const reentrantKeyFile = path.join(reentrantRoot, "artifact-audit.key");
+  fs.writeFileSync(reentrantKeyFile, crypto.randomBytes(32), { mode: 0o600 });
   let reentrantStore;
   let reenter = false;
   const reentrantNow = () => {
@@ -443,7 +542,8 @@ try {
     return tick++;
   };
   reentrantStore = createDirectArtifactAuditStore({
-    rootDir: reentrantRoot, storeId: "reentrant", authority, now: reentrantNow,
+    rootDir: reentrantRoot, storeId: "reentrant", authority, evidenceReceiptAuthority,
+    keyFilePath: reentrantKeyFile, now: reentrantNow,
   });
   reentrantStore.declareArtifactClass({ policy: policyInput, principal: principals.declaration });
   reenter = true;
@@ -458,21 +558,186 @@ try {
   reentrantStore.close();
   fs.rmSync(reentrantRoot, { recursive: true, force: true });
 
-  const foreignRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-artifact-foreign-"));
+  const foreignRoot = fs.mkdtempSync(path.join(temporaryRoot, "direct-artifact-foreign-"));
   const foreignDir = path.join(foreignRoot, "direct-artifact-audit");
-  fs.mkdirSync(foreignDir, { recursive: true });
+  fs.mkdirSync(foreignDir, { recursive: true, mode: 0o700 });
+  const foreignKeyFile = path.join(foreignRoot, "artifact-audit.key");
+  fs.writeFileSync(foreignKeyFile, crypto.randomBytes(32), { mode: 0o600 });
   const foreignPath = path.join(foreignDir, "foreign.sqlite");
   const foreign = new DatabaseSync(foreignPath);
   foreign.exec("create table direct_world_manager_state(id text primary key)");
   foreign.close();
+  if (process.platform !== "win32") fs.chmodSync(foreignPath, 0o600);
   expectCode("artifact_audit_foreign_store", () => createDirectArtifactAuditStore({
-    rootDir: foreignRoot, storeId: "foreign", authority,
+    rootDir: foreignRoot, storeId: "foreign", authority, evidenceReceiptAuthority,
+    keyFilePath: foreignKeyFile,
   }));
   const verifyForeign = new DatabaseSync(foreignPath);
   assert.deepEqual(verifyForeign.prepare("select name from sqlite_master where type = 'table' order by name").all()
     .map((row) => row.name), ["direct_world_manager_state"]);
   verifyForeign.close();
   fs.rmSync(foreignRoot, { recursive: true, force: true });
+
+  const symlinkRoot = fs.mkdtempSync(path.join(temporaryRoot, "direct-artifact-symlink-"));
+  const symlinkOutside = fs.mkdtempSync(path.join(temporaryRoot, "direct-artifact-outside-"));
+  const symlinkKey = path.join(symlinkRoot, "artifact-audit.key");
+  fs.writeFileSync(symlinkKey, crypto.randomBytes(32), { mode: 0o600 });
+  fs.symlinkSync(symlinkOutside, path.join(symlinkRoot, "direct-artifact-audit"),
+    process.platform === "win32" ? "junction" : "dir");
+  expectCode("artifact_audit_store_path_unsafe", () => createDirectArtifactAuditStore({
+    rootDir: symlinkRoot, storeId: "redirected", authority, evidenceReceiptAuthority,
+    keyFilePath: symlinkKey,
+  }));
+  assert.equal(fs.existsSync(path.join(symlinkOutside, "redirected.sqlite")), false);
+  fs.rmSync(symlinkRoot, { recursive: true, force: true });
+  fs.rmSync(symlinkOutside, { recursive: true, force: true });
+
+  const linkedRootParent = fs.mkdtempSync(path.join(temporaryRoot, "direct-artifact-linked-root-"));
+  const linkedRootTarget = fs.mkdtempSync(path.join(temporaryRoot, "direct-artifact-linked-target-"));
+  const linkedRoot = path.join(linkedRootParent, "store-root");
+  const linkedRootKey = path.join(linkedRootParent, "artifact-audit.key");
+  fs.writeFileSync(linkedRootKey, crypto.randomBytes(32), { mode: 0o600 });
+  fs.symlinkSync(linkedRootTarget, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+  expectCode("artifact_audit_store_path_unsafe", () => createDirectArtifactAuditStore({
+    rootDir: linkedRoot, storeId: "linked-root", authority, evidenceReceiptAuthority,
+    keyFilePath: linkedRootKey,
+  }));
+  fs.rmSync(linkedRootParent, { recursive: true, force: true });
+  fs.rmSync(linkedRootTarget, { recursive: true, force: true });
+
+  if (process.platform !== "win32") {
+    const insecureKeyRoot = fs.mkdtempSync(path.join(temporaryRoot, "direct-artifact-insecure-key-"));
+    const insecureKey = path.join(insecureKeyRoot, "artifact-audit.key");
+    fs.writeFileSync(insecureKey, crypto.randomBytes(32), { mode: 0o644 });
+    expectCode("artifact_audit_store_key_file_permissions_unsafe", () => createDirectArtifactAuditStore({
+      rootDir: insecureKeyRoot, storeId: "insecure", authority, evidenceReceiptAuthority,
+      keyFilePath: insecureKey,
+    }));
+    fs.rmSync(insecureKeyRoot, { recursive: true, force: true });
+  }
+
+  const assignmentRoot = fs.mkdtempSync(path.join(temporaryRoot, "direct-artifact-assignment-"));
+  const assignmentKey = path.join(assignmentRoot, "artifact-audit.key");
+  fs.writeFileSync(assignmentKey, crypto.randomBytes(32), { mode: 0o600 });
+  const assignmentScope = {
+    projectId: "assignment-project", workThreadId: "assignment-thread",
+    artifactId: "assignment-artifact", artifactClassId: "assignment-class",
+  };
+  const assignmentPolicyInput = {
+    projectId: assignmentScope.projectId, artifactClassId: assignmentScope.artifactClassId,
+    revision: 1, managerRoleId: "manager", producerRoleIds: ["producer"],
+    admissionRoleId: "admission", allowedEvidenceKinds: ["workspace_worker_terminal"],
+    roles: [
+      { roleId: "manager", actors: ["assignment-manager"], rights: ["propose", "read"] },
+      { roleId: "producer", actors: ["assignment-producer"], rights: ["propose"] },
+      { roleId: "general-auditor", actors: ["assignment-a", "assignment-b"], rights: ["challenge"] },
+      { roleId: "special-auditor", actors: ["assignment-a"], rights: ["challenge"] },
+      { roleId: "admission", actors: ["assignment-authority"], rights: ["admit"] },
+    ],
+    auditRequirements: [
+      { requirementId: "general-check", auditorRoleIds: ["general-auditor"],
+        separationRequired: true, evidenceKinds: ["test_report"] },
+      { requirementId: "special-check", auditorRoleIds: ["special-auditor"],
+        separationRequired: true, evidenceKinds: ["test_report"] },
+    ],
+  };
+  const assignmentPolicy = buildPolicySnapshot(assignmentPolicyInput);
+  const assignmentBindings = [
+    ["assignment-manager", "manager", ["declare", "act", "admin_read"]],
+    ["assignment-producer", "producer", ["act"]],
+    ["assignment-a", "general-auditor", ["act"]],
+    ["assignment-a", "special-auditor", ["act"]],
+    ["assignment-b", "general-auditor", ["act"]],
+    ["assignment-authority", "admission", ["act"]],
+    [evidenceAdapter.actorId, evidenceAdapter.roleId, ["register_evidence"]],
+  ].map(([actorId, roleId, purposes]) => ({
+    projectId: assignmentScope.projectId, artifactClassId: assignmentScope.artifactClassId,
+    policyDigest: assignmentPolicy.policyDigest, actorId, roleId, purposes,
+  }));
+  const assignmentAuthority = createArtifactAuditPrincipalAuthority({
+    authorityId: "assignment-harness", bindings: assignmentBindings,
+  });
+  const assignmentPrincipal = (actorId, roleId, purpose = "act") => assignmentAuthority.issue({
+    projectId: assignmentScope.projectId, artifactClassId: assignmentScope.artifactClassId,
+    policyDigest: assignmentPolicy.policyDigest, actorId, roleId, purpose,
+  });
+  let assignmentStore = createDirectArtifactAuditStore({
+    rootDir: assignmentRoot, storeId: "assignment", authority: assignmentAuthority,
+    evidenceReceiptAuthority, keyFilePath: assignmentKey,
+  });
+  const assignmentEvidence = (kind, evidenceId) => assignmentStore.registerEvidence({
+    principal: assignmentPrincipal(evidenceAdapter.actorId, evidenceAdapter.roleId, "register_evidence"),
+    receipt: evidenceReceiptAuthority.issue({
+      kind, evidenceId, ...assignmentScope, revision: 1, policyDigest: assignmentPolicy.policyDigest,
+      sourceCaptureId: `capture-${evidenceId}`, sourceSessionId: "assignment-session",
+      sourceTurnId: `turn-${evidenceId}`, canonicalEnvelopeDigest: digest("7"),
+    }),
+  }).ref;
+  try {
+    assignmentStore.declareArtifactClass({
+      policy: assignmentPolicyInput,
+      principal: assignmentPrincipal("assignment-manager", "manager", "declare"),
+    });
+    const assignmentRoute = assignmentStore.compileRoutingPlan({
+      scope: assignmentScope, policyDigest: assignmentPolicy.policyDigest,
+      principal: assignmentPrincipal("assignment-manager", "manager"),
+    });
+    assert.deepEqual(assignmentRoute.feasibleAssignments[0].audits.map((entry) =>
+      [entry.requirementId, entry.actorId]), [
+      ["general-check", "assignment-b"], ["special-check", "assignment-a"],
+    ]);
+    assignmentStore.requestArtifact({
+      scope: assignmentScope, policyDigest: assignmentPolicy.policyDigest,
+      principal: assignmentPrincipal("assignment-manager", "manager"), idempotencyKey: "request",
+    });
+    assignmentStore.beginProduction({
+      scope: assignmentScope, policyDigest: assignmentPolicy.policyDigest,
+      principal: assignmentPrincipal("assignment-producer", "producer"), idempotencyKey: "produce",
+      expectedRevision: 1, expectedState: "requested",
+    });
+    assignmentStore.submitCandidate({
+      scope: assignmentScope, policyDigest: assignmentPolicy.policyDigest,
+      principal: assignmentPrincipal("assignment-producer", "producer"), idempotencyKey: "candidate",
+      expectedRevision: 1, expectedState: "under_production",
+      evidenceRefs: [assignmentEvidence("workspace_worker_terminal", "assignment-terminal")],
+    });
+    expectCode("artifact_audit_assignment_actor_ineligible", () => assignmentStore.beginAudit({
+      scope: assignmentScope, policyDigest: assignmentPolicy.policyDigest,
+      principal: assignmentPrincipal("assignment-a", "general-auditor"), idempotencyKey: "wrong-start",
+      expectedRevision: 1, expectedState: "candidate",
+    }));
+    assignmentStore.beginAudit({
+      scope: assignmentScope, policyDigest: assignmentPolicy.policyDigest,
+      principal: assignmentPrincipal("assignment-b", "general-auditor"), idempotencyKey: "audit",
+      expectedRevision: 1, expectedState: "candidate",
+    });
+    expectCode("artifact_audit_assignment_actor_mismatch", () => assignmentStore.recordAuditVerdict({
+      scope: assignmentScope, policyDigest: assignmentPolicy.policyDigest,
+      principal: assignmentPrincipal("assignment-a", "general-auditor"), idempotencyKey: "wrong-general",
+      expectedRevision: 1, expectedState: "under_audit", requirementId: "general-check",
+      verdict: "supported", evidenceRefs: [assignmentEvidence("test_report", "wrong-general-evidence")],
+    }));
+    assignmentStore.recordAuditVerdict({
+      scope: assignmentScope, policyDigest: assignmentPolicy.policyDigest,
+      principal: assignmentPrincipal("assignment-b", "general-auditor"), idempotencyKey: "general",
+      expectedRevision: 1, expectedState: "under_audit", requirementId: "general-check",
+      verdict: "supported", evidenceRefs: [assignmentEvidence("test_report", "general-evidence")],
+    });
+    assert.equal(assignmentStore.recordAuditVerdict({
+      scope: assignmentScope, policyDigest: assignmentPolicy.policyDigest,
+      principal: assignmentPrincipal("assignment-a", "special-auditor"), idempotencyKey: "special",
+      expectedRevision: 1, expectedState: "under_audit", requirementId: "special-check",
+      verdict: "supported", evidenceRefs: [assignmentEvidence("test_report", "special-evidence")],
+    }).stateTo, "supported");
+    assert.equal(assignmentStore.inspectHeadAdministrative({
+      scope: assignmentScope, policyDigest: assignmentPolicy.policyDigest,
+      principal: assignmentPrincipal("assignment-manager", "manager", "admin_read"),
+    }).state, "supported");
+  } finally {
+    assignmentStore.close();
+    assignmentStore = null;
+    fs.rmSync(assignmentRoot, { recursive: true, force: true });
+  }
 
   console.log(JSON.stringify({
     ok: true,
@@ -484,6 +749,11 @@ try {
     evidenceCount: diagnostics.counts.evidence,
     passiveTransitions: projection.transitions.length,
     startupTamperRejected: true,
+    authenticatedRewriteRejected: true,
+    sealedEvidenceReceiptsRequired: true,
+    boundAuditAssignmentEnforced: true,
+    symlinkStoreRejected: true,
+    subscriptionHeadGateEnforced: true,
     foreignStoreRejectedBeforeDdl: true,
   }, null, 2));
 } finally {
