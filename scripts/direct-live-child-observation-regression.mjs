@@ -12,6 +12,10 @@ const {
   safeEpistemicProgress,
 } = require("../src/main/direct/agents/native-agent-pool");
 const { runDirectWorkspaceWorker } = require("../src/main/direct/agents/workspace-worker-runtime");
+const {
+  createWorkspaceParentAuthorityPacket,
+  genericWorkspaceRepositoryProfile,
+} = require("../src/main/direct/agents/workspace-worker-policy-profile");
 const { createNativeChildLiveTurnCapture } = require("../src/main/direct/epistemic/live-turn-capture-adapter");
 const { DirectEpistemicService } = require("../src/main/direct/epistemic/service");
 const { DirectEpistemicStore } = require("../src/main/direct/epistemic/store");
@@ -275,23 +279,35 @@ try {
     workspaceWorkerRunner: async (input) => {
       workspaceRuntimeResult = await runDirectWorkspaceWorker({
         ...input,
+        repositoryPolicy: genericWorkspaceRepositoryProfile(),
+        substrateCapabilities: {
+          boundaryId: "live_observation_substrate",
+          allowedTools: ["read_file"],
+        },
         workspaceProvisioner: async () => ({
           binding: {
             bindingId: "binding_live_workspace",
-            bindingDigest: "sha256:binding_live_workspace",
+            bindingDigest: `sha256:${"1".repeat(64)}`,
             projectId: input.projectId,
             workerKey: "child-live-workspace",
             workspaceKind: "local_git_worktree",
             branch: "codex/worker/child-live-workspace",
-            baseCommit: "0123456789abcdef",
-            rootEvidenceDigest: "sha256:root_live_workspace",
+            baseCommit: "0".repeat(40),
+            rootEvidenceDigest: `sha256:${"2".repeat(64)}`,
+            sourceRepositoryDigest: `sha256:${"3".repeat(64)}`,
             retainedAfterCompletion: true,
           },
           testProfile: null,
           nativeRoot: "/private/live-workspace",
           workspaceRequest: async (method) => {
-            assert.equal(method, "readFile");
-            return { relPath: "fixture.txt", text: "bounded fixture evidence", size: 24 };
+            assert.equal(method, "readWorkspaceRepositoryFile");
+            return {
+              workspaceBindingDigest: `sha256:${"1".repeat(64)}`,
+              relPath: "fixture.txt",
+              text: "bounded fixture evidence",
+              size: 24,
+              manifestDigest: `sha256:${"4".repeat(64)}`,
+            };
           },
           release: async () => {},
         }),
@@ -355,6 +371,12 @@ try {
   });
   let workspaceChangedCount = 0;
   workspacePool.on("changed", () => { workspaceChangedCount += 1; });
+  const workspaceAuthority = createWorkspaceParentAuthorityPacket({
+    boundaryId: "live_observation_workspace_boundary",
+    upstreamPolicyId: "live_observation_workspace_policy",
+    upstreamAllowedTools: ["read_file"],
+    allowedTools: ["read_file"],
+  });
   const workspaceLaunch = workspacePool.launch({
     childAgentId: "child_live_workspace",
     taskName: "live_workspace",
@@ -364,6 +386,7 @@ try {
     message: "Read the bounded fixture and report completion.",
     workspaceMode: "isolated_worktree",
     toolProfile: "read_only_worker",
+    parentAuthorityPacket: workspaceAuthority,
     project: { id: "project_live_children" },
     model: "gpt-5.6-sol",
     reasoningEffort: "xhigh",
@@ -456,7 +479,11 @@ try {
   });
   await cancellationStarted.promise;
   cancellationPool.close({ reasonCode: "fixture_cancel" });
-  const cancelledRecord = cancellationPool.inspect({ target: cancellationLaunch.childAgentId });
+  const cancellationTerminal = await cancellationPool.wait({
+    target: cancellationLaunch.childAgentId,
+    timeoutMs: 5_000,
+  });
+  const cancelledRecord = cancellationTerminal.updates[0];
   assert.equal(cancelledRecord.state, "cancelled");
   assert.equal(cancelledRecord.epistemicCapture.status, "failed");
   assert.equal(cancelledRecord.epistemicCaptureComplete, false);

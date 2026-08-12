@@ -310,6 +310,10 @@ try {
     sideEffectExecuted: true,
     workspaceBindingId: "binding_safe_tool_result",
     workspaceBindingDigest: "sha256:binding_safe_tool_result",
+    mutationOutcome: {
+      requestId: "workspace_request_safe_tool_result",
+      outcomeDigest: `sha256:${"a".repeat(64)}`,
+    },
     providerOutputText: "RAW_TOOL_OUTPUT_/private/worktree",
     rawWorkspacePathIncluded: false,
     rawProviderPayloadIncluded: false,
@@ -318,8 +322,17 @@ try {
   const safeToolResult = capturedWorkspaceToolResult(sourceToolResult);
   assert.equal(safeToolResult.schema, DIRECT_CAPTURED_TOOL_RESULT_SCHEMA);
   assert.equal(safeToolResult.sourceResultDigest, sourceToolResult.resultDigest);
+  assert.equal(safeToolResult.mutationOutcomeDigest, sourceToolResult.mutationOutcome.outcomeDigest);
+  assert.equal(Object.hasOwn(safeToolResult, "mutationOutcome"), false);
   assert.equal(JSON.stringify(safeToolResult).includes("RAW_TOOL_OUTPUT"), false);
   assert.equal(JSON.stringify(safeToolResult).includes("/private/worktree"), false);
+  assert.throws(
+    () => capturedWorkspaceToolResult({
+      ...sourceToolResult,
+      mutationOutcome: { outcomeDigest: "sha256:not-canonical" },
+    }),
+    (error) => error?.code === "direct_turn_capture_tool_result_mutation_outcome_invalid",
+  );
   assert.throws(
     () => capturedWorkspaceToolResult({ ...sourceToolResult, argumentsJson: "{\"secret\":true}" }),
     (error) => error?.code === "direct_turn_capture_tool_result_field_unsupported",

@@ -21,6 +21,7 @@ const CAPTURED_TOOL_RESULT_SOURCE_FIELDS = new Set([
   "sideEffectExecuted",
   "workspaceBindingId",
   "workspaceBindingDigest",
+  "mutationOutcome",
   "exitCode",
   "resultClass",
   "resultDigest",
@@ -140,6 +141,15 @@ function safeCapturedToolResult(result = {}) {
   const providerOutputDigest = providerOutputText
     ? digestFor(providerOutputText)
     : text(result.providerOutputDigest);
+  const mutationOutcomeDigest = text(result.mutationOutcome?.outcomeDigest);
+  if (
+    result.mutationOutcome !== null &&
+    result.mutationOutcome !== undefined &&
+    (!result.mutationOutcome || typeof result.mutationOutcome !== "object" ||
+      !/^sha256:[a-f0-9]{64}$/i.test(mutationOutcomeDigest))
+  ) {
+    fail("direct_turn_capture_tool_result_mutation_outcome_invalid");
+  }
   const core = {
     schema: DIRECT_CAPTURED_TOOL_RESULT_SCHEMA,
     sourceSchema: text(result.schema),
@@ -152,6 +162,7 @@ function safeCapturedToolResult(result = {}) {
     sideEffectExecuted: result.sideEffectExecuted === true,
     workspaceBindingId: text(result.workspaceBindingId),
     workspaceBindingDigest: text(result.workspaceBindingDigest),
+    mutationOutcomeDigest,
     exitCode: result.exitCode !== null && result.exitCode !== undefined && Number.isFinite(Number(result.exitCode))
       ? Number(result.exitCode)
       : null,

@@ -53,7 +53,7 @@ function publicCaptureDigest(value) {
 function normalizeEpistemicCapture(input = {}) {
   const source = isPlainObject(input) ? input : {};
   const sourceStatus = normalizeString(source.status, "unavailable");
-  const status = new Set(["pending", "captured", "failed", "unavailable"]).has(sourceStatus)
+  const status = new Set(["pending", "capturing", "captured", "failed", "unavailable"]).has(sourceStatus)
     ? sourceStatus
     : "unavailable";
   const unsafeStatus = status !== sourceStatus;
