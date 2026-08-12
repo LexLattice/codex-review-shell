@@ -426,7 +426,13 @@ try {
           turnId: receipt.turnId,
         },
         resultEnvelope: { confidence: "exact" },
-        reducedSummary: { summaryText: result.outputText },
+        reducedSummary: {
+          summaryText: result.status === "completed"
+            ? "direct_workspace_worker_completed_captured"
+            : result.blockerCode || "direct_workspace_worker_failed",
+          summaryKind: "typed_status_code",
+          rawChildProseIncluded: false,
+        },
         captureResult: undefined,
       };
     },
@@ -501,7 +507,8 @@ try {
       }
       assert.match(text, /wait_agent_result/);
       assert.match(text, /epistemicCaptureComplete/);
-      assert.match(text, /Bounded workspace patch and test completed/);
+      assert.match(text, /direct_workspace_worker_completed_captured/);
+      assert.doesNotMatch(text, /Bounded workspace patch and test completed/);
       return new Response(completedSse("resp_parent_workspace_done", "The isolated workspace worker completed with captured test evidence."), {
         status: 200,
         headers: { "content-type": "text/event-stream" },
@@ -578,6 +585,11 @@ try {
   assert.equal(lifecycleSession.processState, "quiescent");
   assert.equal(lifecycleSession.binding.sourceRepositoryDigest, privateBinding.sourceRepositoryDigest);
   assert.equal(lifecycleSession.binding.bindingDigest, childRecord.workspaceLifecycle.bindingDigest);
+  assert.match(lifecycleSession.launchIdentity.launchIdentityDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.match(lifecycleSession.delegationAuthority.policyDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(lifecycleSession.delegationAuthority.policyId, "headless_provider_workspace_delegation");
+  assert.equal(lifecycleSession.delegationAuthority.roleLane, "implementation_worker");
+  assert.equal(lifecycleSession.launchIdentity.authorityDigest, lifecycleSession.delegationAuthority.authorityDigest);
   assert.equal(fs.existsSync(privateWorkerRoot), true, "dirty completed workspace must remain retained for inspection");
   const shutdown = await pool.drainAndClose({
     reasonCode: "direct_headless_provider_workspace_fixture_shutdown",

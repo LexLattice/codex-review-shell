@@ -75,7 +75,10 @@ workspace delegation must seed the process-owned registry through
 implementation lane alone grants nothing. Invalid source configuration is
 rejected and leaves the registry empty. The headless acceptance fixture seeds
 the same registry type directly as a harness-owned source; no provider payload
-can mint or serialize its in-process capability brand.
+can mint or serialize its in-process capability brand. Delegation-bearing
+parent packets carry a second private issuance witness owned by the delegation
+registry; constructing an otherwise branded generic parent packet around a
+syntactically valid policy reference does not satisfy that witness.
 
 The first-slice constitutions are:
 
@@ -116,6 +119,7 @@ authority
   requested advisory tool profile
   harness delegation-source id/digest
   short-lived delegation-policy id/digest
+  durable launch-operation/canonical-input digest
   parent-authority boundary digest
   pinned repository-policy profile/digest
   substrate-capability profile/digest
@@ -138,6 +142,12 @@ digest of the native root, never the native root itself.
 
 The binding is frozen for the child lifetime. A worker cannot select another
 child's binding or provide a filesystem root in a tool call.
+
+The durable lifecycle session also binds the provider session/turn/obligation
+identity by digest to the canonical launch input and delegation-authority
+digest. An exact replay returns the original child identity without another
+side effect. Reusing the obligation with different task, model, context,
+profile, role, or authority input is a typed conflict, including after restart.
 
 ### Repository policy and selective inheritance
 
@@ -261,7 +271,7 @@ steps. Each step is:
 
 ```text
 provider requests declared tool
-  -> harness validates call against frozen contract
+  -> harness validates call against frozen contract, active lease, and current policy expiry
   -> resident backend performs the typed operation
   -> harness records typed result
   -> bounded result evidence is admitted to a fresh continuation
@@ -270,6 +280,8 @@ provider requests declared tool
 The loop fails closed on multiple calls, undeclared tools, malformed arguments,
 contract/binding drift, test-profile drift, step exhaustion, or raw-path
 exposure. It never delegates tool execution back to the provider.
+The lease and short-lived delegation policy are revalidated immediately before
+each backend operation; the patch dry-run and apply phases are distinct checks.
 
 ## Communication topology
 
@@ -277,9 +289,14 @@ Active communication remains top-down. Workspace workers see only their task,
 admitted context, compiled tools, and resulting environment constraints. They
 cannot message the parent, request another worker, or alter their constitution.
 
-The parent observes terminal summaries and typed status through `wait_agent`,
-`list_agents`, and `inspect_agent`. It does not need to ingest a flattened child
-transcript.
+The parent observes typed terminal/capture status codes through `wait_agent`,
+`list_agents`, and `inspect_agent`. Child final prose is capture evidence only:
+it is neither used as the parent result summary nor admitted into provider or
+status payloads. It does not need to ingest a flattened child transcript.
+
+The delegation policy fixes the canonical child role to
+`implementation_worker`. A provider-supplied `agent_type` is ignored advisory
+labeling and cannot change the contract or status role.
 
 ## Acceptance witness
 
@@ -297,7 +314,11 @@ that the durable lifecycle session owns provisioning, the canonical source-
 repository digest, binding, lease release, terminal settlement, and ordered
 pool drain. The dirty child worktree remains retained for inspection. Parent,
 provider, and status projections contain neither native roots nor private
-binding fields, and the source checkout stays unchanged.
+binding fields nor child final prose, and the source checkout stays unchanged.
+The focused policy witness additionally proves forged generic-packet rejection,
+expiry between patch planning and apply, inactive-lease denial, exact and
+conflicting spawn replay (including registry restart), canonical role binding,
+and durable launch/authority custody.
 
 The EXEC1 regression creates a temporary local clone derived from the committed
 ArcAGI3 repository, then launches two workspace workers from the same pinned

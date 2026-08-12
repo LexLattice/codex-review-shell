@@ -23,6 +23,9 @@ const {
   executeWorkspaceRepositoryTool,
   safeRepositoryRelativePath,
 } = require("./workspace-worker-repository-tools");
+const {
+  validateWorkspaceDelegatedParentAuthorityPacket,
+} = require("./workspace-worker-delegation-policy");
 
 const DIRECT_WORKSPACE_WORKER_RESULT_SCHEMA = "direct_workspace_worker_result@1";
 const DIRECT_WORKSPACE_WORKER_EXECUTION_SCHEMA = "direct_workspace_worker_execution@1";
@@ -403,6 +406,20 @@ function toolResult(input = {}) {
   return base;
 }
 
+function assertCurrentDelegationLease(input = {}, contract = {}) {
+  if (typeof input.workspaceOperationLeaseValidator === "function") {
+    input.workspaceOperationLeaseValidator();
+  }
+  if (!contract.workspaceWorkerDelegationPolicyRef) return null;
+  return validateWorkspaceDelegatedParentAuthorityPacket(input.parentAuthorityPacket, {
+    projectId: contract.projectId,
+    workThreadId: contract.workThreadId,
+    roleLane: "implementation_worker",
+    requestedProfileId: contract.authority?.toolProfile,
+    nowMs: typeof input.now === "function" ? Number(input.now()) : Date.now(),
+  });
+}
+
 async function executeWorkspaceTool(input = {}) {
   const { obligation, contract, provisioned, stepOrdinal } = input;
   assertWorkspaceWorkerContractSafe(contract);
@@ -422,6 +439,7 @@ async function executeWorkspaceTool(input = {}) {
   };
   const requestOptions = input.signal ? { signal: input.signal } : {};
   if (["inspect_repository", "list_files", "match_files", "search_text", "read_file"].includes(toolName)) {
+    assertCurrentDelegationLease(input, contract);
     const repositoryResult = await executeWorkspaceRepositoryTool({
       toolName,
       args,
@@ -443,11 +461,13 @@ async function executeWorkspaceTool(input = {}) {
       error.code = "direct_workspace_worker_patch_missing";
       throw error;
     }
+    assertCurrentDelegationLease(input, contract);
     const plan = await provisioned.workspaceRequest("applyWorkspaceWorkerPatch", {
       bindingDigest: contract.binding.bindingDigest,
       mode: "dryRun",
       patch,
     }, 30_000, requestOptions);
+    assertCurrentDelegationLease(input, contract);
     const applied = await provisioned.workspaceRequest("applyWorkspaceWorkerPatch", {
       bindingDigest: contract.binding.bindingDigest,
       mode: "apply",
@@ -504,6 +524,7 @@ async function executeWorkspaceTool(input = {}) {
       throw error;
     }
     const timeoutMs = Math.max(1000, Math.min(120_000, Number(args.timeout_ms || args.timeoutMs || 120_000) || 120_000));
+    assertCurrentDelegationLease(input, contract);
     const raw = await provisioned.workspaceRequest("runDirectTest", {
       bindingDigest: contract.binding.bindingDigest,
       profileDigest: contract.testProfile.profileDigest,
@@ -913,6 +934,9 @@ async function runDirectWorkspaceWorker(input = {}) {
           onMutationOutcome: (mutationOutcome) => {
             activeToolMutationOutcome = mutationOutcome;
           },
+          parentAuthorityPacket: input.parentAuthorityPacket,
+          now: input.now,
+          workspaceOperationLeaseValidator: input.workspaceOperationLeaseValidator,
         });
         results.push(executed);
         evidence.push(executed.providerOutputText);

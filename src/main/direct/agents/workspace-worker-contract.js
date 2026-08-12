@@ -10,6 +10,9 @@ const {
 const {
   repositoryToolSchemas,
 } = require("./workspace-worker-repository-tools");
+const {
+  validateWorkspaceDelegatedParentAuthorityPacket,
+} = require("./workspace-worker-delegation-policy");
 
 const DIRECT_WORKSPACE_WORKER_CONTRACT_SCHEMA = "direct_workspace_worker_contract@1";
 const DIRECT_WORKSPACE_WORKER_CONTEXT_ADMISSION_SCHEMA = "direct_workspace_worker_context_admission@1";
@@ -239,13 +242,14 @@ function compileWorkspaceWorkerContract(input = {}) {
     error.code = "direct_workspace_worker_delegation_policy_scope_mismatch";
     throw error;
   }
-  if (parentAuthority?.delegationPolicyRef && (
-    Date.now() < Date.parse(parentAuthority.delegationPolicyRef.issuedAt) ||
-    Date.now() >= Date.parse(parentAuthority.delegationPolicyRef.expiresAt)
-  )) {
-    const error = new Error("Workspace delegation policy expired before contract compilation.");
-    error.code = "direct_workspace_worker_delegation_policy_stale";
-    throw error;
+  if (parentAuthority?.delegationPolicyRef) {
+    validateWorkspaceDelegatedParentAuthorityPacket(input.parentAuthorityPacket, {
+      projectId,
+      workThreadId: normalizeString(input.workThreadId, "work_thread_direct_agents"),
+      roleLane: "implementation_worker",
+      requestedProfileId: toolProfile,
+      nowMs: typeof input.now === "function" ? Number(input.now()) : Date.now(),
+    });
   }
   const compiledPolicy = compileWorkspaceWorkerPolicy({
     requestedProfileId: toolProfile,

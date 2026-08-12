@@ -826,6 +826,21 @@ function workspaceWorkerSpawnHasUndeclaredFields(args = {}) {
   return Object.keys(isPlainObject(args) ? args : {}).some((key) => !admittedFields.has(key));
 }
 
+function typedWorkspaceWorkerParentResultCode(update = {}) {
+  const state = normalizeString(update.state, "failed");
+  if (state === "completed") {
+    return update.epistemicCaptureComplete === true
+      ? "direct_workspace_worker_completed_captured"
+      : "direct_workspace_worker_completed";
+  }
+  return `direct_workspace_worker_${["failed", "timeout", "cancelled"].includes(state) ? state : "status"}`;
+}
+
+function safeWorkspaceWorkerBlockerCode(update = {}) {
+  const code = normalizeString(update.blockerCode, "");
+  return /^(?:direct_|workspace_)[A-Za-z0-9._:-]{0,183}$/.test(code) ? code : "";
+}
+
 function projectAllowsProviderWorkspaceWorkers(project = {}) {
   const binding = isPlainObject(project?.surfaceBinding?.codex)
     ? project.surfaceBinding.codex
@@ -4695,6 +4710,12 @@ class DirectLiveTextController {
         workspaceMode,
         toolProfile: args.tool_profile || args.toolProfile,
         parentAuthorityPacket,
+        spawnOperation: workspaceMode === "isolated_worktree" ? {
+          parentSessionId: sessionId,
+          parentTurnId: turnId,
+          obligationId: normalizeString(obligation.obligationId, ""),
+          callId: normalizeString(obligation.callId, ""),
+        } : null,
         project,
         parentModel: normalizeString(turn.model, session.model),
         parentReasoningEffort: normalizeString(turn.reasoningEffort, session.reasoningEffort),
@@ -4724,6 +4745,8 @@ class DirectLiveTextController {
           contextHandoff: runtimeResult.contextHandoff || null,
           contextMessageCount: Number(runtimeResult.contextMessageCount || 0),
           runtimeProfileIndependentOfContext: runtimeResult.runtimeProfileIndependentOfContext === true,
+          replayed: runtimeResult.replayed === true,
+          providerRoleLabelAcceptedAsAuthority: false,
           pool: runtimeResult.pool || this.subAgentPool?.descriptor?.() || null,
           childRunsInBackground: ["running", "queued", "accepted"].includes(runtimeResult.status),
           rawTaskIncluded: false,
@@ -4733,22 +4756,34 @@ class DirectLiveTextController {
           kind: "wait_agent_result",
           status: normalizeString(runtimeResult.status, "blocked"),
           blockerCode: normalizeString(runtimeResult.blockerCode, ""),
-          updates: (Array.isArray(runtimeResult.updates) ? runtimeResult.updates : []).map((update) => ({
-            childAgentId: normalizeString(update.childAgentId, ""),
-            taskName: normalizeString(update.taskName, ""),
-            state: normalizeString(update.state, ""),
-            resultSummary: normalizeString(update.resultSummary, ""),
-            blockerCode: normalizeString(update.blockerCode, ""),
-            model: normalizeString(update.model, ""),
-            reasoningEffort: normalizeString(update.reasoningEffort, ""),
-            workspaceMode: normalizeString(update.workspaceMode, "reasoning_only"),
-            toolProfile: normalizeString(update.toolProfile, "reasoning_only"),
-            workspaceExecution: update.workspaceExecution || null,
-            epistemicCapture: update.epistemicCapture || null,
-            epistemicCaptureComplete: update.epistemicCaptureComplete === true,
-            epistemicCaptureOmission: update.epistemicCaptureOmission || null,
-            evidenceConfidence: normalizeString(update.evidenceConfidence, "unknown"),
-          })),
+          updates: (Array.isArray(runtimeResult.updates) ? runtimeResult.updates : []).map((update) => {
+            const workspaceWorker = normalizeString(update.workspaceMode, "reasoning_only") === "isolated_worktree";
+            return {
+              childAgentId: normalizeString(update.childAgentId, ""),
+              taskName: normalizeString(update.taskName, ""),
+              state: normalizeString(update.state, ""),
+              resultSummary: workspaceWorker
+                ? typedWorkspaceWorkerParentResultCode(update)
+                : normalizeString(update.resultSummary, ""),
+              resultSummaryKind: workspaceWorker
+                ? "typed_status_code"
+                : normalizeString(update.resultSummaryKind, "provider_summary"),
+              blockerCode: workspaceWorker
+                ? safeWorkspaceWorkerBlockerCode(update)
+                : normalizeString(update.blockerCode, ""),
+              model: normalizeString(update.model, ""),
+              reasoningEffort: normalizeString(update.reasoningEffort, ""),
+              workspaceMode: normalizeString(update.workspaceMode, "reasoning_only"),
+              toolProfile: normalizeString(update.toolProfile, "reasoning_only"),
+              workspaceExecution: update.workspaceExecution || null,
+              epistemicCapture: update.epistemicCapture || null,
+              epistemicCaptureComplete: update.epistemicCaptureComplete === true,
+              epistemicCaptureOmission: update.epistemicCaptureOmission || null,
+              evidenceConfidence: normalizeString(update.evidenceConfidence, "unknown"),
+              childOutputIncluded: false,
+              rawChildProseIncluded: false,
+            };
+          }),
           pool: runtimeResult.pool || this.subAgentPool?.descriptor?.() || null,
           rawChildTranscriptIncluded: false,
         };
@@ -4762,12 +4797,15 @@ class DirectLiveTextController {
       providerOutput,
       sideEffectExecuted:
         toolName === "spawn_agent" &&
-        normalizeString(runtimeResult.status, "blocked") !== "blocked",
+        normalizeString(runtimeResult.status, "blocked") !== "blocked" &&
+        runtimeResult.replayed !== true,
       runtimeLifecycleMutationExecuted:
         toolName === "spawn_agent" &&
-        normalizeString(runtimeResult.status, "blocked") !== "blocked",
+        normalizeString(runtimeResult.status, "blocked") !== "blocked" &&
+        runtimeResult.replayed !== true,
       providerTurnScheduled:
         toolName === "spawn_agent" &&
+        runtimeResult.replayed !== true &&
         ["running", "queued", "accepted"].includes(
           normalizeString(runtimeResult.status, ""),
         ),

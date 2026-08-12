@@ -14,6 +14,8 @@ const WORKSPACE_WORKER_SESSION_SCHEMA = "direct_workspace_worker_session@1";
 const WORKSPACE_WORKER_LIFECYCLE_EVENT_SCHEMA = "direct_workspace_worker_lifecycle_event@1";
 const WORKSPACE_WORKER_RECONCILIATION_RECEIPT_SCHEMA = "direct_workspace_worker_reconciliation_receipt@1";
 const WORKSPACE_WORKER_REGISTRY_FILE = "direct-workspace-worker-lifecycle.sqlite";
+const WORKSPACE_WORKER_LAUNCH_IDENTITY_SCHEMA = "direct_workspace_worker_launch_identity@1";
+const WORKSPACE_WORKER_DELEGATION_AUTHORITY_BINDING_SCHEMA = "direct_workspace_worker_delegation_authority_binding@1";
 
 const SESSION_STATES = new Set([
   "registered",
@@ -226,6 +228,118 @@ function normalizeBinding(input = {}) {
   return binding;
 }
 
+function exactDigest(value, code, optional = false) {
+  const digest = normalizeString(value, "");
+  if (optional && !digest) return "";
+  if (!/^sha256:[a-f0-9]{64}$/i.test(digest)) fail(code);
+  return digest.toLowerCase();
+}
+
+function normalizeDelegationAuthority(input) {
+  if (input === undefined || input === null) return null;
+  if (!isPlainObject(input)) fail("direct_workspace_worker_delegation_authority_binding_invalid");
+  const policyId = safeId(input.policyId, "delegation_policy_id");
+  const policyRevision = Number(input.policyRevision || 0);
+  const sourceId = safeId(input.sourceId, "delegation_source_id");
+  const sourceDigest = exactDigest(input.sourceDigest, "direct_workspace_worker_delegation_source_digest_invalid");
+  const upstreamToolPolicyDigest = exactDigest(
+    input.upstreamToolPolicyDigest,
+    "direct_workspace_worker_upstream_tool_policy_digest_invalid",
+  );
+  const projectId = safeId(input.projectId, "delegation_project_id");
+  const workThreadId = safeId(input.workThreadId, "delegation_work_thread_id");
+  const roleLane = normalizeString(input.roleLane, "");
+  const authorityLineageDigest = digestFor(
+    "direct-workspace-worker-delegation-authority-lineage@1",
+    {
+      policyId,
+      policyRevision,
+      sourceId,
+      sourceDigest,
+      upstreamToolPolicyDigest,
+      projectId,
+      workThreadId,
+      roleLane,
+    },
+  );
+  const base = {
+    schema: WORKSPACE_WORKER_DELEGATION_AUTHORITY_BINDING_SCHEMA,
+    parentAuthorityBoundaryDigest: exactDigest(
+      input.parentAuthorityBoundaryDigest,
+      "direct_workspace_worker_parent_authority_digest_invalid",
+    ),
+    policyId,
+    policyRevision,
+    policyDigest: exactDigest(input.policyDigest, "direct_workspace_worker_delegation_policy_digest_invalid"),
+    sourceId,
+    sourceDigest,
+    upstreamToolPolicyDigest,
+    authorityLineageDigest,
+    issuedAt: normalizeString(input.issuedAt, ""),
+    expiresAt: normalizeString(input.expiresAt, ""),
+    projectId,
+    workThreadId,
+    roleLane,
+    rawAuthorityPacketIncluded: false,
+    rawWorkspacePathIncluded: false,
+  };
+  if (
+    input.schema !== WORKSPACE_WORKER_DELEGATION_AUTHORITY_BINDING_SCHEMA ||
+    input.authorityLineageDigest !== authorityLineageDigest ||
+    !Number.isInteger(base.policyRevision) || base.policyRevision < 1 ||
+    base.roleLane !== "implementation_worker" ||
+    !Number.isFinite(Date.parse(base.issuedAt)) ||
+    !Number.isFinite(Date.parse(base.expiresAt)) ||
+    Date.parse(base.expiresAt) <= Date.parse(base.issuedAt) ||
+    input.rawAuthorityPacketIncluded !== false ||
+    input.rawWorkspacePathIncluded !== false
+  ) {
+    fail("direct_workspace_worker_delegation_authority_binding_invalid");
+  }
+  const authorityDigest = digestFor("direct-workspace-worker-delegation-authority-binding@1", base);
+  if (input.authorityDigest !== authorityDigest) {
+    fail("direct_workspace_worker_delegation_authority_digest_mismatch");
+  }
+  return { ...base, authorityDigest };
+}
+
+function normalizeLaunchIdentity(input) {
+  if (input === undefined || input === null) return null;
+  if (!isPlainObject(input)) fail("direct_workspace_worker_launch_identity_invalid");
+  const base = {
+    schema: WORKSPACE_WORKER_LAUNCH_IDENTITY_SCHEMA,
+    launchOperationId: safeId(input.launchOperationId, "launch_operation_id"),
+    operationKeyDigest: exactDigest(input.operationKeyDigest, "direct_workspace_worker_launch_operation_key_digest_invalid"),
+    parentSessionDigest: exactDigest(input.parentSessionDigest, "direct_workspace_worker_parent_session_digest_invalid"),
+    parentTurnDigest: exactDigest(input.parentTurnDigest, "direct_workspace_worker_parent_turn_digest_invalid"),
+    obligationDigest: exactDigest(input.obligationDigest, "direct_workspace_worker_obligation_digest_invalid"),
+    callDigest: exactDigest(input.callDigest, "direct_workspace_worker_call_digest_invalid", true),
+    taskName: safeId(input.taskName, "launch_task_name"),
+    canonicalInputDigest: exactDigest(input.canonicalInputDigest, "direct_workspace_worker_launch_input_digest_invalid"),
+    authorityDigest: exactDigest(input.authorityDigest, "direct_workspace_worker_launch_authority_digest_invalid"),
+    authorityLineageDigest: exactDigest(
+      input.authorityLineageDigest,
+      "direct_workspace_worker_launch_authority_lineage_digest_invalid",
+    ),
+    rawProviderArgumentsIncluded: false,
+    rawTaskIncluded: false,
+    rawWorkspacePathIncluded: false,
+  };
+  if (
+    input.schema !== WORKSPACE_WORKER_LAUNCH_IDENTITY_SCHEMA ||
+    input.rawProviderArgumentsIncluded !== false ||
+    input.rawTaskIncluded !== false ||
+    input.rawWorkspacePathIncluded !== false
+  ) {
+    fail("direct_workspace_worker_launch_identity_invalid");
+  }
+  const launchIdentityDigest = digestFor("direct-workspace-worker-launch-identity@1", base);
+  if (input.launchIdentityDigest !== launchIdentityDigest) {
+    fail("direct_workspace_worker_launch_identity_digest_mismatch");
+  }
+  return { ...base, launchIdentityDigest };
+}
+
 function sessionDigest(session) {
   const copy = { ...session };
   delete copy.sessionDigest;
@@ -395,6 +509,15 @@ class WorkspaceWorkerLifecycleRegistry {
     return row ? parseJson(row.session_json, "direct_workspace_worker_session_json_invalid") : null;
   }
 
+  sessionForLaunchOperation(launchOperationId) {
+    this.ensureOpen();
+    const row = this.db.prepare(`
+      select session_id from workspace_worker_lifecycle_events
+      where operation_id = ? and event_kind = 'session_registered'
+    `).get(safeId(launchOperationId, "launch_operation_id"));
+    return row ? this.session(row.session_id) : null;
+  }
+
   sessions(input = {}) {
     this.ensureOpen();
     const projectId = normalizeString(input.projectId, "");
@@ -435,6 +558,9 @@ class WorkspaceWorkerLifecycleRegistry {
         custodyDigest: normalizeString(session.workspaceCustody?.custodyDigest, ""),
         mutationOutcomeDigest: normalizeString(session.mutationOutcome?.outcomeDigest, ""),
         partialMutationPossible: session.mutationOutcome?.partialMutationPossible === true,
+        launchOperationId: normalizeString(session.launchIdentity?.launchOperationId, ""),
+        launchIdentityDigest: normalizeString(session.launchIdentity?.launchIdentityDigest, ""),
+        delegationAuthorityDigest: normalizeString(session.delegationAuthority?.authorityDigest, ""),
         automaticReplayAllowed: false,
         automaticCleanupAllowed: false,
         rawWorkspacePathIncluded: false,
@@ -455,10 +581,40 @@ class WorkspaceWorkerLifecycleRegistry {
       input.leaseId || `workspace_worker_lease_${crypto.randomUUID().replace(/-/g, "")}`,
       "lease_id",
     );
-    const operationId = safeId(input.operationId || `open:${sessionId}`, "operation_id");
     const launchDigest = normalizeString(input.launchDigest, "");
     if (!/^sha256:[a-f0-9]{64}$/.test(launchDigest)) {
       fail("direct_workspace_worker_launch_digest_invalid");
+    }
+    const launchIdentity = normalizeLaunchIdentity(input.launchIdentity);
+    const delegationAuthority = normalizeDelegationAuthority(input.delegationAuthority);
+    if (Boolean(launchIdentity) !== Boolean(delegationAuthority)) {
+      fail("direct_workspace_worker_launch_authority_binding_incomplete");
+    }
+    if (launchIdentity && launchIdentity.authorityDigest !== delegationAuthority.authorityDigest) {
+      fail("direct_workspace_worker_launch_authority_digest_mismatch");
+    }
+    if (launchIdentity && launchIdentity.authorityLineageDigest !== delegationAuthority.authorityLineageDigest) {
+      fail("direct_workspace_worker_launch_authority_lineage_mismatch");
+    }
+    const projectId = safeId(input.projectId || "project_direct_agents", "project_id");
+    const workThreadId = normalizeString(input.workThreadId, "");
+    const primaryThreadId = normalizeString(input.primaryThreadId, "");
+    if (delegationAuthority && (
+      delegationAuthority.projectId !== projectId ||
+      delegationAuthority.workThreadId !== workThreadId ||
+      launchIdentity.parentSessionDigest !== digestFor(
+        "direct-workspace-worker-parent-session-id@1",
+        primaryThreadId,
+      )
+    )) {
+      fail("direct_workspace_worker_launch_authority_scope_mismatch");
+    }
+    const operationId = safeId(
+      input.operationId || launchIdentity?.launchOperationId || `open:${sessionId}`,
+      "operation_id",
+    );
+    if (launchIdentity && operationId !== launchIdentity.launchOperationId) {
+      fail("direct_workspace_worker_launch_operation_id_mismatch");
     }
     const operationDigest = digestFor("direct-workspace-worker-lifecycle-operation@1", {
       eventKind: "session_registered",
@@ -466,10 +622,12 @@ class WorkspaceWorkerLifecycleRegistry {
       leaseId,
       childAgentId,
       launchDigest,
-      projectId: safeId(input.projectId || "project_direct_agents", "project_id"),
-      workThreadId: normalizeString(input.workThreadId, ""),
-      primaryThreadId: normalizeString(input.primaryThreadId, ""),
+      projectId,
+      workThreadId,
+      primaryThreadId,
       toolProfile: normalizeString(input.toolProfile, "read_only_worker"),
+      launchIdentity,
+      delegationAuthority,
     });
     const occurredAt = nowIso(this.now);
     return this.withImmediateTransaction(() => {
@@ -500,11 +658,13 @@ class WorkspaceWorkerLifecycleRegistry {
         leaseId,
         childAgentId,
         launchDigest,
-        projectId: safeId(input.projectId || "project_direct_agents", "project_id"),
-        workThreadId: normalizeString(input.workThreadId, ""),
-        primaryThreadId: normalizeString(input.primaryThreadId, ""),
+        projectId,
+        workThreadId,
+        primaryThreadId,
         workspaceMode: "isolated_worktree",
         toolProfile: normalizeString(input.toolProfile, "read_only_worker"),
+        launchIdentity,
+        delegationAuthority,
         state: "registered",
         leaseState: "reserved",
         processState: "not_started",

@@ -4175,10 +4175,13 @@ async function runDirectWorkspaceWorkerTurn(input = {}) {
     epistemicCapture,
     resultEnvelope: { confidence: captureComplete ? "exact" : "partial" },
     reducedSummary: {
-      summaryText: normalizeString(
-        workspaceResult.outputText || workspaceResult.blockerCode,
-        workspaceResult.status === "completed" ? "Workspace worker completed." : "Workspace worker failed.",
-      ),
+      summaryText: workspaceResult.status === "completed"
+        ? captureComplete
+          ? "direct_workspace_worker_completed_captured"
+          : "direct_workspace_worker_completed"
+        : normalizeString(workspaceResult.blockerCode, "direct_workspace_worker_failed"),
+      summaryKind: "typed_status_code",
+      rawChildProseIncluded: false,
     },
     captureResult: undefined,
   });

@@ -12,6 +12,7 @@ const DIRECT_WORKSPACE_WORKER_DELEGATION_POLICY_SCHEMA = "direct_workspace_worke
 const DIRECT_WORKSPACE_WORKER_DELEGATION_SOURCE_SCHEMA = "direct_workspace_worker_delegation_source@1";
 const DIRECT_WORKSPACE_WORKER_DELEGATION_POLICY_PROVENANCE = "harness_owned_project_worker_delegation_policy";
 const harnessOwnedDelegationPolicies = new WeakSet();
+const harnessIssuedDelegatedParentAuthorityPackets = new WeakMap();
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -218,6 +219,31 @@ function delegationPolicyRef(policy) {
   });
 }
 
+function validateWorkspaceDelegatedParentAuthorityPacket(packet, expected = {}) {
+  const issuance = isPlainObject(packet)
+    ? harnessIssuedDelegatedParentAuthorityPackets.get(packet)
+    : null;
+  if (!issuance) {
+    throw delegationPolicyError(
+      "direct_workspace_worker_delegation_policy_untrusted",
+      "Workspace delegation authority must be issued from the process-owned delegation-policy registry.",
+    );
+  }
+  const admitted = validateWorkspaceWorkerDelegationPolicy(issuance.policy, expected);
+  const expectedRef = delegationPolicyRef(admitted);
+  if (stableStringify(packet.delegationPolicyRef) !== stableStringify(expectedRef)) {
+    throw delegationPolicyError(
+      "direct_workspace_worker_delegation_policy_ref_mismatch",
+      "Workspace delegation authority does not carry the exact policy reference issued by the registry.",
+    );
+  }
+  return Object.freeze({
+    packet,
+    policy: admitted,
+    delegationPolicyRef: expectedRef,
+  });
+}
+
 function sourceBaseFromInput(input = {}) {
   const sourceId = normalizeString(input.sourceId, "");
   const sourceRevision = Number(input.sourceRevision || 0);
@@ -379,7 +405,7 @@ class WorkspaceWorkerDelegationPolicyRegistry {
 
 function issueWorkspaceParentAuthorityFromDelegationPolicy(policy, expected = {}) {
   const admitted = validateWorkspaceWorkerDelegationPolicy(policy, expected);
-  return createWorkspaceParentAuthorityPacket({
+  const packet = createWorkspaceParentAuthorityPacket({
     boundaryId: `workspace_delegation_${admitted.policyId}_${admitted.policyRevision}`,
     upstreamPolicyId: admitted.policyId,
     upstreamAllowedTools: admitted.allowedTools,
@@ -388,6 +414,8 @@ function issueWorkspaceParentAuthorityFromDelegationPolicy(policy, expected = {}
     forbiddenTools: admitted.forbiddenTools,
     delegationPolicyRef: delegationPolicyRef(admitted),
   });
+  harnessIssuedDelegatedParentAuthorityPackets.set(packet, Object.freeze({ policy: admitted }));
+  return packet;
 }
 
 module.exports = {
@@ -397,5 +425,6 @@ module.exports = {
   WorkspaceWorkerDelegationPolicyRegistry,
   delegationPolicyRef,
   issueWorkspaceParentAuthorityFromDelegationPolicy,
+  validateWorkspaceDelegatedParentAuthorityPacket,
   validateWorkspaceWorkerDelegationPolicy,
 };
