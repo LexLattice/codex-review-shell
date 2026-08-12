@@ -27,6 +27,10 @@ const {
 const {
   sameNativePath,
 } = require("../shared/native-path-identity");
+const {
+  pinnedWorkspaceMarkerIsExact,
+  searchBoundedWorkspaceRepositoryText,
+} = require("../shared/workspace-repository-boundary");
 
 const PROTOCOL_VERSION = 1;
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
@@ -2856,7 +2860,11 @@ async function workspaceWorkerPinnedProfileEvidence() {
       try {
         const resolved = await resolveFileWithinRoot(marker);
         const stat = await fs.lstat(resolved.requestedFullPath);
-        exact = !stat.isSymbolicLink() && path.resolve(resolved.requestedFullPath) === path.resolve(resolved.fullPath);
+        exact = pinnedWorkspaceMarkerIsExact({
+          requestedFullPath: resolved.requestedFullPath,
+          resolvedFullPath: resolved.fullPath,
+          isSymbolicLink: stat.isSymbolicLink(),
+        });
       } catch {}
       markerResults.push({ marker, exact });
     }
@@ -3123,18 +3131,30 @@ async function readWorkspaceWorkerCanonicalEntry(entry, maxBytes) {
   const bytesToRead = Math.min(requestedStat.size, maxBytes);
   const noFollow = Number(fsSync.constants.O_NOFOLLOW || 0);
   const handle = await fs.open(resolved.requestedFullPath, fsSync.constants.O_RDONLY | noFollow);
+  let bytesRead = 0;
   try {
     const before = await handle.stat();
     if (!before.isFile() || before.dev !== requestedStat.dev || before.ino !== requestedStat.ino) {
       throw new Error("workspace_worker_repository_file_changed_during_read");
     }
     const buffer = Buffer.alloc(bytesToRead);
-    if (bytesToRead) await handle.read(buffer, 0, bytesToRead, 0);
+    if (bytesToRead) {
+      const result = await handle.read(buffer, 0, bytesToRead, 0);
+      bytesRead = Number(result.bytesRead || 0);
+      if (bytesRead !== bytesToRead) {
+        throw new Error("workspace_worker_repository_file_changed_during_read");
+      }
+    }
     const after = await handle.stat();
     if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
       throw new Error("workspace_worker_repository_file_changed_during_read");
     }
     return { buffer, size: after.size, truncated: after.size > maxBytes };
+  } catch (error) {
+    if (error && typeof error === "object") {
+      error.workspaceWorkerBytesRead = bytesRead;
+    }
+    throw error;
   } finally {
     await handle.close();
   }
@@ -3189,66 +3209,26 @@ async function searchWorkspaceRepositoryText(params = {}) {
   }
   const prefix = workspaceWorkerSafePrefix(params.prefix);
   const caseSensitive = params.caseSensitive === true;
-  const needle = caseSensitive ? query : query.toLocaleLowerCase();
   const maxResults = Math.max(1, Math.min(Number(params.maxResults || 60) || 60, DIRECT_WORKSPACE_WORKER_SEARCH_RESULT_LIMIT));
   const manifest = await workspaceWorkerCanonicalManifest();
   const prefixedEntries = manifest.entries.filter((entry) =>
     workspaceWorkerPrefixMatch(entry.path, prefix));
-  const candidates = prefixedEntries.filter((entry) =>
-    entry.size <= DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES);
-  const matches = [];
-  let filesScanned = 0;
-  let bytesScanned = 0;
-  let truncated =
-    prefixedEntries.length !== candidates.length ||
-    candidates.length > DIRECT_WORKSPACE_WORKER_SEARCH_FILE_LIMIT;
-  for (const entry of candidates.slice(0, DIRECT_WORKSPACE_WORKER_SEARCH_FILE_LIMIT)) {
-    if (bytesScanned + entry.size > DIRECT_WORKSPACE_WORKER_SEARCH_TOTAL_BYTES) {
-      truncated = true;
-      break;
-    }
-    let read;
-    try {
-      read = await readWorkspaceWorkerCanonicalEntry(entry, DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES);
-    } catch {
-      continue;
-    }
-    if (looksBinary(read.buffer, { scanEntireBuffer: true })) continue;
-    let decoded;
-    try {
-      decoded = decodeWorkspaceWorkerUtf8(read.buffer, {
-        truncated: read.truncated,
-      });
-    } catch {
-      continue;
-    }
-    filesScanned += 1;
-    bytesScanned += read.buffer.length;
-    const lines = decoded.text.split(/\r?\n/);
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-      const haystack = caseSensitive ? lines[lineIndex] : lines[lineIndex].toLocaleLowerCase();
-      const column = haystack.indexOf(needle);
-      if (column < 0) continue;
-      matches.push({
-        path: entry.path,
-        line: lineIndex + 1,
-        column: column + 1,
-        text: lines[lineIndex].slice(0, 500),
-      });
-      if (matches.length >= maxResults) {
-        truncated = true;
-        break;
-      }
-    }
-    if (matches.length >= maxResults) break;
-  }
+  const search = await searchBoundedWorkspaceRepositoryText({
+    entries: prefixedEntries,
+    query,
+    caseSensitive,
+    maxResults,
+    fileLimit: DIRECT_WORKSPACE_WORKER_SEARCH_FILE_LIMIT,
+    fileByteLimit: DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES,
+    totalByteLimit: DIRECT_WORKSPACE_WORKER_SEARCH_TOTAL_BYTES,
+    readEntry: readWorkspaceWorkerCanonicalEntry,
+    looksBinary,
+    decodeUtf8: decodeWorkspaceWorkerUtf8,
+  });
   return {
     schema: "direct_workspace_worker_repository_text_search@1",
     workspaceBindingDigest,
-    matches,
-    filesScanned,
-    bytesScanned,
-    truncated,
+    ...search,
     manifestDigest: manifest.manifestDigest,
     rawWorkspacePathIncluded: false,
   };

@@ -3,6 +3,9 @@
 const {
   scanToolResultTextForSecrets,
 } = require("../tools/read-only-authority");
+const {
+  SEARCH_OMISSION_KEYS,
+} = require("../../../shared/workspace-repository-boundary");
 
 const MAX_REPOSITORY_TOOL_OUTPUT_CHARS = 48 * 1024;
 const MAX_REPOSITORY_READ_BYTES = 48 * 1024;
@@ -145,6 +148,14 @@ function safeEntries(entries = []) {
     size: Math.max(0, Number(entry?.size || 0) || 0),
     tracked: entry?.tracked === true,
   }));
+}
+
+function safeSearchOmissionCounts(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(SEARCH_OMISSION_KEYS.map((key) => [
+    key,
+    Math.max(0, Number(source[key] || 0) || 0),
+  ]));
 }
 
 function boundedProviderEvidenceJson(value, options = {}) {
@@ -292,6 +303,8 @@ async function executeWorkspaceRepositoryTool(input = {}) {
       maxResults,
     }, 45_000);
     assertBinding(raw, contract);
+    const incomplete = raw?.incomplete === true || raw?.truncated === true;
+    const omissionCounts = safeSearchOmissionCounts(raw?.omissionCounts);
     const matches = (Array.isArray(raw?.matches) ? raw.matches : []).slice(0, MAX_REPOSITORY_SEARCH_RESULTS).map((match) => ({
       path: safeRepositoryRelativePath(match?.path || match?.relPath),
       line: Math.max(1, Number(match?.line || 1) || 1),
@@ -305,9 +318,14 @@ async function executeWorkspaceRepositoryTool(input = {}) {
       caseSensitive: args.case_sensitive === true || args.caseSensitive === true,
       matches,
       returned: matches.length,
+      filesAttempted: Math.max(0, Number(raw?.filesAttempted || 0) || 0),
       filesScanned: Math.max(0, Number(raw?.filesScanned || 0) || 0),
       bytesScanned: Math.max(0, Number(raw?.bytesScanned || 0) || 0),
-      truncated: raw?.truncated === true,
+      binaryFileCount: Math.max(0, Number(raw?.binaryFileCount || 0) || 0),
+      omittedFileCount: Math.max(0, Number(raw?.omittedFileCount || 0) || 0),
+      omissionCounts,
+      incomplete,
+      truncated: incomplete,
       manifestDigest: normalizeString(raw?.manifestDigest, ""),
       rawWorkspacePathIncluded: false,
     };

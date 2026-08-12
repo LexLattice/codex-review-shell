@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { TextDecoder } from "node:util";
 
 const require = createRequire(import.meta.url);
 const { WorkspaceBackendManager } = require("../src/main/workspace-backend");
@@ -22,6 +23,10 @@ const {
 const {
   sameNativePath,
 } = require("../src/shared/native-path-identity");
+const {
+  pinnedWorkspaceMarkerIsExact,
+  searchBoundedWorkspaceRepositoryText,
+} = require("../src/shared/workspace-repository-boundary");
 const {
   executeWorkspaceTool,
 } = require("../src/main/direct/agents/workspace-worker-runtime");
@@ -239,6 +244,11 @@ try {
     maxResults: 10,
   }, 30_000);
   assert.equal(invalidUtf8Search.matches.length, 0, "search must not expose a partly decoded invalid UTF-8 file");
+  assert.equal(invalidUtf8Search.incomplete, true);
+  assert.equal(invalidUtf8Search.truncated, true);
+  assert.equal(invalidUtf8Search.omissionCounts.invalidUtf8 >= 1, true);
+  assert.equal(invalidUtf8Search.bytesScanned >= Buffer.byteLength("invalid-search-target\n") + 2, true,
+    "invalid UTF-8 and binary reads must still consume the aggregate byte budget");
   const oversizedSearch = await session.request("searchWorkspaceRepositoryText", {
     bindingDigest,
     query: "oversized-search-target",
@@ -248,6 +258,79 @@ try {
   }, 30_000);
   assert.equal(oversizedSearch.matches.length, 0);
   assert.equal(oversizedSearch.truncated, true, "search must disclose size-filtered omissions");
+  assert.equal(oversizedSearch.incomplete, true);
+  assert.equal(oversizedSearch.omissionCounts.fileSizeLimit >= 1, true);
+
+  const strictUtf8 = (buffer) => ({
+    text: new TextDecoder("utf-8", { fatal: true }).decode(buffer),
+  });
+  const binaryClassifier = (buffer) => buffer.includes(0);
+  const boundedClassificationSearch = await searchBoundedWorkspaceRepositoryText({
+    entries: [
+      { path: "binary.dat", size: 4 },
+      { path: "invalid.txt", size: 4 },
+      { path: "target.txt", size: 6 },
+    ],
+    query: "needle",
+    caseSensitive: true,
+    maxResults: 10,
+    fileLimit: 10,
+    fileByteLimit: 8,
+    totalByteLimit: 8,
+    readEntry: async (entry) => {
+      const buffers = {
+        "binary.dat": Buffer.from([0, 0x61, 0x61, 0x61]),
+        "invalid.txt": Buffer.from([0xc3, 0x28, 0x61, 0x61]),
+        "target.txt": Buffer.from("needle", "utf8"),
+      };
+      return { buffer: buffers[entry.path], size: entry.size, truncated: false };
+    },
+    looksBinary: binaryClassifier,
+    decodeUtf8: strictUtf8,
+  });
+  assert.equal(boundedClassificationSearch.bytesScanned, 8);
+  assert.equal(boundedClassificationSearch.filesAttempted, 2);
+  assert.equal(boundedClassificationSearch.binaryFileCount, 1);
+  assert.equal(boundedClassificationSearch.omissionCounts.invalidUtf8, 1);
+  assert.equal(boundedClassificationSearch.omissionCounts.aggregateByteLimit, 1);
+  assert.equal(boundedClassificationSearch.matches.length, 0,
+    "binary and invalid UTF-8 reads must exhaust the same aggregate budget as decoded text");
+
+  const failedNativePath = path.join(tempRoot, "must-not-leak.txt");
+  const boundedFailureSearch = await searchBoundedWorkspaceRepositoryText({
+    entries: [
+      { path: "read-failure.txt", size: 3 },
+      { path: "revalidation-failure.txt", size: 4 },
+      { path: "target.txt", size: 6 },
+    ],
+    query: "needle",
+    caseSensitive: true,
+    maxResults: 10,
+    fileLimit: 10,
+    fileByteLimit: 8,
+    totalByteLimit: 20,
+    readEntry: async (entry) => {
+      if (entry.path === "read-failure.txt") {
+        const error = new Error("fixture read failure");
+        error.workspaceWorkerBytesRead = 3;
+        error.nativePath = failedNativePath;
+        throw error;
+      }
+      if (entry.path === "revalidation-failure.txt") {
+        return { buffer: Buffer.from("safe", "utf8"), size: 5, truncated: false };
+      }
+      return { buffer: Buffer.from("needle", "utf8"), size: 6, truncated: false };
+    },
+    looksBinary: binaryClassifier,
+    decodeUtf8: strictUtf8,
+  });
+  assert.equal(boundedFailureSearch.matches.length, 1);
+  assert.equal(boundedFailureSearch.bytesScanned, 13);
+  assert.equal(boundedFailureSearch.omissionCounts.readOrRevalidationFailure, 2);
+  assert.equal(boundedFailureSearch.omittedFileCount, 2);
+  assert.equal(boundedFailureSearch.incomplete, true);
+  assert.equal(boundedFailureSearch.truncated, true);
+  assert.equal(JSON.stringify(boundedFailureSearch).includes(failedNativePath), false);
 
   const read = await session.request("readWorkspaceRepositoryFile", {
     bindingDigest,
@@ -470,6 +553,21 @@ try {
   assert.equal(sameNativePath("/home/rose/repo/", "/home/rose/repo", "linux"), true);
   assert.equal(sameNativePath("/home/rose/Repo", "/home/rose/repo", "linux"), false);
   assert.equal(sameNativePath("/mnt/c/Users/Rose/Repo", "/mnt/c/Users/Rose/Repo/", "linux"), true);
+  assert.equal(pinnedWorkspaceMarkerIsExact({
+    requestedFullPath: "C:\\Users\\Rose\\Repo\\AGENTS.md",
+    resolvedFullPath: "c:/users/rose/repo/agents.md",
+    isSymbolicLink: false,
+  }, "win32"), true, "pinned marker validation must use platform-aware native-path identity");
+  assert.equal(pinnedWorkspaceMarkerIsExact({
+    requestedFullPath: "C:\\Users\\Rose\\Repo\\AGENTS.md",
+    resolvedFullPath: "c:/users/rose/repo/agents.md",
+    isSymbolicLink: true,
+  }, "win32"), false);
+  assert.equal(pinnedWorkspaceMarkerIsExact({
+    requestedFullPath: "/home/rose/Repo/AGENTS.md",
+    resolvedFullPath: "/home/rose/repo/AGENTS.md",
+    isSymbolicLink: false,
+  }, "linux"), false);
 
   const largeSearch = await executeWorkspaceTool({
     obligation: {
@@ -500,12 +598,48 @@ try {
   assert.equal(parsedLargeSearch.truncated, true);
   assert.ok(parsedLargeSearch.returned < 120);
 
+  const incompleteSearch = await executeWorkspaceTool({
+    obligation: {
+      name: "search_text",
+      callId: "call_incomplete_search",
+      argumentsText: JSON.stringify({ query: "needle", max_results: 10 }),
+    },
+    contract: fullContract,
+    provisioned: {
+      workspaceRequest: async () => ({
+        workspaceBindingDigest: bindingDigest,
+        matches: [],
+        filesAttempted: 2,
+        filesScanned: 1,
+        bytesScanned: 64,
+        binaryFileCount: 0,
+        omittedFileCount: 1,
+        omissionCounts: {
+          readOrRevalidationFailure: 1,
+        },
+        incomplete: true,
+        truncated: true,
+        failedNativePath: failedNativePath,
+        manifestDigest: inspect.manifestDigest,
+      }),
+    },
+    stepOrdinal: 3,
+  });
+  const parsedIncompleteSearch = JSON.parse(incompleteSearch.providerOutputText);
+  assert.equal(parsedIncompleteSearch.incomplete, true);
+  assert.equal(parsedIncompleteSearch.truncated, true);
+  assert.equal(parsedIncompleteSearch.omissionCounts.readOrRevalidationFailure, 1);
+  assert.equal(parsedIncompleteSearch.omittedFileCount, 1);
+  assert.equal(JSON.stringify(parsedIncompleteSearch).includes(failedNativePath), false);
+
   console.log(JSON.stringify({
     ok: true,
     canonicalFileCount: inspect.fileCount,
     trackedAndUntrackedEnumeration: true,
     sensitiveAndSymlinkReadsDenied: true,
     literalSearch: true,
+    boundedSearchClassificationAccounting: true,
+    failedSearchCoverageVisible: true,
     requestedProfileAdvisory: true,
     harnessOwnedParentAuthority: true,
     concurrentBindingInitializationSerialized: true,

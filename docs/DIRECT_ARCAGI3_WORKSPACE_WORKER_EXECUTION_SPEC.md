@@ -126,7 +126,9 @@ child's binding or provide a filesystem root in a tool call.
 
 Repository instruction files are evidence, not automatically active worker
 prompts. A pinned repository profile identifies exact marker and policy-source
-digests. When they validate, the worker contract contains only selected,
+digests. Marker realization equality uses the same platform-aware native-path
+identity law as repository reads, while still rejecting symlinks. When the
+markers and digests validate, the worker contract contains only selected,
 role-relevant constraints, source references, and an omission ledger. Raw
 `AGENTS.md` text is not injected. A profile mismatch falls back to an explicitly
 unprofiled Git-repository posture; it never silently claims the pinned policy.
@@ -196,7 +198,11 @@ resolved beneath the exact Git top level. Private `.git` paths, sensitive-path
 classes, symlinks or symlink-mediated paths, non-files, and unstable
 realizations are excluded. Reads reject binary content. Search is literal, not
 regular-expression or shell search, and is bounded by file count, per-file
-bytes, aggregate bytes, result count, and provider-result size.
+bytes, aggregate bytes, result count, and provider-result size. Every attempted
+read consumes the aggregate budget before content classification, including
+binary and invalid UTF-8 files. Read/revalidation failures and invalid UTF-8
+omissions set both `incomplete` and `truncated` and expose only fixed aggregate
+counts; failed native paths and exception text are never projected.
 
 Every repository-tool request carries the frozen public workspace-binding
 digest, and every result must echo it exactly. Provider-facing projections are
