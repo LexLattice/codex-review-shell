@@ -1544,6 +1544,10 @@ class DirectLiveTextController {
     this.subAgentPool = options.subAgentPool && typeof options.subAgentPool.launch === "function"
       ? options.subAgentPool
       : null;
+    this.workspaceParentAuthorityIssuer =
+      typeof options.workspaceParentAuthorityIssuer === "function"
+        ? options.workspaceParentAuthorityIssuer
+        : null;
     this.externalCapabilityProfileResolver = typeof options.externalCapabilityProfileResolver === "function" ? options.externalCapabilityProfileResolver : null;
     this.providerHostedToolsStatusResolver = typeof options.providerHostedToolsStatusResolver === "function" ? options.providerHostedToolsStatusResolver : null;
     this.compiledAgentContextResolver = typeof options.compiledAgentContextResolver === "function"
@@ -4600,7 +4604,31 @@ class DirectLiveTextController {
         updates: [],
       };
     } else if (toolName === "spawn_agent") {
-      runtimeResult = this.subAgentPool.launch({
+      const workspaceMode = normalizeString(
+        args.workspace_mode || args.workspaceMode,
+        "reasoning_only",
+      );
+      let parentAuthorityPacket = null;
+      if (workspaceMode === "isolated_worktree" && this.workspaceParentAuthorityIssuer) {
+        try {
+          parentAuthorityPacket = this.workspaceParentAuthorityIssuer({
+            projectId,
+            workThreadId,
+            primaryThreadId: sessionId,
+            parentAgentId: normalizeString(session.agentThreadId || session.agentId, sessionId),
+            toolProfile: normalizeString(args.tool_profile || args.toolProfile, ""),
+            obligationId: normalizeString(obligation.obligationId, ""),
+            callId: normalizeString(obligation.callId, ""),
+          });
+        } catch (error) {
+          runtimeResult = {
+            status: "blocked",
+            blockerCode: normalizeString(error?.code, "direct_workspace_parent_authority_issuance_failed"),
+            updates: [],
+          };
+        }
+      }
+      if (!runtimeResult) runtimeResult = this.subAgentPool.launch({
         projectId,
         workThreadId,
         primaryThreadId: sessionId,
@@ -4611,8 +4639,9 @@ class DirectLiveTextController {
         model: args.model,
         reasoningEffort: args.reasoning_effort || args.reasoningEffort,
         forkTurns: args.fork_turns || args.forkTurns,
-        workspaceMode: args.workspace_mode || args.workspaceMode,
+        workspaceMode,
         toolProfile: args.tool_profile || args.toolProfile,
+        parentAuthorityPacket,
         project,
         parentModel: normalizeString(turn.model, session.model),
         parentReasoningEffort: normalizeString(turn.reasoningEffort, session.reasoningEffort),

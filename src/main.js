@@ -40,6 +40,10 @@ const {
 } = require("./main/direct/epistemic/repository-runtime");
 const { persistNativeChildProviderTurn } = require("./main/direct/epistemic/native-child-capture");
 const { runDirectWorkspaceWorker } = require("./main/direct/agents/workspace-worker-runtime");
+const {
+  WORKSPACE_WORKER_TOOLS,
+  createWorkspaceParentAuthorityPacket,
+} = require("./main/direct/agents/workspace-worker-policy-profile");
 const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectWorkThreadRegistryStore } = require("./main/direct/bridge/work-thread-registry");
@@ -3996,6 +4000,23 @@ function ensureDirectNativeAgentPool() {
   return directNativeAgentPool;
 }
 
+function issueDirectWorkspaceParentAuthority(input = {}) {
+  const scopeDigest = crypto.createHash("sha256").update(JSON.stringify([
+    normalizeString(input.projectId, ""),
+    normalizeString(input.workThreadId, ""),
+    normalizeString(input.primaryThreadId, ""),
+    normalizeString(input.parentAgentId, ""),
+    normalizeString(input.obligationId, ""),
+    normalizeString(input.callId, ""),
+  ])).digest("hex").slice(0, 24);
+  return createWorkspaceParentAuthorityPacket({
+    boundaryId: `direct_workspace_parent_${scopeDigest}`,
+    upstreamPolicyId: "direct_workspace_worker_baseline_v1",
+    upstreamAllowedTools: [...WORKSPACE_WORKER_TOOLS],
+    allowedTools: [...WORKSPACE_WORKER_TOOLS],
+  });
+}
+
 function ensureDirectLiveTextController() {
   if (directLiveTextController) return directLiveTextController;
   directLiveTextController = new DirectLiveTextController({
@@ -4010,6 +4031,7 @@ function ensureDirectLiveTextController() {
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     subAgentPool: ensureDirectNativeAgentPool(),
+    workspaceParentAuthorityIssuer: (input) => issueDirectWorkspaceParentAuthority(input),
     subAgentStatusSurfaceResolver: (context) => directSubAgentStatusSurfaceFor(context),
     externalCapabilityProfileResolver: (context) => buildDirectExternalCapabilityProfileForProject(context),
     providerHostedToolsStatusResolver: (context) => buildDirectProviderHostedToolsStatusForProject(context),

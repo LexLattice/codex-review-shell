@@ -11,6 +11,10 @@ const {
   DirectLiveTextController,
 } = require("../src/main/direct/controller/live-text-controller");
 const { DirectNativeAgentPool } = require("../src/main/direct/agents/native-agent-pool");
+const {
+  WORKSPACE_WORKER_TOOLS,
+  createWorkspaceParentAuthorityPacket,
+} = require("../src/main/direct/agents/workspace-worker-policy-profile");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 
 function completedSse(id, text) {
@@ -132,9 +136,19 @@ try {
     return poolWait(input);
   };
   const parentBodies = [];
+  const authorityIssuanceCalls = [];
   const controller = new DirectLiveTextController({
     sessionStore,
     subAgentPool: pool,
+    workspaceParentAuthorityIssuer: (input) => {
+      authorityIssuanceCalls.push(input);
+      return createWorkspaceParentAuthorityPacket({
+        boundaryId: `fixture_parent_${authorityIssuanceCalls.length}`,
+        upstreamPolicyId: "fixture_workspace_worker_baseline",
+        upstreamAllowedTools: [...WORKSPACE_WORKER_TOOLS],
+        allowedTools: [...WORKSPACE_WORKER_TOOLS],
+      });
+    },
     profileDoc: { profile: { ontology: { models: [{ id: "gpt-5.6-sol", status: "accepted" }] } } },
     authStore: {
       readStatus: () => ({ status: "authenticated", hasAccessToken: true, hasRefreshToken: false }),
@@ -309,12 +323,17 @@ try {
   );
   assert.equal(workspaceSpawnHandled, 1);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(workspaceChildCalls.length, 0, "provider-visible workspace execution requires a harness-owned authority packet");
+  assert.equal(authorityIssuanceCalls.length, 1);
+  assert.equal(authorityIssuanceCalls[0].projectId, project.id);
+  assert.equal(authorityIssuanceCalls[0].toolProfile, "implementation_worker");
+  assert.equal(workspaceChildCalls.length, 1, "the trusted controller issues the harness-owned authority packet");
   const workspaceRecord = pool.records({
     projectId: project.id,
     primaryThreadId: "direct_parent_native_agents",
   }).find((record) => record.taskName === "isolated_implementation");
-  assert.equal(workspaceRecord, undefined);
+  assert.equal(workspaceRecord.state, "completed");
+  assert.equal(workspaceRecord.workspaceMode, "isolated_worktree");
+  assert.equal(workspaceRecord.toolProfile, "implementation_worker");
   const workspaceSpawnTurn = sessionStore.readTurn(
     "direct_parent_native_agents",
     "turn_spawn_workspace",
@@ -322,7 +341,7 @@ try {
   assert.equal(workspaceSpawnTurn.state, "completed");
   assert.match(
     JSON.stringify(workspaceSpawnTurn.unresolvedObligations[0].result),
-    /direct_workspace_parent_authority_missing/,
+    /isolated_worktree/,
   );
   assert.equal(
     JSON.stringify(workspaceSpawnTurn.unresolvedObligations[0].result).includes("repoPath"),
@@ -337,7 +356,7 @@ try {
     contextHandoffMode: childCalls[0].requestShape.contextHandoffMode,
     parentContinuations: parentBodies.length,
     sameTurnNativeTransitions: 3,
-    isolatedWorkspaceToolRoute: "blocked_without_harness_authority",
+    isolatedWorkspaceToolRoute: "harness_authority_issued",
   }, null, 2));
 } finally {
   await fs.rm(rootDir, { recursive: true, force: true });
