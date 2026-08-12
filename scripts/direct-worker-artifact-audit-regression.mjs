@@ -85,12 +85,21 @@ function expectAnyCode(codes, action) {
 }
 
 const policy = buildPolicySnapshot(policyInput);
+const secondaryScope = {
+  ...scope,
+  artifactClassId: "arc-solver-review-candidate",
+};
+const secondaryPolicyInput = {
+  ...policyInput,
+  artifactClassId: secondaryScope.artifactClassId,
+};
+const secondaryPolicy = buildPolicySnapshot(secondaryPolicyInput);
 const pinnedActors = [manager, producer, auditorA, auditorB, authorityActor, parent, readOnlyParent,
   sharedProducer, sharedAuditor];
-const authorityBindings = [...pinnedActors.map((entry) => ({
+const authorityBindings = [...pinnedActors.flatMap((entry) => [policy, secondaryPolicy].map((boundPolicy) => ({
     projectId: scope.projectId,
-    artifactClassId: scope.artifactClassId,
-    policyDigest: policy.policyDigest,
+    artifactClassId: boundPolicy.artifactClassId,
+    policyDigest: boundPolicy.policyDigest,
     actorId: entry.actorId,
     roleId: entry.roleId,
     purposes: [
@@ -98,11 +107,11 @@ const authorityBindings = [...pinnedActors.map((entry) => ({
       "act",
       ...(entry === manager ? ["admin_read"] : []),
     ],
-  })), {
-    projectId: scope.projectId, artifactClassId: scope.artifactClassId,
-    policyDigest: policy.policyDigest, actorId: evidenceAdapter.actorId,
+  }))), ...[policy, secondaryPolicy].map((boundPolicy) => ({
+    projectId: scope.projectId, artifactClassId: boundPolicy.artifactClassId,
+    policyDigest: boundPolicy.policyDigest, actorId: evidenceAdapter.actorId,
     roleId: evidenceAdapter.roleId, purposes: ["register_evidence"],
-  }];
+  }))];
 const authority = createArtifactAuditPrincipalAuthority({
   authorityId: "artifact-harness",
   bindings: authorityBindings,
@@ -119,6 +128,14 @@ const principal = (entry, purpose = "act") => authority.issue({
   roleId: entry.roleId,
   purpose,
 });
+const secondaryPrincipal = (entry, purpose = "act") => authority.issue({
+  projectId: secondaryScope.projectId,
+  artifactClassId: secondaryScope.artifactClassId,
+  policyDigest: secondaryPolicy.policyDigest,
+  actorId: entry.actorId,
+  roleId: entry.roleId,
+  purpose,
+});
 const principals = {
   manager: principal(manager), declaration: principal(manager, "declare"), producer: principal(producer),
   managerAdmin: principal(manager, "admin_read"), auditorA: principal(auditorA),
@@ -126,6 +143,10 @@ const principals = {
   parent: principal(parent), sharedProducer: principal(sharedProducer), sharedAuditor: principal(sharedAuditor),
   readOnlyParent: principal(readOnlyParent),
   evidenceAdapter: principal(evidenceAdapter, "register_evidence"),
+  secondaryManager: secondaryPrincipal(manager),
+  secondaryDeclaration: secondaryPrincipal(manager, "declare"),
+  secondaryProducer: secondaryPrincipal(producer),
+  secondaryManagerAdmin: secondaryPrincipal(manager, "admin_read"),
 };
 
 let tick = Date.parse("2026-08-12T00:00:00.000Z");
@@ -175,6 +196,10 @@ try {
   const declaration = store.declareArtifactClass({ policy: policyInput, principal: principals.declaration });
   assert.equal(declaration.changed, true);
   assert.equal(store.declareArtifactClass({ policy: policyInput, principal: principals.declaration }).changed, false);
+  assert.equal(store.declareArtifactClass({
+    policy: secondaryPolicyInput,
+    principal: principals.secondaryDeclaration,
+  }).changed, true);
   expectCode("artifact_audit_principal_untrusted", () => store.declareArtifactClass({
     policy: policyInput, principal: structuredClone(principals.declaration),
   }));
@@ -236,9 +261,40 @@ try {
     receipt: sealedProbe, principal: principals.producer,
   }));
 
+  const secondaryRequested = store.requestArtifact({
+    scope: secondaryScope,
+    policyDigest: secondaryPolicy.policyDigest,
+    principal: principals.secondaryManager,
+    idempotencyKey: "secondary-request-1",
+  });
+  assert.equal(secondaryRequested.stateTo, "requested");
+  assert.equal(store.inspectHeadAdministrative({
+    scope,
+    policyDigest: policy.policyDigest,
+    principal: principals.managerAdmin,
+  }), null, "a head from another artifact class must not be relabeled into this class");
+  store.beginProduction({
+    scope: secondaryScope,
+    policyDigest: secondaryPolicy.policyDigest,
+    principal: principals.secondaryProducer,
+    idempotencyKey: "secondary-produce-r1",
+    expectedRevision: 1,
+    expectedState: "requested",
+  });
+  assert.equal(store.inspectHeadAdministrative({
+    scope: secondaryScope,
+    policyDigest: secondaryPolicy.policyDigest,
+    principal: principals.secondaryManagerAdmin,
+  }).state, "under_production");
+
   const requested = request(store, scope, "request-1");
   assert.equal(requested.stateTo, "requested");
   assert.deepEqual(request(store, scope, "request-1"), requested);
+  assert.equal(store.inspectHeadAdministrative({
+    scope: secondaryScope,
+    policyDigest: secondaryPolicy.policyDigest,
+    principal: principals.secondaryManagerAdmin,
+  }).state, "under_production", "a CAS in one artifact class cannot mutate another class head");
   expectCode("artifact_audit_principal_untrusted", () => store.beginProduction({
     scope, policyDigest: policy.policyDigest, principal: { actorId: producer.actorId, roleId: producer.roleId },
     idempotencyKey: "forged", expectedRevision: 1, expectedState: "requested",

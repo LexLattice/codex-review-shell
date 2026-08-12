@@ -29,7 +29,7 @@ const {
   verifyArtifactAuditPrincipal,
 } = require("./artifact-audit-kernel");
 
-const STORE_SCHEMA = "direct_artifact_audit_store@3";
+const STORE_SCHEMA = "direct_artifact_audit_store@4";
 const EVENT_TYPES = Object.freeze([
   "artifact_requested", "production_started", "candidate_recorded", "audit_started",
   "audit_verdict_recorded", "artifact_admitted", "artifact_rejected", "artifact_remanded",
@@ -106,7 +106,7 @@ function actorFromPrincipal(record) {
 }
 
 function scopeKey(scope) {
-  return `${scope.projectId}\u0000${scope.workThreadId}\u0000${scope.artifactId}`;
+  return `${scope.projectId}\u0000${scope.artifactClassId}\u0000${scope.workThreadId}\u0000${scope.artifactId}`;
 }
 
 function sameScalar(actual, expected, code = "artifact_audit_store_integrity_failed") {
@@ -345,7 +345,7 @@ class DirectArtifactAuditStore {
         producer_actor_id text not null default '',
         head_event_id text not null,
         updated_at text not null,
-        primary key (project_id, work_thread_id, artifact_id),
+        primary key (project_id, artifact_class_id, work_thread_id, artifact_id),
         foreign key (policy_digest) references direct_artifact_audit_policies(policy_digest)
       );
       create table direct_artifact_audit_events (
@@ -375,9 +375,10 @@ class DirectArtifactAuditStore {
         foreign key (policy_digest) references direct_artifact_audit_policies(policy_digest)
       );
       create index direct_artifact_audit_event_scope_idx
-        on direct_artifact_audit_events(project_id, work_thread_id, artifact_id, sequence);
+        on direct_artifact_audit_events(project_id, artifact_class_id, work_thread_id, artifact_id, sequence);
       create table direct_artifact_audit_audits (
         project_id text not null,
+        artifact_class_id text not null,
         work_thread_id text not null,
         artifact_id text not null,
         artifact_revision integer not null,
@@ -387,8 +388,8 @@ class DirectArtifactAuditStore {
         verdict text not null,
         event_id text not null unique,
         evidence_json text not null,
-        primary key (project_id, work_thread_id, artifact_id, artifact_revision, requirement_id),
-        unique (project_id, work_thread_id, artifact_id, artifact_revision, auditor_actor_id),
+        primary key (project_id, artifact_class_id, work_thread_id, artifact_id, artifact_revision, requirement_id),
+        unique (project_id, artifact_class_id, work_thread_id, artifact_id, artifact_revision, auditor_actor_id),
         foreign key (event_id) references direct_artifact_audit_events(event_id)
       );
       create table direct_artifact_audit_subscriptions (
@@ -670,16 +671,16 @@ class DirectArtifactAuditStore {
 
   #head(scope) {
     return this.#db.prepare(`select * from direct_artifact_audit_heads
-      where project_id = ? and work_thread_id = ? and artifact_id = ?`).get(
-        scope.projectId, scope.workThreadId, scope.artifactId,
+      where project_id = ? and artifact_class_id = ? and work_thread_id = ? and artifact_id = ?`).get(
+        scope.projectId, scope.artifactClassId, scope.workThreadId, scope.artifactId,
       ) || null;
   }
 
   #boundAuditAssignment(scope, revision) {
     const row = this.#db.prepare(`select * from direct_artifact_audit_events
-      where project_id = ? and work_thread_id = ? and artifact_id = ?
+      where project_id = ? and artifact_class_id = ? and work_thread_id = ? and artifact_id = ?
         and artifact_revision = ? and operation = 'begin_audit'`).get(
-      scope.projectId, scope.workThreadId, scope.artifactId, revision,
+      scope.projectId, scope.artifactClassId, scope.workThreadId, scope.artifactId, revision,
     );
     if (!row) fail("artifact_audit_assignment_missing");
     const event = validateEvent(parseJson(row.event_json, "audit-assignment"));
@@ -814,11 +815,11 @@ class DirectArtifactAuditStore {
       const result = this.#db.prepare(`update direct_artifact_audit_heads set
         artifact_revision = ?, state = ?, head_version = head_version + 1,
         producer_actor_id = ?, head_event_id = ?, updated_at = ?
-        where project_id = ? and work_thread_id = ? and artifact_id = ?
+        where project_id = ? and artifact_class_id = ? and work_thread_id = ? and artifact_id = ?
           and artifact_revision = ? and state = ? and head_version = ?`).run(
         revision, prepared.stateTo, prepared.producerActorId ?? head.producer_actor_id,
-        event.eventId, event.occurredAt, scope.projectId, scope.workThreadId, scope.artifactId,
-        head.artifact_revision, head.state, head.head_version,
+        event.eventId, event.occurredAt, scope.projectId, scope.artifactClassId,
+        scope.workThreadId, scope.artifactId, head.artifact_revision, head.state, head.head_version,
       );
       if (Number(result.changes) !== 1) fail("artifact_audit_head_compare_and_swap_failed");
       return event;
@@ -891,19 +892,23 @@ class DirectArtifactAuditStore {
         const evidenceRefs = this.#resolveEvidenceRefs(value.evidenceRefs,
           { ...scope, revision: head.artifact_revision }, policy.policyDigest, requirement.evidenceKinds);
         const existingRequirement = this.#db.prepare(`select 1 from direct_artifact_audit_audits
-          where project_id = ? and work_thread_id = ? and artifact_id = ?
+          where project_id = ? and artifact_class_id = ? and work_thread_id = ? and artifact_id = ?
             and artifact_revision = ? and requirement_id = ?`).get(
-          scope.projectId, scope.workThreadId, scope.artifactId, head.artifact_revision, value.requirementId,
+          scope.projectId, scope.artifactClassId, scope.workThreadId, scope.artifactId,
+          head.artifact_revision, value.requirementId,
         );
         const existingActor = this.#db.prepare(`select 1 from direct_artifact_audit_audits
-          where project_id = ? and work_thread_id = ? and artifact_id = ?
+          where project_id = ? and artifact_class_id = ? and work_thread_id = ? and artifact_id = ?
             and artifact_revision = ? and auditor_actor_id = ?`).get(
-          scope.projectId, scope.workThreadId, scope.artifactId, head.artifact_revision, actor.actorId,
+          scope.projectId, scope.artifactClassId, scope.workThreadId, scope.artifactId,
+          head.artifact_revision, actor.actorId,
         );
         if (existingRequirement || existingActor) fail("artifact_audit_duplicate_audit_identity");
         const prior = this.#db.prepare(`select requirement_id, verdict from direct_artifact_audit_audits
-          where project_id = ? and work_thread_id = ? and artifact_id = ? and artifact_revision = ?`).all(
-          scope.projectId, scope.workThreadId, scope.artifactId, head.artifact_revision,
+          where project_id = ? and artifact_class_id = ? and work_thread_id = ?
+            and artifact_id = ? and artifact_revision = ?`).all(
+          scope.projectId, scope.artifactClassId, scope.workThreadId, scope.artifactId,
+          head.artifact_revision,
         );
         const all = [...prior, { requirement_id: value.requirementId, verdict: value.verdict }];
         const complete = policy.auditRequirements.every((entry) => all.some((audit) => audit.requirement_id === entry.requirementId));
@@ -914,10 +919,10 @@ class DirectArtifactAuditStore {
           stateTo, evidenceRefs, audit: { requirementId: value.requirementId, verdict: value.verdict },
           beforeHeadCas: (event) => {
             this.#db.prepare(`insert into direct_artifact_audit_audits(
-              project_id, work_thread_id, artifact_id, artifact_revision, requirement_id,
+              project_id, artifact_class_id, work_thread_id, artifact_id, artifact_revision, requirement_id,
               auditor_actor_id, auditor_role_id, verdict, event_id, evidence_json
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-              scope.projectId, scope.workThreadId, scope.artifactId, head.artifact_revision,
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+              scope.projectId, scope.artifactClassId, scope.workThreadId, scope.artifactId, head.artifact_revision,
               value.requirementId, actor.actorId, actor.roleId, value.verdict, event.eventId,
               canonicalJson(evidenceRefs),
             );
@@ -1104,8 +1109,8 @@ class DirectArtifactAuditStore {
     const counts = {};
     for (const table of ["policies", "evidence", "events", "audits", "heads", "subscriptions"]) {
       const actual = table === "audits" ? "direct_artifact_audit_audits" : `direct_artifact_audit_${table}`;
-      counts[table] = Number(this.#db.prepare(`select count(*) as count from ${actual} where project_id = ?`)
-        .get(projectId).count);
+      counts[table] = Number(this.#db.prepare(`select count(*) as count from ${actual}
+        where project_id = ? and artifact_class_id = ?`).get(projectId, artifactClassId).count);
     }
     return deepFreeze({
       schema: "direct_artifact_audit_diagnostics@1", storeId: this.#storeId,
@@ -1325,10 +1330,13 @@ class DirectArtifactAuditStore {
   }
 
   #verifyHeads(reconstructed) {
-    const rows = this.#db.prepare("select * from direct_artifact_audit_heads order by project_id, work_thread_id, artifact_id").all();
+    const rows = this.#db.prepare(`select * from direct_artifact_audit_heads
+      order by project_id, artifact_class_id, work_thread_id, artifact_id`).all();
     if (rows.length !== reconstructed.size) fail("artifact_audit_head_integrity_failed");
     for (const row of rows) {
-      const expected = reconstructed.get(`${row.project_id}\u0000${row.work_thread_id}\u0000${row.artifact_id}`);
+      const expected = reconstructed.get(
+        `${row.project_id}\u0000${row.artifact_class_id}\u0000${row.work_thread_id}\u0000${row.artifact_id}`,
+      );
       if (!expected || row.artifact_class_id !== expected.scope.artifactClassId ||
           row.policy_digest !== expected.policyDigest || Number(row.artifact_revision) !== expected.revision ||
           row.state !== expected.state || Number(row.head_version) !== expected.headVersion ||
@@ -1340,12 +1348,13 @@ class DirectArtifactAuditStore {
   #verifyAudits(reconstructed) {
     const expected = [...reconstructed.entries()].flatMap(([revisionKey, audits]) => audits.map((audit) => ({ revisionKey, ...audit })));
     const rows = this.#db.prepare(`select * from direct_artifact_audit_audits
-      order by project_id, work_thread_id, artifact_id, artifact_revision, requirement_id`).all();
+      order by project_id, artifact_class_id, work_thread_id, artifact_id,
+        artifact_revision, requirement_id`).all();
     if (rows.length !== expected.length) fail("artifact_audit_audit_integrity_failed");
     const byEvent = new Map(expected.map((entry) => [entry.eventId, entry]));
     for (const row of rows) {
       const entry = byEvent.get(row.event_id);
-      const revisionKey = `${row.project_id}\u0000${row.work_thread_id}\u0000${row.artifact_id}\u0000${row.artifact_revision}`;
+      const revisionKey = `${row.project_id}\u0000${row.artifact_class_id}\u0000${row.work_thread_id}\u0000${row.artifact_id}\u0000${row.artifact_revision}`;
       if (!entry || entry.revisionKey !== revisionKey || row.requirement_id !== entry.requirementId ||
           row.auditor_actor_id !== entry.actor.actorId || row.auditor_role_id !== entry.actor.roleId ||
           row.verdict !== entry.verdict || row.evidence_json !== canonicalJson(entry.evidenceRefs)) {
