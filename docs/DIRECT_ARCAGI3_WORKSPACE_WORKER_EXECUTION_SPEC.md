@@ -1,6 +1,6 @@
 # Direct ArcAGI3 workspace-worker execution (EXEC2)
 
-Status: implemented repository-perception and inherited-constitution slice
+Status: implemented provider-visible isolated-worktree execution slice
 
 ## Outcome
 
@@ -55,12 +55,27 @@ The packet is immutably branded inside the harness process and requires an
 explicit boundary id, upstream policy id, and canonical upstream tool set. It
 binds that policy by digest and cannot be reconstructed from provider JSON or
 widened by `tool_profile`; omission of the upstream set never defaults to all
-tools. The current live launcher does not yet project its
-wider work-thread boundary into such a packet, so provider-visible
-`isolated_worktree` spawning is unavailable there. Direct compilation without
-the packet grants zero tools and records a typed parent-boundary omission. The
-acceptance fixture injects a clearly identified harness-owned witness; it is not
-a production authority source.
+tools.
+
+The live launcher obtains that packet through a separate process-owned
+delegation-policy registry, not from provider arguments and not from the set of
+tools declared on the current parent turn. Each admitted registry source is
+keyed by an exact project/work-thread pair and carries explicit source and
+policy revisions, validity times, allowed worker profiles, canonical tools, and
+negative authority flags. Its source digest and the resulting short-lived
+policy digest are bound into the launch, worker contract, execution projection,
+and parent status evidence. Missing, stale, wrong-scope, reconstructed, or
+profile-widening policies block before pool launch. Direct compilation without
+a packet still grants zero tools and records a typed parent-boundary omission.
+
+Main starts with an empty registry. A deployment that wants provider-visible
+workspace delegation must seed the process-owned registry through
+`CODEX_DIRECT_WORKSPACE_WORKER_DELEGATION_SOURCES`, a JSON array of explicit
+`direct_workspace_worker_delegation_source@1` inputs. Selecting the Direct
+implementation lane alone grants nothing. Invalid source configuration is
+rejected and leaves the registry empty. The headless acceptance fixture seeds
+the same registry type directly as a harness-owned source; no provider payload
+can mint or serialize its in-process capability brand.
 
 The first-slice constitutions are:
 
@@ -99,6 +114,8 @@ epistemic input
 
 authority
   requested advisory tool profile
+  harness delegation-source id/digest
+  short-lived delegation-policy id/digest
   parent-authority boundary digest
   pinned repository-policy profile/digest
   substrate-capability profile/digest
@@ -266,9 +283,18 @@ transcript.
 
 ## Acceptance witness
 
-Run `npm run direct:arcagi3-workspace-workers`. This aggregate command executes
-both the generic policy/repository regression and the ArcAGI3 end-to-end runtime
-witness after their shared syntax gate.
+Run `npm run direct:provider-workspace-workers`. This non-recursive aggregate
+executes the provider-policy negatives, the real headless parent-provider loop,
+and `direct:arcagi3-workspace-workers` (the generic policy/repository regression
+plus ArcAGI3 end-to-end runtime witness after their shared syntax gate).
+
+The headless witness creates a disposable committed Node repository, seeds one
+exact project/work-thread delegation source, accepts a root-provider
+`spawn_agent` call, provisions the resident isolated-worktree runner, executes
+bounded read/patch/test tools, persists typed child capture, returns it through
+`wait_agent`, and completes the parent provider continuation. It also verifies
+that parent/provider/status projections contain neither native roots nor
+private binding fields and that the source checkout stays unchanged.
 
 The EXEC1 regression creates a temporary local clone derived from the committed
 ArcAGI3 repository, then launches two workspace workers from the same pinned

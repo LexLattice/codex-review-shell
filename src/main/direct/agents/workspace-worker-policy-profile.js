@@ -7,6 +7,7 @@ const DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA = "direct_workspace_worker_policy@1"
 const DIRECT_WORKSPACE_WORKER_POLICY_COMPILATION_SCHEMA = "direct_workspace_worker_policy_compilation@1";
 const DIRECT_WORKSPACE_PARENT_AUTHORITY_PACKET_SCHEMA = "direct_workspace_parent_authority_packet@1";
 const DIRECT_WORKSPACE_UPSTREAM_TOOL_POLICY_SCHEMA = "direct_workspace_upstream_tool_policy@1";
+const DIRECT_WORKSPACE_WORKER_DELEGATION_POLICY_REF_SCHEMA = "direct_workspace_worker_delegation_policy_ref@1";
 const WORKSPACE_PARENT_AUTHORITY_PROVENANCE = "harness_owned_upstream_authority_packet";
 const WORKSPACE_UPSTREAM_TOOL_POLICY_PROVENANCE = "harness_owned_upstream_tool_policy";
 const harnessOwnedParentAuthorityPackets = new WeakSet();
@@ -111,6 +112,37 @@ function createWorkspaceParentAuthorityPacket(input = {}) {
   };
   const requestedAllowedTools = sortedToolSet(input.allowedTools, upstreamToolPolicy.allowedTools);
   const forbiddenTools = sortedToolSet(input.forbiddenTools, []);
+  const delegationPolicyRef = isPlainObject(input.delegationPolicyRef)
+    ? {
+        schema: normalizeString(input.delegationPolicyRef.schema, ""),
+        policyId: normalizeString(input.delegationPolicyRef.policyId, ""),
+        policyRevision: Number(input.delegationPolicyRef.policyRevision || 0),
+        policyDigest: normalizeString(input.delegationPolicyRef.policyDigest, ""),
+        sourceId: normalizeString(input.delegationPolicyRef.sourceId, ""),
+        sourceDigest: normalizeString(input.delegationPolicyRef.sourceDigest, ""),
+        issuedAt: normalizeString(input.delegationPolicyRef.issuedAt, ""),
+        expiresAt: normalizeString(input.delegationPolicyRef.expiresAt, ""),
+        projectId: normalizeString(input.delegationPolicyRef.projectId, ""),
+        workThreadId: normalizeString(input.delegationPolicyRef.workThreadId, ""),
+        roleLane: normalizeString(input.delegationPolicyRef.roleLane, ""),
+      }
+    : null;
+  if (delegationPolicyRef && (
+    delegationPolicyRef.schema !== DIRECT_WORKSPACE_WORKER_DELEGATION_POLICY_REF_SCHEMA ||
+    !delegationPolicyRef.policyId ||
+    !Number.isInteger(delegationPolicyRef.policyRevision) || delegationPolicyRef.policyRevision < 1 ||
+    !/^sha256:[a-f0-9]{64}$/i.test(delegationPolicyRef.policyDigest) ||
+    !delegationPolicyRef.sourceId ||
+    !/^sha256:[a-f0-9]{64}$/i.test(delegationPolicyRef.sourceDigest) ||
+    !Number.isFinite(Date.parse(delegationPolicyRef.issuedAt)) ||
+    !Number.isFinite(Date.parse(delegationPolicyRef.expiresAt)) ||
+    Date.parse(delegationPolicyRef.expiresAt) <= Date.parse(delegationPolicyRef.issuedAt) ||
+    !delegationPolicyRef.projectId ||
+    !delegationPolicyRef.workThreadId ||
+    delegationPolicyRef.roleLane !== "implementation_worker"
+  )) {
+    throw workspaceAuthorityError("Workspace parent authority has an invalid delegation-policy reference.");
+  }
   const boundaryBase = {
     schema: DIRECT_WORKSPACE_PARENT_AUTHORITY_PACKET_SCHEMA,
     boundaryId,
@@ -121,6 +153,7 @@ function createWorkspaceParentAuthorityPacket(input = {}) {
     forbiddenTools,
     authorityProvenance: WORKSPACE_PARENT_AUTHORITY_PROVENANCE,
     upstreamToolPolicy,
+    ...(delegationPolicyRef ? { delegationPolicyRef } : {}),
   };
   const packet = deepFreeze({
     ...boundaryBase,
@@ -186,7 +219,38 @@ function validateWorkspaceParentAuthorityPacket(value) {
     forbiddenTools,
     authorityProvenance: WORKSPACE_PARENT_AUTHORITY_PROVENANCE,
     upstreamToolPolicy: { ...upstreamPolicyBase, policyDigest: expectedPolicyDigest },
+    ...(value.delegationPolicyRef ? {
+      delegationPolicyRef: {
+        schema: normalizeString(value.delegationPolicyRef.schema, ""),
+        policyId: normalizeString(value.delegationPolicyRef.policyId, ""),
+        policyRevision: Number(value.delegationPolicyRef.policyRevision || 0),
+        policyDigest: normalizeString(value.delegationPolicyRef.policyDigest, ""),
+        sourceId: normalizeString(value.delegationPolicyRef.sourceId, ""),
+        sourceDigest: normalizeString(value.delegationPolicyRef.sourceDigest, ""),
+        issuedAt: normalizeString(value.delegationPolicyRef.issuedAt, ""),
+        expiresAt: normalizeString(value.delegationPolicyRef.expiresAt, ""),
+        projectId: normalizeString(value.delegationPolicyRef.projectId, ""),
+        workThreadId: normalizeString(value.delegationPolicyRef.workThreadId, ""),
+        roleLane: normalizeString(value.delegationPolicyRef.roleLane, ""),
+      },
+    } : {}),
   };
+  if (boundaryBase.delegationPolicyRef && (
+    boundaryBase.delegationPolicyRef.schema !== DIRECT_WORKSPACE_WORKER_DELEGATION_POLICY_REF_SCHEMA ||
+    !boundaryBase.delegationPolicyRef.policyId ||
+    !Number.isInteger(boundaryBase.delegationPolicyRef.policyRevision) || boundaryBase.delegationPolicyRef.policyRevision < 1 ||
+    !/^sha256:[a-f0-9]{64}$/i.test(boundaryBase.delegationPolicyRef.policyDigest) ||
+    !boundaryBase.delegationPolicyRef.sourceId ||
+    !/^sha256:[a-f0-9]{64}$/i.test(boundaryBase.delegationPolicyRef.sourceDigest) ||
+    !Number.isFinite(Date.parse(boundaryBase.delegationPolicyRef.issuedAt)) ||
+    !Number.isFinite(Date.parse(boundaryBase.delegationPolicyRef.expiresAt)) ||
+    Date.parse(boundaryBase.delegationPolicyRef.expiresAt) <= Date.parse(boundaryBase.delegationPolicyRef.issuedAt) ||
+    !boundaryBase.delegationPolicyRef.projectId ||
+    !boundaryBase.delegationPolicyRef.workThreadId ||
+    boundaryBase.delegationPolicyRef.roleLane !== "implementation_worker"
+  )) {
+    throw workspaceAuthorityError("Workspace parent authority has an invalid delegation-policy reference.");
+  }
   const expectedBoundaryDigest = digestFor("direct-workspace-parent-authority-packet@1", boundaryBase);
   if (normalizeString(value.boundaryDigest, "") !== expectedBoundaryDigest) {
     throw workspaceAuthorityError("Workspace parent authority packet digest is invalid.");
@@ -202,6 +266,7 @@ function parentAuthorityBoundaryFromPacket(value) {
     allowedTools: [...packet.allowedTools],
     forbiddenTools: [...packet.forbiddenTools],
     authorityProvenance: packet.authorityProvenance,
+    delegationPolicyRef: packet.delegationPolicyRef ? { ...packet.delegationPolicyRef } : null,
   });
 }
 
@@ -475,6 +540,7 @@ function compileWorkspaceWorkerPolicy(input = {}) {
 module.exports = {
   DIRECT_WORKSPACE_PARENT_AUTHORITY_PACKET_SCHEMA,
   DIRECT_WORKSPACE_UPSTREAM_TOOL_POLICY_SCHEMA,
+  DIRECT_WORKSPACE_WORKER_DELEGATION_POLICY_REF_SCHEMA,
   DIRECT_WORKSPACE_WORKER_POLICY_COMPILATION_SCHEMA,
   DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA,
   REPOSITORY_READ_TOOLS,

@@ -575,6 +575,9 @@ function executionProjection(contract, results = [], status = "running", pending
     contractDigest: contract.contractDigest,
     workspaceMode: contract.workspaceMode,
     toolProfile: contract.authority.toolProfile,
+    workspaceWorkerDelegationPolicyRef: contract.workspaceWorkerDelegationPolicyRef
+      ? { ...contract.workspaceWorkerDelegationPolicyRef }
+      : null,
     declaredTools: [...contract.authority.declaredTools],
     binding: { ...contract.binding },
     contextAdmission: { ...contract.contextAdmission },

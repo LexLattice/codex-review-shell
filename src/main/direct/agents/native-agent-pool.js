@@ -339,6 +339,10 @@ class DirectNativeAgentPool extends EventEmitter {
     if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && this.recoverySnapshot().status !== "clean") {
       return this.launchResult(null, "blocked", "direct_workspace_worker_restart_reconciliation_required");
     }
+    const projectId = normalizeString(input.projectId, "project_direct_agents");
+    const primaryThreadId = normalizeString(input.primaryThreadId || input.parentThreadId, "primary_direct_agent");
+    const workThreadId = normalizeString(input.workThreadId, "work_thread_direct_agents");
+    const parentAgentId = normalizeString(input.parentAgentId, primaryThreadId);
     let parentAuthorityPacket = null;
     if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE) {
       if (!isPlainObject(input.parentAuthorityPacket)) {
@@ -349,13 +353,23 @@ class DirectNativeAgentPool extends EventEmitter {
       } catch (error) {
         return this.launchResult(null, "blocked", normalizeString(error?.code, "direct_workspace_parent_authority_invalid"));
       }
+      const delegationRef = parentAuthorityPacket.delegationPolicyRef;
+      if (delegationRef && (
+        delegationRef.projectId !== projectId ||
+        delegationRef.workThreadId !== workThreadId
+      )) {
+        return this.launchResult(null, "blocked", "direct_workspace_worker_delegation_policy_scope_mismatch");
+      }
+      const nowMs = Number(this.now());
+      if (delegationRef && (
+        nowMs < Date.parse(delegationRef.issuedAt) ||
+        nowMs >= Date.parse(delegationRef.expiresAt)
+      )) {
+        return this.launchResult(null, "blocked", "direct_workspace_worker_delegation_policy_stale");
+      }
     }
     const task = normalizeString(input.message || input.prompt || input.task, "");
     if (!task) return this.launchResult(null, "blocked", "missing_spawn_prompt");
-    const projectId = normalizeString(input.projectId, "project_direct_agents");
-    const primaryThreadId = normalizeString(input.primaryThreadId || input.parentThreadId, "primary_direct_agent");
-    const workThreadId = normalizeString(input.workThreadId, "work_thread_direct_agents");
-    const parentAgentId = normalizeString(input.parentAgentId, primaryThreadId);
     const taskName = safeTaskName(input.taskName || input.task_name || `agent_${this.sequence + 1}`);
     const taskKey = `${scopeKey(projectId, primaryThreadId)}::${taskName}`;
     const existingId = this.taskIndex.get(taskKey);
@@ -401,11 +415,14 @@ class DirectNativeAgentPool extends EventEmitter {
       workspaceMode,
       toolProfile,
       workspaceExecution: workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
-        ? {
+          ? {
             schema: "direct_workspace_worker_execution@1",
             status: "provisioning_pending",
             workspaceMode,
             toolProfile,
+            workspaceWorkerDelegationPolicyRef: parentAuthorityPacket?.delegationPolicyRef
+              ? { ...parentAuthorityPacket.delegationPolicyRef }
+              : null,
             rawWorkspacePathIncluded: false,
           }
         : null,

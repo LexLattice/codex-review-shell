@@ -231,6 +231,22 @@ function compileWorkspaceWorkerContract(input = {}) {
   const parentAuthority = input.parentAuthorityPacket
     ? parentAuthorityBoundaryFromPacket(input.parentAuthorityPacket)
     : undefined;
+  if (parentAuthority?.delegationPolicyRef && (
+    parentAuthority.delegationPolicyRef.projectId !== projectId ||
+    parentAuthority.delegationPolicyRef.workThreadId !== normalizeString(input.workThreadId, "work_thread_direct_agents")
+  )) {
+    const error = new Error("Workspace delegation policy does not match the contract project/work-thread scope.");
+    error.code = "direct_workspace_worker_delegation_policy_scope_mismatch";
+    throw error;
+  }
+  if (parentAuthority?.delegationPolicyRef && (
+    Date.now() < Date.parse(parentAuthority.delegationPolicyRef.issuedAt) ||
+    Date.now() >= Date.parse(parentAuthority.delegationPolicyRef.expiresAt)
+  )) {
+    const error = new Error("Workspace delegation policy expired before contract compilation.");
+    error.code = "direct_workspace_worker_delegation_policy_stale";
+    throw error;
+  }
   const compiledPolicy = compileWorkspaceWorkerPolicy({
     requestedProfileId: toolProfile,
     parentAuthority,
@@ -274,6 +290,9 @@ function compileWorkspaceWorkerContract(input = {}) {
     childAgentId,
     role: normalizeString(input.role, "sub_agent_worker"),
     workspaceMode,
+    workspaceWorkerDelegationPolicyRef: parentAuthority?.delegationPolicyRef
+      ? { ...parentAuthority.delegationPolicyRef }
+      : null,
     binding,
     contextAdmission: context.record,
     repositoryPolicy: compiledPolicy.repositoryPolicy,
@@ -392,6 +411,17 @@ function assertWorkspaceWorkerContractSafe(contract = {}) {
   }
   if (contract.binding?.rawWorkspacePathIncluded !== false) {
     throw new Error("direct_workspace_worker_binding_raw_path_leak");
+  }
+  const delegationRef = contract.workspaceWorkerDelegationPolicyRef;
+  if (delegationRef && (
+    delegationRef.schema !== "direct_workspace_worker_delegation_policy_ref@1" ||
+    !/^sha256:[a-f0-9]{64}$/i.test(normalizeString(delegationRef.policyDigest, "")) ||
+    !/^sha256:[a-f0-9]{64}$/i.test(normalizeString(delegationRef.sourceDigest, "")) ||
+    delegationRef.projectId !== contract.projectId ||
+    delegationRef.workThreadId !== contract.workThreadId ||
+    delegationRef.roleLane !== "implementation_worker"
+  )) {
+    throw new Error("direct_workspace_worker_delegation_policy_ref_unsafe");
   }
   if (Object.prototype.hasOwnProperty.call(contract.binding || {}, "worktreePath")) {
     throw new Error("direct_workspace_worker_binding_private_path_present");

@@ -199,6 +199,13 @@ try {
   const project = {
     id: "project_native_agents",
     workThreadId: "work_thread_native_agents",
+    surfaceBinding: {
+      codex: {
+        runtimeMode: "direct-experimental",
+        directTransport: "live-text",
+        directTier: "implementation-lane",
+      },
+    },
   };
 
   sessionStore.createTurn("direct_parent_native_agents", {
@@ -341,7 +348,7 @@ try {
   assert.equal(workspaceSpawnTurn.state, "completed");
   assert.match(
     JSON.stringify(workspaceSpawnTurn.unresolvedObligations[0].result),
-    /isolated_worktree/,
+    /direct_workspace_worker_delegation_policy_missing/,
   );
   assert.equal(
     JSON.stringify(workspaceSpawnTurn.unresolvedObligations[0].result).includes("repoPath"),

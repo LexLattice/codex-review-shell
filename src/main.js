@@ -45,9 +45,8 @@ const {
   runDirectWorkspaceWorker,
 } = require("./main/direct/agents/workspace-worker-runtime");
 const {
-  WORKSPACE_WORKER_TOOLS,
-  createWorkspaceParentAuthorityPacket,
-} = require("./main/direct/agents/workspace-worker-policy-profile");
+  WorkspaceWorkerDelegationPolicyRegistry,
+} = require("./main/direct/agents/workspace-worker-delegation-policy");
 const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectWorkThreadRegistryStore } = require("./main/direct/bridge/work-thread-registry");
@@ -502,6 +501,7 @@ let workspaceWorkerShutdownReceipt = null;
 let applicationQuitAfterOrderedShutdown = false;
 let degradedWorkspaceShutdownStarted = false;
 const windowsAllowedToCloseAfterOrderedShutdown = new WeakSet();
+let directWorkspaceWorkerDelegationPolicyRegistry = null;
 let directProviderMetadataAdapter = null;
 let directActivationStore = null;
 let worldManagerSemanticCoordinator = null;
@@ -4209,21 +4209,49 @@ function ensureDirectNativeAgentPool() {
   return directNativeAgentPool;
 }
 
-function issueDirectWorkspaceParentAuthority(input = {}) {
-  const scopeDigest = crypto.createHash("sha256").update(JSON.stringify([
-    normalizeString(input.projectId, ""),
-    normalizeString(input.workThreadId, ""),
-    normalizeString(input.primaryThreadId, ""),
-    normalizeString(input.parentAgentId, ""),
-    normalizeString(input.obligationId, ""),
-    normalizeString(input.callId, ""),
-  ])).digest("hex").slice(0, 24);
-  return createWorkspaceParentAuthorityPacket({
-    boundaryId: `direct_workspace_parent_${scopeDigest}`,
-    upstreamPolicyId: "direct_workspace_worker_baseline_v1",
-    upstreamAllowedTools: [...WORKSPACE_WORKER_TOOLS],
-    allowedTools: [...WORKSPACE_WORKER_TOOLS],
-  });
+function ensureDirectWorkspaceWorkerDelegationPolicyRegistry() {
+  if (directWorkspaceWorkerDelegationPolicyRegistry) {
+    return directWorkspaceWorkerDelegationPolicyRegistry;
+  }
+  const serializedSources = normalizeString(
+    process.env.CODEX_DIRECT_WORKSPACE_WORKER_DELEGATION_SOURCES,
+    "",
+  );
+  let sources = [];
+  if (serializedSources) {
+    try {
+      const parsed = JSON.parse(serializedSources);
+      sources = Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      console.warn("Direct workspace-worker delegation source configuration was rejected:", error.message);
+    }
+  }
+  try {
+    directWorkspaceWorkerDelegationPolicyRegistry = new WorkspaceWorkerDelegationPolicyRegistry({ sources });
+  } catch (error) {
+    console.warn("Direct workspace-worker delegation sources failed admission:", error.message);
+    directWorkspaceWorkerDelegationPolicyRegistry = new WorkspaceWorkerDelegationPolicyRegistry({ sources: [] });
+  }
+  return directWorkspaceWorkerDelegationPolicyRegistry;
+}
+
+function resolveDirectWorkspaceWorkerDelegationPolicy(input = {}) {
+  const project = input.project && typeof input.project === "object" ? input.project : {};
+  const projectId = normalizeString(input.projectId, "");
+  const boundProjectId = normalizeString(project.id || project.projectId || project.name, "");
+  const workThreadId = normalizeString(input.workThreadId, "");
+  const binding = normalizeCodexBinding(project?.surfaceBinding?.codex || {});
+  if (
+    !projectId || projectId !== boundProjectId || !workThreadId ||
+    binding.runtimeMode !== "direct-experimental" ||
+    binding.directTransport !== "live-text" ||
+    binding.directTier !== "implementation-lane"
+  ) {
+    const error = new Error("Workspace worker delegation is unavailable outside the exact Direct implementation project binding.");
+    error.code = "direct_workspace_worker_delegation_policy_scope_invalid";
+    throw error;
+  }
+  return ensureDirectWorkspaceWorkerDelegationPolicyRegistry().resolve(input);
 }
 
 function ensureDirectLiveTextController() {
@@ -4240,7 +4268,8 @@ function ensureDirectLiveTextController() {
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     subAgentPool: ensureDirectNativeAgentPool(),
-    workspaceParentAuthorityIssuer: (input) => issueDirectWorkspaceParentAuthority(input),
+    workspaceWorkerDelegationPolicyResolver: (context) =>
+      resolveDirectWorkspaceWorkerDelegationPolicy(context),
     subAgentStatusSurfaceResolver: (context) => directSubAgentStatusSurfaceFor(context),
     externalCapabilityProfileResolver: (context) => buildDirectExternalCapabilityProfileForProject(context),
     providerHostedToolsStatusResolver: (context) => buildDirectProviderHostedToolsStatusForProject(context),
