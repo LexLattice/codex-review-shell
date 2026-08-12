@@ -52,7 +52,18 @@ function assertSafeLiveActivityProjection(projection = {}) {
     "windowspath",
     "contextbody",
   ]);
+  const absolutePathShaped = (value) => {
+    const candidate = String(value || "");
+    return /(?:^|[\s"'`(=])\/(?!\/)[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+/.test(candidate) ||
+      /(?:^|[\s"'`(=])[A-Za-z]:[\\/][^\s"']+/.test(candidate) ||
+      /(?:^|[\s"'`(=])\\\\[^\\\s]+\\[^\s"']+/.test(candidate) ||
+      /file:\/\//i.test(candidate);
+  };
   const inspect = (value) => {
+    if (typeof value === "string") {
+      if (absolutePathShaped(value)) fail("direct_live_activity_projection_path_value_present");
+      return;
+    }
     if (Array.isArray(value)) {
       for (const entry of value) inspect(entry);
       return;

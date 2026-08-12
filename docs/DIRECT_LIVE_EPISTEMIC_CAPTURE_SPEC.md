@@ -79,24 +79,38 @@ It contains no partial prose, raw tool arguments, native paths, provider frames,
 or context body. It is never model context, never enables the composer, never
 grants control or canonical standing, and never sends a worker message.
 
-## Remaining root wiring seams
+## Root live boundaries
 
-The integration owner must wire without changing this contract:
+`src/main.js` opens a native-child writer before each reasoning-only child
+provider invocation. Its strict callback is the transport commit boundary and
+one aggregate result is finalized once; the former terminal compatibility
+append is not invoked on this path.
 
-1. In `src/main.js`, open a native-child capture writer before invoking the
-   provider, pass `writer.strictCommitCallback()` as
-   `onNormalizedEventsCommitted`, and call `writer.finalize(result)` after the
-   provider returns. The compatibility `persistNativeChildProviderTurn` remains
-   valid for terminal-only callers but is not live-prefix durability.
-2. Primary Direct and continuation controllers must give each provider attempt
-   an unambiguous capture identity before adopting the strict hook; they must not
-   append the same terminal batch a second time.
-3. Native-agent pool status may copy only the safe live-activity cursor/count
-   fields. It must not receive raw events or treat a progress update as a child
-   message or parent-context admission.
-4. Renderer IPC may send a scoped invalidation cursor and refetch this read
-   model. It must not expose under-construction prose or use the projection for
-   composer/context authority.
+For an isolated workspace child, the runtime calls a harness-owned capture
+adapter factory immediately after the immutable contract and binding exist.
+The contract identity is part of the stable pre-provider attempt identity, so a
+new workspace realization cannot collide with an earlier child turn.
+Each provider step maps its local normalized offsets into the aggregate turn's
+global offsets. The step prefix is reconciled before tool execution, each safe
+typed tool result is appended immediately after execution, and exactly one
+aggregate turn is finalized. A failed strict append poisons that adapter: later
+terminal evidence cannot silently recapture or relabel the partial turn.
+Cancellation finalizes the observed aborted prefix when transport reconciliation
+is available; a strict capture failure remains incomplete with durable gap refs.
+
+The native-agent pool accepts only
+`direct_native_agent_epistemic_progress@1`: capture state and identity plus a
+validated `direct_live_activity_projection@1`. Updating it mutates only the
+passive pool record. It does not emit a pool change, resolve a waiter, create a
+child result/message, admit context, or start transcript promotion. Existing
+list/inspect and terminal wait packets expose the passive projection; no new
+renderer IPC is required for headless orchestration.
+
+Primary Direct and continuation controllers remain deliberately deferred. The
+current primary routes do not yet share one unambiguous pre-response attempt
+identity with their existing terminal persistence paths. They must adopt this
+adapter only in a change that simultaneously removes the corresponding
+terminal append, so O cannot be duplicated.
 
 ## Verification
 
@@ -105,3 +119,10 @@ durability, stable pre-response child identity, deterministic cursor advance,
 typed unclassified omissions, terminal-prefix reconciliation, durable gap
 receipts, restart catch-up, projection raw-exposure safety, and zero automatic
 Luna invocations.
+
+`scripts/direct-live-child-observation-regression.mjs` proves native and
+workspace root wiring headlessly: durable O and projected E while execution is
+paused mid-stream and between tool/provider steps, global workspace offsets,
+immediate typed tool-result capture, restart catch-up, exact terminal replay,
+passive pool inspection without waiter wakeup, and zero Luna invocation,
+bottom-up messages, or child-transcript promotion.

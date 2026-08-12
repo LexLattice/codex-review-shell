@@ -655,6 +655,7 @@ function resultFor(input = {}) {
     tokenUsage: isPlainObject(input.tokenUsage) ? input.tokenUsage : {},
     workspaceExecution: input.workspaceExecution || null,
     captureResult: input.captureResult || null,
+    epistemicCapture: input.epistemicCapture || null,
     providerRequestStarted: input.providerRequestStarted === true,
     providerCompleted: input.providerCompleted === true,
     workspaceMutationStarted: input.workspaceExecution?.workspaceMutationStarted === true,
@@ -736,6 +737,7 @@ async function runDirectWorkspaceWorker(input = {}) {
   });
   let provisioned;
   let contract;
+  let captureAdapter = null;
   let admittedContextMessages = [];
   try {
     assertCurrentDelegationLease(input);
@@ -757,6 +759,12 @@ async function runDirectWorkspaceWorker(input = {}) {
     });
     contract = compiled.contract;
     admittedContextMessages = compiled.admittedContextMessages;
+    if (typeof input.captureAdapterFactory === "function") {
+      captureAdapter = input.captureAdapterFactory({
+        contract,
+        admittedContextMessages,
+      });
+    }
   } catch (error) {
     try {
       await provisioned?.release?.();
@@ -782,12 +790,25 @@ async function runDirectWorkspaceWorker(input = {}) {
     let latestProviderResult = null;
     let activeOperation = "provider";
     let activeToolMutationOutcome = null;
+    let providerRequestStarted = false;
+    const finish = (resultInput) => {
+      let epistemicCapture = captureAdapter?.epistemicCapture?.() || null;
+      if (captureAdapter && resultInput.captureResult) {
+        try {
+          captureAdapter.finalize(resultInput.captureResult);
+        } catch (error) {
+          captureAdapter.markFailed?.(error);
+        }
+        epistemicCapture = captureAdapter.epistemicCapture();
+      }
+      return workerResult({ ...resultInput, epistemicCapture });
+    };
     try {
       for (let stepOrdinal = 1; stepOrdinal <= contract.maxToolSteps + 1; stepOrdinal += 1) {
         if (input.signal?.aborted) {
           const execution = executionProjection(contract, results, "cancelled");
           const latestMutationOutcome = execution.latestMutationOutcome;
-          return workerResult({
+          return finish({
             status: "cancelled",
             blockerCode: "direct_workspace_worker_aborted",
             tokenUsage: aggregateTokenUsage(allEvents),
@@ -799,7 +820,7 @@ async function runDirectWorkspaceWorker(input = {}) {
               workspaceWorkerToolResults: results,
               workspaceWorkerContract: contract,
             },
-            providerRequestStarted: allEvents.length > 0,
+            providerRequestStarted,
             cancellationAcknowledged: true,
             backendQuiesced: true,
             cancellationReceipt: {
@@ -820,16 +841,23 @@ async function runDirectWorkspaceWorker(input = {}) {
         });
         activeOperation = "provider";
         activeToolMutationOutcome = null;
+        const globalNormalizedOffset = allEvents.length;
+        providerRequestStarted = true;
         latestProviderResult = await input.providerRequestRunner({
           requestBody,
           signal: input.signal,
           contract,
           stepOrdinal,
+          globalNormalizedOffset,
+          onNormalizedEventsCommitted: captureAdapter?.strictCommitCallback({
+            globalOffset: globalNormalizedOffset,
+            renumberSequences: true,
+          }),
         });
         if (input.signal?.aborted) {
           const execution = executionProjection(contract, results, "cancelled");
           const latestMutationOutcome = execution.latestMutationOutcome;
-          return workerResult({
+          return finish({
             status: "cancelled",
             blockerCode: "direct_workspace_worker_aborted",
             responseId,
@@ -854,14 +882,15 @@ async function runDirectWorkspaceWorker(input = {}) {
             },
           });
         }
-        const stepEvents = renumberEvents(latestProviderResult?.normalizedEvents, allEvents.length);
+        const stepEvents = renumberEvents(latestProviderResult?.normalizedEvents, globalNormalizedOffset);
+        captureAdapter?.reconcileEventPrefix(stepEvents, { sourceOffset: globalNormalizedOffset });
         allEvents.push(...stepEvents);
         responseId = normalizeString(latestProviderResult?.responseId, responseId);
         const terminal = latestProviderResult?.terminal || {};
         if (terminal.state === "completed") {
           const outputText = assistantText(stepEvents);
           const execution = executionProjection(contract, results, "completed");
-          return workerResult({
+          return finish({
             status: "completed",
             outputText: outputText || "Workspace worker completed without a textual summary.",
             responseId,
@@ -886,7 +915,7 @@ async function runDirectWorkspaceWorker(input = {}) {
           );
           const execution = executionProjection(contract, results, "failed");
           const latestMutationOutcome = execution.latestMutationOutcome;
-          return workerResult({
+          return finish({
             status: terminal.state === "aborted" ? "cancelled" : "failed",
             blockerCode,
             responseId,
@@ -913,7 +942,7 @@ async function runDirectWorkspaceWorker(input = {}) {
         }
         if (stepOrdinal > contract.maxToolSteps) {
           const blockerCode = "direct_workspace_worker_tool_step_limit";
-          return workerResult({
+          return finish({
             status: "failed",
             blockerCode,
             responseId,
@@ -955,6 +984,7 @@ async function runDirectWorkspaceWorker(input = {}) {
           workspaceOperationLeaseValidator: input.workspaceOperationLeaseValidator,
         });
         results.push(executed);
+        captureAdapter?.appendToolResult(executed);
         evidence.push(executed.providerOutputText);
         activeOperation = "provider";
       }
@@ -994,7 +1024,7 @@ async function runDirectWorkspaceWorker(input = {}) {
         outcomeDigest: effectiveMutationOutcome?.outcomeDigest || "",
         rawProcessDetailsIncluded: false,
       } : error?.cancellationReceipt;
-      return workerResult({
+      return finish({
         status: input.signal?.aborted ? "cancelled" : "failed",
         blockerCode,
         responseId,
@@ -1011,7 +1041,7 @@ async function runDirectWorkspaceWorker(input = {}) {
           workspaceWorkerToolResults: results,
           workspaceWorkerContract: contract,
         },
-        providerRequestStarted: allEvents.length > 0,
+        providerRequestStarted,
         cancellationAcknowledged: error?.cancellationAcknowledged === true,
         backendQuiesced: error?.backendQuiesced === true,
         backendOwnershipUnresolved,
@@ -1019,11 +1049,21 @@ async function runDirectWorkspaceWorker(input = {}) {
         mutationOutcome: effectiveMutationOutcome,
       });
     }
-    return workerResult({
+    const blockerCode = "direct_workspace_worker_loop_exhausted";
+    return finish({
       status: "failed",
-      blockerCode: "direct_workspace_worker_loop_exhausted",
+      blockerCode,
       tokenUsage: aggregateTokenUsage(allEvents),
       workspaceExecution: executionProjection(contract, results, "failed"),
+      captureResult: {
+        ...(latestProviderResult || {}),
+        normalizedEvents: allEvents,
+        terminal: { state: "failed", error: { code: blockerCode } },
+        responseId,
+        workspaceWorkerToolResults: results,
+        workspaceWorkerContract: contract,
+      },
+      providerRequestStarted,
     });
   } finally {
     if (!retainProvisionedBackend) {
