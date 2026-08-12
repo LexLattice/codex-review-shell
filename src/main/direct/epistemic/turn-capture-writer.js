@@ -1,11 +1,58 @@
 "use strict";
 
 const {
+  DIRECT_CAPTURED_TOOL_RESULT_SCHEMA,
   DIRECT_TURN_CAPTURE_SCHEMA,
+  capturedToolResultDigest,
 } = require("../session/session-store");
 const { digestFor, text } = require("./kernel");
 
 const DIRECT_TURN_CAPTURE_RECEIPT_SCHEMA = "direct_turn_capture_receipt@1";
+const CAPTURED_TOOL_RESULT_SOURCE_FIELDS = new Set([
+  "schema",
+  "stepOrdinal",
+  "tool",
+  "callId",
+  "obligationId",
+  "status",
+  "outcome",
+  "summary",
+  "sideEffectExecuted",
+  "workspaceBindingId",
+  "workspaceBindingDigest",
+  "exitCode",
+  "resultClass",
+  "resultDigest",
+  "providerOutputText",
+  "providerOutputDigest",
+  "providerOutputCharacterCount",
+  "rawOutputPersisted",
+  "rawArgumentsPersisted",
+  "rawWorkspacePathIncluded",
+  "rawProviderPayloadIncluded",
+]);
+const CAPTURED_TOOL_RESULT_FORBIDDEN_KEYS = new Set([
+  "arguments",
+  "argumentsjson",
+  "argumentsdelta",
+  "command",
+  "context",
+  "contextbody",
+  "content",
+  "linuxpath",
+  "localpath",
+  "nativeroot",
+  "outputtext",
+  "patch",
+  "prompt",
+  "providerpayload",
+  "repositorypath",
+  "stderr",
+  "stdout",
+  "text",
+  "windowspath",
+  "worktreepath",
+]);
 
 function fail(code, message = code) {
   const error = new Error(message);
@@ -26,29 +73,102 @@ function eventPrefixDigest(events = []) {
   return digestFor({ kind: "direct_normalized_event_prefix", events: sourceEvents(events) });
 }
 
+function normalizedFieldName(value) {
+  return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function isAbsolutePathShaped(value) {
+  const candidate = String(value || "");
+  return /(?:^|[\s"'`(=])\/(?!\/)[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+/.test(candidate) ||
+    /(?:^|[\s"'`(=])[A-Za-z]:[\\/][^\s"']+/.test(candidate) ||
+    /(?:^|[\s"'`(=])\\\\[^\\\s]+\\[^\s"']+/.test(candidate) ||
+    /file:\/\//i.test(candidate);
+}
+
+function assertCapturedValueSafe(value, path = []) {
+  if (typeof value === "string") {
+    if (isAbsolutePathShaped(value)) fail("direct_turn_capture_tool_result_path_forbidden");
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertCapturedValueSafe(entry, [...path, String(index)]));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    const normalized = normalizedFieldName(key);
+    if (CAPTURED_TOOL_RESULT_FORBIDDEN_KEYS.has(normalized)) {
+      fail("direct_turn_capture_tool_result_raw_field_forbidden");
+    }
+    assertCapturedValueSafe(child, [...path, key]);
+  }
+}
+
+function nonnegativeNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, number) : fallback;
+}
+
 function safeCapturedToolResult(result = {}) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    fail("direct_turn_capture_tool_result_invalid");
+  }
+  if (result.schema === DIRECT_CAPTURED_TOOL_RESULT_SCHEMA) {
+    assertCapturedValueSafe(result);
+    if (capturedToolResultDigest(result) !== text(result.resultDigest)) {
+      fail("direct_turn_capture_tool_result_digest_invalid");
+    }
+    return { ...result };
+  }
+  for (const key of Object.keys(result)) {
+    if (!CAPTURED_TOOL_RESULT_SOURCE_FIELDS.has(key)) {
+      fail("direct_turn_capture_tool_result_field_unsupported");
+    }
+  }
+  if (
+    result.rawOutputPersisted === true ||
+    result.rawArgumentsPersisted === true ||
+    result.rawWorkspacePathIncluded === true ||
+    result.rawProviderPayloadIncluded === true
+  ) fail("direct_turn_capture_tool_result_raw_flag_forbidden");
   const providerOutputText = typeof result?.providerOutputText === "string"
     ? result.providerOutputText
     : "";
-  const {
-    providerOutputText: _providerOutputText,
-    nativeRoot: _nativeRoot,
-    worktreePath: _worktreePath,
-    repositoryPath: _repositoryPath,
-    localPath: _localPath,
-    linuxPath: _linuxPath,
-    windowsPath: _windowsPath,
-    command: _command,
-    ...typed
-  } = result || {};
-  return {
-    ...typed,
-    providerOutputDigest: providerOutputText ? digestFor(providerOutputText) : "",
-    providerOutputCharacterCount: providerOutputText.length,
+  const sourceResultDigest = text(result.resultDigest);
+  if (!sourceResultDigest) fail("direct_turn_capture_tool_result_source_digest_required");
+  const providerOutputDigest = providerOutputText
+    ? digestFor(providerOutputText)
+    : text(result.providerOutputDigest);
+  const core = {
+    schema: DIRECT_CAPTURED_TOOL_RESULT_SCHEMA,
+    sourceSchema: text(result.schema),
+    stepOrdinal: nonnegativeNumber(result.stepOrdinal),
+    tool: text(result.tool),
+    callId: text(result.callId),
+    obligationId: text(result.obligationId),
+    status: text(result.status || result.outcome, "recorded"),
+    summary: text(result.summary),
+    sideEffectExecuted: result.sideEffectExecuted === true,
+    workspaceBindingId: text(result.workspaceBindingId),
+    workspaceBindingDigest: text(result.workspaceBindingDigest),
+    exitCode: result.exitCode !== null && result.exitCode !== undefined && Number.isFinite(Number(result.exitCode))
+      ? Number(result.exitCode)
+      : null,
+    resultClass: text(result.resultClass),
+    sourceResultDigest,
+    providerOutputDigest,
+    providerOutputCharacterCount: providerOutputText
+      ? providerOutputText.length
+      : nonnegativeNumber(result.providerOutputCharacterCount),
     rawOutputPersisted: false,
     rawArgumentsPersisted: false,
     rawWorkspacePathIncluded: false,
     rawProviderPayloadIncluded: false,
+  };
+  assertCapturedValueSafe(core);
+  return {
+    ...core,
+    resultDigest: capturedToolResultDigest(core),
   };
 }
 
@@ -217,10 +337,10 @@ class DirectTurnCaptureWriter {
     ).receipt;
   }
 
-  refreshCapture(patch = {}) {
+  captureWithCurrentEvidence(patch = {}) {
     const turn = this.turn();
     const events = this.persistedEvents();
-    const capture = {
+    return {
       ...turn.capture,
       ...patch,
       eventCount: events.length,
@@ -229,6 +349,10 @@ class DirectTurnCaptureWriter {
       toolResultDigest: toolResultDigest(turn.toolResults),
       updatedAt: new Date().toISOString(),
     };
+  }
+
+  refreshCapture(patch = {}) {
+    const capture = this.captureWithCurrentEvidence(patch);
     return this.sessionStore.updateTurnCapture(
       this.input.sessionId,
       this.input.turnId,
@@ -238,35 +362,58 @@ class DirectTurnCaptureWriter {
 
   appendEventPrefix(events = [], options = {}) {
     const incoming = sourceEvents(events);
-    if (!incoming.length) return this.refreshCapture();
+    const turn = this.turn();
+    if (!incoming.length) {
+      return turn.capture?.complete === true ? turn.capture : this.refreshCapture();
+    }
     const persisted = sourceEvents(this.persistedEvents());
     const sourceOffset = Number.isFinite(Number(options.sourceOffset))
       ? Math.max(0, Number(options.sourceOffset))
       : persisted.length;
     if (sourceOffset > persisted.length) {
-      this.recordGap("direct_turn_capture_prefix_gap", {
+      const code = turn.capture?.complete === true
+        ? "direct_turn_capture_terminal_prefix_conflict"
+        : "direct_turn_capture_prefix_gap";
+      this.recordGap(code, {
         expectedEventCount: sourceOffset,
         observedEventCount: persisted.length,
         sourceOffset,
         expectedPrefixDigest: eventPrefixDigest(incoming.slice(0, sourceOffset)),
         observedPrefixDigest: eventPrefixDigest(persisted),
+        preserveComplete: turn.capture?.complete === true,
       });
-      fail("direct_turn_capture_prefix_gap");
+      fail(code);
     }
     const overlap = Math.min(incoming.length, Math.max(0, persisted.length - sourceOffset));
     for (let index = 0; index < overlap; index += 1) {
       if (digestFor(incoming[index]) !== digestFor(persisted[sourceOffset + index])) {
-        this.recordGap("direct_turn_capture_prefix_conflict", {
+        const code = turn.capture?.complete === true
+          ? "direct_turn_capture_terminal_prefix_conflict"
+          : "direct_turn_capture_prefix_conflict";
+        this.recordGap(code, {
           expectedEventCount: sourceOffset + incoming.length,
           observedEventCount: persisted.length,
           sourceOffset,
           expectedPrefixDigest: eventPrefixDigest(incoming.slice(0, index + 1)),
           observedPrefixDigest: eventPrefixDigest(persisted.slice(sourceOffset, sourceOffset + index + 1)),
+          preserveComplete: turn.capture?.complete === true,
         });
-        fail("direct_turn_capture_prefix_conflict");
+        fail(code);
       }
     }
     const suffix = incoming.slice(overlap);
+    if (turn.capture?.complete === true) {
+      if (!suffix.length) return turn.capture;
+      this.recordGap("direct_turn_capture_terminal_prefix_conflict", {
+        expectedEventCount: persisted.length,
+        observedEventCount: sourceOffset + incoming.length,
+        sourceOffset,
+        expectedPrefixDigest: eventPrefixDigest(persisted),
+        observedPrefixDigest: eventPrefixDigest([...persisted.slice(0, sourceOffset), ...incoming]),
+        preserveComplete: true,
+      });
+      fail("direct_turn_capture_terminal_prefix_conflict");
+    }
     if (suffix.length) {
       this.sessionStore.appendNormalizedEvents(this.input.sessionId, this.input.turnId, suffix);
     }
@@ -275,6 +422,22 @@ class DirectTurnCaptureWriter {
 
   appendToolResult(result = {}) {
     const safe = safeCapturedToolResult(result);
+    const turn = this.turn();
+    if (turn.capture?.complete === true) {
+      const key = text(safe.obligationId || safe.callId, safe.resultDigest);
+      const existing = (Array.isArray(turn.toolResults) ? turn.toolResults : []).find((entry) =>
+        text(entry?.obligationId || entry?.callId, entry?.resultDigest) === key);
+      if (existing && text(existing.resultDigest) === safe.resultDigest) return turn.capture;
+      this.recordGap("direct_turn_capture_terminal_tool_result_conflict", {
+        expectedEventCount: Number(turn.normalizedEventCount || 0),
+        observedEventCount: Number(turn.normalizedEventCount || 0),
+        expectedPrefixDigest: eventPrefixDigest(this.persistedEvents()),
+        observedPrefixDigest: eventPrefixDigest(this.persistedEvents()),
+        sourceOffset: Number(turn.normalizedEventCount || 0),
+        preserveComplete: true,
+      });
+      fail("direct_turn_capture_terminal_tool_result_conflict");
+    }
     this.sessionStore.appendCapturedToolResult(
       this.input.sessionId,
       this.input.turnId,
@@ -351,16 +514,17 @@ class DirectTurnCaptureWriter {
     }
     const terminalState = terminalTurnState(result);
     const finalizedAt = new Date().toISOString();
-    this.refreshCapture({
+    const capture = this.captureWithCurrentEvidence({
       status: "complete",
       terminalState,
       finalCaptureDigest: expectedDigest,
       complete: true,
       finalizedAt,
     });
-    turn = this.sessionStore.updateTurnState(
+    turn = this.sessionStore.finalizeTurnCapture(
       this.input.sessionId,
       this.input.turnId,
+      capture,
       terminalState,
       {
         ...terminalEvidence(result),

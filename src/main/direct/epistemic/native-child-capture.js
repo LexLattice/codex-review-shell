@@ -26,15 +26,23 @@ function nativeChildTurnId(input = {}) {
   }).slice(0, 24)}`;
 }
 
+function legacyNativeChildTurnId(input = {}, result = {}) {
+  return `direct_child_turn_${digestFor({
+    childAgentId: text(input.agent?.agentThreadId || input.childAgentId),
+    attemptId: text(input.attemptId || input.callId),
+    promptDigest: text(input.promptDigest),
+    responseId: text(result.responseId),
+  }).slice(0, 24)}`;
+}
+
 function sourceClassFor(input = {}, contract = null) {
   return text(input.sourceClass, contract
     ? "native_workspace_child_provider_turn"
     : "native_child_provider_turn");
 }
 
-function nativeCaptureInput(input = {}, contract = null) {
+function nativeCaptureInput(input = {}, contract = null, turnId = nativeChildTurnId(input)) {
   const sessionId = nativeChildSessionId(input);
-  const turnId = nativeChildTurnId(input);
   return {
     ...input,
     sessionId,
@@ -76,9 +84,8 @@ function ensureNativeChildSession(sessionStore, input = {}, contract = null) {
   return session;
 }
 
-function ensureNativeChildTurn(sessionStore, input = {}, contract = null) {
+function ensureNativeChildTurn(sessionStore, input = {}, contract = null, turnId = nativeChildTurnId(input)) {
   const session = ensureNativeChildSession(sessionStore, input, contract);
-  const turnId = nativeChildTurnId(input);
   let turn = sessionStore.readTurn(session.sessionId, turnId);
   if (!turn) {
     turn = sessionStore.createTurn(session.sessionId, {
@@ -121,15 +128,24 @@ function ensureNativeChildTurn(sessionStore, input = {}, contract = null) {
   return turn;
 }
 
-function openNativeChildProviderTurnCapture(sessionStore, input = {}) {
+function openNativeChildProviderTurnCaptureAtId(sessionStore, input = {}, contract = null, turnId = nativeChildTurnId(input)) {
   if (!sessionStore) {
     const error = new Error("Native child capture requires a Direct session store.");
     error.code = "direct_epistemic_native_child_session_store_required";
     throw error;
   }
+  ensureNativeChildTurn(sessionStore, input, contract, turnId);
+  return new DirectTurnCaptureWriter(sessionStore, nativeCaptureInput(input, contract, turnId));
+}
+
+function openNativeChildProviderTurnCapture(sessionStore, input = {}) {
   const contract = input.workspaceWorkerContract || input.contract || null;
-  ensureNativeChildTurn(sessionStore, input, contract);
-  return new DirectTurnCaptureWriter(sessionStore, nativeCaptureInput(input, contract));
+  return openNativeChildProviderTurnCaptureAtId(
+    sessionStore,
+    input,
+    contract,
+    nativeChildTurnId(input),
+  );
 }
 
 function captureDigest(input = {}, result = {}) {
@@ -138,14 +154,51 @@ function captureDigest(input = {}, result = {}) {
 }
 
 function persistNativeChildProviderTurn(sessionStore, input = {}, result = {}) {
+  if (!sessionStore) {
+    const error = new Error("Native child capture requires a Direct session store.");
+    error.code = "direct_epistemic_native_child_session_store_required";
+    throw error;
+  }
   const contract = result.workspaceWorkerContract || input.workspaceWorkerContract || null;
-  const writer = openNativeChildProviderTurnCapture(sessionStore, {
+  const session = ensureNativeChildSession(sessionStore, input, contract);
+  const currentTurnId = nativeChildTurnId(input);
+  const legacyTurnId = legacyNativeChildTurnId(input, result);
+  const legacyTurn = !sessionStore.readTurn(session.sessionId, currentTurnId) &&
+    legacyTurnId !== currentTurnId &&
+    text(result.responseId)
+    ? sessionStore.readTurn(session.sessionId, legacyTurnId)
+    : null;
+  if (legacyTurn) {
+    const normalizedToolResults = (Array.isArray(legacyTurn.toolResults) ? legacyTurn.toolResults : [])
+      .map(safeCapturedToolResult);
+    if (
+      JSON.stringify(normalizedToolResults) !== JSON.stringify(legacyTurn.toolResults || []) ||
+      legacyTurn.requestShape?.legacyResponseIdentityAdopted !== true ||
+      legacyTurn.requestShape?.stableTurnIdentity !== currentTurnId
+    ) {
+      sessionStore.updateTurnState(session.sessionId, legacyTurn.turnId, legacyTurn.state, {
+        toolResults: normalizedToolResults,
+        requestShape: {
+          ...(legacyTurn.requestShape || {}),
+          legacyResponseIdentityAdopted: true,
+          stableTurnIdentity: currentTurnId,
+        },
+      });
+    }
+  }
+  const writerInput = {
     ...input,
     workspaceWorkerContract: contract,
     workspaceWorkerToolResultCount: Array.isArray(result.workspaceWorkerToolResults)
       ? result.workspaceWorkerToolResults.length
       : 0,
-  });
+  };
+  const writer = openNativeChildProviderTurnCaptureAtId(
+    sessionStore,
+    writerInput,
+    contract,
+    legacyTurn ? legacyTurnId : currentTurnId,
+  );
   const receipt = writer.finalize(result, {
     duplicateConflictCode: "direct_epistemic_native_child_duplicate_conflict",
     prefixConflictCode: "direct_epistemic_native_child_partial_capture_conflict",
@@ -182,6 +235,7 @@ module.exports = {
   DirectTurnCaptureWriter,
   captureDigest,
   capturedWorkspaceToolResult: safeCapturedToolResult,
+  legacyNativeChildTurnId,
   nativeChildSessionId,
   nativeChildTurnId,
   openNativeChildProviderTurnCapture,

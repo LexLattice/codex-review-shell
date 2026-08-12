@@ -14,6 +14,7 @@ const DIRECT_TOOL_OBLIGATION_SCHEMA = "direct_codex_tool_obligation@1";
 const DIRECT_IMPORT_INDEX_SCHEMA = "direct_codex_import_index@1";
 const DIRECT_TURN_CAPTURE_SCHEMA = "direct_turn_capture@1";
 const DIRECT_TURN_CAPTURE_GAP_SCHEMA = "direct_turn_capture_gap@1";
+const DIRECT_CAPTURED_TOOL_RESULT_SCHEMA = "direct_captured_tool_result@1";
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/;
 const DIRECT_TURN_STATES = new Set([
   "created",
@@ -50,6 +51,16 @@ const DIRECT_RECOVERABLE_ACTIVE_TURN_STATES = new Set([
   "streaming",
   "continuation_sent",
   "streaming_continuation",
+]);
+const DIRECT_CAPTURE_TERMINAL_TURN_STATES = new Set([
+  "completed",
+  "failed",
+  "aborted",
+  "response_incomplete",
+  "content_filter_terminal",
+  "max_output_terminal",
+  "empty_output_terminal",
+  "tool_waiting",
 ]);
 const DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES = new Set([
   "approved",
@@ -92,6 +103,19 @@ function newId(prefix) {
 function normalizedEventEnvelopeDigest(envelope = {}) {
   return crypto.createHash("sha256")
     .update(JSON.stringify({ at: normalizeString(envelope.at, ""), event: envelope.event }))
+    .digest("hex");
+}
+
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalValue(value[key])]));
+}
+
+function capturedToolResultDigest(result = {}) {
+  const { resultDigest: _resultDigest, ...core } = result || {};
+  return crypto.createHash("sha256")
+    .update(JSON.stringify(canonicalValue({ kind: DIRECT_CAPTURED_TOOL_RESULT_SCHEMA, result: core })))
     .digest("hex");
 }
 
@@ -1156,6 +1180,83 @@ class DirectSessionStore {
     return updated;
   }
 
+  finalizeTurnCapture(sessionId, turnId, capture, nextState, patch = {}, options = {}) {
+    if (!isPlainObject(capture) || capture.schema !== DIRECT_TURN_CAPTURE_SCHEMA) {
+      const error = new Error("Direct turn capture state is invalid.");
+      error.code = "direct_turn_capture_state_invalid";
+      throw error;
+    }
+    const state = normalizeTurnState(nextState, "");
+    if (
+      !DIRECT_CAPTURE_TERMINAL_TURN_STATES.has(state) ||
+      capture.status !== "complete" ||
+      capture.complete !== true ||
+      normalizeString(capture.terminalState, "") !== state ||
+      !normalizeString(capture.finalCaptureDigest, "")
+    ) {
+      const error = new Error("Direct terminal capture and turn state must be complete and identical.");
+      error.code = "direct_turn_capture_terminal_state_invalid";
+      throw error;
+    }
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+    const now = nowIso(options.nowMs);
+    const terminalPatch = {};
+    if (state === "completed") terminalPatch.completedAt = now;
+    if (state === "failed") terminalPatch.failedAt = now;
+    if (state === "aborted") terminalPatch.abortedAt = now;
+    const nextCapture = {
+      ...capture,
+      status: "complete",
+      complete: true,
+      terminalState: state,
+      updatedAt: now,
+      finalizedAt: normalizeString(capture.finalizedAt, now),
+    };
+    const nextTurn = {
+      ...turn,
+      ...patch,
+      ...terminalPatch,
+      capture: nextCapture,
+      state,
+      updatedAt: now,
+    };
+    // Capture completion and terminal state share one atomic turn-file replacement.
+    this.writeTurn(nextTurn);
+    const session = this.readSession(sessionId);
+    if (session) {
+      const usageTotals = isPlainObject(nextTurn.usageAttribution?.totals) ? nextTurn.usageAttribution.totals : {};
+      this.writeSession({
+        ...session,
+        updatedAt: now,
+        status: state,
+        turns: session.turns.map((summary) => summary.turnId === turnId
+          ? {
+              ...summary,
+              state,
+              updatedAt: now,
+              normalizedEventCount: nextTurn.normalizedEventCount,
+              usageAttributionStatus: normalizeString(nextTurn.usageAttribution?.status, summary.usageAttributionStatus || ""),
+              usageTotalTokensKnown: Number(usageTotals.totalTokensKnown ?? summary.usageTotalTokensKnown ?? 0),
+              agentKind: normalizeString(nextTurn.agentKind, summary.agentKind || ""),
+              agentThreadId: normalizeString(nextTurn.agentThreadId, summary.agentThreadId || ""),
+              parentThreadId: normalizeString(nextTurn.parentThreadId, summary.parentThreadId || ""),
+            }
+          : summary),
+      });
+    }
+    this.notifyEpistemicObservers({
+      kind: "turn_capture_updated",
+      sessionId,
+      turnId,
+      captureStatus: "complete",
+      eventCount: Number(nextCapture.eventCount || 0),
+      toolResultCount: Number(nextCapture.toolResultCount || 0),
+      complete: true,
+    });
+    return nextTurn;
+  }
+
   appendTurnCaptureGap(sessionId, turnId, input = {}, options = {}) {
     const turn = this.readTurn(sessionId, turnId);
     if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
@@ -1198,7 +1299,7 @@ class DirectSessionStore {
   }
 
   appendCapturedToolResult(sessionId, turnId, result = {}, options = {}) {
-    if (!isPlainObject(result)) {
+    if (!isPlainObject(result) || result.schema !== DIRECT_CAPTURED_TOOL_RESULT_SCHEMA) {
       const error = new Error("Captured tool result must be typed.");
       error.code = "direct_turn_capture_tool_result_invalid";
       throw error;
@@ -1209,6 +1310,11 @@ class DirectSessionStore {
     if (!resultDigest) {
       const error = new Error("Captured tool result requires an exact result digest.");
       error.code = "direct_turn_capture_tool_result_digest_required";
+      throw error;
+    }
+    if (capturedToolResultDigest(result) !== resultDigest) {
+      const error = new Error("Captured tool result digest is not canonical.");
+      error.code = "direct_turn_capture_tool_result_digest_invalid";
       throw error;
     }
     const key = normalizeString(result.obligationId || result.callId, resultDigest);
@@ -1396,11 +1502,35 @@ class DirectSessionStore {
         ...this.listTurnIdsFromDisk(session.sessionId),
       ]);
       const recoveredByTurnId = new Map();
+      const summaryByTurnId = new Map(session.turns.map((summary) => [summary?.turnId, summary]));
       for (const turnId of turnIds) {
         const turn = this.readTurn(session.sessionId, turnId);
-        if (!turn || !DIRECT_RECOVERABLE_ACTIVE_TURN_STATES.has(turn.state)) continue;
+        if (!turn) continue;
+        const recoverable = DIRECT_RECOVERABLE_ACTIVE_TURN_STATES.has(turn.state);
+        const completedCaptureState = normalizeTurnState(turn.capture?.terminalState, "");
+        const completeActiveContradiction = recoverable &&
+          isPlainObject(turn.capture) &&
+          turn.capture.schema === DIRECT_TURN_CAPTURE_SCHEMA &&
+          turn.capture.status === "complete" &&
+          turn.capture.complete === true &&
+          Boolean(normalizeString(turn.capture.finalCaptureDigest, "")) &&
+          DIRECT_CAPTURE_TERMINAL_TURN_STATES.has(completedCaptureState);
+        if (!recoverable) {
+          const summary = summaryByTurnId.get(turnId);
+          if (
+            !summary ||
+            summary.state !== turn.state ||
+            Number(summary.normalizedEventCount || 0) !== Number(turn.normalizedEventCount || 0)
+          ) recoveredByTurnId.set(turn.turnId, turn);
+          continue;
+        }
         let capture = turn.capture;
-        if (isPlainObject(capture) && capture.schema === DIRECT_TURN_CAPTURE_SCHEMA && capture.status === "capturing") {
+        if (
+          !completeActiveContradiction &&
+          isPlainObject(capture) &&
+          capture.schema === DIRECT_TURN_CAPTURE_SCHEMA &&
+          capture.status === "capturing"
+        ) {
           const receipt = captureGapReceipt({
             sessionId: session.sessionId,
             turnId,
@@ -1421,19 +1551,42 @@ class DirectSessionStore {
             finalizedAt: recoveredAt,
           };
         }
-        const nextTurn = {
-          ...turn,
-          state: "failed",
-          updatedAt: recoveredAt,
-          failedAt: recoveredAt,
-          error: {
-            code: "restart_interrupted_turn",
-            message: "Direct text probe turn was interrupted before a terminal event and needs explicit user resume.",
-            previousState: turn.state,
-            recoveredAt,
-          },
-          capture,
-        };
+        const nextTurn = completeActiveContradiction
+          ? {
+              ...turn,
+              state: completedCaptureState,
+              updatedAt: recoveredAt,
+              captureRecovered: true,
+              ...(completedCaptureState === "completed" ? {
+                completedAt: recoveredAt,
+                failedAt: "",
+                abortedAt: "",
+                error: null,
+              } : {}),
+              ...(completedCaptureState === "failed" ? {
+                completedAt: "",
+                failedAt: recoveredAt,
+                abortedAt: "",
+              } : {}),
+              ...(completedCaptureState === "aborted" ? {
+                completedAt: "",
+                failedAt: "",
+                abortedAt: recoveredAt,
+              } : {}),
+            }
+          : {
+              ...turn,
+              state: "failed",
+              updatedAt: recoveredAt,
+              failedAt: recoveredAt,
+              error: {
+                code: "restart_interrupted_turn",
+                message: "Direct text probe turn was interrupted before a terminal event and needs explicit user resume.",
+                previousState: turn.state,
+                recoveredAt,
+              },
+              capture,
+            };
         this.writeTurn(nextTurn);
         recoveredByTurnId.set(nextTurn.turnId, nextTurn);
         recoveredTurnCount += 1;
@@ -1450,24 +1603,28 @@ class DirectSessionStore {
           model: turn.model,
           normalizedEventCount: turn.normalizedEventCount,
         }));
+      const nextTurns = [
+        ...session.turns.map((summary) => {
+          const recovered = recoveredByTurnId.get(summary.turnId);
+          return recovered
+            ? {
+                ...summary,
+                state: recovered.state,
+                updatedAt: recovered.updatedAt,
+                normalizedEventCount: recovered.normalizedEventCount,
+              }
+            : summary;
+        }),
+        ...recoveredSummaries,
+      ];
+      const latestRecovered = [...recoveredByTurnId.values()]
+        .sort((left, right) => Date.parse(left.updatedAt || 0) - Date.parse(right.updatedAt || 0))
+        .at(-1);
       this.writeSession({
         ...session,
         updatedAt: recoveredAt,
-        status: "failed",
-        turns: [
-          ...session.turns.map((summary) => {
-            const recovered = recoveredByTurnId.get(summary.turnId);
-            return recovered
-              ? {
-                  ...summary,
-                  state: recovered.state,
-                  updatedAt: recovered.updatedAt,
-                  normalizedEventCount: recovered.normalizedEventCount,
-                }
-              : summary;
-          }),
-          ...recoveredSummaries,
-        ],
+        status: normalizeString(latestRecovered?.state, session.status),
+        turns: nextTurns,
       });
     }
     return {
@@ -1588,6 +1745,7 @@ class DirectSessionStore {
 }
 
 module.exports = {
+  DIRECT_CAPTURED_TOOL_RESULT_SCHEMA,
   DIRECT_DIAGNOSTIC_SCHEMA,
   DIRECT_ACTIVE_TURN_STATES,
   DIRECT_IMPORT_INDEX_SCHEMA,
@@ -1601,6 +1759,7 @@ module.exports = {
   DIRECT_TURN_STATES,
   DirectSessionStore,
   buildToolObligationsFromEvents,
+  capturedToolResultDigest,
   captureGapReceipt,
   normalizeTurnState,
   toolTranscriptItemFromObligation,

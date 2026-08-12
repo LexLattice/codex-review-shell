@@ -13,7 +13,9 @@ provider-normalized event
 
 The append must finish before the transport reports the normalized frame to a
 durable-capture caller. Display-only callbacks remain best-effort. A callback
-failure is visible and may not be swallowed as if capture succeeded.
+failure is visible and may not be swallowed as if capture succeeded. A durable
+callback may return a promise, but the transport awaits it serially before
+reading past the frame; a rejection is not retried by terminal reconciliation.
 
 O is the append-only normalized-event file plus exact typed tool results. Each
 persisted event carries its source-envelope digest. E is a deterministic
@@ -22,6 +24,11 @@ projection bound to an exact O prefix and a durable source cursor. E records use
 has no deterministic mapping produces `UnclassifiedNormalizedEvent` with an
 explicit omission code and a digest of the unprojected payload; its prose or
 arguments are not copied into E.
+
+A provider frame unknown to the normalizer becomes a bounded
+`unclassified_provider_event` in O containing only its raw type, source index,
+and raw-type/payload digests. The provider payload itself is never copied into
+the normalized stream or E.
 
 Luna is not part of this path. Luna remains an explicitly requested bounded
 linguistic-residue job whose records have attributed standing.
@@ -43,6 +50,14 @@ the overlapping event digests match. A skipped offset, divergent overlap,
 conflicting terminal replay, or interrupted active capture creates a durable
 `direct_turn_capture_gap@1` receipt. A full terminal result may append a missing
 suffix only after verifying the entire persisted overlap.
+
+Completed capture and terminal turn state share one atomic turn-file
+replacement. Exact replay against a completed capture is a no-op; any new event
+suffix or tool result after completion is a durable terminal conflict. Captured
+tool results use `direct_captured_tool_result@1`, an explicit field allowlist,
+recursive raw/path rejection, and a recomputed canonical persistence digest.
+Legacy response-id-based turn identities are adopted in place and carry a
+stable pre-response identity alias so an upgrade does not duplicate evidence.
 
 Session recovery marks an interrupted capture incomplete without changing or
 inventing provider evidence. On epistemic-service restart, persisted Direct

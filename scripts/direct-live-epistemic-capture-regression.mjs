@@ -8,8 +8,12 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const {
+  capturedWorkspaceToolResult,
+  legacyNativeChildTurnId,
+  nativeChildSessionId,
   openNativeChildProviderTurnCapture,
   nativeChildTurnId,
+  persistNativeChildProviderTurn,
 } = require("../src/main/direct/epistemic/native-child-capture");
 const {
   buildLiveActivityProjection,
@@ -21,6 +25,7 @@ const {
   DirectEpistemicStore,
 } = require("../src/main/direct/epistemic/store");
 const {
+  DIRECT_CAPTURED_TOOL_RESULT_SCHEMA,
   DirectSessionStore,
 } = require("../src/main/direct/session/session-store");
 const {
@@ -196,6 +201,168 @@ try {
   assert.equal(safeUnclassified.typedRecordCounts.UnclassifiedNormalizedEvent, 1);
   assert.equal(JSON.stringify(safeUnclassified).includes("future_normalized_event"), false);
 
+  const unknownTransportInput = {
+    ...captureInput,
+    childAgentId: "child_unknown_transport_capture",
+    attemptId: "attempt_unknown_transport_capture",
+    promptDigest: "sha256:prompt_unknown_transport_capture",
+  };
+  const unknownTransportWriter = openNativeChildProviderTurnCapture(sessionStore, unknownTransportInput);
+  const unknownTransportResult = await runTextOnlyDirectProbe({
+    profileDoc: profileDoc(),
+    authStore: authStore(),
+    model: "gpt-5.4",
+    prompt: "unknown transport fixture",
+    fetchImpl: async () => new Response([
+      "event: response.future",
+      "data: {\"text\":\"RAW_UNKNOWN_PROVIDER_SECRET_/private/provider\"}",
+      "",
+      "event: response.completed",
+      "data: {\"response\":{\"id\":\"response_unknown_transport\",\"status\":\"completed\"}}",
+      "",
+      "",
+    ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } }),
+    onNormalizedEventsCommitted: unknownTransportWriter.strictCommitCallback(),
+  });
+  assert.deepEqual(unknownTransportResult.unknownRawTypes, ["response.future"]);
+  assert.equal(unknownTransportResult.normalizedEvents[0].type, "unclassified_provider_event");
+  assert.equal(unknownTransportResult.normalizedEvents[0].rawPayloadIncluded, false);
+  assert.equal(JSON.stringify(unknownTransportResult.normalizedEvents[0]).includes("RAW_UNKNOWN_PROVIDER_SECRET"), false);
+  const unknownPersisted = sessionStore.readNormalizedEvents(
+    unknownTransportWriter.input.sessionId,
+    unknownTransportWriter.input.turnId,
+  );
+  assert.deepEqual(unknownPersisted.map((event) => event.type), [
+    "unclassified_provider_event",
+    "response_completed",
+  ]);
+  unknownTransportWriter.finalize(unknownTransportResult);
+  const unknownTransportProjection = service.syncThread(unknownTransportWriter.input.sessionId);
+  assert.equal(unknownTransportProjection.recordCounts.UnclassifiedNormalizedEvent, 1);
+
+  let asyncCommitCalls = 0;
+  const unhandledRejections = [];
+  const recordUnhandled = (reason) => unhandledRejections.push(reason);
+  process.on("unhandledRejection", recordUnhandled);
+  const asyncCommitResult = await runTextOnlyDirectProbe({
+    profileDoc: profileDoc(),
+    authStore: authStore(),
+    model: "gpt-5.4",
+    prompt: "async durable callback fixture",
+    fetchImpl: async () => new Response([
+      "event: response.completed",
+      "data: {\"response\":{\"id\":\"response_async_commit\",\"status\":\"completed\"}}",
+      "",
+      "",
+    ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } }),
+    onNormalizedEventsCommitted: async () => {
+      asyncCommitCalls += 1;
+      throw new Error("async durable write failed");
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  process.removeListener("unhandledRejection", recordUnhandled);
+  assert.equal(asyncCommitCalls, 1, "a rejected durable callback must not be reconciled a second time");
+  assert.equal(unhandledRejections.length, 0, "the awaited durable callback must not leak an unhandled rejection");
+  assert.equal(asyncCommitResult.ok, false);
+  assert.equal(asyncCommitResult.error.code, "direct_normalized_event_commit_failed");
+  assert.equal(asyncCommitResult.lifecycle.timing.durableCommitFailed, true);
+
+  const sourceToolResult = {
+    schema: "direct_workspace_worker_tool_result@1",
+    stepOrdinal: 1,
+    tool: "run_test",
+    callId: "call_safe_tool_result",
+    obligationId: "obligation_safe_tool_result",
+    status: "completed",
+    summary: "focused test passed",
+    sideEffectExecuted: true,
+    workspaceBindingId: "binding_safe_tool_result",
+    workspaceBindingDigest: "sha256:binding_safe_tool_result",
+    providerOutputText: "RAW_TOOL_OUTPUT_/private/worktree",
+    rawWorkspacePathIncluded: false,
+    rawProviderPayloadIncluded: false,
+    resultDigest: "sha256:source_safe_tool_result",
+  };
+  const safeToolResult = capturedWorkspaceToolResult(sourceToolResult);
+  assert.equal(safeToolResult.schema, DIRECT_CAPTURED_TOOL_RESULT_SCHEMA);
+  assert.equal(safeToolResult.sourceResultDigest, sourceToolResult.resultDigest);
+  assert.equal(JSON.stringify(safeToolResult).includes("RAW_TOOL_OUTPUT"), false);
+  assert.equal(JSON.stringify(safeToolResult).includes("/private/worktree"), false);
+  assert.throws(
+    () => capturedWorkspaceToolResult({ ...sourceToolResult, argumentsJson: "{\"secret\":true}" }),
+    (error) => error?.code === "direct_turn_capture_tool_result_field_unsupported",
+  );
+  assert.throws(
+    () => capturedWorkspaceToolResult({ ...sourceToolResult, summary: "/private/native/result.txt" }),
+    (error) => error?.code === "direct_turn_capture_tool_result_path_forbidden",
+  );
+  assert.throws(
+    () => capturedWorkspaceToolResult({
+      ...safeToolResult,
+      metadata: { providerPayload: { text: "nested raw payload" } },
+    }),
+    (error) => error?.code === "direct_turn_capture_tool_result_raw_field_forbidden",
+  );
+
+  const replayInput = {
+    ...captureInput,
+    childAgentId: "child_completed_replay",
+    attemptId: "attempt_completed_replay",
+    promptDigest: "sha256:prompt_completed_replay",
+  };
+  const replayWriter = openNativeChildProviderTurnCapture(sessionStore, replayInput);
+  const replayEvents = [{
+    type: "response_completed",
+    sequence: 0,
+    responseId: "response_completed_replay",
+  }];
+  replayWriter.finalize({
+    responseId: "response_completed_replay",
+    terminal: { state: "completed" },
+    normalizedEvents: replayEvents,
+    workspaceWorkerToolResults: [sourceToolResult],
+  });
+  const completedBeforeReplay = sessionStore.readTurn(replayWriter.input.sessionId, replayWriter.input.turnId);
+  replayWriter.appendEventPrefix(replayEvents, { sourceOffset: 0 });
+  replayWriter.appendToolResult(sourceToolResult);
+  const completedAfterReplay = sessionStore.readTurn(replayWriter.input.sessionId, replayWriter.input.turnId);
+  assert.deepEqual(completedAfterReplay.capture, completedBeforeReplay.capture, "exact completed replay must be a no-op");
+  assert.throws(
+    () => replayWriter.appendEventPrefix([{
+      type: "message_delta",
+      sequence: 1,
+      text: "late suffix",
+    }], { sourceOffset: 1 }),
+    (error) => error?.code === "direct_turn_capture_terminal_prefix_conflict",
+  );
+  assert.throws(
+    () => replayWriter.appendToolResult({
+      ...sourceToolResult,
+      callId: "call_late_tool_result",
+      obligationId: "obligation_late_tool_result",
+      resultDigest: "sha256:source_late_tool_result",
+    }),
+    (error) => error?.code === "direct_turn_capture_terminal_tool_result_conflict",
+  );
+  const conflictedCompletedTurn = sessionStore.readTurn(replayWriter.input.sessionId, replayWriter.input.turnId);
+  assert.equal(conflictedCompletedTurn.capture.status, "complete");
+  assert.equal(conflictedCompletedTurn.capture.complete, true);
+  assert(conflictedCompletedTurn.capture.gapReceipts.some((receipt) =>
+    receipt.code === "direct_turn_capture_terminal_prefix_conflict"));
+  assert(conflictedCompletedTurn.capture.gapReceipts.some((receipt) =>
+    receipt.code === "direct_turn_capture_terminal_tool_result_conflict"));
+
+  const tamperedToolResult = { ...safeToolResult, summary: "tampered after digest" };
+  assert.throws(
+    () => sessionStore.appendCapturedToolResult(
+      replayWriter.input.sessionId,
+      replayWriter.input.turnId,
+      tamperedToolResult,
+    ),
+    (error) => error?.code === "direct_turn_capture_tool_result_digest_invalid",
+  );
+
   const gapInput = {
     ...captureInput,
     childAgentId: "child_gap_capture",
@@ -211,6 +378,97 @@ try {
   assert.equal(gapTurn.capture.status, "gap");
   assert.equal(gapTurn.capture.gapReceipts.length, 1);
   assert.equal(gapTurn.capture.gapReceipts[0].rawTextIncluded, false);
+
+  const contradictionStore = new DirectSessionStore({
+    rootDir: path.join(rootDir, "contradiction-sessions"),
+  });
+  const contradictionInput = {
+    ...captureInput,
+    childAgentId: "child_complete_active_contradiction",
+    attemptId: "attempt_complete_active_contradiction",
+    promptDigest: "sha256:prompt_complete_active_contradiction",
+  };
+  const contradictionWriter = openNativeChildProviderTurnCapture(contradictionStore, contradictionInput);
+  contradictionWriter.appendEventPrefix([{
+    type: "response_completed",
+    sequence: 0,
+    responseId: "response_complete_active_contradiction",
+  }], { sourceOffset: 0 });
+  contradictionWriter.refreshCapture({
+    status: "complete",
+    terminalState: "completed",
+    finalCaptureDigest: "sha256:complete_active_contradiction",
+    complete: true,
+    finalizedAt: new Date().toISOString(),
+  });
+  contradictionStore.recoverInterruptedTurns();
+  const reconciledContradiction = contradictionStore.readTurn(
+    contradictionWriter.input.sessionId,
+    contradictionWriter.input.turnId,
+  );
+  assert.equal(reconciledContradiction.state, "completed");
+  assert.equal(reconciledContradiction.capture.status, "complete");
+  assert.equal(reconciledContradiction.capture.complete, true);
+  assert.equal(reconciledContradiction.captureRecovered, true);
+  assert.equal(
+    contradictionStore.readSession(contradictionWriter.input.sessionId).turns[0].state,
+    "completed",
+    "restart must reconcile the session summary with an atomically terminal turn",
+  );
+
+  const legacyStore = new DirectSessionStore({ rootDir: path.join(rootDir, "legacy-sessions") });
+  const legacyInput = {
+    ...captureInput,
+    childAgentId: "child_legacy_capture",
+    attemptId: "attempt_legacy_capture",
+    promptDigest: "sha256:prompt_legacy_capture",
+    contextDigest: "sha256:context_legacy_capture",
+  };
+  const legacyResult = {
+    responseId: "response_legacy_capture",
+    terminal: { state: "completed" },
+    normalizedEvents: [{
+      type: "response_completed",
+      sequence: 0,
+      responseId: "response_legacy_capture",
+    }],
+  };
+  const legacySessionId = nativeChildSessionId(legacyInput);
+  const legacyTurnId = legacyNativeChildTurnId(legacyInput, legacyResult);
+  const stableTurnId = nativeChildTurnId(legacyInput);
+  assert.notEqual(legacyTurnId, stableTurnId);
+  legacyStore.createSession({
+    sessionId: legacySessionId,
+    projectId: legacyInput.projectId,
+    title: "Legacy native child fixture",
+    agentId: legacyInput.childAgentId,
+    agentThreadId: legacyInput.childAgentId,
+    parentThreadId: legacyInput.primaryThreadId,
+    primaryThreadId: legacyInput.primaryThreadId,
+    nativeDirectSession: true,
+  });
+  legacyStore.createTurn(legacySessionId, {
+    turnId: legacyTurnId,
+    state: "streaming",
+    agentId: legacyInput.childAgentId,
+    agentThreadId: legacyInput.childAgentId,
+    requestShape: {
+      attemptId: legacyInput.attemptId,
+      promptDigest: legacyInput.promptDigest,
+      captureDigest: "sha256:legacy_terminal_capture",
+    },
+  });
+  legacyStore.appendNormalizedEvents(legacySessionId, legacyTurnId, legacyResult.normalizedEvents);
+  legacyStore.updateTurnState(legacySessionId, legacyTurnId, "completed", {
+    captureDigest: "sha256:legacy_terminal_capture",
+  });
+  const adoptedLegacy = persistNativeChildProviderTurn(legacyStore, legacyInput, legacyResult);
+  assert.equal(adoptedLegacy.turnId, legacyTurnId);
+  assert.deepEqual(legacyStore.listTurnIdsFromDisk(legacySessionId), [legacyTurnId]);
+  const adoptedLegacyTurn = legacyStore.readTurn(legacySessionId, legacyTurnId);
+  assert.equal(adoptedLegacyTurn.requestShape.legacyResponseIdentityAdopted, true);
+  assert.equal(adoptedLegacyTurn.requestShape.stableTurnIdentity, stableTurnId);
+  assert.equal(adoptedLegacyTurn.capture.complete, true);
 
   service.close();
   epistemicStore.close();
@@ -259,6 +517,12 @@ try {
     livePrefixDurable: true,
     deterministicCursorAdvanced: true,
     unclassifiedOmissionTyped: true,
+    unknownTransportOmissionTyped: true,
+    asyncStrictCommitHandledOnce: true,
+    toolResultCaptureFailClosed: true,
+    completedReplayIdempotent: true,
+    completeActiveRecoveryReconciled: true,
+    legacyCaptureAdopted: true,
     captureGapDurable: true,
     restartCatchUp: true,
     safePassiveProjection: true,
