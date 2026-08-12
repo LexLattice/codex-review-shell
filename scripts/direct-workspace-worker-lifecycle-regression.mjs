@@ -24,7 +24,7 @@ const {
   buildWorkspaceWorkerShutdownPlan,
   runWorkspaceWorkerShutdown,
 } = require("../src/main/direct/agents/workspace-worker-shutdown");
-const { NdjsonTransport } = require("../src/main/workspace-backend");
+const { NdjsonTransport, WorkspaceBackendManager } = require("../src/main/workspace-backend");
 
 function deferred() {
   let resolve;
@@ -283,6 +283,20 @@ try {
   });
   await tick();
   assert.equal(runnerCalls.length, 1);
+  const firstLifecycleBinding = normalizeBinding({
+    workerKey: "first_worker",
+    branchName: "codex/worker/first-worker",
+    baseCommit: "1".repeat(40),
+    headCommit: "1".repeat(40),
+    worktreePathDigest: `sha256:${"2".repeat(64)}`,
+    sourceRepositoryDigest: `sha256:${"3".repeat(64)}`,
+  });
+  pool.bindWorkspaceForChild(first.childAgentId, { binding: firstLifecycleBinding });
+  assert.equal(
+    pool.inspect({ target: first.childAgentId }).workspaceLifecycle.bindingDigest,
+    firstLifecycleBinding.bindingDigest,
+    "validated private binding evidence is reflected through the safe pool lifecycle projection",
+  );
   const interruption = pool.interrupt({
     projectId: "project_pool_lifecycle",
     primaryThreadId: "primary_pool_lifecycle",
@@ -607,6 +621,111 @@ try {
   assert.equal(blockedShutdown.status, "blocked");
   assert.equal(unsafeDisposalStarted, false, "backends stay alive until child acknowledgement");
 
+  const liveBackendRoot = path.join(temporaryRoot, "live-backend");
+  fs.mkdirSync(liveBackendRoot, { recursive: true });
+  const lateMarkerPath = path.join(liveBackendRoot, "late-marker.txt");
+  fs.writeFileSync(path.join(liveBackendRoot, "package.json"), JSON.stringify({
+    name: "direct-worker-live-cancellation-fixture",
+    private: true,
+    scripts: { test: "node long-test.js" },
+  }, null, 2));
+  fs.writeFileSync(path.join(liveBackendRoot, "long-test.js"), [
+    'const fs = require("node:fs");',
+    `setTimeout(() => fs.writeFileSync(${JSON.stringify(lateMarkerPath)}, "escaped"), 5000);`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n"));
+  const liveManager = new WorkspaceBackendManager({
+    agentPath: path.resolve("src/backend/wsl-agent.js"),
+    fallbackRoot: liveBackendRoot,
+  });
+  const liveProject = {
+    id: "project_live_backend_cancellation",
+    repoPath: liveBackendRoot,
+    workspace: { kind: "local", localPath: liveBackendRoot },
+  };
+  const liveSession = await liveManager.ensureForProject(liveProject, { workspaceHygiene: false });
+  const liveProfile = await liveSession.request("directTestProfile", {}, 5_000);
+  const liveRegistry = new WorkspaceWorkerLifecycleRegistry({ db: new DatabaseSync(":memory:") });
+  const livePool = new DirectNativeAgentPool({
+    maxActiveChildren: 1,
+    workspaceWorkerLifecycleRegistry: liveRegistry,
+    workspaceWorkerRunner: async ({ signal }) => {
+      try {
+        await liveSession.request("runDirectTest", {
+          profileDigest: liveProfile.profileDigest,
+          timeoutMs: 30_000,
+        }, 35_000, { signal });
+        return { status: "completed" };
+      } catch (error) {
+        return {
+          status: "cancelled",
+          blockerCode: error.code,
+          cancellationAcknowledged: error.cancellationAcknowledged === true,
+          backendQuiesced: error.backendQuiesced === true,
+          cancellationReceipt: error.cancellationReceipt,
+        };
+      }
+    },
+  });
+  const liveLaunch = livePool.launch({
+    childAgentId: "child_live_backend_cancellation",
+    projectId: liveProject.id,
+    primaryThreadId: "primary_live_backend_cancellation",
+    taskName: "live_backend_cancellation",
+    message: "run until cancelled",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "implementation_worker",
+    project: liveProject,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  livePool.interrupt({ target: liveLaunch.childAgentId, reasonCode: "fixture_live_cancel" });
+  const liveDone = await livePool.wait({ target: liveLaunch.childAgentId, timeoutMs: 5_000 });
+  assert.equal(liveDone.updates[0].state, "cancelled");
+  assert.equal(liveDone.updates[0].cancellation.acknowledged, true);
+  assert.equal(liveDone.updates[0].cancellation.leaseActive, false);
+  assert.equal(livePool.descriptor().activeChildren, 0, "capacity releases only after exact backend quiescence");
+  await assert.rejects(
+    liveSession.request("cancelRequest", { requestId: "forged_request_id" }, 2_000),
+    (error) => error.code === "workspace_backend_cancel_target_unavailable",
+    "an absent or forged request ID cannot receive a quiescence acknowledgement",
+  );
+  const liveShutdownOrder = [];
+  const liveShutdown = await runWorkspaceWorkerShutdown({
+    reasonCode: "fixture_live_shutdown",
+    stopWorkerIntake: () => { liveShutdownOrder.push("stop"); return livePool.stopAccepting(); },
+    requestChildCancellation: () => { liveShutdownOrder.push("cancel"); return livePool.requestCancellationForAll(); },
+    awaitChildAcknowledgement: async () => {
+      liveShutdownOrder.push("child_ack");
+      return livePool.drainAndClose({ timeoutMs: 1_000 });
+    },
+    drainWorkspaceBackends: async () => {
+      liveShutdownOrder.push("backend_drain");
+      return liveManager.drainAll({ timeoutMs: 1_000 });
+    },
+    disposeWorkspaceBackends: () => { liveShutdownOrder.push("backend_dispose"); liveManager.disposeAll(); },
+    closeLifecycleRegistry: () => { liveShutdownOrder.push("registry_close"); liveRegistry.close(); },
+  });
+  assert.equal(liveShutdown.status, "completed");
+  assert.deepEqual(liveShutdownOrder, [
+    "stop",
+    "cancel",
+    "child_ack",
+    "backend_drain",
+    "backend_dispose",
+    "registry_close",
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(fs.existsSync(lateMarkerPath), false, "the cancelled process group cannot escape and finish later");
+
+  const mainSource = fs.readFileSync(path.resolve("src/main.js"), "utf8");
+  assert.match(mainSource, /workspaceWorkerLifecycleRegistry: ensureWorkspaceWorkerLifecycleRegistry\(\)/);
+  assert.match(mainSource, /installOrderedWorkspaceWorkerWindowClose\(mainWindow,/);
+  assert.doesNotMatch(
+    mainSource.slice(mainSource.indexOf("async function provisionDirectWorkspaceWorker"), mainSource.indexOf("function tokenUsageFromWorkspaceWorkerCapture")),
+    /removeGitWorktree/,
+    "failed or cancelled provisioning retains the worktree for inspection",
+  );
+
   console.log(JSON.stringify({
     ok: true,
     durableEvents: durableEventCount,
@@ -619,6 +738,10 @@ try {
     operationIdentityBound: true,
     settlementFailureRetryable: true,
     shutdownOrder: order,
+    liveBackendCancellationQuiesced: true,
+    liveCapacityReleasedAfterAcknowledgement: true,
+    liveOrderedShutdown: liveShutdownOrder,
+    failedWorktreeRetentionWired: true,
   }, null, 2));
 } finally {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });

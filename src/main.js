@@ -243,6 +243,13 @@ const {
   DirectNativeAgentPool,
 } = require("./main/direct/agents/native-agent-pool");
 const {
+  WorkspaceWorkerLifecycleRegistry,
+  normalizeBinding: normalizeWorkspaceWorkerLifecycleBinding,
+} = require("./main/direct/agents/workspace-worker-lifecycle-registry");
+const {
+  runWorkspaceWorkerShutdown,
+} = require("./main/direct/agents/workspace-worker-shutdown");
+const {
   assertBatchAgentJobSurfaceSafe,
   buildBatchAgentJobSurface,
 } = require("./main/direct/agents/batch-job-surface");
@@ -485,6 +492,12 @@ let directImplementationProofEvidenceStore = null;
 let directFixtureController = null;
 let directLiveTextController = null;
 let directNativeAgentPool = null;
+let workspaceWorkerLifecycleRegistry = null;
+let workspaceWorkerShutdownInFlight = null;
+let workspaceWorkerShutdownReceipt = null;
+let applicationQuitAfterOrderedShutdown = false;
+let degradedWorkspaceShutdownStarted = false;
+const windowsAllowedToCloseAfterOrderedShutdown = new WeakSet();
 let directProviderMetadataAdapter = null;
 let directActivationStore = null;
 let worldManagerSemanticCoordinator = null;
@@ -578,6 +591,15 @@ function directProviderMetadataRootDir() {
 
 function directSessionRootDir() {
   return path.join(app.getPath("userData"), DIRECT_SESSION_ROOT_NAME);
+}
+
+function ensureWorkspaceWorkerLifecycleRegistry() {
+  if (workspaceWorkerLifecycleRegistry) return workspaceWorkerLifecycleRegistry;
+  resetCompletedWorkspaceWorkerShutdown();
+  workspaceWorkerLifecycleRegistry = new WorkspaceWorkerLifecycleRegistry({
+    rootDir: directSessionRootDir(),
+  });
+  return workspaceWorkerLifecycleRegistry;
 }
 
 function worldManagerSemanticMockupRootDir() {
@@ -3084,6 +3106,7 @@ function chooseCodexThreadRestoreTarget(project, hint = {}) {
 
 function ensureWorkspaceBackendManager() {
   if (workspaceBackends) return workspaceBackends;
+  resetCompletedWorkspaceWorkerShutdown();
   workspaceBackends = new WorkspaceBackendManager({
     agentPath: workspaceAgentPath,
     fallbackRoot: repoRoot,
@@ -3475,12 +3498,79 @@ function closeDirectLiveTextController(reason = "Direct runtime closed.") {
   directLiveTextController = null;
 }
 
-function closeDirectNativeAgentPool(reason = "Direct runtime closed.") {
-  directNativeAgentPool?.close?.({
-    reason,
+function workspaceWorkerShutdownTimeoutMs() {
+  const configured = Number(process.env.CODEX_DIRECT_WORKSPACE_SHUTDOWN_TIMEOUT_MS);
+  return Number.isFinite(configured)
+    ? Math.max(1000, Math.min(300_000, Math.floor(configured)))
+    : 30_000;
+}
+
+function resetCompletedWorkspaceWorkerShutdown() {
+  if (workspaceWorkerShutdownReceipt?.status !== "completed") return;
+  workspaceWorkerShutdownReceipt = null;
+  workspaceWorkerShutdownInFlight = null;
+}
+
+async function coordinateWorkspaceWorkerShutdown(reason = "Direct runtime closed.") {
+  if (workspaceWorkerShutdownReceipt?.status === "completed") return workspaceWorkerShutdownReceipt;
+  if (workspaceWorkerShutdownInFlight) return workspaceWorkerShutdownInFlight;
+  const pool = directNativeAgentPool;
+  const manager = workspaceBackends;
+  const registry = workspaceWorkerLifecycleRegistry;
+  const timeoutMs = workspaceWorkerShutdownTimeoutMs();
+  workspaceWorkerShutdownInFlight = runWorkspaceWorkerShutdown({
     reasonCode: "direct_runtime_closed",
+    stopWorkerIntake: () => pool?.stopAccepting?.({ reason, reasonCode: "direct_runtime_closed" }),
+    requestChildCancellation: () => pool?.requestCancellationForAll?.({ reason, reasonCode: "direct_runtime_closed" }),
+    awaitChildAcknowledgement: () => pool?.drainAndClose?.({
+      reason,
+      reasonCode: "direct_runtime_closed",
+      timeoutMs,
+    }) || { status: "drained", blockerCode: "" },
+    drainWorkspaceBackends: () => manager?.drainAll?.({ timeoutMs }) || {
+      status: "drained",
+      blockerCode: "",
+      pendingRequests: 0,
+    },
+    disposeWorkspaceBackends: () => manager?.disposeAll?.(),
+    closeLifecycleRegistry: () => registry?.close?.(),
+  }).then((receipt) => {
+    workspaceWorkerShutdownReceipt = receipt;
+    if (receipt.status === "completed") {
+      if (directNativeAgentPool === pool) directNativeAgentPool = null;
+      if (workspaceBackends === manager) workspaceBackends = null;
+      if (workspaceWorkerLifecycleRegistry === registry) workspaceWorkerLifecycleRegistry = null;
+    } else {
+      workspaceWorkerShutdownInFlight = null;
+      console.warn("[workspace-worker] ordered shutdown blocked", receipt.blockerCode);
+    }
+    return receipt;
   });
-  directNativeAgentPool = null;
+  return workspaceWorkerShutdownInFlight;
+}
+
+function installOrderedWorkspaceWorkerWindowClose(window, reason) {
+  window.on("close", (event) => {
+    if (windowsAllowedToCloseAfterOrderedShutdown.has(window)) return;
+    event.preventDefault();
+    coordinateWorkspaceWorkerShutdown(reason).then((receipt) => {
+      if (receipt.status !== "completed" || window.isDestroyed?.()) return;
+      windowsAllowedToCloseAfterOrderedShutdown.add(window);
+      window.close();
+    }).catch((error) => {
+      console.warn("[workspace-worker] ordered window shutdown failed", error?.code || error?.message);
+    });
+  });
+}
+
+function degradedSynchronousWorkspaceWorkerShutdown(reason = "process_exit") {
+  if (workspaceWorkerShutdownReceipt?.status === "completed" || degradedWorkspaceShutdownStarted) return;
+  degradedWorkspaceShutdownStarted = true;
+  console.warn("[workspace-worker] degraded synchronous shutdown without a quiescence receipt", reason);
+  directNativeAgentPool?.stopAccepting?.({ reasonCode: "direct_runtime_degraded_exit" });
+  directNativeAgentPool?.requestCancellationForAll?.({ reasonCode: "direct_runtime_degraded_exit" });
+  workspaceBackends?.disposeAll?.();
+  workspaceWorkerLifecycleRegistry?.close?.();
 }
 
 function ensureDirectThreadStore() {
@@ -3821,6 +3911,45 @@ function projectForWorkspaceWorker(parentProject = {}, worktreePath = "", worker
   };
 }
 
+function validateDirectWorkspaceWorkerBinding(provisioned, input = {}) {
+  const bindingBase = {
+    schema: "direct_workspace_worker_binding@1",
+    projectId: normalizeString(provisioned?.projectId, ""),
+    workerKey: normalizeString(provisioned?.workerKey, ""),
+    workspaceKind: normalizeString(provisioned?.workspaceKind, ""),
+    branch: normalizeString(provisioned?.branch, ""),
+    baseCommit: normalizeString(provisioned?.baseCommit, ""),
+    rootEvidenceDigest: normalizeString(provisioned?.rootEvidenceDigest, ""),
+    sourceRepositoryDigest: normalizeString(provisioned?.sourceRepositoryDigest, ""),
+    retainedAfterCompletion: provisioned?.retainedAfterCompletion === true,
+    rawWorkspacePathIncluded: false,
+  };
+  const expectedDigest = `sha256:${stableDigest(bindingBase)}`;
+  const valid = (
+    bindingBase.projectId === normalizeString(input.projectId, "") &&
+    bindingBase.workerKey === normalizeString(input.workerKey, "") &&
+    bindingBase.workspaceKind === normalizeString(input.workspaceKind, "") &&
+    bindingBase.branch === normalizeString(input.branch, "") &&
+    /^[a-f0-9]{40,64}$/i.test(bindingBase.baseCommit) &&
+    /^sha256:[a-f0-9]{64}$/i.test(bindingBase.rootEvidenceDigest) &&
+    /^sha256:[a-f0-9]{64}$/i.test(bindingBase.sourceRepositoryDigest) &&
+    bindingBase.retainedAfterCompletion === true &&
+    provisioned?.rawWorkspacePathIncluded === false &&
+    normalizeString(provisioned?.bindingDigest, "") === expectedDigest &&
+    normalizeString(provisioned?.bindingId, "") === `workspace_worker_binding_${expectedDigest.slice(7, 31)}`
+  );
+  if (!valid) {
+    const error = new Error("Resident backend workspace-worker binding evidence failed exact validation.");
+    error.code = "direct_workspace_worker_binding_validation_failed";
+    throw error;
+  }
+  return {
+    ...bindingBase,
+    bindingId: provisioned.bindingId,
+    bindingDigest: provisioned.bindingDigest,
+  };
+}
+
 async function provisionDirectWorkspaceWorker(input = {}) {
   const parentProject = input.project;
   if (!isPlainObject(parentProject)) {
@@ -3850,20 +3979,56 @@ async function provisionDirectWorkspaceWorker(input = {}) {
       error.code = "direct_workspace_worker_native_root_missing";
       throw error;
     }
-    const binding = { ...provisioned };
-    delete binding.worktreePath;
+    const binding = validateDirectWorkspaceWorkerBinding(provisioned, {
+      projectId: parentProject.id,
+      workerKey,
+      workspaceKind: parentWorkspaceKind,
+      branch,
+    });
     workerProject = projectForWorkspaceWorker(parentProject, nativeRoot, workerKey);
     manager = ensureWorkspaceBackendManager();
     const workerSession = await manager.ensureForProject(workerProject, {
       workspaceHygiene: false,
       workspaceWorkerBinding: binding,
     });
+    if (
+      normalizeString(workerSession.hello?.projectId, "") !== workerProject.id ||
+      normalizeString(workerSession.hello?.workspaceKind, "") !== parentWorkspaceKind ||
+      !sameNativeWorkspacePath(workerSession.hello?.root, nativeRoot, parentWorkspaceKind)
+    ) {
+      const error = new Error("Workspace-worker backend attachment did not match the provisioned binding.");
+      error.code = "direct_workspace_worker_backend_binding_mismatch";
+      throw error;
+    }
     const testProfile = await workerSession.request(
       "directTestProfile",
       {},
       10_000,
       { signal: input.signal },
     );
+    const registry = ensureWorkspaceWorkerLifecycleRegistry();
+    const lifecycleSession = registry.sessionForChild(input.childAgentId);
+    if (!lifecycleSession) {
+      const error = new Error("Workspace-worker lifecycle registration is missing.");
+      error.code = "direct_workspace_worker_lifecycle_session_missing";
+      throw error;
+    }
+    if (!directNativeAgentPool?.bindWorkspaceForChild) {
+      const error = new Error("Workspace-worker pool lifecycle binding seam is unavailable.");
+      error.code = "direct_workspace_worker_pool_binding_unavailable";
+      throw error;
+    }
+    directNativeAgentPool.bindWorkspaceForChild(input.childAgentId, {
+      operationId: `pool-bind:${input.childAgentId}`,
+      binding: normalizeWorkspaceWorkerLifecycleBinding({
+        workerKey,
+        branchName: binding.branch,
+        baseCommit: binding.baseCommit,
+        headCommit: binding.baseCommit,
+        worktreePathDigest: binding.rootEvidenceDigest,
+        sourceRepositoryDigest: binding.sourceRepositoryDigest,
+      }),
+    });
     return {
       binding,
       testProfile,
@@ -3875,18 +4040,8 @@ async function provisionDirectWorkspaceWorker(input = {}) {
     };
   } catch (error) {
     if (manager && workerProject) manager.disposeForProject(workerProject);
-    try {
-      await requestWorkspace(parentProject, "removeGitWorktree", {
-        workerKey,
-        branch,
-        deleteBranch: true,
-      }, 45_000);
-    } catch (cleanupError) {
-      error.workspaceCleanupErrorCode = normalizeString(
-        cleanupError?.code,
-        "direct_workspace_worker_failed_provision_cleanup_failed",
-      );
-    }
+    error.workspaceRetainedForInspection = true;
+    error.forcedWorkspaceCleanupStarted = false;
     throw error;
   }
 }
@@ -3985,6 +4140,7 @@ async function runDirectWorkspaceWorkerTurn(input = {}) {
 
 function ensureDirectNativeAgentPool() {
   if (directNativeAgentPool) return directNativeAgentPool;
+  resetCompletedWorkspaceWorkerShutdown();
   directNativeAgentPool = new DirectNativeAgentPool({
     maxActiveChildren: Number(
       process.env.CODEX_DIRECT_SUB_AGENT_MAX_ACTIVE || 8,
@@ -4002,6 +4158,7 @@ function ensureDirectNativeAgentPool() {
     ),
     providerTurnRunner: (input) => runDirectNativeChildProviderTurn(input),
     workspaceWorkerRunner: (input) => runDirectWorkspaceWorkerTurn(input),
+    workspaceWorkerLifecycleRegistry: ensureWorkspaceWorkerLifecycleRegistry(),
   });
   return directNativeAgentPool;
 }
@@ -10877,6 +11034,7 @@ async function createDirectWorkbenchWindow() {
     backgroundColor: "#090a0c",
     show: true,
   });
+  installOrderedWorkspaceWorkerWindowClose(mainWindow, "Direct Workbench window close requested.");
   codexView = new WebContentsView({
     webPreferences: {
       preload: codexSurfacePreloadPath,
@@ -10913,8 +11071,6 @@ async function createDirectWorkbenchWindow() {
   configureGuestSurface("codex", codexView);
 
   mainWindow.on("closed", () => {
-    workspaceBackends?.disposeAll();
-    workspaceBackends = null;
     codexAppServer?.dispose();
     codexAppServer = null;
     for (const session of codexSurfaceSessions?.values() || []) {
@@ -10936,7 +11092,6 @@ async function createDirectWorkbenchWindow() {
     directWorkbenchProjectLifecycleOperations.clear();
     directWorkbenchProjectBindingMutation = { state: "idle" };
     directThreadWorkbenchController = null;
-    closeDirectNativeAgentPool("Direct Workbench window closed.");
     closeDirectEpistemicService();
     directThreadStore?.close();
     directThreadStore = null;
@@ -10990,6 +11145,7 @@ async function createWorldManagerWindow() {
     backgroundColor: "#08111f",
     show: true,
   });
+  installOrderedWorkspaceWorkerWindowClose(mainWindow, "WorldManager window close requested.");
   codexView = new WebContentsView({
     webPreferences: {
       preload: codexSurfacePreloadPath,
@@ -11061,6 +11217,7 @@ async function createWorldManagerWindow() {
 }
 
 async function createWindow() {
+  resetCompletedWorkspaceWorkerShutdown();
   if (WORLD_MANAGER_SURFACE_MODE) {
     return createWorldManagerWindow();
   }
@@ -11080,6 +11237,7 @@ async function createWindow() {
     backgroundColor: "#080b10",
     show: true,
   });
+  installOrderedWorkspaceWorkerWindowClose(mainWindow, "Main window close requested.");
 
   shellView = new WebContentsView({
     webPreferences: {
@@ -11155,8 +11313,6 @@ async function createWindow() {
 
   mainWindow.on("closed", () => {
     stopGeometrySyncLoop();
-    workspaceBackends?.disposeAll();
-    workspaceBackends = null;
     codexAppServer?.dispose();
     codexAppServer = null;
     for (const session of codexSurfaceSessions?.values() || []) {
@@ -11173,7 +11329,6 @@ async function createWindow() {
     directImplementationProofEvidenceStore = null;
     directActivationStore = null;
     directThreadWorkbenchController = null;
-    closeDirectNativeAgentPool("Main window closed.");
     closeDirectEpistemicService();
     directThreadStore?.close();
     directThreadStore = null;
@@ -12920,9 +13075,7 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on("before-quit", () => {
-  workspaceBackends?.disposeAll();
-  workspaceBackends = null;
+function closeApplicationRuntimeAfterOrderedWorkspaceShutdown() {
   threadAnalyticsStore?.close();
   threadAnalyticsStore = null;
   directAuthLoginCoordinator = null;
@@ -12933,18 +13086,34 @@ app.on("before-quit", () => {
   directImplementationProofEvidenceStore = null;
   directActivationStore = null;
   directThreadWorkbenchController = null;
-  closeDirectNativeAgentPool("Application quit.");
   closeDirectEpistemicService();
   clearWorldManagerTransitionSubscribers();
   worldManagerService?.close();
   worldManagerService = null;
   worldManagerRoleRuntime = null;
-    directThreadStore?.close();
-    directThreadStore = null;
-    directSessionStore = null;
-    directWorkThreadStore = null;
-    directAgentRegistryStore = null;
-    directAgentRegistryBackfillStateByProject.clear();
+  directThreadStore?.close();
+  directThreadStore = null;
+  directSessionStore = null;
+  directWorkThreadStore = null;
+  directAgentRegistryStore = null;
+  directAgentRegistryBackfillStateByProject.clear();
+}
+
+app.on("before-quit", (event) => {
+  if (applicationQuitAfterOrderedShutdown) return;
+  event.preventDefault();
+  coordinateWorkspaceWorkerShutdown("Application quit requested.").then((receipt) => {
+    if (receipt.status !== "completed") return;
+    closeApplicationRuntimeAfterOrderedWorkspaceShutdown();
+    applicationQuitAfterOrderedShutdown = true;
+    app.quit();
+  }).catch((error) => {
+    console.warn("[workspace-worker] application shutdown failed", error?.code || error?.message);
+  });
+});
+
+app.on("quit", () => {
+  degradedSynchronousWorkspaceWorkerShutdown("electron_quit_without_ordered_receipt");
 });
 
 function emitDirectAuthAndRuntimeStatus(event) {

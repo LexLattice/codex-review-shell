@@ -133,6 +133,7 @@
     "direct:live-sub-agent-tool-surface": "node ./scripts/direct-live-sub-agent-tool-surface-regression.mjs",
     "direct:provider-backed-sub-agent-route": "node ./scripts/direct-provider-backed-sub-agent-route-regression.mjs",
     "direct:native-agent-pool": "node ./scripts/direct-native-agent-pool-regression.mjs",
+    "direct:workspace-worker-lifecycle": "node ./scripts/direct-workspace-worker-lifecycle-regression.mjs",
     "direct:native-agent-tool-routing": "node ./scripts/direct-native-agent-tool-routing-regression.mjs",
     "direct:sub-agent-resident-declaration": "node ./scripts/direct-sub-agent-resident-declaration-regression.mjs",
     "direct:sub-agent-operator-projection": "node ./scripts/direct-sub-agent-operator-projection-regression.mjs",

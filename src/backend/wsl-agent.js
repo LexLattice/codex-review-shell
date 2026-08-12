@@ -15,6 +15,7 @@ const fsSync = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
+const { AsyncLocalStorage } = require("node:async_hooks");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const { TextDecoder } = require("node:util");
@@ -163,6 +164,59 @@ let shutdownTimer = null;
 let forceShutdownTimer = null;
 const activeChildProcesses = new Set();
 const terminatingChildProcesses = new WeakSet();
+const cancellableRequestContext = new AsyncLocalStorage();
+const cancellableRequestScopes = new Map();
+const completedCancellableRequests = new Map();
+const CANCELLABLE_REQUEST_METHODS = new Set(["provisionGitWorktree", "runDirectTest"]);
+const COMPLETED_CANCELLABLE_REQUEST_LIMIT = 256;
+
+function requestCancellationError(scope) {
+  const error = new Error(`Workspace backend request cancelled: ${scope?.method || "operation"}`);
+  error.name = "AbortError";
+  error.code = "workspace_backend_request_cancelled";
+  error.requestId = scope?.requestId || "";
+  error.backendQuiesced = true;
+  error.cancellationAcknowledged = true;
+  return error;
+}
+
+function throwIfCurrentRequestCancelled() {
+  const scope = cancellableRequestContext.getStore();
+  if (scope?.cancellationRequested) throw requestCancellationError(scope);
+}
+
+function rememberCompletedCancellableRequest(scope) {
+  completedCancellableRequests.set(scope.requestId, {
+    method: scope.method,
+    completedAt: new Date().toISOString(),
+  });
+  while (completedCancellableRequests.size > COMPLETED_CANCELLABLE_REQUEST_LIMIT) {
+    completedCancellableRequests.delete(completedCancellableRequests.keys().next().value);
+  }
+}
+
+function createCancellableRequestScope(requestId, method) {
+  let resolveDone;
+  const done = new Promise((resolve) => { resolveDone = resolve; });
+  return {
+    requestId,
+    method,
+    children: new Set(),
+    cancellationRequested: false,
+    cancellationReasonCode: "",
+    completed: false,
+    done,
+    resolveDone,
+  };
+}
+
+function completeCancellableRequestScope(scope) {
+  if (!scope || scope.completed) return;
+  scope.completed = true;
+  cancellableRequestScopes.delete(scope.requestId);
+  rememberCompletedCancellableRequest(scope);
+  scope.resolveDone();
+}
 
 function isClosedPipeError(error) {
   return ["EPIPE", "ERR_STREAM_DESTROYED", "ERR_STREAM_WRITE_AFTER_END"].includes(error?.code);
@@ -214,11 +268,15 @@ function terminateChild(child) {
 }
 
 function trackChildProcess(child) {
+  const requestScope = cancellableRequestContext.getStore();
   activeChildProcesses.add(child);
+  if (requestScope) requestScope.children.add(child);
   child.once("close", () => {
     activeChildProcesses.delete(child);
+    requestScope?.children.delete(child);
   });
   if (stdinClosed) terminateChild(child);
+  if (requestScope?.cancellationRequested) killProcessTree(child, "SIGTERM");
   return child;
 }
 
@@ -2281,6 +2339,7 @@ function workspaceEffectSummary(before, after) {
 }
 
 async function runDirectCommand(params = {}) {
+  throwIfCurrentRequestCancelled();
   const command = String(params.command || "").trim();
   if (!command) throw new Error("Command is required.");
   const args = Array.isArray(params.args) ? params.args.map((arg) => String(arg)) : [];
@@ -2300,13 +2359,13 @@ async function runDirectCommand(params = {}) {
   const beforeEffects = await workspaceEffectSnapshot();
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
-    const child = spawn(command, args, {
+    const child = trackChildProcess(spawn(command, args, {
       cwd: fullPath,
       env: minimalCommandEnv(params.env),
       shell: false,
       windowsHide: true,
       detached: process.platform !== "win32",
-    });
+    }));
 
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -2332,7 +2391,13 @@ async function runDirectCommand(params = {}) {
     child.on("error", async (error) => {
       clearTimeout(timer);
       settled = true;
-      const afterEffects = await workspaceEffectSnapshot();
+      const afterEffects = await workspaceEffectSnapshot().catch(() => ({
+        supported: false,
+        scanScope: "none",
+        scanFailed: true,
+        digest: "",
+        entries: [],
+      }));
       resolve({
         command,
         args,
@@ -2358,7 +2423,13 @@ async function runDirectCommand(params = {}) {
     child.on("close", async (exitCode, signal) => {
       clearTimeout(timer);
       settled = true;
-      const afterEffects = await workspaceEffectSnapshot();
+      const afterEffects = await workspaceEffectSnapshot().catch(() => ({
+        supported: false,
+        scanScope: "none",
+        scanFailed: true,
+        digest: "",
+        entries: [],
+      }));
       resolve({
         command,
         args,
@@ -2384,6 +2455,7 @@ async function runDirectCommand(params = {}) {
 }
 
 function captureProcess(command, args, options = {}) {
+  throwIfCurrentRequestCancelled();
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     const child = trackChildProcess(spawn(command, args, {
@@ -2391,13 +2463,17 @@ function captureProcess(command, args, options = {}) {
       env: { ...process.env, ...(options.env && typeof options.env === "object" ? options.env : {}) },
       shell: false,
       windowsHide: true,
+      detached: process.platform !== "win32",
     }));
     const stdoutChunks = [];
     const stderrChunks = [];
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
-      terminateChild(child);
+      killProcessTree(child, "SIGTERM");
+      setTimeout(() => {
+        if (!settled) killProcessTree(child, "SIGKILL");
+      }, 1200).unref?.();
     }, timeoutMs);
     child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
     child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
@@ -2543,6 +2619,7 @@ async function provisionGitWorktree(params = {}) {
     throw error;
   }
   const rootEvidenceDigest = sha256Digest(await fs.realpath(worktreePath));
+  const sourceRepositoryDigest = sha256Digest(git.topLevel);
   const bindingBase = {
     schema: "direct_workspace_worker_binding@1",
     projectId,
@@ -2551,6 +2628,7 @@ async function provisionGitWorktree(params = {}) {
     branch,
     baseCommit,
     rootEvidenceDigest,
+    sourceRepositoryDigest,
     retainedAfterCompletion: true,
     rawWorkspacePathIncluded: false,
   };
@@ -5192,6 +5270,51 @@ async function handleRequest(method, params = {}) {
   throw new Error(`Unknown workspace-agent method: ${method}`);
 }
 
+async function cancelScopedRequest(params = {}) {
+  const targetRequestId = String(params.requestId || "").trim();
+  if (!targetRequestId) {
+    const error = new Error("Workspace backend cancellation requires an exact request ID.");
+    error.code = "workspace_backend_cancel_request_id_missing";
+    throw error;
+  }
+  if (completedCancellableRequests.has(targetRequestId)) {
+    return {
+      targetRequestId,
+      acknowledged: true,
+      quiesced: true,
+      acknowledgementKind: "request_already_completed",
+      rawProcessDetailsIncluded: false,
+    };
+  }
+  const scope = cancellableRequestScopes.get(targetRequestId);
+  if (!scope) {
+    const error = new Error("Workspace backend request is absent or does not own a cancellable execution.");
+    error.code = "workspace_backend_cancel_target_unavailable";
+    throw error;
+  }
+  scope.cancellationRequested = true;
+  scope.cancellationReasonCode = String(params.reasonCode || "workspace_backend_request_aborted").trim();
+  for (const child of scope.children) killProcessTree(child, "SIGTERM");
+  const forceTimer = setTimeout(() => {
+    for (const child of scope.children) killProcessTree(child, "SIGKILL");
+  }, 1200);
+  forceTimer.unref?.();
+  await scope.done;
+  clearTimeout(forceTimer);
+  if (scope.children.size > 0) {
+    const error = new Error("Workspace backend request completion did not prove process quiescence.");
+    error.code = "workspace_backend_cancel_quiescence_unproven";
+    throw error;
+  }
+  return {
+    targetRequestId,
+    acknowledged: true,
+    quiesced: true,
+    acknowledgementKind: "request_execution_quiesced",
+    rawProcessDetailsIncluded: false,
+  };
+}
+
 async function handleLine(line) {
   if (stdinClosed) return;
   if (!line.trim()) return;
@@ -5206,12 +5329,57 @@ async function handleLine(line) {
     return;
   }
   const id = request.id;
+  if (request.method === "cancelRequest") {
+    try {
+      const result = await cancelScopedRequest(request.params || {});
+      send({ id, result });
+    } catch (error) {
+      send({ id, error: { message: error.message, code: error.code || "", stack: error.stack } });
+    } finally {
+      activeRequests -= 1;
+      if (stdinClosed && activeRequests === 0) requestShutdown();
+    }
+    return;
+  }
+  const requestId = String(id ?? "").trim();
+  const cancellable = CANCELLABLE_REQUEST_METHODS.has(request.method);
+  let requestScope = null;
+  if (cancellable) {
+    if (!requestId || cancellableRequestScopes.has(requestId)) {
+      send({
+        id,
+        error: {
+          message: "Cancellable workspace backend request ID is missing or already active.",
+          code: "workspace_backend_request_id_invalid",
+        },
+      });
+      activeRequests -= 1;
+      if (stdinClosed && activeRequests === 0) requestShutdown();
+      return;
+    }
+    requestScope = createCancellableRequestScope(requestId, request.method);
+    cancellableRequestScopes.set(requestId, requestScope);
+  }
+  let result;
+  let requestError;
   try {
-    const result = await handleRequest(request.method, request.params || {});
-    send({ id, result });
+    result = requestScope
+      ? await cancellableRequestContext.run(
+          requestScope,
+          () => handleRequest(request.method, request.params || {}),
+        )
+      : await handleRequest(request.method, request.params || {});
   } catch (error) {
-    send({ id, error: { message: error.message, code: error.code || "", stack: error.stack } });
+    requestError = error;
   } finally {
+    completeCancellableRequestScope(requestScope);
+    if (!requestScope?.cancellationRequested) {
+      if (requestError) {
+        send({ id, error: { message: requestError.message, code: requestError.code || "", stack: requestError.stack } });
+      } else {
+        send({ id, result });
+      }
+    }
     activeRequests -= 1;
     if (stdinClosed && activeRequests === 0) requestShutdown();
   }

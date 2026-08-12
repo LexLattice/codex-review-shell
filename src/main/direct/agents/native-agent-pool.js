@@ -539,6 +539,26 @@ class DirectNativeAgentPool extends EventEmitter {
     }
   }
 
+  bindWorkspaceForChild(childAgentId, input = {}) {
+    const record = this.jobs.get(normalizeString(childAgentId, ""));
+    if (!record || !record._lifecycleSessionId) {
+      const error = new Error("direct_workspace_worker_lifecycle_session_missing");
+      error.code = "direct_workspace_worker_lifecycle_session_missing";
+      throw error;
+    }
+    const lifecycleError = this.transitionLifecycle(record, "bindWorkspace", {
+      operationId: normalizeString(input.operationId, `pool-bind:${record.childAgentId}`),
+      binding: input.binding,
+    });
+    if (lifecycleError) {
+      const error = new Error(lifecycleError);
+      error.code = lifecycleError;
+      throw error;
+    }
+    this.emit("changed", this.publicRecord(record));
+    return record._lifecycleProjection;
+  }
+
   commitLifecycleSettlement(record, patch = {}) {
     if (!record?._lifecycleSessionId || !this.workspaceWorkerLifecycleRegistry) return "";
     try {
