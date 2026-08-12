@@ -1,6 +1,6 @@
 # Direct ArcAGI3 workspace-worker execution (EXEC2)
 
-Status: implemented repository-perception and inherited-constitution slice
+Status: implemented provider-visible isolated-worktree execution slice
 
 ## Outcome
 
@@ -55,12 +55,30 @@ The packet is immutably branded inside the harness process and requires an
 explicit boundary id, upstream policy id, and canonical upstream tool set. It
 binds that policy by digest and cannot be reconstructed from provider JSON or
 widened by `tool_profile`; omission of the upstream set never defaults to all
-tools. The current live launcher does not yet project its
-wider work-thread boundary into such a packet, so provider-visible
-`isolated_worktree` spawning is unavailable there. Direct compilation without
-the packet grants zero tools and records a typed parent-boundary omission. The
-acceptance fixture injects a clearly identified harness-owned witness; it is not
-a production authority source.
+tools.
+
+The live launcher obtains that packet through a separate process-owned
+delegation-policy registry, not from provider arguments and not from the set of
+tools declared on the current parent turn. Each admitted registry source is
+keyed by an exact project/work-thread pair and carries explicit source and
+policy revisions, validity times, allowed worker profiles, canonical tools, and
+negative authority flags. Its source digest and the resulting short-lived
+policy digest are bound into the launch, worker contract, execution projection,
+and parent status evidence. Missing, stale, wrong-scope, reconstructed, or
+profile-widening policies block before pool launch. Direct compilation without
+a packet still grants zero tools and records a typed parent-boundary omission.
+
+Main starts with an empty registry. A deployment that wants provider-visible
+workspace delegation must seed the process-owned registry through
+`CODEX_DIRECT_WORKSPACE_WORKER_DELEGATION_SOURCES`, a JSON array of explicit
+`direct_workspace_worker_delegation_source@1` inputs. Selecting the Direct
+implementation lane alone grants nothing. Invalid source configuration is
+rejected and leaves the registry empty. The headless acceptance fixture seeds
+the same registry type directly as a harness-owned source; no provider payload
+can mint or serialize its in-process capability brand. Delegation-bearing
+parent packets carry a second private issuance witness owned by the delegation
+registry; constructing an otherwise branded generic parent packet around a
+syntactically valid policy reference does not satisfy that witness.
 
 The first-slice constitutions are:
 
@@ -99,6 +117,9 @@ epistemic input
 
 authority
   requested advisory tool profile
+  harness delegation-source id/digest
+  short-lived delegation-policy id/digest
+  durable launch-operation/canonical-input digest
   parent-authority boundary digest
   pinned repository-policy profile/digest
   substrate-capability profile/digest
@@ -121,6 +142,12 @@ digest of the native root, never the native root itself.
 
 The binding is frozen for the child lifetime. A worker cannot select another
 child's binding or provide a filesystem root in a tool call.
+
+The durable lifecycle session also binds the provider session/turn/obligation
+identity by digest to the canonical launch input and delegation-authority
+digest. An exact replay returns the original child identity without another
+side effect. Reusing the obligation with different task, model, context,
+profile, role, or authority input is a typed conflict, including after restart.
 
 ### Repository policy and selective inheritance
 
@@ -244,7 +271,7 @@ steps. Each step is:
 
 ```text
 provider requests declared tool
-  -> harness validates call against frozen contract
+  -> harness validates call against frozen contract, active lease, and current policy expiry
   -> resident backend performs the typed operation
   -> harness records typed result
   -> bounded result evidence is admitted to a fresh continuation
@@ -253,6 +280,8 @@ provider requests declared tool
 The loop fails closed on multiple calls, undeclared tools, malformed arguments,
 contract/binding drift, test-profile drift, step exhaustion, or raw-path
 exposure. It never delegates tool execution back to the provider.
+The lease and short-lived delegation policy are revalidated immediately before
+each backend operation; the patch dry-run and apply phases are distinct checks.
 
 ## Communication topology
 
@@ -260,15 +289,36 @@ Active communication remains top-down. Workspace workers see only their task,
 admitted context, compiled tools, and resulting environment constraints. They
 cannot message the parent, request another worker, or alter their constitution.
 
-The parent observes terminal summaries and typed status through `wait_agent`,
-`list_agents`, and `inspect_agent`. It does not need to ingest a flattened child
-transcript.
+The parent observes typed terminal/capture status codes through `wait_agent`,
+`list_agents`, and `inspect_agent`. Child final prose is capture evidence only:
+it is neither used as the parent result summary nor admitted into provider or
+status payloads. It does not need to ingest a flattened child transcript.
+
+The delegation policy fixes the canonical child role to
+`implementation_worker`. A provider-supplied `agent_type` is ignored advisory
+labeling and cannot change the contract or status role.
 
 ## Acceptance witness
 
-Run `npm run direct:arcagi3-workspace-workers`. This aggregate command executes
-both the generic policy/repository regression and the ArcAGI3 end-to-end runtime
-witness after their shared syntax gate.
+Run `npm run direct:provider-workspace-workers`. This non-recursive aggregate
+executes the provider-policy negatives, the real headless parent-provider loop,
+and `direct:arcagi3-workspace-workers` (the generic policy/repository regression
+plus ArcAGI3 end-to-end runtime witness after their shared syntax gate).
+
+The headless witness creates a disposable committed Node repository, seeds one
+exact project/work-thread delegation source, accepts a root-provider
+`spawn_agent` call, provisions the resident isolated-worktree runner, executes
+bounded read/patch/test tools, persists typed child capture, returns it through
+`wait_agent`, and completes the parent provider continuation. It also verifies
+that the durable lifecycle session owns provisioning, the canonical source-
+repository digest, binding, lease release, terminal settlement, and ordered
+pool drain. The dirty child worktree remains retained for inspection. Parent,
+provider, and status projections contain neither native roots nor private
+binding fields nor child final prose, and the source checkout stays unchanged.
+The focused policy witness additionally proves forged generic-packet rejection,
+expiry between patch planning and apply, inactive-lease denial, exact and
+conflicting spawn replay (including registry restart), canonical role binding,
+and durable launch/authority custody.
 
 The EXEC1 regression creates a temporary local clone derived from the committed
 ArcAGI3 repository, then launches two workspace workers from the same pinned

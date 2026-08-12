@@ -71,6 +71,9 @@ const {
 const {
   createDirectLiveSubAgentToolSurface,
 } = require("../agents/live-tool-surface");
+const {
+  issueWorkspaceParentAuthorityFromDelegationPolicy,
+} = require("../agents/workspace-worker-delegation-policy");
 const { buildDirectThreadDeckProjection } = require("../thread/thread-deck");
 const {
   assertDirectAttachmentCapabilityProjectionSafe,
@@ -809,6 +812,46 @@ function isNativeSubAgentRuntimeToolName(toolName = "") {
   return NATIVE_SUB_AGENT_RUNTIME_TOOL_SET.has(normalizeString(toolName, ""));
 }
 
+function workspaceWorkerSpawnHasUndeclaredFields(args = {}) {
+  const admittedFields = new Set([
+    "task_name",
+    "message",
+    "agent_type",
+    "model",
+    "reasoning_effort",
+    "fork_turns",
+    "workspace_mode",
+    "tool_profile",
+  ]);
+  return Object.keys(isPlainObject(args) ? args : {}).some((key) => !admittedFields.has(key));
+}
+
+function typedWorkspaceWorkerParentResultCode(update = {}) {
+  const state = normalizeString(update.state, "failed");
+  if (state === "completed") {
+    return update.epistemicCaptureComplete === true
+      ? "direct_workspace_worker_completed_captured"
+      : "direct_workspace_worker_completed";
+  }
+  return `direct_workspace_worker_${["failed", "timeout", "cancelled"].includes(state) ? state : "status"}`;
+}
+
+function safeWorkspaceWorkerBlockerCode(update = {}) {
+  const code = normalizeString(update.blockerCode, "");
+  return /^(?:direct_|workspace_)[A-Za-z0-9._:-]{0,183}$/.test(code) ? code : "";
+}
+
+function projectAllowsProviderWorkspaceWorkers(project = {}) {
+  const binding = isPlainObject(project?.surfaceBinding?.codex)
+    ? project.surfaceBinding.codex
+    : {};
+  return (
+    binding.runtimeMode === "direct-experimental" &&
+    binding.directTransport === "live-text" &&
+    binding.directTier === "implementation-lane"
+  );
+}
+
 function directParentContextMessages(session = {}) {
   const messages = [];
   for (const turn of Array.isArray(session.messages) ? session.messages : []) {
@@ -1544,9 +1587,9 @@ class DirectLiveTextController {
     this.subAgentPool = options.subAgentPool && typeof options.subAgentPool.launch === "function"
       ? options.subAgentPool
       : null;
-    this.workspaceParentAuthorityIssuer =
-      typeof options.workspaceParentAuthorityIssuer === "function"
-        ? options.workspaceParentAuthorityIssuer
+    this.workspaceWorkerDelegationPolicyResolver =
+      typeof options.workspaceWorkerDelegationPolicyResolver === "function"
+        ? options.workspaceWorkerDelegationPolicyResolver
         : null;
     this.externalCapabilityProfileResolver = typeof options.externalCapabilityProfileResolver === "function" ? options.externalCapabilityProfileResolver : null;
     this.providerHostedToolsStatusResolver = typeof options.providerHostedToolsStatusResolver === "function" ? options.providerHostedToolsStatusResolver : null;
@@ -4604,28 +4647,53 @@ class DirectLiveTextController {
         updates: [],
       };
     } else if (toolName === "spawn_agent") {
-      const workspaceMode = normalizeString(
-        args.workspace_mode || args.workspaceMode,
-        "reasoning_only",
-      );
+      const workspaceMode = normalizeString(args.workspace_mode || args.workspaceMode, "reasoning_only");
       let parentAuthorityPacket = null;
-      if (workspaceMode === "isolated_worktree" && this.workspaceParentAuthorityIssuer) {
-        try {
-          parentAuthorityPacket = this.workspaceParentAuthorityIssuer({
-            projectId,
-            workThreadId,
-            primaryThreadId: sessionId,
-            parentAgentId: normalizeString(session.agentThreadId || session.agentId, sessionId),
-            toolProfile: normalizeString(args.tool_profile || args.toolProfile, ""),
-            obligationId: normalizeString(obligation.obligationId, ""),
-            callId: normalizeString(obligation.callId, ""),
-          });
-        } catch (error) {
+      if (workspaceMode === "isolated_worktree") {
+        const requestedProfileId = normalizeString(args.tool_profile || args.toolProfile, "");
+        if (!projectAllowsProviderWorkspaceWorkers(project)) {
           runtimeResult = {
             status: "blocked",
-            blockerCode: normalizeString(error?.code, "direct_workspace_parent_authority_issuance_failed"),
+            blockerCode: "direct_workspace_worker_implementation_lane_required",
             updates: [],
           };
+        } else if (workspaceWorkerSpawnHasUndeclaredFields(args)) {
+          runtimeResult = {
+            status: "blocked",
+            blockerCode: "direct_workspace_worker_spawn_arguments_unsafe",
+            updates: [],
+          };
+        } else if (!this.workspaceWorkerDelegationPolicyResolver) {
+          runtimeResult = {
+            status: "blocked",
+            blockerCode: "direct_workspace_worker_delegation_policy_missing",
+            updates: [],
+          };
+        } else {
+          try {
+            const resolved = await this.workspaceWorkerDelegationPolicyResolver({
+              projectId,
+              workThreadId,
+              primaryThreadId: sessionId,
+              parentAgentId: normalizeString(session.agentThreadId || session.agentId, sessionId),
+              roleLane: "implementation_worker",
+              requestedProfileId,
+              project,
+            });
+            const policy = resolved?.policy || resolved;
+            parentAuthorityPacket = issueWorkspaceParentAuthorityFromDelegationPolicy(policy, {
+              projectId,
+              workThreadId,
+              roleLane: "implementation_worker",
+              requestedProfileId,
+            });
+          } catch (error) {
+            runtimeResult = {
+              status: "blocked",
+              blockerCode: normalizeString(error?.code, "direct_workspace_worker_delegation_policy_invalid"),
+              updates: [],
+            };
+          }
         }
       }
       if (!runtimeResult) runtimeResult = this.subAgentPool.launch({
@@ -4642,6 +4710,12 @@ class DirectLiveTextController {
         workspaceMode,
         toolProfile: args.tool_profile || args.toolProfile,
         parentAuthorityPacket,
+        spawnOperation: workspaceMode === "isolated_worktree" ? {
+          parentSessionId: sessionId,
+          parentTurnId: turnId,
+          obligationId: normalizeString(obligation.obligationId, ""),
+          callId: normalizeString(obligation.callId, ""),
+        } : null,
         project,
         parentModel: normalizeString(turn.model, session.model),
         parentReasoningEffort: normalizeString(turn.reasoningEffort, session.reasoningEffort),
@@ -4671,6 +4745,8 @@ class DirectLiveTextController {
           contextHandoff: runtimeResult.contextHandoff || null,
           contextMessageCount: Number(runtimeResult.contextMessageCount || 0),
           runtimeProfileIndependentOfContext: runtimeResult.runtimeProfileIndependentOfContext === true,
+          replayed: runtimeResult.replayed === true,
+          providerRoleLabelAcceptedAsAuthority: false,
           pool: runtimeResult.pool || this.subAgentPool?.descriptor?.() || null,
           childRunsInBackground: ["running", "queued", "accepted"].includes(runtimeResult.status),
           rawTaskIncluded: false,
@@ -4680,18 +4756,34 @@ class DirectLiveTextController {
           kind: "wait_agent_result",
           status: normalizeString(runtimeResult.status, "blocked"),
           blockerCode: normalizeString(runtimeResult.blockerCode, ""),
-          updates: (Array.isArray(runtimeResult.updates) ? runtimeResult.updates : []).map((update) => ({
-            childAgentId: normalizeString(update.childAgentId, ""),
-            taskName: normalizeString(update.taskName, ""),
-            state: normalizeString(update.state, ""),
-            resultSummary: normalizeString(update.resultSummary, ""),
-            blockerCode: normalizeString(update.blockerCode, ""),
-            model: normalizeString(update.model, ""),
-            reasoningEffort: normalizeString(update.reasoningEffort, ""),
-            workspaceMode: normalizeString(update.workspaceMode, "reasoning_only"),
-            toolProfile: normalizeString(update.toolProfile, "reasoning_only"),
-            workspaceExecution: update.workspaceExecution || null,
-          })),
+          updates: (Array.isArray(runtimeResult.updates) ? runtimeResult.updates : []).map((update) => {
+            const workspaceWorker = normalizeString(update.workspaceMode, "reasoning_only") === "isolated_worktree";
+            return {
+              childAgentId: normalizeString(update.childAgentId, ""),
+              taskName: normalizeString(update.taskName, ""),
+              state: normalizeString(update.state, ""),
+              resultSummary: workspaceWorker
+                ? typedWorkspaceWorkerParentResultCode(update)
+                : normalizeString(update.resultSummary, ""),
+              resultSummaryKind: workspaceWorker
+                ? "typed_status_code"
+                : normalizeString(update.resultSummaryKind, "provider_summary"),
+              blockerCode: workspaceWorker
+                ? safeWorkspaceWorkerBlockerCode(update)
+                : normalizeString(update.blockerCode, ""),
+              model: normalizeString(update.model, ""),
+              reasoningEffort: normalizeString(update.reasoningEffort, ""),
+              workspaceMode: normalizeString(update.workspaceMode, "reasoning_only"),
+              toolProfile: normalizeString(update.toolProfile, "reasoning_only"),
+              workspaceExecution: update.workspaceExecution || null,
+              epistemicCapture: update.epistemicCapture || null,
+              epistemicCaptureComplete: update.epistemicCaptureComplete === true,
+              epistemicCaptureOmission: update.epistemicCaptureOmission || null,
+              evidenceConfidence: normalizeString(update.evidenceConfidence, "unknown"),
+              childOutputIncluded: false,
+              rawChildProseIncluded: false,
+            };
+          }),
           pool: runtimeResult.pool || this.subAgentPool?.descriptor?.() || null,
           rawChildTranscriptIncluded: false,
         };
@@ -4705,12 +4797,15 @@ class DirectLiveTextController {
       providerOutput,
       sideEffectExecuted:
         toolName === "spawn_agent" &&
-        normalizeString(runtimeResult.status, "blocked") !== "blocked",
+        normalizeString(runtimeResult.status, "blocked") !== "blocked" &&
+        runtimeResult.replayed !== true,
       runtimeLifecycleMutationExecuted:
         toolName === "spawn_agent" &&
-        normalizeString(runtimeResult.status, "blocked") !== "blocked",
+        normalizeString(runtimeResult.status, "blocked") !== "blocked" &&
+        runtimeResult.replayed !== true,
       providerTurnScheduled:
         toolName === "spawn_agent" &&
+        runtimeResult.replayed !== true &&
         ["running", "queued", "accepted"].includes(
           normalizeString(runtimeResult.status, ""),
         ),

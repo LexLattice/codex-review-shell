@@ -20,12 +20,17 @@ const {
   admittedWorkspaceWorkerCancellationReceipt,
   validateWorkspaceWorkerCancellationReceipt,
 } = require("./workspace-worker-runtime");
+const {
+  validateWorkspaceDelegatedParentAuthorityPacket,
+} = require("./workspace-worker-delegation-policy");
 
 const DIRECT_NATIVE_AGENT_POOL_SCHEMA = "direct_native_agent_pool@1";
 const DIRECT_NATIVE_AGENT_LAUNCH_SCHEMA = "direct_native_agent_launch@1";
 const DIRECT_NATIVE_AGENT_STATUS_SCHEMA = "direct_native_agent_status@1";
 const TERMINAL_STATES = new Set(["completed", "failed", "timeout", "cancelled"]);
 const CANCELLATION_REASON_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/;
+const DIRECT_WORKSPACE_WORKER_LAUNCH_IDENTITY_SCHEMA = "direct_workspace_worker_launch_identity@1";
+const DIRECT_WORKSPACE_WORKER_DELEGATION_AUTHORITY_BINDING_SCHEMA = "direct_workspace_worker_delegation_authority_binding@1";
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -190,6 +195,131 @@ function scopeKey(projectId, primaryThreadId) {
   return `${normalizeString(projectId, "project_direct")}::${normalizeString(primaryThreadId, "primary_direct")}`;
 }
 
+function safeStatusCode(value, fallback = "") {
+  const code = normalizeString(value, "");
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(code) ? code : fallback;
+}
+
+function safeWorkspaceStatusCode(value, fallback = "") {
+  const code = safeStatusCode(value, "");
+  return /^(?:direct_|workspace_|provider_|response_|content_|max_|stream_|missing_|target_)/.test(code)
+    ? code
+    : fallback;
+}
+
+function safeDigest(value, fallback = "") {
+  const digest = normalizeString(value, "");
+  return /^sha256:[a-f0-9]{64}$/i.test(digest) ? digest : fallback;
+}
+
+function workspaceDelegationAuthorityBinding(packet = {}) {
+  const ref = packet.delegationPolicyRef;
+  if (!isPlainObject(ref)) return null;
+  const lineageBase = {
+    policyId: normalizeString(ref.policyId, ""),
+    policyRevision: Number(ref.policyRevision || 0),
+    sourceId: normalizeString(ref.sourceId, ""),
+    sourceDigest: normalizeString(ref.sourceDigest, ""),
+    upstreamToolPolicyDigest: normalizeString(packet.upstreamToolPolicy?.policyDigest, ""),
+    projectId: normalizeString(ref.projectId, ""),
+    workThreadId: normalizeString(ref.workThreadId, ""),
+    roleLane: normalizeString(ref.roleLane, ""),
+  };
+  const base = {
+    schema: DIRECT_WORKSPACE_WORKER_DELEGATION_AUTHORITY_BINDING_SCHEMA,
+    parentAuthorityBoundaryDigest: normalizeString(packet.boundaryDigest, ""),
+    policyId: normalizeString(ref.policyId, ""),
+    policyRevision: Number(ref.policyRevision || 0),
+    policyDigest: normalizeString(ref.policyDigest, ""),
+    sourceId: normalizeString(ref.sourceId, ""),
+    sourceDigest: normalizeString(ref.sourceDigest, ""),
+    upstreamToolPolicyDigest: lineageBase.upstreamToolPolicyDigest,
+    authorityLineageDigest: digestFor(
+      "direct-workspace-worker-delegation-authority-lineage@1",
+      lineageBase,
+    ),
+    issuedAt: normalizeString(ref.issuedAt, ""),
+    expiresAt: normalizeString(ref.expiresAt, ""),
+    projectId: normalizeString(ref.projectId, ""),
+    workThreadId: normalizeString(ref.workThreadId, ""),
+    roleLane: normalizeString(ref.roleLane, ""),
+    rawAuthorityPacketIncluded: false,
+    rawWorkspacePathIncluded: false,
+  };
+  return Object.freeze({
+    ...base,
+    authorityDigest: digestFor("direct-workspace-worker-delegation-authority-binding@1", base),
+  });
+}
+
+function workspaceSpawnLaunchIdentity(input = {}) {
+  const source = isPlainObject(input.spawnOperation) ? input.spawnOperation : {};
+  const parentSessionId = normalizeString(source.parentSessionId, "");
+  const parentTurnId = normalizeString(source.parentTurnId, "");
+  const obligationId = normalizeString(source.obligationId, "");
+  if (!parentSessionId || !parentTurnId || !obligationId) {
+    const error = new Error("Provider-visible workspace launch requires an exact session, turn, and obligation identity.");
+    error.code = "direct_workspace_worker_spawn_operation_missing";
+    throw error;
+  }
+  const operationKeyDigest = digestFor("direct-workspace-worker-spawn-operation-key@1", {
+    parentSessionId,
+    parentTurnId,
+    obligationId,
+  });
+  const launchOperationId = `provider_workspace_spawn_${operationKeyDigest.slice(7, 39)}`;
+  const canonicalInputDigest = digestFor("direct-workspace-worker-spawn-canonical-input@1", {
+    operationKeyDigest,
+    callId: normalizeString(source.callId, ""),
+    projectId: input.projectId,
+    workThreadId: input.workThreadId,
+    primaryThreadId: input.primaryThreadId,
+    parentAgentId: input.parentAgentId,
+    taskName: input.taskName,
+    taskDigest: input.taskDigest,
+    role: input.role,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
+    contextHandoff: input.contextHandoff,
+    contextDigest: input.contextDigest,
+    workspaceMode: input.workspaceMode,
+    toolProfile: input.toolProfile,
+    delegationAuthorityLineageDigest: input.delegationAuthority?.authorityLineageDigest || "",
+  });
+  const base = {
+    schema: DIRECT_WORKSPACE_WORKER_LAUNCH_IDENTITY_SCHEMA,
+    launchOperationId,
+    operationKeyDigest,
+    parentSessionDigest: digestFor("direct-workspace-worker-parent-session-id@1", parentSessionId),
+    parentTurnDigest: digestFor("direct-workspace-worker-parent-turn-id@1", parentTurnId),
+    obligationDigest: digestFor("direct-workspace-worker-provider-obligation-id@1", obligationId),
+    callDigest: normalizeString(source.callId, "")
+      ? digestFor("direct-workspace-worker-provider-call-id@1", normalizeString(source.callId, ""))
+      : "",
+    taskName: input.taskName,
+    canonicalInputDigest,
+    authorityDigest: input.delegationAuthority?.authorityDigest || "",
+    authorityLineageDigest: input.delegationAuthority?.authorityLineageDigest || "",
+    rawProviderArgumentsIncluded: false,
+    rawTaskIncluded: false,
+    rawWorkspacePathIncluded: false,
+  };
+  return Object.freeze({
+    ...base,
+    launchIdentityDigest: digestFor("direct-workspace-worker-launch-identity@1", base),
+  });
+}
+
+function typedWorkspaceResultSummary(record = {}, patch = {}) {
+  const state = TERMINAL_STATES.has(patch.state) ? patch.state : "failed";
+  if (state !== "completed") {
+    return safeWorkspaceStatusCode(patch.blockerCode, `direct_workspace_worker_${state}`);
+  }
+  return normalizeEpistemicCapture(patch.epistemicCapture).complete
+    ? "direct_workspace_worker_completed_captured"
+    : "direct_workspace_worker_completed";
+}
+
 class DirectNativeAgentPool extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -303,6 +433,40 @@ class DirectNativeAgentPool extends EventEmitter {
     return this.routes.get(key);
   }
 
+  validateWorkspaceOperationLease(record) {
+    if (
+      !record ||
+      record.workspaceMode !== WORKSPACE_MODE_ISOLATED_WORKTREE ||
+      record._settled ||
+      record._cancelRequested ||
+      record._leaseActive !== true
+    ) {
+      const error = new Error("Workspace operation lease is no longer active.");
+      error.code = "direct_workspace_worker_operation_lease_inactive";
+      throw error;
+    }
+    if (record._lifecycleSessionId && this.workspaceWorkerLifecycleRegistry) {
+      const session = this.workspaceWorkerLifecycleRegistry.session(record._lifecycleSessionId);
+      if (
+        !session ||
+        session.state !== "active" ||
+        session.leaseState !== "active" ||
+        session.processState !== "running" ||
+        session.delegationAuthority?.authorityDigest !== record._delegationAuthority?.authorityDigest
+      ) {
+        const error = new Error("Durable workspace operation lease does not match the active launch authority.");
+        error.code = "direct_workspace_worker_operation_lease_unverified";
+        throw error;
+      }
+    }
+    return Object.freeze({
+      status: "active",
+      childAgentId: record.childAgentId,
+      delegationAuthorityDigest: record._delegationAuthority?.authorityDigest || "",
+      rawWorkspacePathIncluded: false,
+    });
+  }
+
   launch(input = {}) {
     if (this.closed) return this.launchResult(null, "blocked", "direct_agent_pool_closed");
     if (input.signal?.aborted) return this.launchResult(null, "blocked", "direct_agent_launch_aborted");
@@ -339,7 +503,12 @@ class DirectNativeAgentPool extends EventEmitter {
     if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && this.recoverySnapshot().status !== "clean") {
       return this.launchResult(null, "blocked", "direct_workspace_worker_restart_reconciliation_required");
     }
+    const projectId = normalizeString(input.projectId, "project_direct_agents");
+    const primaryThreadId = normalizeString(input.primaryThreadId || input.parentThreadId, "primary_direct_agent");
+    const workThreadId = normalizeString(input.workThreadId, "work_thread_direct_agents");
+    const parentAgentId = normalizeString(input.parentAgentId, primaryThreadId);
     let parentAuthorityPacket = null;
+    let delegationAuthority = null;
     if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE) {
       if (!isPlainObject(input.parentAuthorityPacket)) {
         return this.launchResult(null, "blocked", "direct_workspace_parent_authority_missing");
@@ -349,14 +518,96 @@ class DirectNativeAgentPool extends EventEmitter {
       } catch (error) {
         return this.launchResult(null, "blocked", normalizeString(error?.code, "direct_workspace_parent_authority_invalid"));
       }
+      const delegationRef = parentAuthorityPacket.delegationPolicyRef;
+      if (delegationRef) {
+        try {
+          validateWorkspaceDelegatedParentAuthorityPacket(parentAuthorityPacket, {
+            projectId,
+            workThreadId,
+            roleLane: "implementation_worker",
+            requestedProfileId: toolProfile,
+            nowMs: Number(this.now()),
+          });
+          delegationAuthority = workspaceDelegationAuthorityBinding(parentAuthorityPacket);
+        } catch (error) {
+          const policyCode = normalizeString(error?.code, "");
+          return this.launchResult(null, "blocked", normalizeString(
+            [
+              "direct_workspace_worker_delegation_policy_project_mismatch",
+              "direct_workspace_worker_delegation_policy_work_thread_mismatch",
+            ].includes(policyCode)
+              ? "direct_workspace_worker_delegation_policy_scope_mismatch"
+              : policyCode,
+            "direct_workspace_worker_delegation_policy_untrusted",
+          ));
+        }
+      }
     }
     const task = normalizeString(input.message || input.prompt || input.task, "");
     if (!task) return this.launchResult(null, "blocked", "missing_spawn_prompt");
-    const projectId = normalizeString(input.projectId, "project_direct_agents");
-    const primaryThreadId = normalizeString(input.primaryThreadId || input.parentThreadId, "primary_direct_agent");
-    const workThreadId = normalizeString(input.workThreadId, "work_thread_direct_agents");
-    const parentAgentId = normalizeString(input.parentAgentId, primaryThreadId);
     const taskName = safeTaskName(input.taskName || input.task_name || `agent_${this.sequence + 1}`);
+    const handoff = normalizeForkTurns(input.forkTurns || input.fork_turns);
+    const contextMessages = selectContextMessages(input.parentContextMessages, handoff);
+    const contextDigest = contextMessages.length
+      ? digestFor("direct-native-agent-context@1", contextMessages)
+      : "";
+    const taskDigest = digestFor("direct-native-agent-task@1", task);
+    const model = normalizeString(input.model, normalizeString(input.parentModel, this.defaultModel));
+    const reasoningEffort = normalizeString(
+      input.reasoningEffort || input.reasoning_effort,
+      normalizeString(input.parentReasoningEffort, this.defaultReasoningEffort),
+    );
+    const requestedRoleLabel = normalizeString(input.agentType || input.agent_type || input.role, "");
+    const role = delegationAuthority?.roleLane || requestedRoleLabel || "sub_agent_worker";
+    let launchIdentity = null;
+    if (delegationAuthority && this.workspaceWorkerLifecycleRegistry && !isPlainObject(input.spawnOperation)) {
+      return this.launchResult(null, "blocked", "direct_workspace_worker_spawn_operation_missing");
+    }
+    if (delegationAuthority && isPlainObject(input.spawnOperation)) {
+      if (!this.workspaceWorkerLifecycleRegistry) {
+        return this.launchResult(null, "blocked", "direct_workspace_worker_spawn_lifecycle_required");
+      }
+      try {
+        launchIdentity = workspaceSpawnLaunchIdentity({
+          spawnOperation: input.spawnOperation,
+          projectId,
+          workThreadId,
+          primaryThreadId,
+          parentAgentId,
+          taskName,
+          taskDigest,
+          role,
+          model,
+          reasoningEffort,
+          contextHandoff: handoff,
+          contextDigest,
+          workspaceMode,
+          toolProfile,
+          delegationAuthority,
+        });
+        const prior = this.workspaceWorkerLifecycleRegistry.sessionForLaunchOperation?.(
+          launchIdentity.launchOperationId,
+        );
+        if (prior) {
+          if (
+            prior.launchIdentity?.canonicalInputDigest !== launchIdentity.canonicalInputDigest ||
+            prior.launchIdentity?.authorityLineageDigest !== launchIdentity.authorityLineageDigest ||
+            prior.delegationAuthority?.authorityLineageDigest !== delegationAuthority.authorityLineageDigest
+          ) {
+            return this.launchResult(null, "blocked", "direct_workspace_worker_spawn_operation_conflict");
+          }
+          const resident = this.jobs.get(prior.childAgentId);
+          return resident
+            ? this.launchResult(resident, resident.state, "", { replayed: true })
+            : this.lifecycleReplayLaunchResult(prior);
+        }
+      } catch (error) {
+        return this.launchResult(null, "blocked", normalizeString(
+          error?.code,
+          "direct_workspace_worker_spawn_operation_invalid",
+        ));
+      }
+    }
     const taskKey = `${scopeKey(projectId, primaryThreadId)}::${taskName}`;
     const existingId = this.taskIndex.get(taskKey);
     if (existingId && !TERMINAL_STATES.has(this.jobs.get(existingId)?.state)) {
@@ -365,13 +616,6 @@ class DirectNativeAgentPool extends EventEmitter {
     if (this.queue.length >= this.maxQueuedChildren && this.activeCount >= this.maxActiveChildren) {
       return this.launchResult(null, "blocked", "direct_agent_queue_full");
     }
-    const handoff = normalizeForkTurns(input.forkTurns || input.fork_turns);
-    const contextMessages = selectContextMessages(input.parentContextMessages, handoff);
-    const model = normalizeString(input.model, normalizeString(input.parentModel, this.defaultModel));
-    const reasoningEffort = normalizeString(
-      input.reasoningEffort || input.reasoning_effort,
-      normalizeString(input.parentReasoningEffort, this.defaultReasoningEffort),
-    );
     const childAgentId = normalizeString(
       input.childAgentId,
       `direct_child_${++this.sequence}_${crypto.randomUUID().replace(/-/g, "").slice(0, 10)}`,
@@ -396,16 +640,21 @@ class DirectNativeAgentPool extends EventEmitter {
       primaryThreadId,
       launchDigest,
       parentAgentId,
-      role: normalizeString(input.agentType || input.agent_type || input.role, "sub_agent_worker"),
+      role,
+      providerRoleLabelAcceptedAsAuthority: false,
+      providerRoleLabelIgnored: Boolean(delegationAuthority && requestedRoleLabel && requestedRoleLabel !== role),
       displayLabel: normalizeString(input.displayLabel, taskName),
       workspaceMode,
       toolProfile,
       workspaceExecution: workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
-        ? {
+          ? {
             schema: "direct_workspace_worker_execution@1",
             status: "provisioning_pending",
             workspaceMode,
             toolProfile,
+            workspaceWorkerDelegationPolicyRef: parentAuthorityPacket?.delegationPolicyRef
+              ? { ...parentAuthorityPacket.delegationPolicyRef }
+              : null,
             rawWorkspacePathIncluded: false,
           }
         : null,
@@ -414,15 +663,16 @@ class DirectNativeAgentPool extends EventEmitter {
       reasoningEffort,
       contextHandoff: handoff,
       contextMessageCount: contextMessages.length,
-      contextDigest: contextMessages.length
-        ? digestFor("direct-native-agent-context@1", contextMessages)
-        : "",
-      taskDigest: digestFor("direct-native-agent-task@1", task),
+      contextDigest,
+      taskDigest,
       runtimeProfileIndependentOfContext: true,
       createdAt: nowIso(this.now),
       startedAt: "",
       completedAt: "",
       resultSummary: "",
+      resultSummaryKind: workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
+        ? "typed_status_code"
+        : "provider_summary",
       blockerCode: "",
       resultDigest: "",
       mutationOutcome: null,
@@ -443,6 +693,8 @@ class DirectNativeAgentPool extends EventEmitter {
       _contextMessages: contextMessages,
       _project: workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE ? input.project : null,
       _parentAuthorityPacket: parentAuthorityPacket,
+      _delegationAuthority: delegationAuthority,
+      _launchIdentity: launchIdentity,
       _waiters: new Set(),
       _settled: false,
       _leaseActive: false,
@@ -473,7 +725,9 @@ class DirectNativeAgentPool extends EventEmitter {
           primaryThreadId,
           launchDigest,
           toolProfile,
-          operationId: `pool-open:${childAgentId}`,
+          operationId: launchIdentity?.launchOperationId || `pool-open:${childAgentId}`,
+          launchIdentity,
+          delegationAuthority,
         });
         record._lifecycleSessionId = session.sessionId;
         record._lifecycleProjection = this.safeLifecycleProjection(session);
@@ -500,7 +754,7 @@ class DirectNativeAgentPool extends EventEmitter {
     return this.launchResult(record, record.state, "");
   }
 
-  launchResult(record, status, blockerCode) {
+  launchResult(record, status, blockerCode, options = {}) {
     const result = {
       schema: DIRECT_NATIVE_AGENT_LAUNCH_SCHEMA,
       status,
@@ -519,12 +773,149 @@ class DirectNativeAgentPool extends EventEmitter {
       contextHandoff: record?.contextHandoff || null,
       contextMessageCount: Number(record?.contextMessageCount || 0),
       runtimeProfileIndependentOfContext: record?.runtimeProfileIndependentOfContext === true,
+      replayed: options.replayed === true,
+      providerRoleLabelAcceptedAsAuthority: false,
       pool: this.descriptor(),
       rawTaskIncluded: false,
       rawContextIncluded: false,
     };
     result.resultDigest = digestFor("direct-native-agent-launch@1", result);
     return result;
+  }
+
+  lifecycleReplayLaunchResult(session = {}) {
+    const record = this.materializeLifecycleReplayRecord(session);
+    if (!record) {
+      return this.launchResult(
+        null,
+        "blocked",
+        "direct_workspace_worker_restart_reconciliation_required",
+        { replayed: true },
+      );
+    }
+    return this.launchResult(record, record.state, "", { replayed: true });
+  }
+
+  materializeLifecycleReplayRecord(session = {}) {
+    if (!TERMINAL_STATES.has(session.state)) return null;
+    const existing = this.jobs.get(normalizeString(session.childAgentId, ""));
+    if (existing) return existing;
+    const ref = session.delegationAuthority
+      ? {
+          schema: "direct_workspace_worker_delegation_policy_ref@1",
+          policyId: session.delegationAuthority.policyId,
+          policyRevision: session.delegationAuthority.policyRevision,
+          policyDigest: session.delegationAuthority.policyDigest,
+          sourceId: session.delegationAuthority.sourceId,
+          sourceDigest: session.delegationAuthority.sourceDigest,
+          issuedAt: session.delegationAuthority.issuedAt,
+          expiresAt: session.delegationAuthority.expiresAt,
+          projectId: session.delegationAuthority.projectId,
+          workThreadId: session.delegationAuthority.workThreadId,
+          roleLane: session.delegationAuthority.roleLane,
+        }
+      : null;
+    const blockerCode = session.state === "completed"
+      ? ""
+      : safeWorkspaceStatusCode(
+          session.blockerCode,
+          `direct_workspace_worker_${session.state}`,
+        );
+    const capture = normalizeEpistemicCapture({
+      status: "unavailable",
+      errorCode: "direct_workspace_worker_replay_capture_unavailable",
+    });
+    const mutationOutcome = safeMutationOutcome(session.mutationOutcome);
+    const taskName = normalizeString(session.launchIdentity?.taskName, session.childAgentId);
+    const record = {
+      schema: DIRECT_NATIVE_AGENT_STATUS_SCHEMA,
+      childAgentId: session.childAgentId,
+      taskName,
+      projectId: session.projectId,
+      workThreadId: session.workThreadId,
+      primaryThreadId: session.primaryThreadId,
+      launchDigest: normalizeString(session.launchDigest, ""),
+      parentAgentId: "",
+      role: normalizeString(session.delegationAuthority?.roleLane, "implementation_worker"),
+      providerRoleLabelAcceptedAsAuthority: false,
+      providerRoleLabelIgnored: false,
+      displayLabel: taskName,
+      state: session.state,
+      model: "",
+      reasoningEffort: "",
+      workspaceMode: session.workspaceMode,
+      toolProfile: session.toolProfile,
+      workspaceExecution: {
+        schema: "direct_workspace_worker_execution@1",
+        status: session.state,
+        workspaceMode: session.workspaceMode,
+        toolProfile: session.toolProfile,
+        workspaceWorkerDelegationPolicyRef: ref,
+        rawWorkspacePathIncluded: false,
+      },
+      contextHandoff: null,
+      contextMessageCount: 0,
+      contextDigest: "",
+      taskDigest: "",
+      runtimeProfileIndependentOfContext: true,
+      createdAt: normalizeString(session.createdAt, ""),
+      startedAt: "",
+      completedAt: normalizeString(session.updatedAt, ""),
+      resultSummary: session.state === "completed"
+        ? "direct_workspace_worker_completed"
+        : blockerCode,
+      resultSummaryKind: "typed_status_code",
+      blockerCode,
+      resultDigest: publicResultDigest(session.resultDigest),
+      mutationOutcome,
+      partialMutationPossible: mutationOutcome?.partialMutationPossible === true,
+      epistemicCapture: {
+        status: capture.status,
+        errorCode: capture.errorCode,
+        receiptDigest: capture.receiptDigest,
+        sessionId: capture.sessionId,
+        turnId: capture.turnId,
+      },
+      epistemicCaptureComplete: false,
+      epistemicCaptureOmission: capture.omission,
+      evidenceConfidence: "partial",
+      rawTaskPersisted: false,
+      rawContextPersisted: false,
+      _task: "",
+      _contextMessages: [],
+      _project: null,
+      _parentAuthorityPacket: null,
+      _delegationAuthority: session.delegationAuthority || null,
+      _launchIdentity: session.launchIdentity || null,
+      _waiters: new Set(),
+      _settled: true,
+      _leaseActive: false,
+      _abortController: null,
+      _externalSignal: null,
+      _externalAbortListener: null,
+      _runnerStarted: false,
+      _runnerPromise: null,
+      _cancelRequested: session.cancellation?.requested === true,
+      _cancelReasonCode: normalizeString(session.cancellation?.reasonCode, ""),
+      _cancelRequestedAt: normalizeString(session.cancellation?.requestedAt, ""),
+      _cancelAcknowledgedAt: normalizeString(session.cancellation?.acknowledgedAt, ""),
+      _cancellationReceipt: session.cancellationReceipt
+        ? {
+            receiptDigest: normalizeString(session.cancellationReceipt.receiptDigest, ""),
+            acknowledgementKind: normalizeString(session.cancellationReceipt.acknowledgementKind, ""),
+            outcomeDigest: normalizeString(session.cancellationReceipt.outcomeDigest, ""),
+          }
+        : null,
+      _pendingSettlement: null,
+      _settlementAttempts: 0,
+      _lifecycleSessionId: normalizeString(session.sessionId, ""),
+      _lifecycleProjection: this.safeLifecycleProjection(session),
+      _lifecycleErrorCode: "",
+    };
+    this.jobs.set(record.childAgentId, record);
+    this.taskIndex.set(`${scopeKey(record.projectId, record.primaryThreadId)}::${taskName}`, record.childAgentId);
+    this.emit("changed", this.publicRecord(record));
+    return record;
   }
 
   startRecord(record) {
@@ -581,6 +972,8 @@ class DirectNativeAgentPool extends EventEmitter {
         lifecycleSessionId: record._lifecycleSessionId,
         lifecycleLeaseId: normalizeString(record._lifecycleProjection?.leaseId, ""),
         signal: record._abortController.signal,
+        now: this.now,
+        workspaceOperationLeaseValidator: () => this.validateWorkspaceOperationLease(record),
       };
       return record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
         ? await this.workspaceWorkerRunner({
@@ -737,11 +1130,8 @@ class DirectNativeAgentPool extends EventEmitter {
       record.partialMutationPossible = mutationOutcome.partialMutationPossible === true;
     }
     record.state = "cancellation_unacknowledged";
-    record.blockerCode = normalizeString(
-      publicAgentErrorCode(
-        evidence?.code || evidence?.blockerCode,
-        "direct_workspace_worker_cancellation_unacknowledged",
-      ),
+    record.blockerCode = safeWorkspaceStatusCode(
+      evidence?.code || evidence?.blockerCode,
       "direct_workspace_worker_cancellation_unacknowledged",
     );
     record.resultSummary = record.blockerCode;
@@ -786,6 +1176,9 @@ class DirectNativeAgentPool extends EventEmitter {
       partialMutationPossible: session.mutationOutcome?.partialMutationPossible === true,
       launchDigest: normalizeString(session.launchDigest, ""),
       cancellationReceiptDigest: normalizeString(session.cancellationReceipt?.receiptDigest, ""),
+      launchOperationId: normalizeString(session.launchIdentity?.launchOperationId, ""),
+      launchIdentityDigest: safeDigest(session.launchIdentity?.launchIdentityDigest, ""),
+      delegationAuthorityDigest: safeDigest(session.delegationAuthority?.authorityDigest, ""),
       rawWorkspacePathIncluded: false,
     };
   }
@@ -993,6 +1386,21 @@ class DirectNativeAgentPool extends EventEmitter {
         };
       }
     }
+    if (record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE) {
+      const safeBlockerCode = safeWorkspaceStatusCode(
+        patch.blockerCode,
+        patch.state === "completed" ? "" : "direct_workspace_worker_failed",
+      );
+      patch = {
+        ...patch,
+        blockerCode: safeBlockerCode,
+        resultSummary: typedWorkspaceResultSummary(record, {
+          ...patch,
+          blockerCode: safeBlockerCode,
+        }),
+        resultDigest: safeDigest(patch.resultDigest, record.resultDigest),
+      };
+    }
     const lifecycleError = this.commitLifecycleSettlement(record, patch);
     if (lifecycleError) {
       record._settlementAttempts += 1;
@@ -1023,6 +1431,9 @@ class DirectNativeAgentPool extends EventEmitter {
         outcomeDigest: normalizeString(patch.cancellationReceipt.outcomeDigest, ""),
       };
     }
+    record.resultSummaryKind = record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
+      ? "typed_status_code"
+      : "provider_summary";
     if (workspaceExecution) record.workspaceExecution = workspaceExecution;
     const capture = normalizeEpistemicCapture(patch.epistemicCapture || record.epistemicCapture);
     record.epistemicCapture = {
@@ -1263,6 +1674,8 @@ class DirectNativeAgentPool extends EventEmitter {
       launchDigest: record.launchDigest,
       parentAgentId: record.parentAgentId,
       role: record.role,
+      providerRoleLabelAcceptedAsAuthority: false,
+      providerRoleLabelIgnored: record.providerRoleLabelIgnored === true,
       displayLabel: record.displayLabel,
       state: record.state,
       model: record.model,
@@ -1281,6 +1694,7 @@ class DirectNativeAgentPool extends EventEmitter {
       startedAt: record.startedAt,
       completedAt: record.completedAt,
       resultSummary: record.resultSummary,
+      resultSummaryKind: record.resultSummaryKind,
       blockerCode: record.blockerCode,
       resultDigest: record.resultDigest,
       mutationOutcome: record.mutationOutcome ? { ...record.mutationOutcome } : null,

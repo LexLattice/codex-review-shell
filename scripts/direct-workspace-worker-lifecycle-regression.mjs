@@ -2533,7 +2533,8 @@ try {
   })).updates[0];
   assert.equal(completedWithBlockerDone.state, "completed");
   assert.equal(completedWithBlockerDone.blockerCode, "");
-  assert.equal(completedWithBlockerDone.resultSummary, "Workspace worker completed.");
+  assert.equal(completedWithBlockerDone.resultSummary, "direct_workspace_worker_completed");
+  assert.equal(completedWithBlockerDone.resultSummaryKind, "typed_status_code");
   assert.equal(completedWithBlockerDone.resultDigest, "");
   assert.equal(completedWithBlockerDone.epistemicCaptureComplete, false);
   assert.equal(completedWithBlockerDone.evidenceConfidence, "partial");
