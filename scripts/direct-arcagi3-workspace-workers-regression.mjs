@@ -20,6 +20,10 @@ const {
   workspaceWorkerToolSchemas,
 } = require("../src/main/direct/agents/workspace-worker-contract");
 const {
+  WORKSPACE_WORKER_TOOLS,
+  createWorkspaceParentAuthorityPacket,
+} = require("../src/main/direct/agents/workspace-worker-policy-profile");
+const {
   nativeChildSessionId,
   persistNativeChildProviderTurn,
 } = require("../src/main/direct/epistemic/native-child-capture");
@@ -170,6 +174,11 @@ try {
     repoPath: seedRoot,
     workspace: { kind: "local", localPath: seedRoot, label: "ArcAGI3 seed clone" },
   };
+  const harnessImplementationAuthority = createWorkspaceParentAuthorityPacket({
+    boundaryId: "arcagi3_workspace_worker_harness_authority",
+    upstreamPolicyId: "arcagi3_workspace_worker_harness_tool_policy",
+    upstreamAllowedTools: WORKSPACE_WORKER_TOOLS,
+  });
   manager = new WorkspaceBackendManager({
     agentPath: path.join(shellRoot, "src/backend/wsl-agent.js"),
     fallbackRoot: shellRoot,
@@ -353,6 +362,51 @@ try {
     { turnId: "turn_1", role: "user", text: "The worker fixture must remain isolated." },
     { turnId: "turn_1", role: "assistant", text: "Use one branch and worktree per child." },
   ];
+  const rawBoundaryLaunch = pool.launch({
+    childAgentId: "arcagi3-worker-raw-boundary",
+    taskName: "arcagi3_worker_raw_boundary",
+    projectId: parentProject.id,
+    primaryThreadId: "primary_arcagi3_workspace_workers",
+    message: "A raw caller boundary must not become workspace authority.",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "implementation_worker",
+    project: parentProject,
+    parentAuthority: {
+      boundaryId: "raw_caller_boundary",
+      allowedTools: ["apply_patch"],
+    },
+  });
+  assert.equal(rawBoundaryLaunch.status, "blocked");
+  assert.equal(rawBoundaryLaunch.blockerCode, "direct_workspace_parent_authority_missing");
+  const forgedBoundaryLaunch = pool.launch({
+    childAgentId: "arcagi3-worker-forged-boundary",
+    taskName: "arcagi3_worker_forged_boundary",
+    projectId: parentProject.id,
+    primaryThreadId: "primary_arcagi3_workspace_workers",
+    message: "A forged harness packet must not become workspace authority.",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "implementation_worker",
+    project: parentProject,
+    parentAuthorityPacket: {
+      ...harnessImplementationAuthority,
+      boundaryDigest: `sha256:${"0".repeat(64)}`,
+    },
+  });
+  assert.equal(forgedBoundaryLaunch.status, "blocked");
+  assert.equal(forgedBoundaryLaunch.blockerCode, "direct_workspace_parent_authority_invalid");
+  const reconstructedBoundaryLaunch = pool.launch({
+    childAgentId: "arcagi3-worker-reconstructed-boundary",
+    taskName: "arcagi3_worker_reconstructed_boundary",
+    projectId: parentProject.id,
+    primaryThreadId: "primary_arcagi3_workspace_workers",
+    message: "A digest-valid reconstructed packet must not become workspace authority.",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "implementation_worker",
+    project: parentProject,
+    parentAuthorityPacket: { ...harnessImplementationAuthority },
+  });
+  assert.equal(reconstructedBoundaryLaunch.status, "blocked");
+  assert.equal(reconstructedBoundaryLaunch.blockerCode, "direct_workspace_parent_authority_invalid");
   const launchA = pool.launch({
     childAgentId: "arcagi3-worker-a",
     taskName: "arcagi3_worker_a",
@@ -367,6 +421,7 @@ try {
     reasoningEffort: "xhigh",
     forkTurns: "all",
     parentContextMessages,
+    parentAuthorityPacket: harnessImplementationAuthority,
   });
   const launchB = pool.launch({
     childAgentId: "arcagi3-worker-b",
@@ -382,6 +437,7 @@ try {
     reasoningEffort: "xhigh",
     forkTurns: "all",
     parentContextMessages,
+    parentAuthorityPacket: harnessImplementationAuthority,
   });
   assert.equal(pool.descriptor().activeChildren, 2, "both isolated workers must hold active pool leases concurrently");
   const [waitA, waitB] = await Promise.all([
@@ -498,7 +554,7 @@ try {
   assert.equal(contractA.repositoryPolicy.validationPosture, "exact");
   assert.equal(contractA.policyCompilation.parentAuthorityExplicit, true);
   assert.equal(contractA.policyCompilation.substrateCapabilityExplicit, true);
-  assert.equal(contractA.policyCompilation.authorityProvenance.parentAuthority, "admitted_spawn_tool_profile");
+  assert.equal(contractA.policyCompilation.authorityProvenance.parentAuthority, "harness_owned_upstream_authority_packet");
   assert.equal(contractA.policyCompilation.wideningPerformed, false);
   let invalidRuntimeTargetDispatched = false;
   await assert.rejects(
@@ -536,10 +592,12 @@ try {
     toolProfile: "read_only_worker",
     binding: realizationA.binding,
     testProfile: realizationA.testProfile,
-    parentAuthority: {
+    parentAuthorityPacket: createWorkspaceParentAuthorityPacket({
       boundaryId: "arcagi3_read_only_fixture_parent",
       allowedTools: ["inspect_repository", "list_files", "match_files", "search_text", "read_file"],
-    },
+      upstreamPolicyId: "arcagi3_read_only_fixture_tool_policy",
+      upstreamAllowedTools: WORKSPACE_WORKER_TOOLS,
+    }),
     contextMessages: parentContextMessages,
     contextHandoffMode: "full",
   }).contract;

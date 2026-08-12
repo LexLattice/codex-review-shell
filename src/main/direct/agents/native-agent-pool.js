@@ -14,7 +14,7 @@ const {
   safeWorkspaceExecutionProjection,
 } = require("./workspace-worker-contract");
 const {
-  REQUESTED_ROLE_PROFILES,
+  validateWorkspaceParentAuthorityPacket,
 } = require("./workspace-worker-policy-profile");
 
 const DIRECT_NATIVE_AGENT_POOL_SCHEMA = "direct_native_agent_pool@1";
@@ -46,38 +46,6 @@ function stableStringify(value) {
 
 function digestFor(domain, value) {
   return `sha256:${crypto.createHash("sha256").update(`${domain}\0${stableStringify(value)}`).digest("hex")}`;
-}
-
-function parentAuthorityForWorkspaceLaunch(toolProfile, suppliedBoundary) {
-  const admittedProfile = REQUESTED_ROLE_PROFILES[toolProfile];
-  const candidateTools = admittedProfile ? [...admittedProfile.requestedTools] : [];
-  const suppliedAllowed = suppliedBoundary?.allowedTools || suppliedBoundary?.declaredTools || suppliedBoundary?.availableTools;
-  const suppliedTools = isPlainObject(suppliedBoundary)
-    ? new Set((Array.isArray(suppliedAllowed) ? suppliedAllowed : [])
-      .map((entry) => normalizeString(entry, ""))
-      .filter(Boolean))
-    : null;
-  const suppliedForbidden = new Set((Array.isArray(suppliedBoundary?.forbiddenTools) ? suppliedBoundary.forbiddenTools : [])
-    .map((entry) => normalizeString(entry, ""))
-    .filter(Boolean));
-  const allowedTools = suppliedTools
-    ? candidateTools.filter((toolName) => suppliedTools.has(toolName) && !suppliedForbidden.has(toolName))
-    : candidateTools;
-  const boundaryBase = {
-    boundaryId: normalizeString(
-      suppliedBoundary?.boundaryId,
-      `direct_native_spawn_${toolProfile}_authority`,
-    ),
-    allowedTools,
-    forbiddenTools: candidateTools.filter((toolName) => !allowedTools.includes(toolName)),
-    authorityProvenance: suppliedTools
-      ? "explicit_launch_boundary_intersected_with_admitted_profile"
-      : "admitted_spawn_tool_profile",
-  };
-  return {
-    ...boundaryBase,
-    boundaryDigest: digestFor("direct-native-workspace-parent-authority@1", boundaryBase),
-  };
 }
 
 function nowIso(now = Date.now) {
@@ -227,6 +195,17 @@ class DirectNativeAgentPool extends EventEmitter {
     if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && !isPlainObject(input.project)) {
       return this.launchResult(null, "blocked", "workspace_worker_project_binding_missing");
     }
+    let parentAuthorityPacket = null;
+    if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE) {
+      if (!isPlainObject(input.parentAuthorityPacket)) {
+        return this.launchResult(null, "blocked", "direct_workspace_parent_authority_missing");
+      }
+      try {
+        parentAuthorityPacket = validateWorkspaceParentAuthorityPacket(input.parentAuthorityPacket);
+      } catch (error) {
+        return this.launchResult(null, "blocked", normalizeString(error?.code, "direct_workspace_parent_authority_invalid"));
+      }
+    }
     const task = normalizeString(input.message || input.prompt || input.task, "");
     if (!task) return this.launchResult(null, "blocked", "missing_spawn_prompt");
     const projectId = normalizeString(input.projectId, "project_direct_agents");
@@ -305,9 +284,7 @@ class DirectNativeAgentPool extends EventEmitter {
       _task: task,
       _contextMessages: contextMessages,
       _project: workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE ? input.project : null,
-      _parentAuthority: workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
-        ? parentAuthorityForWorkspaceLaunch(toolProfile, input.parentAuthority || input.authorityBoundary)
-        : null,
+      _parentAuthorityPacket: parentAuthorityPacket,
       _waiters: new Set(),
       _settled: false,
       _leaseActive: false,
@@ -393,7 +370,7 @@ class DirectNativeAgentPool extends EventEmitter {
             ...commonInput,
             workspaceMode: record.workspaceMode,
             toolProfile: record.toolProfile,
-            parentAuthority: record._parentAuthority,
+            parentAuthorityPacket: record._parentAuthorityPacket,
             project: record._project,
           })
         : await this.routeFor(record).spawnAndRun(commonInput);
@@ -476,7 +453,7 @@ class DirectNativeAgentPool extends EventEmitter {
     record._task = "";
     record._contextMessages = [];
     record._project = null;
-    record._parentAuthority = null;
+    record._parentAuthorityPacket = null;
     this.queue = this.queue.filter((childAgentId) => childAgentId !== record.childAgentId);
     if (record._leaseActive) {
       record._leaseActive = false;

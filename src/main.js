@@ -10603,11 +10603,7 @@ async function openContextMenu(event, request = {}) {
 async function getWorkspaceStatus(projectId) {
   const project = await getProjectById(projectId);
   const manager = ensureWorkspaceBackendManager();
-  return {
-    ...manager.statusForProject(project),
-    root: workspaceRoot(project, repoRoot),
-    label: workspaceLabel(project, repoRoot),
-  };
+  return manager.statusForProject(project);
 }
 
 function openChatgptSettingsScript() {
@@ -12205,7 +12201,7 @@ ipcMain.handle("chatgpt:open-url", async (_event, payload) => {
 ipcMain.handle("workspace:attach", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   const session = await attachProjectWorkspace(project, { wait: true });
-  return session.snapshot();
+  return session.publicSnapshot();
 });
 
 ipcMain.handle("workspace:status", async (_event, payload) => {

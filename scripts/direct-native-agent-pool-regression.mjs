@@ -9,6 +9,10 @@ const {
   normalizeForkTurns,
   selectContextMessages,
 } = require("../src/main/direct/agents/native-agent-pool");
+const {
+  REPOSITORY_READ_TOOLS,
+  createWorkspaceParentAuthorityPacket,
+} = require("../src/main/direct/agents/workspace-worker-policy-profile");
 
 function deferred() {
   let resolve;
@@ -192,6 +196,12 @@ const unsafeWorkspacePool = new DirectNativeAgentPool({
     },
   }),
 });
+const unsafeWorkspaceHarnessAuthority = createWorkspaceParentAuthorityPacket({
+  boundaryId: "unsafe_workspace_projection_harness_authority",
+  upstreamPolicyId: "unsafe_workspace_projection_harness_tools",
+  upstreamAllowedTools: REPOSITORY_READ_TOOLS,
+  allowedTools: ["inspect_repository", "list_files", "match_files", "search_text", "read_file"],
+});
 const unsafeWorkspaceLaunch = unsafeWorkspacePool.launch({
   projectId: "project_unsafe_workspace_fixture",
   primaryThreadId: "primary_unsafe_workspace_fixture",
@@ -200,6 +210,7 @@ const unsafeWorkspaceLaunch = unsafeWorkspacePool.launch({
   workspaceMode: "isolated_worktree",
   toolProfile: "read_only_worker",
   project: { id: "project_unsafe_workspace_fixture" },
+  parentAuthorityPacket: unsafeWorkspaceHarnessAuthority,
 });
 const unsafeWorkspaceWait = await unsafeWorkspacePool.wait({
   projectId: "project_unsafe_workspace_fixture",

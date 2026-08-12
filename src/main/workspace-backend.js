@@ -96,6 +96,57 @@ function workspaceLabel(project, fallbackRoot) {
   return `Local ${workspace.localPath}`;
 }
 
+const PRIVATE_BACKEND_STATUS_KEYS = new Set([
+  "args",
+  "command",
+  "cwd",
+  "env",
+  "key",
+  "localpath",
+  "linuxpath",
+  "nativeroot",
+  "repopath",
+  "root",
+  "windowspath",
+  "workspace",
+  "worktreepath",
+]);
+
+function rawPathVariants(value) {
+  const source = normalizeString(value, "");
+  if (!source) return [];
+  return [...new Set([
+    source,
+    source.replace(/\\/g, "/"),
+    source.replace(/\//g, "\\"),
+  ].filter(Boolean))].sort((left, right) => right.length - left.length);
+}
+
+function redactBackendNativePaths(value, nativePaths = []) {
+  let text = typeof value === "string" ? value : "";
+  for (const nativePath of nativePaths.flatMap(rawPathVariants)) {
+    if (!nativePath) continue;
+    text = text.replaceAll(nativePath, "<workspace>");
+    const escaped = nativePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(escaped, "gi"), "<workspace>");
+  }
+  return text
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\s"'<>]+/g, "<native-path>")
+    .replace(/(^|[\s("'=])\/(?:[^\s"'<>]+)/g, (_match, prefix) => `${prefix}<native-path>`);
+}
+
+function safeBackendPublicValue(value, nativePaths = []) {
+  if (typeof value === "string") return redactBackendNativePaths(value, nativePaths);
+  if (Array.isArray(value)) return value.map((entry) => safeBackendPublicValue(entry, nativePaths));
+  if (!isPlainObject(value)) return value;
+  const result = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (PRIVATE_BACKEND_STATUS_KEYS.has(key.toLowerCase())) continue;
+    result[key] = safeBackendPublicValue(entry, nativePaths);
+  }
+  return result;
+}
+
 function workspaceSessionKey(project, fallbackRoot) {
   const workspace = normalizeWorkspace(project?.workspace, project?.repoPath, fallbackRoot);
   if (workspace.kind === "wsl") return `wsl:${workspace.distro || "default"}:${workspace.linuxPath}`;
@@ -336,6 +387,7 @@ class WorkspaceSession extends EventEmitter {
     this.readySeen = false;
     this.hygiene = null;
     this.workspaceWorkerBinding = null;
+    this.workspaceWorkerBindingInitialization = null;
     this.recentDiagnostics = [];
   }
 
@@ -352,6 +404,52 @@ class WorkspaceSession extends EventEmitter {
       readySeen: this.readySeen,
       hygiene: this.hygiene,
       workspaceWorkerBinding: this.workspaceWorkerBinding,
+    };
+  }
+
+  nativePathCandidates() {
+    const workspace = this.descriptor?.workspace || normalizeWorkspace(
+      this.project.workspace,
+      this.project.repoPath,
+      this.options.fallbackRoot,
+    );
+    return [
+      workspace?.localPath,
+      workspace?.linuxPath,
+      workspace?.windowsPath,
+      this.descriptor?.cwd,
+      this.hello?.root,
+      this.hello?.cwd,
+    ].map((entry) => normalizeString(entry, "")).filter(Boolean);
+  }
+
+  publicSnapshot() {
+    const nativePaths = this.nativePathCandidates();
+    return {
+      schema: "workspace_backend_public_session@1",
+      projectId: this.project.id,
+      projectName: this.project.name,
+      status: this.status,
+      transport: this.descriptor?.transport || "not-started",
+      workspaceKind: normalizeString(
+        this.descriptor?.workspace?.kind || this.hello?.workspaceKind,
+        "local",
+      ),
+      backend: this.hello ? safeBackendPublicValue({
+        protocolVersion: this.hello.protocolVersion,
+        sessionId: this.hello.sessionId,
+        projectId: this.hello.projectId,
+        workspaceKind: this.hello.workspaceKind,
+        platform: this.hello.platform,
+        pid: this.hello.pid,
+        node: this.hello.node,
+        capabilities: this.hello.capabilities,
+      }, nativePaths) : null,
+      lastError: redactBackendNativePaths(this.lastError, nativePaths),
+      readySeen: this.readySeen,
+      hygiene: safeBackendPublicValue(this.hygiene, nativePaths),
+      workspaceWorkerBinding: safeBackendPublicValue(this.workspaceWorkerBinding, nativePaths),
+      rawWorkspacePathIncluded: false,
     };
   }
 
@@ -376,11 +474,19 @@ class WorkspaceSession extends EventEmitter {
     details.push(`readySeen=${this.readySeen ? "yes" : "no"}`);
     const recent = this.recentDiagnostics.map((item) => `${item.type}: ${item.text}`).join(" | ");
     if (recent) details.push(`recent=${recent}`);
-    return `${error.message}${details.length ? ` (${details.join("; ")})` : ""}`;
+    return redactBackendNativePaths(
+      `${error.message}${details.length ? ` (${details.join("; ")})` : ""}`,
+      this.nativePathCandidates(),
+    );
   }
 
   emitStatus(type, extra = {}) {
-    const payload = { type, session: this.snapshot(), at: new Date().toISOString(), ...extra };
+    const payload = {
+      ...safeBackendPublicValue(extra, this.nativePathCandidates()),
+      type,
+      session: this.publicSnapshot(),
+      at: new Date().toISOString(),
+    };
     this.emit("status", payload);
   }
 
@@ -416,6 +522,7 @@ class WorkspaceSession extends EventEmitter {
     this.lastError = null;
     this.readySeen = false;
     this.workspaceWorkerBinding = null;
+    this.workspaceWorkerBindingInitialization = null;
     this.recentDiagnostics = [];
     this.descriptor = launchDescriptor(this.project, this.options);
     this.emitStatus("backend-starting");
@@ -436,7 +543,10 @@ class WorkspaceSession extends EventEmitter {
     });
     this.transport = new NdjsonTransport(this.child);
     this.transport.on("event", (event) => {
-      this.emit("agent-event", { session: this.snapshot(), event });
+      this.emit("agent-event", {
+        session: this.publicSnapshot(),
+        event: safeBackendPublicValue(event, this.nativePathCandidates()),
+      });
       if (event.event === "ready") {
         this.readySeen = true;
         this.noteDiagnostic("agent-ready", `${event.platform || "unknown"} pid=${event.pid || "unknown"}`);
@@ -526,34 +636,50 @@ class WorkspaceSession extends EventEmitter {
       error.code = "workspace_worker_binding_already_initialized";
       throw error;
     }
-    const initialized = await this.transport.request(
+    if (this.workspaceWorkerBindingInitialization) {
+      if (this.workspaceWorkerBindingInitialization.bindingDigest !== requestedDigest) {
+        const error = new Error("Workspace backend session has a conflicting binding initialization in flight.");
+        error.code = "workspace_worker_binding_already_initialized";
+        throw error;
+      }
+      return this.workspaceWorkerBindingInitialization.promise;
+    }
+    const pending = { bindingDigest: requestedDigest, promise: null };
+    pending.promise = this.transport.request(
       "initializeWorkspaceWorkerBinding",
       { binding },
       DEFAULT_REQUEST_TIMEOUT_MS,
-    );
-    if (
-      normalizeString(initialized?.bindingDigest, "") !== requestedDigest ||
-      initialized?.immutable !== true
-    ) {
-      const error = new Error("Workspace backend did not acknowledge the requested immutable worker binding.");
-      error.code = "workspace_worker_binding_initialization_unacknowledged";
-      throw error;
-    }
-    this.workspaceWorkerBinding = {
-      schema: normalizeString(initialized.schema, "direct_workspace_worker_binding_initialization@1"),
-      bindingId: normalizeString(initialized.bindingId, ""),
-      bindingDigest: requestedDigest,
-      backendSessionId: normalizeString(initialized.backendSessionId, ""),
-      projectId: normalizeString(initialized.projectId, ""),
-      workerKey: normalizeString(initialized.workerKey, ""),
-      workspaceKind: normalizeString(initialized.workspaceKind, ""),
-      branch: normalizeString(initialized.branch, ""),
-      baseCommit: normalizeString(initialized.baseCommit, ""),
-      rootEvidenceDigest: normalizeString(initialized.rootEvidenceDigest, ""),
-      immutable: true,
-      rawWorkspacePathIncluded: false,
-    };
-    return this.workspaceWorkerBinding;
+    ).then((initialized) => {
+      if (
+        normalizeString(initialized?.bindingDigest, "") !== requestedDigest ||
+        initialized?.immutable !== true
+      ) {
+        const error = new Error("Workspace backend did not acknowledge the requested immutable worker binding.");
+        error.code = "workspace_worker_binding_initialization_unacknowledged";
+        throw error;
+      }
+      this.workspaceWorkerBinding = {
+        schema: normalizeString(initialized.schema, "direct_workspace_worker_binding_initialization@1"),
+        bindingId: normalizeString(initialized.bindingId, ""),
+        bindingDigest: requestedDigest,
+        backendSessionId: normalizeString(initialized.backendSessionId, ""),
+        projectId: normalizeString(initialized.projectId, ""),
+        workerKey: normalizeString(initialized.workerKey, ""),
+        workspaceKind: normalizeString(initialized.workspaceKind, ""),
+        branch: normalizeString(initialized.branch, ""),
+        baseCommit: normalizeString(initialized.baseCommit, ""),
+        rootEvidenceDigest: normalizeString(initialized.rootEvidenceDigest, ""),
+        immutable: true,
+        rawWorkspacePathIncluded: false,
+      };
+      return this.workspaceWorkerBinding;
+    }).finally(() => {
+      if (this.workspaceWorkerBindingInitialization === pending) {
+        this.workspaceWorkerBindingInitialization = null;
+      }
+    });
+    this.workspaceWorkerBindingInitialization = pending;
+    return pending.promise;
   }
 
   dispose() {
@@ -596,6 +722,10 @@ class WorkspaceBackendManager extends EventEmitter {
   }
 
   statusForProject(project) {
+    return this.sessionForProject(project).publicSnapshot();
+  }
+
+  privateStatusForProject(project) {
     return this.sessionForProject(project).snapshot();
   }
 

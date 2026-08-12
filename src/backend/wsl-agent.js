@@ -23,6 +23,9 @@ const {
   genericWorkspaceRepositoryProfile,
   pinnedWorkspaceRepositoryProfiles,
 } = require("../main/direct/agents/workspace-worker-policy-profile");
+const {
+  sameNativePath,
+} = require("../shared/native-path-identity");
 
 const PROTOCOL_VERSION = 1;
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
@@ -102,6 +105,7 @@ const SENSITIVE_READ_FILE_PATTERNS = [
 let reviewShellIgnorePromise = null;
 let gitWorktreeMutationQueue = Promise.resolve();
 let authoritativeWorkspaceWorkerBinding = null;
+let workspaceWorkerBindingInitialization = null;
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -2670,16 +2674,35 @@ async function initializeWorkspaceWorkerBinding(params = {}) {
     throw error;
   }
   const candidate = { ...binding, bindingId: expectedBindingId, bindingDigest };
+  const candidateCanonical = canonicalJson(candidate);
   if (authoritativeWorkspaceWorkerBinding) {
-    if (canonicalJson(authoritativeWorkspaceWorkerBinding) !== canonicalJson(candidate)) {
+    if (canonicalJson(authoritativeWorkspaceWorkerBinding) !== candidateCanonical) {
       const error = new Error("Workspace worker session binding is immutable.");
       error.code = "workspace_worker_binding_already_initialized";
       throw error;
     }
     await verifyWorkspaceWorkerBindingRealization(candidate);
   } else {
-    await verifyWorkspaceWorkerBindingRealization(candidate, { requireBaseHead: true });
-    authoritativeWorkspaceWorkerBinding = Object.freeze(candidate);
+    if (workspaceWorkerBindingInitialization) {
+      if (workspaceWorkerBindingInitialization.canonicalCandidate !== candidateCanonical) {
+        const error = new Error("Workspace worker session has a conflicting immutable binding initialization in flight.");
+        error.code = "workspace_worker_binding_already_initialized";
+        throw error;
+      }
+      await workspaceWorkerBindingInitialization.promise;
+    } else {
+      const pending = { canonicalCandidate: candidateCanonical, promise: null };
+      pending.promise = (async () => {
+        await verifyWorkspaceWorkerBindingRealization(candidate, { requireBaseHead: true });
+        authoritativeWorkspaceWorkerBinding = Object.freeze(candidate);
+      })().finally(() => {
+        if (workspaceWorkerBindingInitialization === pending) {
+          workspaceWorkerBindingInitialization = null;
+        }
+      });
+      workspaceWorkerBindingInitialization = pending;
+      await pending.promise;
+    }
   }
   return {
     schema: "direct_workspace_worker_binding_initialization@1",
@@ -2739,7 +2762,7 @@ async function workspaceWorkerCanonicalFileEntry(relativePath, trackedPaths) {
     const resolved = await resolveFileWithinRoot(safePath);
     const requestedPath = path.resolve(resolved.requestedFullPath);
     const physicalPath = path.resolve(resolved.fullPath);
-    if (path.resolve(resolved.realRoot) !== path.resolve(root) || requestedPath !== physicalPath) return null;
+    if (!sameNativePath(resolved.realRoot, root) || !sameNativePath(requestedPath, physicalPath)) return null;
     const requestedStat = await fs.lstat(resolved.requestedFullPath);
     if (requestedStat.isSymbolicLink() || !requestedStat.isFile()) return null;
     return {

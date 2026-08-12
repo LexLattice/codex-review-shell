@@ -309,18 +309,12 @@ try {
   );
   assert.equal(workspaceSpawnHandled, 1);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(workspaceChildCalls.length, 1);
-  assert.equal(workspaceChildCalls[0].workspaceMode, "isolated_worktree");
-  assert.equal(workspaceChildCalls[0].toolProfile, "implementation_worker");
-  assert.equal(workspaceChildCalls[0].project, project);
-  assert.equal(workspaceChildCalls[0].contextMessages.length, 0);
+  assert.equal(workspaceChildCalls.length, 0, "provider-visible workspace execution requires a harness-owned authority packet");
   const workspaceRecord = pool.records({
     projectId: project.id,
     primaryThreadId: "direct_parent_native_agents",
   }).find((record) => record.taskName === "isolated_implementation");
-  assert.equal(workspaceRecord.state, "completed");
-  assert.equal(workspaceRecord.workspaceExecution.status, "completed");
-  assert.equal(workspaceRecord.workspaceExecution.rawWorkspacePathIncluded, false);
+  assert.equal(workspaceRecord, undefined);
   const workspaceSpawnTurn = sessionStore.readTurn(
     "direct_parent_native_agents",
     "turn_spawn_workspace",
@@ -328,7 +322,7 @@ try {
   assert.equal(workspaceSpawnTurn.state, "completed");
   assert.match(
     JSON.stringify(workspaceSpawnTurn.unresolvedObligations[0].result),
-    /isolated_worktree/,
+    /direct_workspace_parent_authority_missing/,
   );
   assert.equal(
     JSON.stringify(workspaceSpawnTurn.unresolvedObligations[0].result).includes("repoPath"),
@@ -343,7 +337,7 @@ try {
     contextHandoffMode: childCalls[0].requestShape.contextHandoffMode,
     parentContinuations: parentBodies.length,
     sameTurnNativeTransitions: 3,
-    isolatedWorkspaceToolRoute: true,
+    isolatedWorkspaceToolRoute: "blocked_without_harness_authority",
   }, null, 2));
 } finally {
   await fs.rm(rootDir, { recursive: true, force: true });

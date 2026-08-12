@@ -50,13 +50,17 @@ authority, pinned repository policy, and resident-substrate capability.
 `tool_profile` is retained as advisory provenance; it cannot widen any of the
 other three boundaries.
 
-The compiler accepts an explicit parent-authority carrier. The current EXEC1
-launcher does not yet project its wider work-thread boundary into the worker
-call (that integration surface is outside this slice), so compatibility calls
-receive only the requested-role candidate as their parent ceiling and record a
-typed boundary omission. Repository and substrate boundaries still narrow that
-candidate. Carrying the canonical parent boundary through the pool is required
-before claiming end-to-end parent-policy inheritance.
+The compiler accepts only an explicit, harness-owned parent-authority packet.
+The packet is immutably branded inside the harness process and requires an
+explicit boundary id, upstream policy id, and canonical upstream tool set. It
+binds that policy by digest and cannot be reconstructed from provider JSON or
+widened by `tool_profile`; omission of the upstream set never defaults to all
+tools. The current live launcher does not yet project its
+wider work-thread boundary into such a packet, so provider-visible
+`isolated_worktree` spawning is unavailable there. Direct compilation without
+the packet grants zero tools and records a typed parent-boundary omission. The
+acceptance fixture injects a clearly identified harness-owned witness; it is not
+a production authority source.
 
 The first-slice constitutions are:
 
@@ -255,6 +259,10 @@ The parent observes terminal summaries and typed status through `wait_agent`,
 transcript.
 
 ## Acceptance witness
+
+Run `npm run direct:arcagi3-workspace-workers`. This aggregate command executes
+both the generic policy/repository regression and the ArcAGI3 end-to-end runtime
+witness after their shared syntax gate.
 
 The EXEC1 regression creates a temporary local clone derived from the committed
 ArcAGI3 repository, then launches two workspace workers from the same pinned

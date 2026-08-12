@@ -5,6 +5,11 @@ const arcagi3Profile = require("../epistemic/profiles/arcagi3-odeu-local.v1.json
 
 const DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA = "direct_workspace_worker_policy@1";
 const DIRECT_WORKSPACE_WORKER_POLICY_COMPILATION_SCHEMA = "direct_workspace_worker_policy_compilation@1";
+const DIRECT_WORKSPACE_PARENT_AUTHORITY_PACKET_SCHEMA = "direct_workspace_parent_authority_packet@1";
+const DIRECT_WORKSPACE_UPSTREAM_TOOL_POLICY_SCHEMA = "direct_workspace_upstream_tool_policy@1";
+const WORKSPACE_PARENT_AUTHORITY_PROVENANCE = "harness_owned_upstream_authority_packet";
+const WORKSPACE_UPSTREAM_TOOL_POLICY_PROVENANCE = "harness_owned_upstream_tool_policy";
+const harnessOwnedParentAuthorityPackets = new WeakSet();
 
 const REPOSITORY_READ_TOOLS = Object.freeze([
   "inspect_repository",
@@ -56,6 +61,148 @@ function sortedToolSet(value, fallback = []) {
   const source = Array.isArray(value) ? value : fallback;
   const admitted = new Set(source.map((entry) => normalizeString(entry, "")).filter(Boolean));
   return WORKSPACE_WORKER_TOOLS.filter((toolName) => admitted.has(toolName));
+}
+
+function workspaceAuthorityError(message) {
+  const error = new Error(message);
+  error.code = "direct_workspace_parent_authority_invalid";
+  return error;
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const entry of Object.values(value)) deepFreeze(entry);
+  return Object.freeze(value);
+}
+
+function exactToolArray(value, label) {
+  if (!Array.isArray(value)) {
+    throw workspaceAuthorityError(`${label} must be one explicit canonical tool array.`);
+  }
+  const canonical = sortedToolSet(value, []);
+  if (stableStringify(value) !== stableStringify(canonical)) {
+    throw workspaceAuthorityError(`${label} contains unknown, duplicate, or non-canonical tools.`);
+  }
+  return canonical;
+}
+
+function createWorkspaceParentAuthorityPacket(input = {}) {
+  const boundaryId = normalizeString(input.boundaryId, "");
+  const upstreamPolicyId = normalizeString(input.upstreamPolicyId, "");
+  if (!boundaryId || !upstreamPolicyId || !Array.isArray(input.upstreamAllowedTools)) {
+    throw workspaceAuthorityError(
+      "Harness authority issuance requires explicit boundary identity, upstream policy identity, and canonical upstream tools.",
+    );
+  }
+  const upstreamAllowedTools = exactToolArray(input.upstreamAllowedTools, "upstreamAllowedTools");
+  const upstreamForbiddenTools = input.upstreamForbiddenTools === undefined
+    ? []
+    : exactToolArray(input.upstreamForbiddenTools, "upstreamForbiddenTools");
+  const upstreamPolicyBase = {
+    schema: DIRECT_WORKSPACE_UPSTREAM_TOOL_POLICY_SCHEMA,
+    policyId: upstreamPolicyId,
+    allowedTools: upstreamAllowedTools.filter((toolName) => !upstreamForbiddenTools.includes(toolName)),
+    forbiddenTools: upstreamForbiddenTools,
+    authorityProvenance: WORKSPACE_UPSTREAM_TOOL_POLICY_PROVENANCE,
+  };
+  const upstreamToolPolicy = {
+    ...upstreamPolicyBase,
+    policyDigest: digestFor("direct-workspace-upstream-tool-policy@1", upstreamPolicyBase),
+  };
+  const requestedAllowedTools = sortedToolSet(input.allowedTools, upstreamToolPolicy.allowedTools);
+  const forbiddenTools = sortedToolSet(input.forbiddenTools, []);
+  const boundaryBase = {
+    schema: DIRECT_WORKSPACE_PARENT_AUTHORITY_PACKET_SCHEMA,
+    boundaryId,
+    allowedTools: requestedAllowedTools.filter((toolName) =>
+      upstreamToolPolicy.allowedTools.includes(toolName) &&
+      !upstreamToolPolicy.forbiddenTools.includes(toolName) &&
+      !forbiddenTools.includes(toolName)),
+    forbiddenTools,
+    authorityProvenance: WORKSPACE_PARENT_AUTHORITY_PROVENANCE,
+    upstreamToolPolicy,
+  };
+  const packet = deepFreeze({
+    ...boundaryBase,
+    boundaryDigest: digestFor("direct-workspace-parent-authority-packet@1", boundaryBase),
+  });
+  harnessOwnedParentAuthorityPackets.add(packet);
+  return packet;
+}
+
+function validateWorkspaceParentAuthorityPacket(value) {
+  if (!isPlainObject(value)) {
+    throw workspaceAuthorityError("Workspace launch requires one harness-owned parent authority packet.");
+  }
+  if (!harnessOwnedParentAuthorityPackets.has(value)) {
+    throw workspaceAuthorityError("Workspace parent authority was reconstructed from an untrusted caller object.");
+  }
+  if (
+    value.schema !== DIRECT_WORKSPACE_PARENT_AUTHORITY_PACKET_SCHEMA ||
+    value.authorityProvenance !== WORKSPACE_PARENT_AUTHORITY_PROVENANCE
+  ) {
+    throw workspaceAuthorityError("Workspace parent authority schema or provenance is invalid.");
+  }
+  const boundaryId = normalizeString(value.boundaryId, "");
+  if (!boundaryId) throw workspaceAuthorityError("Workspace parent authority boundary id is missing.");
+  const upstream = value.upstreamToolPolicy;
+  if (
+    !isPlainObject(upstream) ||
+    upstream.schema !== DIRECT_WORKSPACE_UPSTREAM_TOOL_POLICY_SCHEMA ||
+    upstream.authorityProvenance !== WORKSPACE_UPSTREAM_TOOL_POLICY_PROVENANCE
+  ) {
+    throw workspaceAuthorityError("Workspace parent authority has no valid upstream tool policy.");
+  }
+  const upstreamPolicyId = normalizeString(upstream.policyId, "");
+  if (!upstreamPolicyId) throw workspaceAuthorityError("Workspace upstream tool policy id is missing.");
+  const upstreamAllowedTools = exactToolArray(upstream.allowedTools, "upstreamToolPolicy.allowedTools");
+  const upstreamForbiddenTools = exactToolArray(upstream.forbiddenTools, "upstreamToolPolicy.forbiddenTools");
+  if (upstreamAllowedTools.some((toolName) => upstreamForbiddenTools.includes(toolName))) {
+    throw workspaceAuthorityError("Workspace upstream tool policy grants and forbids the same tool.");
+  }
+  const upstreamPolicyBase = {
+    schema: DIRECT_WORKSPACE_UPSTREAM_TOOL_POLICY_SCHEMA,
+    policyId: upstreamPolicyId,
+    allowedTools: upstreamAllowedTools,
+    forbiddenTools: upstreamForbiddenTools,
+    authorityProvenance: WORKSPACE_UPSTREAM_TOOL_POLICY_PROVENANCE,
+  };
+  const expectedPolicyDigest = digestFor("direct-workspace-upstream-tool-policy@1", upstreamPolicyBase);
+  if (normalizeString(upstream.policyDigest, "") !== expectedPolicyDigest) {
+    throw workspaceAuthorityError("Workspace upstream tool policy digest is invalid.");
+  }
+  const allowedTools = exactToolArray(value.allowedTools, "parentAuthority.allowedTools");
+  const forbiddenTools = exactToolArray(value.forbiddenTools, "parentAuthority.forbiddenTools");
+  if (allowedTools.some((toolName) =>
+    !upstreamAllowedTools.includes(toolName) ||
+    upstreamForbiddenTools.includes(toolName) ||
+    forbiddenTools.includes(toolName))) {
+    throw workspaceAuthorityError("Workspace parent authority exceeds its upstream tool policy.");
+  }
+  const boundaryBase = {
+    schema: DIRECT_WORKSPACE_PARENT_AUTHORITY_PACKET_SCHEMA,
+    boundaryId,
+    allowedTools,
+    forbiddenTools,
+    authorityProvenance: WORKSPACE_PARENT_AUTHORITY_PROVENANCE,
+    upstreamToolPolicy: { ...upstreamPolicyBase, policyDigest: expectedPolicyDigest },
+  };
+  const expectedBoundaryDigest = digestFor("direct-workspace-parent-authority-packet@1", boundaryBase);
+  if (normalizeString(value.boundaryDigest, "") !== expectedBoundaryDigest) {
+    throw workspaceAuthorityError("Workspace parent authority packet digest is invalid.");
+  }
+  return value;
+}
+
+function parentAuthorityBoundaryFromPacket(value) {
+  const packet = validateWorkspaceParentAuthorityPacket(value);
+  return Object.freeze({
+    boundaryId: packet.boundaryId,
+    boundaryDigest: packet.boundaryDigest,
+    allowedTools: [...packet.allowedTools],
+    forbiddenTools: [...packet.forbiddenTools],
+    authorityProvenance: packet.authorityProvenance,
+  });
 }
 
 function sourceById(profile, id) {
@@ -326,14 +473,19 @@ function compileWorkspaceWorkerPolicy(input = {}) {
 }
 
 module.exports = {
+  DIRECT_WORKSPACE_PARENT_AUTHORITY_PACKET_SCHEMA,
+  DIRECT_WORKSPACE_UPSTREAM_TOOL_POLICY_SCHEMA,
   DIRECT_WORKSPACE_WORKER_POLICY_COMPILATION_SCHEMA,
   DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA,
   REPOSITORY_READ_TOOLS,
   REQUESTED_ROLE_PROFILES,
   WORKSPACE_WORKER_TOOLS,
   compileWorkspaceWorkerPolicy,
+  createWorkspaceParentAuthorityPacket,
   digestFor,
   genericWorkspaceRepositoryProfile,
+  parentAuthorityBoundaryFromPacket,
   pinnedWorkspaceRepositoryProfiles,
   publicRepositoryPolicy,
+  validateWorkspaceParentAuthorityPacket,
 };

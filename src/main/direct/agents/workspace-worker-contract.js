@@ -5,6 +5,7 @@ const {
   WORKSPACE_WORKER_TOOLS,
   compileWorkspaceWorkerPolicy,
   digestFor,
+  parentAuthorityBoundaryFromPacket,
 } = require("./workspace-worker-policy-profile");
 const {
   repositoryToolSchemas,
@@ -199,9 +200,12 @@ function compileWorkspaceWorkerContract(input = {}) {
     error.code = "direct_workspace_worker_child_identity_missing";
     throw error;
   }
+  const parentAuthority = input.parentAuthorityPacket
+    ? parentAuthorityBoundaryFromPacket(input.parentAuthorityPacket)
+    : undefined;
   const compiledPolicy = compileWorkspaceWorkerPolicy({
     requestedProfileId: toolProfile,
-    parentAuthority: input.parentAuthority || input.authorityBoundary,
+    parentAuthority,
     repositoryPolicy: input.repositoryPolicy || input.testProfile?.repositoryPolicy,
     substrateCapabilities: input.substrateCapabilities || input.testProfile?.substrateCapabilities,
     testProfile: input.testProfile,

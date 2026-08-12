@@ -16,14 +16,21 @@ const {
 } = require("../src/main/direct/agents/workspace-worker-contract");
 const {
   compileWorkspaceWorkerPolicy,
+  createWorkspaceParentAuthorityPacket,
+  validateWorkspaceParentAuthorityPacket,
 } = require("../src/main/direct/agents/workspace-worker-policy-profile");
+const {
+  sameNativePath,
+} = require("../src/shared/native-path-identity");
 const {
   executeWorkspaceTool,
 } = require("../src/main/direct/agents/workspace-worker-runtime");
 
 const shellRoot = path.resolve(import.meta.dirname, "..");
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-worker-policy-repository-"));
+const backendRaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-worker-binding-race-"));
 let manager;
+let backendRaceManager;
 
 function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, encoding: "utf8" });
@@ -69,6 +76,9 @@ try {
     agentPath: path.join(shellRoot, "src/backend/wsl-agent.js"),
     fallbackRoot: shellRoot,
   });
+  const publicBackendPayloads = [];
+  manager.on("status", (payload) => publicBackendPayloads.push(payload));
+  manager.on("agent-event", (payload) => publicBackendPayloads.push(payload));
   const parentProjectId = "project_worker_policy_repository_fixture";
   const project = {
     id: `${parentProjectId}__worker-policy-fixture`,
@@ -93,10 +103,84 @@ try {
     bindingId: `workspace_worker_binding_${bindingDigest.slice(7, 31)}`,
     bindingDigest,
   };
+  const conflictingBindingBase = { ...bindingBase, retainedAfterCompletion: false };
+  const conflictingBindingDigest = digest(canonicalJson(conflictingBindingBase));
+  const conflictingBinding = {
+    ...conflictingBindingBase,
+    bindingId: `workspace_worker_binding_${conflictingBindingDigest.slice(7, 31)}`,
+    bindingDigest: conflictingBindingDigest,
+  };
   const session = await manager.ensureForProject(project, {
     workspaceHygiene: false,
-    workspaceWorkerBinding: binding,
   });
+  const bindingRace = await Promise.allSettled([
+    manager.ensureForProject(project, { workspaceWorkerBinding: binding }),
+    manager.ensureForProject(project, { workspaceWorkerBinding: conflictingBinding }),
+  ]);
+  assert.equal(bindingRace[0].status, "fulfilled");
+  assert.equal(bindingRace[1].status, "rejected");
+  assert.equal(bindingRace[1].reason?.code, "workspace_worker_binding_already_initialized");
+  assert.equal(session.workspaceWorkerBinding.bindingDigest, bindingDigest);
+  const publicBackendJson = JSON.stringify([
+    ...publicBackendPayloads,
+    manager.statusForProject(project),
+  ]);
+  for (const nativePath of [tempRoot, tempRoot.replace(/\\/g, "/"), tempRoot.replace(/\//g, "\\")]) {
+    assert.equal(publicBackendJson.toLowerCase().includes(nativePath.toLowerCase()), false);
+  }
+  assert.equal(publicBackendPayloads.some((payload) => payload.session?.workspace), false);
+  assert.equal(publicBackendPayloads.some((payload) => payload.session?.hello?.root || payload.session?.hello?.cwd), false);
+
+  run("git", ["init", "-q"], backendRaceRoot);
+  fs.writeFileSync(path.join(backendRaceRoot, "race.txt"), "binding race\n", "utf8");
+  run("git", ["add", "race.txt"], backendRaceRoot);
+  run("git", ["-c", "user.name=Direct Test", "-c", "user.email=direct@invalid.example", "commit", "-qm", "fixture"], backendRaceRoot);
+  run("git", ["checkout", "-qb", "codex/worker/backend-binding-race"], backendRaceRoot);
+  const backendRaceParentId = "project_backend_binding_race_fixture";
+  const backendRaceProject = {
+    id: `${backendRaceParentId}__backend-binding-race`,
+    name: "backend binding race fixture",
+    repoPath: backendRaceRoot,
+    workspace: { kind: "local", localPath: backendRaceRoot },
+  };
+  const backendRaceBase = {
+    schema: "direct_workspace_worker_binding@1",
+    projectId: backendRaceParentId,
+    workerKey: "backend-binding-race",
+    workspaceKind: "local",
+    branch: "codex/worker/backend-binding-race",
+    baseCommit: run("git", ["rev-parse", "HEAD"], backendRaceRoot),
+    rootEvidenceDigest: digest(fs.realpathSync(backendRaceRoot)),
+    retainedAfterCompletion: true,
+    rawWorkspacePathIncluded: false,
+  };
+  const backendRaceDigestA = digest(canonicalJson(backendRaceBase));
+  const backendRaceBindingA = {
+    ...backendRaceBase,
+    bindingId: `workspace_worker_binding_${backendRaceDigestA.slice(7, 31)}`,
+    bindingDigest: backendRaceDigestA,
+  };
+  const backendRaceBaseB = { ...backendRaceBase, retainedAfterCompletion: false };
+  const backendRaceDigestB = digest(canonicalJson(backendRaceBaseB));
+  const backendRaceBindingB = {
+    ...backendRaceBaseB,
+    bindingId: `workspace_worker_binding_${backendRaceDigestB.slice(7, 31)}`,
+    bindingDigest: backendRaceDigestB,
+  };
+  backendRaceManager = new WorkspaceBackendManager({
+    agentPath: path.join(shellRoot, "src/backend/wsl-agent.js"),
+    fallbackRoot: shellRoot,
+  });
+  const backendRaceSession = await backendRaceManager.ensureForProject(backendRaceProject, {
+    workspaceHygiene: false,
+  });
+  const backendSettlements = await Promise.allSettled([
+    backendRaceSession.transport.request("initializeWorkspaceWorkerBinding", { binding: backendRaceBindingA }, 30_000),
+    backendRaceSession.transport.request("initializeWorkspaceWorkerBinding", { binding: backendRaceBindingB }, 30_000),
+  ]);
+  assert.equal(backendSettlements.filter((entry) => entry.status === "fulfilled").length, 1);
+  assert.equal(backendSettlements.filter((entry) =>
+    entry.status === "rejected" && entry.reason?.code === "workspace_worker_binding_already_initialized").length, 1);
   const inspect = await session.request("inspectWorkspaceRepository", { bindingDigest }, 30_000);
   assert.equal(inspect.gitCanonical, true);
   assert.equal(inspect.workspaceBindingDigest, bindingDigest);
@@ -172,16 +256,44 @@ try {
   assert.deepEqual(detectedTestProfile.actionsAllowed, ["test"]);
   assert.equal(detectedTestProfile.repositoryPolicy.profileId, "unprofiled_git_repository");
   assert.equal(detectedTestProfile.repositoryPolicy.validationPosture, "builtin_generic");
+  const harnessAuthorityPacket = createWorkspaceParentAuthorityPacket({
+    boundaryId: "parent_worker_policy_fixture",
+    upstreamPolicyId: "worker_policy_repository_harness_tools",
+    upstreamAllowedTools: detectedTestProfile.repositoryPolicy.allowedTools,
+    allowedTools: detectedTestProfile.repositoryPolicy.allowedTools,
+  });
+  assert.throws(
+    () => createWorkspaceParentAuthorityPacket({
+      boundaryId: "missing_upstream_tools",
+      upstreamPolicyId: "missing_upstream_tools_policy",
+    }),
+    (error) => error?.code === "direct_workspace_parent_authority_invalid",
+  );
+  const explicitEmptyUpstreamPacket = createWorkspaceParentAuthorityPacket({
+    boundaryId: "explicit_empty_upstream_tools",
+    upstreamPolicyId: "explicit_empty_upstream_tools_policy",
+    upstreamAllowedTools: [],
+  });
+  assert.deepEqual(explicitEmptyUpstreamPacket.allowedTools, []);
+  assert.equal(validateWorkspaceParentAuthorityPacket(explicitEmptyUpstreamPacket), explicitEmptyUpstreamPacket);
+  assert.throws(
+    () => validateWorkspaceParentAuthorityPacket({ ...harnessAuthorityPacket }),
+    (error) => error?.code === "direct_workspace_parent_authority_invalid",
+  );
+  const upstreamNarrowedPacket = createWorkspaceParentAuthorityPacket({
+    boundaryId: "parent_worker_policy_upstream_narrowed",
+    upstreamPolicyId: "worker_policy_repository_read_only_upstream",
+    upstreamAllowedTools: ["inspect_repository", "read_file"],
+    allowedTools: ["inspect_repository", "read_file", "apply_patch"],
+  });
+  assert.deepEqual(upstreamNarrowedPacket.allowedTools, ["inspect_repository", "read_file"]);
   const contractInput = {
     projectId: parentProjectId,
     childAgentId: "worker-policy-fixture",
     workspaceMode: "isolated_worktree",
     toolProfile: "implementation_worker",
     binding,
-    parentAuthority: {
-      boundaryId: "parent_worker_policy_fixture",
-      allowedTools: detectedTestProfile.repositoryPolicy.allowedTools,
-    },
+    parentAuthorityPacket: harnessAuthorityPacket,
     testProfile: detectedTestProfile,
   };
   const fullContract = compileWorkspaceWorkerContract(contractInput).contract;
@@ -252,7 +364,7 @@ try {
   assert.equal(missingParent.compilation.boundaryOmissions[0].boundary, "parent_authority");
   const missingParentContract = compileWorkspaceWorkerContract({
     ...contractInput,
-    parentAuthority: undefined,
+    parentAuthorityPacket: undefined,
   }).contract;
   assert.deepEqual(missingParentContract.authority.declaredTools, []);
   assert.equal(missingParentContract.policyCompilation.boundaryOmissions[0].boundary, "parent_authority");
@@ -260,7 +372,7 @@ try {
   const missingSubstrate = compileWorkspaceWorkerPolicy({
     requestedProfileId: "implementation_worker",
     repositoryPolicy: detectedTestProfile.repositoryPolicy,
-    parentAuthority: contractInput.parentAuthority,
+    parentAuthority: { allowedTools: harnessAuthorityPacket.allowedTools },
     testProfile: detectedTestProfile,
   });
   assert.deepEqual(missingSubstrate.declaredTools, []);
@@ -268,7 +380,12 @@ try {
 
   const narrowedContract = compileWorkspaceWorkerContract({
     ...contractInput,
-    parentAuthority: { allowedTools: ["inspect_repository", "list_files", "read_file"] },
+    parentAuthorityPacket: createWorkspaceParentAuthorityPacket({
+      boundaryId: "parent_worker_policy_narrowed",
+      upstreamPolicyId: "worker_policy_repository_narrowed_tools",
+      upstreamAllowedTools: detectedTestProfile.repositoryPolicy.allowedTools,
+      allowedTools: ["inspect_repository", "list_files", "read_file"],
+    }),
     substrateCapabilities: { availableTools: ["inspect_repository", "read_file", "apply_patch", "run_test"] },
     repositoryPolicy: {
       ...detectedTestProfile.repositoryPolicy,
@@ -289,7 +406,7 @@ try {
   };
   const forgedPinnedPolicy = compileWorkspaceWorkerPolicy({
     requestedProfileId: "implementation_worker",
-    parentAuthority: contractInput.parentAuthority,
+    parentAuthority: { allowedTools: harnessAuthorityPacket.allowedTools },
     substrateCapabilities: detectedTestProfile.substrateCapabilities,
     repositoryPolicy: forgedRepositoryPolicy,
     testProfile: {
@@ -301,6 +418,10 @@ try {
   assert.equal(forgedPinnedPolicy.repositoryPolicy.validationPosture, "profile_evidence_mismatch");
   assert.deepEqual(forgedPinnedPolicy.repositoryPolicy.allowedTools, []);
   assert.deepEqual(forgedPinnedPolicy.declaredTools, []);
+  assert.equal(sameNativePath("C:\\Users\\Rose\\Repo", "c:/users/rose/repo/", "win32"), true);
+  assert.equal(sameNativePath("/home/rose/repo/", "/home/rose/repo", "linux"), true);
+  assert.equal(sameNativePath("/home/rose/Repo", "/home/rose/repo", "linux"), false);
+  assert.equal(sameNativePath("/mnt/c/Users/Rose/Repo", "/mnt/c/Users/Rose/Repo/", "linux"), true);
 
   const largeSearch = await executeWorkspaceTool({
     obligation: {
@@ -338,11 +459,17 @@ try {
     sensitiveAndSymlinkReadsDenied: true,
     literalSearch: true,
     requestedProfileAdvisory: true,
+    harnessOwnedParentAuthority: true,
+    concurrentBindingInitializationSerialized: true,
+    rendererStatusPathsRedacted: true,
+    platformAwareNativePathIdentity: true,
     fourWayIntersection: true,
     forgedPinnedPolicyRejected: true,
     bottomUpMessagingAllowed: false,
   }, null, 2));
 } finally {
   manager?.disposeAll();
+  backendRaceManager?.disposeAll();
   fs.rmSync(tempRoot, { recursive: true, force: true });
+  fs.rmSync(backendRaceRoot, { recursive: true, force: true });
 }
