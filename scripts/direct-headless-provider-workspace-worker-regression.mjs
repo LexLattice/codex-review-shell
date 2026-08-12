@@ -12,6 +12,10 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { WorkspaceBackendManager } = require("../src/main/workspace-backend");
 const { DirectNativeAgentPool } = require("../src/main/direct/agents/native-agent-pool");
+const {
+  WorkspaceWorkerLifecycleRegistry,
+  normalizeBinding: normalizeWorkspaceWorkerLifecycleBinding,
+} = require("../src/main/direct/agents/workspace-worker-lifecycle-registry");
 const { runDirectWorkspaceWorker } = require("../src/main/direct/agents/workspace-worker-runtime");
 const {
   WORKSPACE_WORKER_TOOLS,
@@ -272,6 +276,8 @@ const project = {
 let manager;
 let daemon;
 let parentSession;
+let lifecycleRegistry;
+let pool;
 let privateWorkerRoot = "";
 let privateWorkerProject = null;
 let privateBinding = null;
@@ -290,6 +296,11 @@ try {
   async function provision(input) {
     const workerKey = input.childAgentId.replace(/_/g, "-").slice(0, 72);
     const branch = `codex/worker/${workerKey}`;
+    pool.beginWorkspaceProvisioning(input.childAgentId, {
+      operationId: `fixture-provision:${input.childAgentId}`,
+      workerKey,
+      branchName: branch,
+    });
     const provisioned = await parentSession.request("provisionGitWorktree", {
       workerKey,
       branch,
@@ -298,6 +309,17 @@ try {
     privateWorkerRoot = provisioned.worktreePath;
     privateBinding = { ...provisioned };
     delete privateBinding.worktreePath;
+    pool.bindWorkspaceForChild(input.childAgentId, {
+      operationId: `fixture-bind:${input.childAgentId}`,
+      binding: normalizeWorkspaceWorkerLifecycleBinding({
+        workerKey,
+        branchName: provisioned.branch,
+        baseCommit: provisioned.baseCommit,
+        headCommit: provisioned.baseCommit,
+        worktreePathDigest: provisioned.rootEvidenceDigest,
+        sourceRepositoryDigest: provisioned.sourceRepositoryDigest,
+      }),
+    });
     privateWorkerProject = {
       ...project,
       id: `${project.id}__${workerKey}`.slice(0, 180),
@@ -365,7 +387,10 @@ try {
     };
   }
 
-  const pool = new DirectNativeAgentPool({
+  lifecycleRegistry = new WorkspaceWorkerLifecycleRegistry({
+    rootDir: path.join(tempRoot, "workspace-lifecycle"),
+  });
+  pool = new DirectNativeAgentPool({
     maxActiveChildren: 2,
     providerTurnRunner: async () => ({ terminalState: "completed", outputText: "reasoning child completed" }),
     workspaceWorkerRunner: async (input) => {
@@ -405,6 +430,7 @@ try {
         captureResult: undefined,
       };
     },
+    workspaceWorkerLifecycleRegistry: lifecycleRegistry,
   });
 
   const delegationSourceNow = Date.now();
@@ -545,18 +571,24 @@ try {
   }
   assert.equal(publicPayloadText.includes("worktreePath"), false);
 
-  const retainedWorkerKey = privateBinding.workerKey;
-  const retainedBranch = privateBinding.branch;
-  manager.disposeForProject(privateWorkerProject);
-  await parentSession.request("removeGitWorktree", {
-    workerKey: retainedWorkerKey,
-    branch: retainedBranch,
-    deleteBranch: true,
-  }, 45_000);
-  privateWorkerRoot = "";
+  const childRecord = pool.records({ projectId, primaryThreadId: parentSessionId })[0];
+  const lifecycleSession = lifecycleRegistry.sessionForChild(childRecord.childAgentId);
+  assert.equal(lifecycleSession.state, "completed");
+  assert.equal(lifecycleSession.leaseState, "released");
+  assert.equal(lifecycleSession.processState, "quiescent");
+  assert.equal(lifecycleSession.binding.sourceRepositoryDigest, privateBinding.sourceRepositoryDigest);
+  assert.equal(lifecycleSession.binding.bindingDigest, childRecord.workspaceLifecycle.bindingDigest);
+  assert.equal(fs.existsSync(privateWorkerRoot), true, "dirty completed workspace must remain retained for inspection");
+  const shutdown = await pool.drainAndClose({
+    reasonCode: "direct_headless_provider_workspace_fixture_shutdown",
+    timeoutMs: 5_000,
+  });
+  assert.equal(shutdown.status, "drained");
+  assert.equal(shutdown.pool.acceptingNewChildren, false);
 } finally {
   if (daemon) await daemon.close();
   if (manager) manager.disposeAll();
+  if (lifecycleRegistry) lifecycleRegistry.close();
   threadStore.close();
   await fsp.rm(tempRoot, { recursive: true, force: true });
 }

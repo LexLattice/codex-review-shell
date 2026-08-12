@@ -4240,7 +4240,9 @@ function resolveDirectWorkspaceWorkerDelegationPolicy(input = {}) {
   const projectId = normalizeString(input.projectId, "");
   const boundProjectId = normalizeString(project.id || project.projectId || project.name, "");
   const workThreadId = normalizeString(input.workThreadId, "");
-  const binding = normalizeCodexBinding(project?.surfaceBinding?.codex || {});
+  const binding = isPlainObject(project?.surfaceBinding?.codex)
+    ? project.surfaceBinding.codex
+    : {};
   if (
     !projectId || projectId !== boundProjectId || !workThreadId ||
     binding.runtimeMode !== "direct-experimental" ||

@@ -25,6 +25,10 @@ function isSafePolicyIdentifier(value) {
   return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(normalizeString(value, ""));
 }
 
+function isSafeScopeIdentifier(value) {
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(normalizeString(value, ""));
+}
+
 function stableStringify(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
@@ -89,7 +93,7 @@ function policyBaseFromInput(input = {}) {
   const sourceDigest = normalizeString(input.sourceDigest, "");
   if (
     !isSafePolicyIdentifier(policyId) || !Number.isInteger(policyRevision) || policyRevision < 1 ||
-    !projectId || !workThreadId || roleLane !== "implementation_worker" ||
+    !isSafeScopeIdentifier(projectId) || !isSafeScopeIdentifier(workThreadId) || roleLane !== "implementation_worker" ||
     !isSafePolicyIdentifier(sourceId) || !/^sha256:[a-f0-9]{64}$/i.test(sourceDigest) ||
     !Number.isFinite(issuedAtMs) || !Number.isFinite(expiresAtMs) || expiresAtMs <= issuedAtMs
   ) {
@@ -227,7 +231,7 @@ function sourceBaseFromInput(input = {}) {
     input.schema !== DIRECT_WORKSPACE_WORKER_DELEGATION_SOURCE_SCHEMA ||
     !isSafePolicyIdentifier(sourceId) || !Number.isInteger(sourceRevision) || sourceRevision < 1 ||
     !isSafePolicyIdentifier(policyId) || !Number.isInteger(policyRevision) || policyRevision < 1 ||
-    !projectId || !workThreadId ||
+    !isSafeScopeIdentifier(projectId) || !isSafeScopeIdentifier(workThreadId) ||
     input.status !== "admitted" || input.roleLane !== "implementation_worker" ||
     !Number.isFinite(Date.parse(validFrom)) || !Number.isFinite(Date.parse(validUntil)) ||
     Date.parse(validUntil) <= Date.parse(validFrom)
@@ -313,6 +317,12 @@ class WorkspaceWorkerDelegationPolicyRegistry {
     const projectId = normalizeString(input.projectId, "");
     const workThreadId = normalizeString(input.workThreadId, "");
     const requestedProfileId = normalizeString(input.requestedProfileId, "");
+    if (!isSafeScopeIdentifier(projectId) || !isSafeScopeIdentifier(workThreadId)) {
+      throw delegationPolicyError(
+        "direct_workspace_worker_delegation_policy_scope_invalid",
+        "Workspace delegation resolution requires exact safe project and work-thread identities.",
+      );
+    }
     const source = this.#sources.get(`${projectId}\0${workThreadId}`);
     if (!source) {
       throw delegationPolicyError(

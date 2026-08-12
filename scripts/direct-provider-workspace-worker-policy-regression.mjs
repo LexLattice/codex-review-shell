@@ -70,6 +70,38 @@ assert.throws(
   }),
   (error) => error?.code === "direct_workspace_worker_delegation_policy_missing",
 );
+for (const unsafeScope of [
+  { projectId: "/private/repository", workThreadId },
+  { projectId, workThreadId: "work_thread\0another_scope" },
+]) {
+  assert.throws(
+    () => new WorkspaceWorkerDelegationPolicyRegistry({
+      sources: [{
+        schema: "direct_workspace_worker_delegation_source@1",
+        sourceId: "unsafe_scope_source",
+        sourceRevision: 1,
+        policyId: "unsafe_scope_policy",
+        policyRevision: 1,
+        projectId: unsafeScope.projectId,
+        workThreadId: unsafeScope.workThreadId,
+        status: "admitted",
+        roleLane: "implementation_worker",
+        allowedToolProfiles: ["implementation_worker"],
+        allowedTools: [...WORKSPACE_WORKER_TOOLS],
+        forbiddenTools: [],
+        validFrom: new Date(sourceNow - 1_000).toISOString(),
+        validUntil: new Date(sourceNow + 60_000).toISOString(),
+        remoteMutationAllowed: false,
+        arbitraryCommandAllowed: false,
+        childMessagingAllowed: false,
+        recursiveSpawnAllowed: false,
+        providerMaySupplyAuthority: false,
+        rawWorkspacePathAllowed: false,
+      }],
+    }),
+    (error) => error?.code === "direct_workspace_worker_delegation_source_invalid",
+  );
+}
 assert.throws(
   () => registry.resolve({ projectId, workThreadId, requestedProfileId: "unbounded_worker" }),
   (error) => error?.code === "direct_workspace_worker_delegation_policy_profile_denied",
@@ -94,6 +126,14 @@ const poolLaunchBase = {
   project,
 };
 const scopePool = new DirectNativeAgentPool({ workspaceWorkerRunner: async () => ({ status: "completed" }) });
+assert.equal(
+  scopePool.launch({
+    ...poolLaunchBase,
+    parentAuthorityPacket: JSON.parse(JSON.stringify(packet)),
+  }).blockerCode,
+  "direct_workspace_parent_authority_invalid",
+  "a serialized provider-visible policy packet must lose its process-private authority brand",
+);
 assert.equal(scopePool.launch({
   ...poolLaunchBase,
   workThreadId: "another_work_thread",
@@ -198,6 +238,7 @@ const binding = {
   branch: "codex/worker/provider-workspace-fixture",
   baseCommit: "2".repeat(40),
   rootEvidenceDigest: `sha256:${"3".repeat(64)}`,
+  sourceRepositoryDigest: `sha256:${"5".repeat(64)}`,
   retainedAfterCompletion: true,
 };
 const repositoryPolicy = genericWorkspaceRepositoryProfile();
@@ -332,9 +373,19 @@ assert.equal(waitEnvelope.providerOutput.updates[0].evidenceConfidence, "exact")
 
 for (const [label, resolver, expectedBlocker, caseProject = project] of [
   ["missing", undefined, "direct_workspace_worker_delegation_policy_missing"],
+  ["empty-registry", (context) => new WorkspaceWorkerDelegationPolicyRegistry({ sources: [] }).resolve(context), "direct_workspace_worker_delegation_policy_missing"],
   ["forged", () => forgedPolicy, "direct_workspace_worker_delegation_policy_untrusted"],
   ["stale", () => staleRegistry.resolve({ projectId, workThreadId, requestedProfileId: "implementation_worker" }), "direct_workspace_worker_delegation_policy_stale"],
   ["wrong-project", () => activePolicy, "direct_workspace_worker_delegation_policy_project_mismatch", { ...project, id: "another_project" }],
+  ["wrong-lane", () => activePolicy, "direct_workspace_worker_implementation_lane_required", {
+    ...project,
+    surfaceBinding: {
+      codex: {
+        ...project.surfaceBinding.codex,
+        directTier: "chat-lane",
+      },
+    },
+  }],
 ]) {
   const envelope = await controller(resolver).buildNativeSubAgentRuntimeEnvelope(
     "direct_parent_provider_workspace",

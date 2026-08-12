@@ -293,8 +293,11 @@ exact project/work-thread delegation source, accepts a root-provider
 `spawn_agent` call, provisions the resident isolated-worktree runner, executes
 bounded read/patch/test tools, persists typed child capture, returns it through
 `wait_agent`, and completes the parent provider continuation. It also verifies
-that parent/provider/status projections contain neither native roots nor
-private binding fields and that the source checkout stays unchanged.
+that the durable lifecycle session owns provisioning, the canonical source-
+repository digest, binding, lease release, terminal settlement, and ordered
+pool drain. The dirty child worktree remains retained for inspection. Parent,
+provider, and status projections contain neither native roots nor private
+binding fields, and the source checkout stays unchanged.
 
 The EXEC1 regression creates a temporary local clone derived from the committed
 ArcAGI3 repository, then launches two workspace workers from the same pinned

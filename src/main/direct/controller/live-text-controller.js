@@ -827,7 +827,9 @@ function workspaceWorkerSpawnHasUndeclaredFields(args = {}) {
 }
 
 function projectAllowsProviderWorkspaceWorkers(project = {}) {
-  const binding = normalizeCodexBinding(project?.surfaceBinding?.codex || {});
+  const binding = isPlainObject(project?.surfaceBinding?.codex)
+    ? project.surfaceBinding.codex
+    : {};
   return (
     binding.runtimeMode === "direct-experimental" &&
     binding.directTransport === "live-text" &&
