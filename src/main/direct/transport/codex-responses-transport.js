@@ -472,14 +472,31 @@ async function responseText(response) {
   return "";
 }
 
+function sseNewlineLengthAt(value, index) {
+  if (value[index] === "\n") return 1;
+  if (value[index] !== "\r") return 0;
+  return value[index + 1] === "\n" ? 2 : 1;
+}
+
+function nextSseFrameBoundary(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const firstLength = sseNewlineLengthAt(value, index);
+    if (!firstLength) continue;
+    const secondLength = sseNewlineLengthAt(value, index + firstLength);
+    if (secondLength) return { index, length: firstLength + secondLength };
+    index += firstLength - 1;
+  }
+  return null;
+}
+
 function splitCompleteSseFrames(buffer) {
   const frames = [];
   let remaining = String(buffer || "");
   for (;;) {
-    const match = /\r?\n\r?\n/.exec(remaining);
-    if (!match) break;
-    const frame = remaining.slice(0, match.index);
-    remaining = remaining.slice(match.index + match[0].length);
+    const boundary = nextSseFrameBoundary(remaining);
+    if (!boundary) break;
+    const frame = remaining.slice(0, boundary.index);
+    remaining = remaining.slice(boundary.index + boundary.length);
     if (frame.trim()) frames.push(frame);
   }
   return { frames, remaining };

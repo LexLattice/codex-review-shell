@@ -106,6 +106,20 @@ function normalizedEventEnvelopeDigest(envelope = {}) {
     .digest("hex");
 }
 
+function normalizedEventSource(event = {}) {
+  const { persistedIndex, persistedAt, sourceEnvelopeDigest, ...source } = event || {};
+  return source;
+}
+
+function normalizedEventPrefixDigest(events = []) {
+  return crypto.createHash("sha256")
+    .update(JSON.stringify(canonicalValue({
+      kind: "direct_normalized_event_prefix",
+      events: (Array.isArray(events) ? events : []).map(normalizedEventSource),
+    })))
+    .digest("hex");
+}
+
 function canonicalValue(value) {
   if (Array.isArray(value)) return value.map(canonicalValue);
   if (!value || typeof value !== "object") return value;
@@ -968,12 +982,27 @@ class DirectSessionStore {
   }
 
   readNormalizedEvents(sessionId, turnId) {
+    const inspection = this.inspectNormalizedEventLog(sessionId, turnId);
+    if (inspection.error) throw inspection.error;
+    return inspection.events;
+  }
+
+  inspectNormalizedEventLog(sessionId, turnId) {
     const filePath = this.eventPath(sessionId, turnId);
     let body = "";
     try {
       body = fs.readFileSync(filePath, "utf8");
     } catch (error) {
-      if (error?.code === "ENOENT") return [];
+      if (error?.code === "ENOENT") {
+        return {
+          events: [],
+          complete: true,
+          error: null,
+          errorCode: "",
+          observedEventCount: 0,
+          observedPrefixDigest: normalizedEventPrefixDigest([]),
+        };
+      }
       throw error;
     }
     const events = [];
@@ -1000,16 +1029,35 @@ class DirectSessionStore {
           throw error;
         }
       } catch (cause) {
-        if ([
+        const code = [
           "direct_normalized_event_envelope_digest_mismatch",
           "direct_normalized_event_envelope_invalid",
-        ].includes(cause?.code)) throw cause;
-        const error = new Error(`Invalid normalized event JSONL at line ${index + 1}.`);
-        error.code = "direct_normalized_event_jsonl_invalid";
-        throw error;
+        ].includes(cause?.code)
+          ? cause.code
+          : "direct_normalized_event_jsonl_invalid";
+        const error = cause?.code === code
+          ? cause
+          : new Error(`Invalid normalized event JSONL at line ${index + 1}.`);
+        error.code = code;
+        return {
+          events,
+          complete: false,
+          error,
+          errorCode: code,
+          invalidLine: index + 1,
+          observedEventCount: events.length,
+          observedPrefixDigest: normalizedEventPrefixDigest(events),
+        };
       }
     }
-    return events;
+    return {
+      events,
+      complete: true,
+      error: null,
+      errorCode: "",
+      observedEventCount: events.length,
+      observedPrefixDigest: normalizedEventPrefixDigest(events),
+    };
   }
 
   writeTurn(turn) {
@@ -1492,6 +1540,10 @@ class DirectSessionStore {
   }
 
   recoverInterruptedTurns(options = {}) {
+    const {
+      toolResultDigest,
+      verifyCompleteTurnCapture,
+    } = require("../epistemic/turn-capture-writer");
     const recoveredAt = nowIso(options.nowMs);
     let recoveredTurnCount = 0;
     for (const sessionId of this.listSessionIdsFromDisk()) {
@@ -1506,55 +1558,105 @@ class DirectSessionStore {
       for (const turnId of turnIds) {
         const turn = this.readTurn(session.sessionId, turnId);
         if (!turn) continue;
+        const eventLog = this.inspectNormalizedEventLog(session.sessionId, turnId);
+        const observedEventCount = eventLog.observedEventCount;
+        const observedPrefixDigest = eventLog.observedPrefixDigest;
         const recoverable = DIRECT_RECOVERABLE_ACTIVE_TURN_STATES.has(turn.state);
-        const completedCaptureState = normalizeTurnState(turn.capture?.terminalState, "");
-        const completeActiveContradiction = recoverable &&
-          isPlainObject(turn.capture) &&
-          turn.capture.schema === DIRECT_TURN_CAPTURE_SCHEMA &&
+        const managedCapture = isPlainObject(turn.capture) &&
+          turn.capture.schema === DIRECT_TURN_CAPTURE_SCHEMA;
+        const completeClaim = managedCapture &&
           turn.capture.status === "complete" &&
-          turn.capture.complete === true &&
-          Boolean(normalizeString(turn.capture.finalCaptureDigest, "")) &&
+          turn.capture.complete === true;
+        const verification = completeClaim && eventLog.complete
+          ? verifyCompleteTurnCapture(turn, eventLog.events)
+          : { ok: false, code: eventLog.errorCode || "direct_turn_capture_restart_complete_shape_invalid" };
+        const completedCaptureState = verification.ok
+          ? normalizeTurnState(verification.terminalState, "")
+          : "";
+        const completeActiveContradiction = recoverable &&
+          verification.ok &&
           DIRECT_CAPTURE_TERMINAL_TURN_STATES.has(completedCaptureState);
-        if (!recoverable) {
+        const preserveTerminalCaptureOutcome = !recoverable && completeClaim && !verification.ok;
+        const metadataDrift = Number(turn.normalizedEventCount || 0) !== observedEventCount;
+        const terminalCaptureInvalid = completeClaim && !verification.ok;
+        if (!recoverable && !terminalCaptureInvalid && eventLog.complete) {
+          const reconciledTurn = metadataDrift
+            ? {
+                ...turn,
+                normalizedEventCount: observedEventCount,
+                updatedAt: recoveredAt,
+                eventLogRecovered: true,
+              }
+            : turn;
+          if (metadataDrift) this.writeTurn(reconciledTurn);
           const summary = summaryByTurnId.get(turnId);
           if (
             !summary ||
-            summary.state !== turn.state ||
-            Number(summary.normalizedEventCount || 0) !== Number(turn.normalizedEventCount || 0)
-          ) recoveredByTurnId.set(turn.turnId, turn);
+            summary.state !== reconciledTurn.state ||
+            Number(summary.normalizedEventCount || 0) !== observedEventCount
+          ) recoveredByTurnId.set(reconciledTurn.turnId, reconciledTurn);
           continue;
         }
         let capture = turn.capture;
-        if (
-          !completeActiveContradiction &&
-          isPlainObject(capture) &&
-          capture.schema === DIRECT_TURN_CAPTURE_SCHEMA &&
-          capture.status === "capturing"
-        ) {
+        const expectedEventCount = managedCapture
+          ? Math.max(0, Number(capture.eventCount ?? turn.normalizedEventCount ?? 0))
+          : Math.max(0, Number(turn.normalizedEventCount || 0));
+        const expectedPrefixDigest = normalizeString(capture?.eventPrefixDigest, "");
+        const recoveryGapCode = !eventLog.complete
+          ? "direct_turn_capture_restart_event_log_invalid"
+          : terminalCaptureInvalid
+            ? "direct_turn_capture_restart_verification_failed"
+            : "direct_turn_capture_interrupted";
+        const existingGap = Array.isArray(capture?.gapReceipts)
+          ? capture.gapReceipts.some((receipt) => receipt?.code === recoveryGapCode &&
+            Number(receipt?.observedEventCount || 0) === observedEventCount &&
+            normalizeString(receipt?.observedPrefixDigest, "") === observedPrefixDigest)
+          : false;
+        if (!completeActiveContradiction && managedCapture && !existingGap) {
           const receipt = captureGapReceipt({
             sessionId: session.sessionId,
             turnId,
-            code: "direct_turn_capture_interrupted",
-            expectedEventCount: Number(capture.eventCount || turn.normalizedEventCount || 0),
-            observedEventCount: Number(turn.normalizedEventCount || 0),
-            expectedPrefixDigest: normalizeString(capture.eventPrefixDigest, ""),
-            observedPrefixDigest: normalizeString(capture.eventPrefixDigest, ""),
-            sourceOffset: Number(turn.normalizedEventCount || 0),
+            code: recoveryGapCode,
+            expectedEventCount,
+            observedEventCount,
+            expectedPrefixDigest,
+            observedPrefixDigest,
+            sourceOffset: observedEventCount,
           }, options.nowMs);
           capture = {
             ...capture,
             status: "gap",
             complete: false,
             terminalState: "failed",
+            finalCaptureDigest: "",
+            eventCount: observedEventCount,
+            eventPrefixDigest: observedPrefixDigest,
+            toolResultCount: Array.isArray(turn.toolResults) ? turn.toolResults.length : 0,
+            toolResultDigest: toolResultDigest(turn.toolResults),
             gapReceipts: [...(Array.isArray(capture.gapReceipts) ? capture.gapReceipts : []), receipt],
             updatedAt: recoveredAt,
             finalizedAt: recoveredAt,
+          };
+        } else if (!completeActiveContradiction && managedCapture) {
+          capture = {
+            ...capture,
+            status: capture.complete === true ? "gap" : normalizeString(capture.status, "gap"),
+            complete: false,
+            terminalState: "failed",
+            finalCaptureDigest: "",
+            eventCount: observedEventCount,
+            eventPrefixDigest: observedPrefixDigest,
+            toolResultCount: Array.isArray(turn.toolResults) ? turn.toolResults.length : 0,
+            toolResultDigest: toolResultDigest(turn.toolResults),
+            updatedAt: recoveredAt,
+            finalizedAt: normalizeString(capture.finalizedAt, recoveredAt),
           };
         }
         const nextTurn = completeActiveContradiction
           ? {
               ...turn,
               state: completedCaptureState,
+              normalizedEventCount: observedEventCount,
               updatedAt: recoveredAt,
               captureRecovered: true,
               ...(completedCaptureState === "completed" ? {
@@ -1574,18 +1676,59 @@ class DirectSessionStore {
                 abortedAt: recoveredAt,
               } : {}),
             }
-          : {
+          : preserveTerminalCaptureOutcome
+            ? {
+                ...turn,
+                normalizedEventCount: observedEventCount,
+                updatedAt: recoveredAt,
+                capture,
+                captureVerificationFailed: true,
+                eventLogIntegrity: eventLog.complete ? {
+                  status: "verified",
+                  observedEventCount,
+                  observedPrefixDigest,
+                } : {
+                  status: "invalid",
+                  code: eventLog.errorCode,
+                  invalidLine: Number(eventLog.invalidLine || 0),
+                  observedEventCount,
+                  observedPrefixDigest,
+                  rawLinePersisted: false,
+                },
+              }
+            : {
               ...turn,
               state: "failed",
+              normalizedEventCount: observedEventCount,
               updatedAt: recoveredAt,
               failedAt: recoveredAt,
               error: {
-                code: "restart_interrupted_turn",
-                message: "Direct text probe turn was interrupted before a terminal event and needs explicit user resume.",
+                code: eventLog.complete
+                  ? terminalCaptureInvalid
+                    ? "restart_capture_verification_failed"
+                    : "restart_interrupted_turn"
+                  : "restart_event_log_integrity_failed",
+                message: eventLog.complete
+                  ? terminalCaptureInvalid
+                    ? "Direct turn capture failed canonical restart verification."
+                    : "Direct text probe turn was interrupted before a terminal event and needs explicit user resume."
+                  : "Direct normalized event storage failed canonical restart verification.",
                 previousState: turn.state,
                 recoveredAt,
               },
               capture,
+              eventLogIntegrity: eventLog.complete ? {
+                status: "verified",
+                observedEventCount,
+                observedPrefixDigest,
+              } : {
+                status: "invalid",
+                code: eventLog.errorCode,
+                invalidLine: Number(eventLog.invalidLine || 0),
+                observedEventCount,
+                observedPrefixDigest,
+                rawLinePersisted: false,
+              },
             };
         this.writeTurn(nextTurn);
         recoveredByTurnId.set(nextTurn.turnId, nextTurn);

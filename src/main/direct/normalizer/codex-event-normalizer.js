@@ -295,13 +295,13 @@ function normalizeDirectCodexEvents(rawEvents, options = {}) {
 
 function parseSseFixtureText(text) {
   const events = [];
-  const frames = String(text || "").split(/\r?\n\r?\n/);
+  const frames = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n\n");
   for (const frame of frames) {
     const trimmed = frame.trim();
     if (!trimmed) continue;
     let event = "";
     const dataLines = [];
-    for (const line of trimmed.split(/\r?\n/)) {
+    for (const line of trimmed.split(/\r\n|\r|\n/)) {
       if (line.startsWith("event:")) event = line.slice("event:".length).trim();
       if (line.startsWith("data:")) dataLines.push(line.slice("data:".length).trimStart());
     }

@@ -240,6 +240,37 @@ try {
   const unknownTransportProjection = service.syncThread(unknownTransportWriter.input.sessionId);
   assert.equal(unknownTransportProjection.recordCounts.UnclassifiedNormalizedEvent, 1);
 
+  for (const lineEnding of ["\n", "\r\n", "\r"]) {
+    const fragmentedBody = [
+      `event: response.created${lineEnding}`,
+      `data: {"response":{"id":"response_fragmented_sse"}}${lineEnding}${lineEnding}`,
+      `event: response.completed${lineEnding}`,
+      `data: {"response":{"id":"response_fragmented_sse","status":"completed"}}${lineEnding}${lineEnding}`,
+    ].join("");
+    const bytes = encoder.encode(fragmentedBody);
+    const fragmentedResult = await runTextOnlyDirectProbe({
+      profileDoc: profileDoc(),
+      authStore: authStore(),
+      model: "gpt-5.4",
+      prompt: "fragmented SSE line-ending fixture",
+      fetchImpl: async () => new Response(new ReadableStream({
+        start(controller) {
+          for (const boundary of [1, 7, 19, 31, 47, bytes.length]) {
+            const previous = this.previous || 0;
+            if (boundary > previous) controller.enqueue(bytes.slice(previous, boundary));
+            this.previous = boundary;
+          }
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+    });
+    assert.equal(fragmentedResult.terminal.state, "completed");
+    assert.deepEqual(fragmentedResult.normalizedEvents.map((event) => event.type), [
+      "session_started",
+      "response_completed",
+    ]);
+  }
+
   let asyncCommitCalls = 0;
   const unhandledRejections = [];
   const recordUnhandled = (reason) => unhandledRejections.push(reason);
@@ -406,14 +437,144 @@ try {
     contradictionWriter.input.sessionId,
     contradictionWriter.input.turnId,
   );
-  assert.equal(reconciledContradiction.state, "completed");
-  assert.equal(reconciledContradiction.capture.status, "complete");
-  assert.equal(reconciledContradiction.capture.complete, true);
-  assert.equal(reconciledContradiction.captureRecovered, true);
+  assert.equal(reconciledContradiction.state, "failed");
+  assert.equal(reconciledContradiction.capture.status, "gap");
+  assert.equal(reconciledContradiction.capture.complete, false);
+  assert(reconciledContradiction.capture.gapReceipts.some((receipt) =>
+    receipt.code === "direct_turn_capture_restart_verification_failed"));
   assert.equal(
     contradictionStore.readSession(contradictionWriter.input.sessionId).turns[0].state,
-    "completed",
-    "restart must reconcile the session summary with an atomically terminal turn",
+    "failed",
+    "restart must reject an unverified complete-capture claim",
+  );
+
+  const canonicalContradictionStore = new DirectSessionStore({
+    rootDir: path.join(rootDir, "canonical-contradiction-sessions"),
+  });
+  const canonicalContradictionInput = {
+    ...captureInput,
+    childAgentId: "child_canonical_complete_active_contradiction",
+    attemptId: "attempt_canonical_complete_active_contradiction",
+    promptDigest: "sha256:prompt_canonical_complete_active_contradiction",
+  };
+  const canonicalContradictionWriter = openNativeChildProviderTurnCapture(
+    canonicalContradictionStore,
+    canonicalContradictionInput,
+  );
+  const canonicalContradictionResult = {
+    responseId: "response_canonical_complete_active_contradiction",
+    normalizedEvents: [{
+      type: "response_completed",
+      sequence: 0,
+      responseId: "response_canonical_complete_active_contradiction",
+    }],
+    terminal: { state: "completed", error: null },
+  };
+  canonicalContradictionWriter.finalize(canonicalContradictionResult);
+  const canonicalTerminalTurn = canonicalContradictionStore.readTurn(
+    canonicalContradictionWriter.input.sessionId,
+    canonicalContradictionWriter.input.turnId,
+  );
+  canonicalContradictionStore.writeTurn({
+    ...canonicalTerminalTurn,
+    state: "streaming",
+    completedAt: "",
+  });
+  canonicalContradictionStore.recoverInterruptedTurns();
+  const canonicalRecoveredTurn = canonicalContradictionStore.readTurn(
+    canonicalContradictionWriter.input.sessionId,
+    canonicalContradictionWriter.input.turnId,
+  );
+  assert.equal(canonicalRecoveredTurn.state, "completed");
+  assert.equal(canonicalRecoveredTurn.capture.complete, true);
+  assert.equal(canonicalRecoveredTurn.captureRecovered, true);
+
+  const appendWindowStore = new DirectSessionStore({
+    rootDir: path.join(rootDir, "append-window-sessions"),
+  });
+  const appendWindowWriter = openNativeChildProviderTurnCapture(appendWindowStore, {
+    ...captureInput,
+    childAgentId: "child_append_window",
+    attemptId: "attempt_append_window",
+    promptDigest: "sha256:prompt_append_window",
+  });
+  const originalUpdateTurnState = appendWindowStore.updateTurnState.bind(appendWindowStore);
+  let failAfterEventAppend = true;
+  appendWindowStore.updateTurnState = (...args) => {
+    if (failAfterEventAppend) {
+      failAfterEventAppend = false;
+      const error = new Error("simulated failure after canonical O append");
+      error.code = "simulated_event_metadata_crash";
+      throw error;
+    }
+    return originalUpdateTurnState(...args);
+  };
+  assert.throws(
+    () => appendWindowWriter.appendEventPrefix([{
+      type: "session_started",
+      sequence: 0,
+      responseId: "response_append_window",
+    }], { sourceOffset: 0 }),
+    (error) => error?.code === "simulated_event_metadata_crash",
+  );
+  appendWindowStore.updateTurnState = originalUpdateTurnState;
+  assert.equal(appendWindowStore.readNormalizedEvents(
+    appendWindowWriter.input.sessionId,
+    appendWindowWriter.input.turnId,
+  ).length, 1);
+  assert.equal(appendWindowStore.readTurn(
+    appendWindowWriter.input.sessionId,
+    appendWindowWriter.input.turnId,
+  ).normalizedEventCount, 0);
+  appendWindowStore.recoverInterruptedTurns();
+  const recoveredAppendWindow = appendWindowStore.readTurn(
+    appendWindowWriter.input.sessionId,
+    appendWindowWriter.input.turnId,
+  );
+  assert.equal(recoveredAppendWindow.normalizedEventCount, 1);
+  assert.equal(recoveredAppendWindow.capture.eventCount, 1);
+  const appendWindowGap = recoveredAppendWindow.capture.gapReceipts.find((receipt) =>
+    receipt.code === "direct_turn_capture_interrupted");
+  assert.equal(appendWindowGap.expectedEventCount, 0);
+  assert.equal(appendWindowGap.observedEventCount, 1);
+  assert.equal(appendWindowGap.observedPrefixDigest, recoveredAppendWindow.capture.eventPrefixDigest);
+
+  const partialLogStore = new DirectSessionStore({
+    rootDir: path.join(rootDir, "partial-log-sessions"),
+  });
+  const partialLogWriter = openNativeChildProviderTurnCapture(partialLogStore, {
+    ...captureInput,
+    childAgentId: "child_partial_log",
+    attemptId: "attempt_partial_log",
+    promptDigest: "sha256:prompt_partial_log",
+  });
+  partialLogWriter.appendEventPrefix([{
+    type: "session_started",
+    sequence: 0,
+    responseId: "response_partial_log",
+  }], { sourceOffset: 0 });
+  fs.appendFileSync(
+    partialLogStore.eventPath(partialLogWriter.input.sessionId, partialLogWriter.input.turnId),
+    "{\"at\":\"partial",
+    "utf8",
+  );
+  partialLogStore.recoverInterruptedTurns();
+  const partialLogTurn = partialLogStore.readTurn(
+    partialLogWriter.input.sessionId,
+    partialLogWriter.input.turnId,
+  );
+  assert.equal(partialLogTurn.state, "failed");
+  assert.equal(partialLogTurn.eventLogIntegrity.status, "invalid");
+  assert.equal(partialLogTurn.eventLogIntegrity.observedEventCount, 1);
+  assert(partialLogTurn.capture.gapReceipts.some((receipt) =>
+    receipt.code === "direct_turn_capture_restart_event_log_invalid" &&
+    receipt.observedEventCount === 1));
+  assert.throws(
+    () => partialLogStore.readNormalizedEvents(
+      partialLogWriter.input.sessionId,
+      partialLogWriter.input.turnId,
+    ),
+    (error) => error?.code === "direct_normalized_event_jsonl_invalid",
   );
 
   const legacyStore = new DirectSessionStore({ rootDir: path.join(rootDir, "legacy-sessions") });
@@ -521,7 +682,11 @@ try {
     asyncStrictCommitHandledOnce: true,
     toolResultCaptureFailClosed: true,
     completedReplayIdempotent: true,
-    completeActiveRecoveryReconciled: true,
+    completeActiveRecoveryVerified: true,
+    forgedCompleteCaptureRejected: true,
+    appendMetadataWindowRecoveredFromO: true,
+    partialEventLogFailedClosed: true,
+    fragmentedSseLineEndings: ["LF", "CRLF", "CR"],
     legacyCaptureAdopted: true,
     captureGapDurable: true,
     restartCatchUp: true,

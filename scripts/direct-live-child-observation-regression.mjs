@@ -176,6 +176,40 @@ try {
     }),
     (error) => error?.code === "direct_agent_capture_progress_field_unsupported",
   );
+  const {
+    schema: _nativeProgressSchema,
+    ...nativeProgressInput
+  } = nativeMid.epistemicCaptureProgress;
+  assert.throws(
+    () => safeEpistemicProgress({
+      ...nativeProgressInput,
+      liveActivityProjection: {
+        ...nativeMid.epistemicCaptureProgress.liveActivityProjection,
+        privateNote: "PROVIDER SECRET PROSE",
+      },
+    }),
+    (error) => error?.code === "direct_live_activity_projection_fields_invalid",
+  );
+  assert.throws(
+    () => safeEpistemicProgress({
+      ...nativeProgressInput,
+      liveActivityProjection: {
+        ...nativeMid.epistemicCaptureProgress.liveActivityProjection,
+        latestTypedClass: "secrets/key.txt",
+      },
+    }),
+    (error) => error?.code === "direct_live_activity_projection_identity_invalid",
+  );
+  assert.throws(
+    () => safeEpistemicProgress({
+      ...nativeProgressInput,
+      liveActivityProjection: {
+        ...nativeMid.epistemicCaptureProgress.liveActivityProjection,
+        state: "failed",
+      },
+    }),
+    (error) => error?.code === "direct_live_activity_projection_digest_invalid",
+  );
   assert.equal((await passiveNativeWait).status, "timeout", "capture progress must not wake pool waiters");
 
   const nativeSessionId = nativeMid.epistemicCapture.sessionId;
@@ -209,6 +243,15 @@ try {
   assert.equal(nativeRecord.epistemicCaptureProgress.liveActivityProjection.terminal, true);
   assert.equal(sessionStore.readNormalizedEvents(nativeSessionId, nativeTurnId).length, 3);
   assert.equal(sessionStore.readSession(nativeSessionId).messages.length, 0);
+  nativeCaptureInput.onEpistemicProgress({
+    status: "failed",
+    receiptDigest: "",
+    sessionId: nativeSessionId,
+    turnId: nativeTurnId,
+  });
+  const immutableNativeTerminal = pool.inspect({ target: nativeLaunch.childAgentId });
+  assert.equal(immutableNativeTerminal.epistemicCapture.status, "captured");
+  assert.equal(immutableNativeTerminal.epistemicCaptureComplete, true);
 
   const replayAdapter = createNativeChildLiveTurnCapture({
     sessionStore,
@@ -372,13 +415,20 @@ try {
   assert.equal(statusJson.includes("/private/live-workspace"), false);
 
   const cancellationStarted = deferred();
+  let cancellationProgressCallback;
   const cancellationPool = new DirectNativeAgentPool({
     providerTurnRunner: async (input) => {
+      cancellationProgressCallback = input.onEpistemicProgress;
       const adapter = createNativeChildLiveTurnCapture({
         sessionStore,
         epistemicService: service,
         captureInput: input,
         onProgress: input.onEpistemicProgress,
+      });
+      input.registerEpistemicCaptureController({
+        sessionId: adapter.writer.input.sessionId,
+        turnId: adapter.writer.input.turnId,
+        cancel: () => adapter.cancel(),
       });
       const events = [
         { type: "session_started", sequence: 0, responseId: "response_cancelled" },
@@ -389,14 +439,6 @@ try {
       if (!input.signal.aborted) {
         await new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }));
       }
-      await adapter.strictCommitCallback()(events.slice(1), { normalizedOffset: 1 });
-      const result = {
-        responseId: "response_cancelled",
-        normalizedEvents: events,
-        terminal: { state: "aborted", error: null },
-      };
-      adapter.reconcileEventPrefix(events, { sourceOffset: 0 });
-      adapter.finalize(result);
       return {
         terminalState: "cancelled",
         errorCode: "provider_child_turn_aborted",
@@ -414,21 +456,29 @@ try {
   });
   await cancellationStarted.promise;
   cancellationPool.close({ reasonCode: "fixture_cancel" });
-  const cancelledRecord = await waitFor(
-    () => {
-      const record = cancellationPool.inspect({ target: cancellationLaunch.childAgentId });
-      return record?.epistemicCaptureComplete ? record : null;
-    },
-    "cancelled terminal capture should passively reconcile after the pool record settles",
-  );
+  const cancelledRecord = cancellationPool.inspect({ target: cancellationLaunch.childAgentId });
   assert.equal(cancelledRecord.state, "cancelled");
-  assert.equal(cancelledRecord.epistemicCaptureProgress.liveActivityProjection.state, "aborted");
+  assert.equal(cancelledRecord.epistemicCapture.status, "failed");
+  assert.equal(cancelledRecord.epistemicCaptureComplete, false);
+  assert.equal(cancelledRecord.epistemicCaptureProgress.liveActivityProjection.state, "streaming");
   const cancelledTurn = sessionStore.readTurn(
     cancelledRecord.epistemicCapture.sessionId,
     cancelledRecord.epistemicCapture.turnId,
   );
-  assert.equal(cancelledTurn.capture.complete, true);
-  assert.equal(cancelledTurn.normalizedEventCount, 2);
+  assert.equal(cancelledTurn.capture.complete, false);
+  assert.equal(cancelledTurn.capture.status, "failed");
+  assert.equal(cancelledTurn.normalizedEventCount, 1);
+  assert(cancelledTurn.capture.gapReceipts.some((receipt) =>
+    receipt.code === "direct_turn_capture_cancelled"));
+  cancellationProgressCallback({
+    status: "captured",
+    receiptDigest: `sha256:${"a".repeat(64)}`,
+    sessionId: cancelledRecord.epistemicCapture.sessionId,
+    turnId: cancelledRecord.epistemicCapture.turnId,
+  });
+  const immutableCancelledCapture = cancellationPool.inspect({ target: cancellationLaunch.childAgentId });
+  assert.equal(immutableCancelledCapture.epistemicCapture.status, "failed");
+  assert.equal(immutableCancelledCapture.epistemicCaptureComplete, false);
 
   const failedInput = {
     projectId: "project_live_children",
@@ -482,11 +532,13 @@ try {
     workspaceMidToolODurable: true,
     deterministicEProjectedBeforeTerminal: true,
     restartCatchUp: true,
-    cancellationReconciledWithoutDuplicates: true,
+    cancellationGapDurableBeforeSettlement: true,
     captureFailureStayedPartial: true,
     terminalReplayIdempotent: true,
     globalWorkspaceOffsets: persistedWorkspaceEvents.length,
     passivePoolProgress: true,
+    exactProgressSchema: true,
+    terminalCaptureProgressImmutable: true,
     parentWakeupsFromProgress: 0,
     childTranscriptPromotions: 0,
     bottomUpMessages: 0,

@@ -163,6 +163,14 @@ class DirectLiveTurnCaptureAdapter {
     return failure;
   }
 
+  cancel() {
+    if (this.receipt || this.finalized) return this.receipt;
+    if (this.failure) return this.failure;
+    const error = new Error("Direct live turn capture was cancelled by its owning lifecycle.");
+    error.code = "direct_turn_capture_cancelled";
+    return this.markFailed(error);
+  }
+
   finalize(result = {}) {
     if (this.receipt) return this.receipt;
     this.assertWritable();

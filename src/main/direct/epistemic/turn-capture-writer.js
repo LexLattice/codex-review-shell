@@ -8,6 +8,7 @@ const {
 const { digestFor, text } = require("./kernel");
 
 const DIRECT_TURN_CAPTURE_RECEIPT_SCHEMA = "direct_turn_capture_receipt@1";
+const DIRECT_TURN_CAPTURE_VERIFICATION_SCHEMA = "direct_turn_capture_verification@1";
 const CAPTURED_TOOL_RESULT_SOURCE_FIELDS = new Set([
   "schema",
   "stepOrdinal",
@@ -240,16 +241,118 @@ function finalCaptureDigest(input = {}, result = {}) {
     ? result.workspaceWorkerToolResults
     : Array.isArray(result.toolResults) ? result.toolResults : [])
     .map(safeCapturedToolResult);
-  return digestFor({
-    kind: "direct_turn_capture_final",
+  return finalCaptureDigestFromEvidence({
     captureIdentity: captureIdentity(input),
     responseId: text(result.responseId),
     terminalState: terminalTurnState(result),
     terminalEvidence: terminalEvidence(result),
-    events: sourceEvents(result.normalizedEvents),
-    toolResultDigest: toolResultDigest(tools),
+    events: result.normalizedEvents,
+    tools,
     workspaceWorkerContractDigest: text(result.workspaceWorkerContract?.contractDigest),
   });
+}
+
+function finalCaptureDigestFromEvidence(input = {}) {
+  return digestFor({
+    kind: "direct_turn_capture_final",
+    captureIdentity: input.captureIdentity,
+    responseId: text(input.responseId),
+    terminalState: text(input.terminalState),
+    terminalEvidence: input.terminalEvidence,
+    events: sourceEvents(input.events),
+    toolResultDigest: toolResultDigest(input.tools),
+    workspaceWorkerContractDigest: text(input.workspaceWorkerContractDigest),
+  });
+}
+
+function verifyCompleteTurnCapture(turn = {}, events = []) {
+  const capture = turn?.capture;
+  const failure = (code, evidence = {}) => ({ ok: false, code, ...evidence });
+  if (
+    !capture ||
+    capture.schema !== DIRECT_TURN_CAPTURE_SCHEMA ||
+    capture.verificationSchema !== DIRECT_TURN_CAPTURE_VERIFICATION_SCHEMA ||
+    capture.status !== "complete" ||
+    capture.complete !== true
+  ) return failure("direct_turn_capture_restart_complete_shape_invalid");
+  if (!/^[a-f0-9]{64}$/.test(text(capture.finalCaptureDigest))) {
+    return failure("direct_turn_capture_restart_final_digest_invalid");
+  }
+  const identity = captureIdentity(capture);
+  if (identity.captureIdentityDigest !== text(capture.captureIdentityDigest)) {
+    return failure("direct_turn_capture_restart_identity_invalid");
+  }
+  const canonicalEvents = sourceEvents(events);
+  const observedEventPrefixDigest = eventPrefixDigest(canonicalEvents);
+  if (
+    Number(capture.eventCount) !== canonicalEvents.length ||
+    text(capture.eventPrefixDigest) !== observedEventPrefixDigest
+  ) {
+    return failure("direct_turn_capture_restart_event_prefix_invalid", {
+      observedEventCount: canonicalEvents.length,
+      observedEventPrefixDigest,
+    });
+  }
+  let tools;
+  try {
+    tools = (Array.isArray(turn.toolResults) ? turn.toolResults : []).map(safeCapturedToolResult);
+  } catch (error) {
+    return failure(text(error?.code, "direct_turn_capture_restart_tool_result_invalid"));
+  }
+  const observedToolResultDigest = toolResultDigest(tools);
+  if (
+    Number(capture.toolResultCount) !== tools.length ||
+    text(capture.toolResultDigest) !== observedToolResultDigest
+  ) {
+    return failure("direct_turn_capture_restart_tool_results_invalid", {
+      observedToolResultCount: tools.length,
+      observedToolResultDigest,
+    });
+  }
+  const terminalState = terminalTurnState({ terminalState: capture.terminalState });
+  if (terminalState !== text(capture.terminalState)) {
+    return failure("direct_turn_capture_restart_terminal_state_invalid");
+  }
+  if (!Object.prototype.hasOwnProperty.call(turn, "responseId")) {
+    return failure("direct_turn_capture_restart_response_identity_missing");
+  }
+  const storedError = turn.error && typeof turn.error === "object"
+    ? {
+        code: text(turn.error.code),
+        messageDigest: text(turn.error.messageDigest),
+        rawMessagePersisted: turn.error.rawMessagePersisted === true,
+      }
+    : null;
+  if (storedError?.rawMessagePersisted === true) {
+    return failure("direct_turn_capture_restart_raw_error_invalid");
+  }
+  const expectedFinalCaptureDigest = finalCaptureDigestFromEvidence({
+    captureIdentity: identity,
+    responseId: turn.responseId,
+    terminalState,
+    terminalEvidence: {
+      responseStatus: Number(turn.responseStatus || 0),
+      responseContentType: text(turn.responseContentType),
+      error: storedError,
+    },
+    events: canonicalEvents,
+    tools,
+    workspaceWorkerContractDigest: text(turn.requestShape?.workspaceWorkerContractDigest),
+  });
+  if (expectedFinalCaptureDigest !== capture.finalCaptureDigest) {
+    return failure("direct_turn_capture_restart_final_digest_mismatch", {
+      expectedFinalCaptureDigest,
+    });
+  }
+  return {
+    ok: true,
+    terminalState,
+    observedEventCount: canonicalEvents.length,
+    observedEventPrefixDigest,
+    observedToolResultCount: tools.length,
+    observedToolResultDigest,
+    expectedFinalCaptureDigest,
+  };
 }
 
 function initialCapture(input = {}, turn = {}, now = new Date().toISOString()) {
@@ -515,6 +618,7 @@ class DirectTurnCaptureWriter {
     const terminalState = terminalTurnState(result);
     const finalizedAt = new Date().toISOString();
     const capture = this.captureWithCurrentEvidence({
+      verificationSchema: DIRECT_TURN_CAPTURE_VERIFICATION_SCHEMA,
       status: "complete",
       terminalState,
       finalCaptureDigest: expectedDigest,
@@ -528,6 +632,7 @@ class DirectTurnCaptureWriter {
       terminalState,
       {
         ...terminalEvidence(result),
+        responseId: text(result.responseId),
         ...terminalStateReset(terminalState),
         captureDigest: expectedDigest,
         captureRecovered: Boolean(this.turn().capture?.gapReceipts?.length),
@@ -584,13 +689,16 @@ class DirectTurnCaptureWriter {
 
 module.exports = {
   DIRECT_TURN_CAPTURE_RECEIPT_SCHEMA,
+  DIRECT_TURN_CAPTURE_VERIFICATION_SCHEMA,
   DirectTurnCaptureWriter,
   captureIdentity,
   eventPrefixDigest,
   finalCaptureDigest,
+  finalCaptureDigestFromEvidence,
   safeCapturedToolResult,
   sourceEvent,
   terminalEvidence,
   terminalTurnState,
   toolResultDigest,
+  verifyCompleteTurnCapture,
 };

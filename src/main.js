@@ -3826,6 +3826,15 @@ function assistantTextFromDirectProviderResult(result = {}) {
     .join("");
 }
 
+function registerDirectChildCaptureController(input = {}, captureAdapter) {
+  if (!captureAdapter || typeof input.registerEpistemicCaptureController !== "function") return;
+  input.registerEpistemicCaptureController({
+    sessionId: captureAdapter.writer.input.sessionId,
+    turnId: captureAdapter.writer.input.turnId,
+    cancel: () => captureAdapter.cancel(),
+  });
+}
+
 async function runDirectNativeChildProviderTurn(input = {}) {
   const captureAdapter = createNativeChildLiveTurnCapture({
     sessionStore: ensureDirectSessionStore(),
@@ -3833,6 +3842,7 @@ async function runDirectNativeChildProviderTurn(input = {}) {
     captureInput: input,
     onProgress: input.onEpistemicProgress,
   });
+  registerDirectChildCaptureController(input, captureAdapter);
   let result;
   try {
     result = await runImplementationToolInitialProbe({
@@ -4101,30 +4111,33 @@ async function runDirectWorkspaceWorkerTurn(input = {}) {
   const workspaceResult = await runDirectWorkspaceWorker({
     ...input,
     workspaceProvisioner: (request) => provisionDirectWorkspaceWorker(request),
-    captureAdapterFactory: ({ contract }) => createNativeChildLiveTurnCapture({
-      sessionStore: ensureDirectSessionStore(),
-      epistemicService: ensureDirectEpistemicService(),
-      captureInput: {
-        ...input,
-        agent: {
-          agentThreadId: input.childAgentId,
-          displayLabel: input.displayLabel,
-          role: input.role,
-          model: input.model,
-          reasoningEffort: input.reasoningEffort,
+    captureAdapterFactory: ({ contract }) => {
+      const captureAdapter = createNativeChildLiveTurnCapture({
+        sessionStore: ensureDirectSessionStore(),
+        epistemicService: ensureDirectEpistemicService(),
+        captureInput: {
+          ...input,
+          agent: {
+            agentThreadId: input.childAgentId,
+            displayLabel: input.displayLabel,
+            role: input.role,
+            model: input.model,
+            reasoningEffort: input.reasoningEffort,
+          },
+          attemptId: `workspace_worker_${contract.contractId}`,
+          promptDigest: crypto.createHash("sha256").update(normalizeString(input.prompt, "")).digest("hex"),
+          contextDigest: normalizeString(contract.contextAdmission?.admittedContextDigest, ""),
+          contextMessageCount: Number(contract.contextAdmission?.admittedMessageCount || 0),
+          requestBody: {
+            model: input.model,
+            reasoning: { effort: input.reasoningEffort },
+          },
+          workspaceWorkerContract: contract,
         },
-        attemptId: `workspace_worker_${contract.contractId}`,
-        promptDigest: crypto.createHash("sha256").update(normalizeString(input.prompt, "")).digest("hex"),
-        contextDigest: normalizeString(contract.contextAdmission?.admittedContextDigest, ""),
-        contextMessageCount: Number(contract.contextAdmission?.admittedMessageCount || 0),
-        requestBody: {
-          model: input.model,
-          reasoning: { effort: input.reasoningEffort },
-        },
-        workspaceWorkerContract: contract,
-      },
-      onProgress: input.onEpistemicProgress,
-    }),
+        onProgress: input.onEpistemicProgress,
+      });
+      return captureAdapter;
+    },
     providerRequestRunner: ({ requestBody, signal, onNormalizedEventsCommitted }) => runImplementationToolInitialProbe({
       authStore: directRuntimeAuthStore(),
       refreshCredentials: () => refreshDirectRuntimeCredentials(),
@@ -11364,6 +11377,7 @@ async function createWindow() {
   }
 
   mainWindow.on("closed", () => {
+    closeDirectNativeAgentPool("Main window closed.");
     stopGeometrySyncLoop();
     codexAppServer?.dispose();
     codexAppServer = null;

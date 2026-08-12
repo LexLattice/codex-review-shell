@@ -358,6 +358,11 @@ function safeEpistemicProgress(input = {}) {
     error.code = "direct_agent_capture_progress_reference_invalid";
     throw error;
   }
+  if (status === "captured" && !receiptDigest) {
+    const error = new Error("Completed Direct child capture progress requires a receipt digest.");
+    error.code = "direct_agent_capture_progress_receipt_required";
+    throw error;
+  }
   if (projection && (projection.sessionId !== sessionId || projection.turnId !== turnId)) {
     const error = new Error("Direct child capture progress identity is inconsistent.");
     error.code = "direct_agent_capture_progress_identity_mismatch";
@@ -753,6 +758,7 @@ class DirectNativeAgentPool extends EventEmitter {
       _settled: false,
       _leaseActive: false,
       _abortController: null,
+      _captureController: null,
       _externalSignal: input.signal || null,
       _externalAbortListener: null,
       _runnerStarted: false,
@@ -1029,6 +1035,8 @@ class DirectNativeAgentPool extends EventEmitter {
         now: this.now,
         workspaceOperationLeaseValidator: () => this.validateWorkspaceOperationLease(record),
         onEpistemicProgress: (update) => this.updateEpistemicProgress(record, update),
+        registerEpistemicCaptureController: (controller) =>
+          this.registerEpistemicCaptureController(record, controller),
       };
       return record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
         ? await this.workspaceWorkerRunner({
@@ -1524,6 +1532,7 @@ class DirectNativeAgentPool extends EventEmitter {
       record._externalSignal.removeEventListener("abort", record._externalAbortListener);
     }
     record._externalAbortListener = null;
+    record._captureController = null;
     const publicRecord = this.publicRecord(record);
     for (const waiter of record._waiters) waiter(publicRecord);
     record._waiters.clear();
@@ -1547,6 +1556,26 @@ class DirectNativeAgentPool extends EventEmitter {
       (record.epistemicCapture.sessionId !== progress.sessionId ||
         record.epistemicCapture.turnId !== progress.turnId)
     ) return false;
+    const currentStatus = normalizeString(record.epistemicCapture?.status, "pending");
+    const transitions = {
+      pending: new Set(["capturing", "failed", "captured"]),
+      capturing: new Set(["capturing", "failed", "captured"]),
+      failed: new Set(["failed"]),
+      captured: new Set(["captured"]),
+    };
+    if (!transitions[currentStatus]?.has(progress.status)) return false;
+    if (
+      currentStatus === "captured" &&
+      normalizeString(record.epistemicCapture?.receiptDigest, "") !== progress.receiptDigest
+    ) return false;
+    const previousProjection = record.epistemicCaptureProgress?.liveActivityProjection;
+    const nextProjection = progress.liveActivityProjection;
+    if (previousProjection && nextProjection && (
+      Number(nextProjection.eventCursor?.persistedEventCount || 0) <
+        Number(previousProjection.eventCursor?.persistedEventCount || 0) ||
+      Number(nextProjection.capture?.toolResultCount || 0) <
+        Number(previousProjection.capture?.toolResultCount || 0)
+    )) return false;
     const capture = normalizeEpistemicCapture({
       status: progress.status,
       receiptDigest: progress.receiptDigest,
@@ -1567,6 +1596,37 @@ class DirectNativeAgentPool extends EventEmitter {
     return true;
   }
 
+  registerEpistemicCaptureController(record, controller = {}) {
+    if (!record || !isPlainObject(controller)) return false;
+    const allowed = new Set(["sessionId", "turnId", "cancel"]);
+    if (
+      Object.keys(controller).some((key) => !allowed.has(key)) ||
+      typeof controller.cancel !== "function"
+    ) return false;
+    const sessionId = normalizeString(controller.sessionId, "");
+    const turnId = normalizeString(controller.turnId, "");
+    if (!/^[A-Za-z0-9_-]+$/.test(sessionId) || !/^[A-Za-z0-9_-]+$/.test(turnId)) return false;
+    if (
+      record.epistemicCapture?.sessionId &&
+      (record.epistemicCapture.sessionId !== sessionId || record.epistemicCapture.turnId !== turnId)
+    ) return false;
+    if (record._cancelRequested) {
+      try {
+        controller.cancel(record._cancelReasonCode || "direct_agent_cancelled");
+      } catch {}
+      return true;
+    }
+    if (record._settled) {
+      if (record.state !== "cancelled") return false;
+      try {
+        controller.cancel(record.blockerCode || "direct_agent_cancelled");
+      } catch {}
+      return true;
+    }
+    record._captureController = { sessionId, turnId, cancel: controller.cancel };
+    return true;
+  }
+
   cancelRecord(record, blockerCode = "direct_agent_pool_closed") {
     if (!record || record._settled) return false;
     if (record._cancelRequested) return true;
@@ -1574,6 +1634,9 @@ class DirectNativeAgentPool extends EventEmitter {
     record._cancelRequested = true;
     record._cancelReasonCode = reasonCode;
     record._cancelRequestedAt = nowIso(this.now);
+    try {
+      record._captureController?.cancel?.(reasonCode);
+    } catch {}
     const lifecycleError = this.transitionLifecycle(record, "requestCancellation", {
       operationId: `pool-request-cancel:${record.childAgentId}`,
       reasonCode,

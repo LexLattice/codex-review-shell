@@ -662,6 +662,7 @@ class DirectProviderBackedSubAgentRoute {
         attemptId: normalizeString(input.callId, `call_provider_backed_${agent.agentThreadId}`),
         signal: input.signal,
         onEpistemicProgress: input.onEpistemicProgress,
+        registerEpistemicCaptureController: input.registerEpistemicCaptureController,
       }));
       const terminalStatus = providerOutcome.terminalState;
       const terminalExact = EXACT_TERMINAL_STATES.includes(terminalStatus);

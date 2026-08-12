@@ -363,7 +363,10 @@ shared Subject / O revision / E revision / record / port / import kernel
   -> atomic compare-and-swap publication of E head, records, ports, and completed transcription receipt
   -> separately idempotent, immutable purpose-sensitive context receipts
   -> restart verification plus explicit interrupted-transcription recovery
-  -> closed native-agent pool cancellation and typed capture-gap projection
+  -> strict per-prefix native-child and workspace-child SSE capture before provider completion
+  -> canonical complete-capture verification and O-driven interrupted-turn recovery
+  -> closed, digest-verified passive pool progress with no parent wake or context authority
+  -> lifecycle-owned native-agent cancellation with a durable capture gap before settlement
   -> Direct Workbench Epistemic inspector and narrow IPC surface
 ```
 
@@ -393,24 +396,34 @@ context are represented only by digests. The same deterministic and Luna paths
 can therefore cover actual downstream child workthreads without adding a
 child-to-parent message or any new child affordance.
 
-Capture currently occurs when the child provider turn returns. It is lossless
-for the normalized result received by Main but not an incremental live prefix
-if the process dies mid-turn. A capture failure is carried as an explicit
-omission on the provider-backed child result and the operator-facing pool
-record, but there is not yet a separate durable capture-gap outbox. Closing the
-Direct runtime aborts active native-child provider work and cancels queued
-children before session teardown. Native children otherwise remain
-reasoning-only: they have no tools, recursive spawn, or workspace authority in
-this slice.
+Capture writers now open before a native-child provider request and immediately
+after an isolated workspace child's immutable contract and binding exist. The
+transport serially awaits each normalized prefix commit. Workspace provider
+steps use global normalized offsets and persist safe typed tool results before
+the next provider request. Terminal capture and turn state share one atomic
+turn-file replacement; restart promotion requires a canonical digest over the
+stable capture identity, actual O prefix, safe tool results, terminal evidence,
+and pinned workspace contract. Recovery treats validated JSONL as canonical,
+repairs truthful counts and prefix digests, and fails closed on malformed or
+partial lines.
+
+Pool progress exposes only the exact allowlisted, digest-verified passive live
+activity projection. It cannot wake parent waiters, emit a child-to-parent
+message, enter a context build, promote child prose, or invoke Luna. Pool
+cancellation owns a narrow capture handle and records a durable partial gap
+before terminal pool settlement; shutdown aborts the pool before workspace and
+epistemic dependencies are disposed. Reasoning-only children still have no
+tools or recursive spawn. Isolated workspace children use only their separately
+compiled bounded workspace authority.
 
 Other explicit deferrals:
 
 ```text
-incremental Direct and native-child SSE prefix durability before a provider turn terminates
+primary Direct-controller live capture, pending one unambiguous pre-response attempt identity
 app-server notification/request/response transcription
 automatic admission of IMPORT_CONTEXT into a worker context pack
 purpose-bound higher-order auditor dispatch
-child workspace tools and per-child Git worktrees
+recursive child spawn and bottom-up active communication
 live provider evaluation of Luna quality and model-catalog preflight
 ```
 

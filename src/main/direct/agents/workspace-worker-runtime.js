@@ -764,6 +764,13 @@ async function runDirectWorkspaceWorker(input = {}) {
         contract,
         admittedContextMessages,
       });
+      if (captureAdapter && typeof input.registerEpistemicCaptureController === "function") {
+        input.registerEpistemicCaptureController({
+          sessionId: captureAdapter.writer?.input?.sessionId,
+          turnId: captureAdapter.writer?.input?.turnId,
+          cancel: () => captureAdapter.cancel?.(),
+        });
+      }
     }
   } catch (error) {
     try {
