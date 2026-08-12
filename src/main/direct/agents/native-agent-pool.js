@@ -315,7 +315,7 @@ function typedWorkspaceResultSummary(record = {}, patch = {}) {
   if (state !== "completed") {
     return safeWorkspaceStatusCode(patch.blockerCode, `direct_workspace_worker_${state}`);
   }
-  return patch.epistemicCapture?.status === "captured" && patch.epistemicCapture?.receiptDigest
+  return normalizeEpistemicCapture(patch.epistemicCapture).complete
     ? "direct_workspace_worker_completed_captured"
     : "direct_workspace_worker_completed";
 }
