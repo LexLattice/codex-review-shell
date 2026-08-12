@@ -20,6 +20,10 @@ const {
   workspaceWorkerToolSchemas,
 } = require("../src/main/direct/agents/workspace-worker-contract");
 const {
+  WORKSPACE_WORKER_TOOLS,
+  createWorkspaceParentAuthorityPacket,
+} = require("../src/main/direct/agents/workspace-worker-policy-profile");
+const {
   nativeChildSessionId,
   persistNativeChildProviderTurn,
 } = require("../src/main/direct/epistemic/native-child-capture");
@@ -148,7 +152,14 @@ try {
     '    assert WORKER_VALUE.startswith("worker-")',
     "",
   ].join("\n"), "utf8");
-  run("git", ["add", "worker_fixture.py", "test_worker_fixture.py"], seedRoot);
+  fs.appendFileSync(path.join(seedRoot, "tests", "current_robot_tests.txt"), "\ntests/test_worker_fixture.py\n", "utf8");
+  fs.renameSync(path.join(seedRoot, "test_worker_fixture.py"), path.join(seedRoot, "tests", "test_worker_fixture.py"));
+  fs.mkdirSync(path.join(seedRoot, ".venv", "bin"), { recursive: true });
+  const fixturePython = path.join(seedRoot, ".venv", "bin", "python");
+  fs.writeFileSync(fixturePython, "#!/bin/sh\nexec python3 \"$@\"\n", "utf8");
+  fs.chmodSync(fixturePython, 0o755);
+  run("git", ["add", "worker_fixture.py", "tests/test_worker_fixture.py", "tests/current_robot_tests.txt"], seedRoot);
+  run("git", ["add", "-f", ".venv/bin/python"], seedRoot);
   run("git", [
     "-c", "user.name=Direct Workspace Worker Fixture",
     "-c", "user.email=workspace-worker@invalid.example",
@@ -163,6 +174,11 @@ try {
     repoPath: seedRoot,
     workspace: { kind: "local", localPath: seedRoot, label: "ArcAGI3 seed clone" },
   };
+  const harnessImplementationAuthority = createWorkspaceParentAuthorityPacket({
+    boundaryId: "arcagi3_workspace_worker_harness_authority",
+    upstreamPolicyId: "arcagi3_workspace_worker_harness_tool_policy",
+    upstreamAllowedTools: WORKSPACE_WORKER_TOOLS,
+  });
   manager = new WorkspaceBackendManager({
     agentPath: path.join(shellRoot, "src/backend/wsl-agent.js"),
     fallbackRoot: shellRoot,
@@ -188,6 +204,7 @@ try {
   const providerBodies = [];
   const providerSteps = new Map();
   const workerTokenUsage = new Map();
+  const workspaceRequestSignalForwarding = [];
   let firstProviderEntrants = 0;
   let releaseFirstProviderEntrants;
   const firstProviderBarrier = new Promise((resolve) => { releaseFirstProviderEntrants = resolve; });
@@ -199,18 +216,30 @@ try {
       workerKey,
       branch,
       baseRef: seedHead,
-    }, 45_000);
+    }, 45_000, { signal: input.signal });
+    assert.equal(provisioned.requestOutcome?.committed, true);
+    assert.equal(provisioned.requestOutcome?.retainedForInspection, true);
     const nativeRoot = provisioned.worktreePath;
     const project = childProject(parentProject, nativeRoot, input.childAgentId);
-    const session = await manager.ensureForProject(project, { workspaceHygiene: false });
-    const testProfile = await session.request("directTestProfile", {}, 10_000);
     const binding = { ...provisioned };
     delete binding.worktreePath;
+    const session = await manager.ensureForProject(project, {
+      workspaceHygiene: false,
+      workspaceWorkerBinding: binding,
+    });
+    const testProfile = await session.request("directTestProfile", {}, 10_000, { signal: input.signal });
     const realization = {
       binding,
       testProfile,
       nativeRoot,
-      workspaceRequest: (method, params = {}, timeoutMs) => session.request(method, params, timeoutMs),
+      backendSessionId: session.workspaceWorkerBinding.backendSessionId,
+      workspaceRequest: (method, params = {}, timeoutMs, requestOptions = {}) => {
+        workspaceRequestSignalForwarding.push({
+          method,
+          forwarded: requestOptions.signal === input.signal,
+        });
+        return session.request(method, params, timeoutMs, requestOptions);
+      },
     };
     privateRealizations.set(input.childAgentId, realization);
     return realization;
@@ -231,10 +260,36 @@ try {
       return {
         terminal: { state: "tool_waiting", error: null },
         responseId,
-        normalizedEvents: toolEvents(responseId, "read_file", { path: "worker_fixture.py" }),
+        normalizedEvents: toolEvents(responseId, "inspect_repository", {}),
       };
     }
     if (step === 2) {
+      return {
+        terminal: { state: "tool_waiting", error: null },
+        responseId,
+        normalizedEvents: toolEvents(responseId, "list_files", { path: "tests", limit: 20 }),
+      };
+    }
+    if (step === 3) {
+      return {
+        terminal: { state: "tool_waiting", error: null },
+        responseId,
+        normalizedEvents: toolEvents(responseId, "search_text", {
+          query: "WORKER_VALUE",
+          path: "worker_fixture.py",
+          case_sensitive: true,
+          max_results: 10,
+        }),
+      };
+    }
+    if (step === 4) {
+      return {
+        terminal: { state: "tool_waiting", error: null },
+        responseId,
+        normalizedEvents: toolEvents(responseId, "read_file", { path: "worker_fixture.py" }),
+      };
+    }
+    if (step === 5) {
       return {
         terminal: { state: "tool_waiting", error: null },
         responseId,
@@ -251,12 +306,13 @@ try {
         }),
       };
     }
-    if (step === 3) {
+    if (step === 6) {
       return {
         terminal: { state: "tool_waiting", error: null },
         responseId,
         normalizedEvents: toolEvents(responseId, "run_test", {
-          targets: ["test_worker_fixture.py"],
+          action: "test_focus",
+          targets: ["tests/test_worker_fixture.py"],
           timeout_ms: 30_000,
         }),
       };
@@ -277,7 +333,7 @@ try {
         workspaceProvisioner: provision,
         providerRequestRunner: (request) => providerRequest(input.childAgentId, request),
       });
-      assert.ok(result.captureResult, "workspace worker must return a typed terminal capture payload");
+      assert.ok(result.captureResult, JSON.stringify(result, null, 2));
       contracts.set(input.childAgentId, result.captureResult.workspaceWorkerContract);
       workerTokenUsage.set(input.childAgentId, result.tokenUsage);
       const receipt = persistNativeChildProviderTurn(sessionStore, {
@@ -315,6 +371,51 @@ try {
     { turnId: "turn_1", role: "user", text: "The worker fixture must remain isolated." },
     { turnId: "turn_1", role: "assistant", text: "Use one branch and worktree per child." },
   ];
+  const rawBoundaryLaunch = pool.launch({
+    childAgentId: "arcagi3-worker-raw-boundary",
+    taskName: "arcagi3_worker_raw_boundary",
+    projectId: parentProject.id,
+    primaryThreadId: "primary_arcagi3_workspace_workers",
+    message: "A raw caller boundary must not become workspace authority.",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "implementation_worker",
+    project: parentProject,
+    parentAuthority: {
+      boundaryId: "raw_caller_boundary",
+      allowedTools: ["apply_patch"],
+    },
+  });
+  assert.equal(rawBoundaryLaunch.status, "blocked");
+  assert.equal(rawBoundaryLaunch.blockerCode, "direct_workspace_parent_authority_missing");
+  const forgedBoundaryLaunch = pool.launch({
+    childAgentId: "arcagi3-worker-forged-boundary",
+    taskName: "arcagi3_worker_forged_boundary",
+    projectId: parentProject.id,
+    primaryThreadId: "primary_arcagi3_workspace_workers",
+    message: "A forged harness packet must not become workspace authority.",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "implementation_worker",
+    project: parentProject,
+    parentAuthorityPacket: {
+      ...harnessImplementationAuthority,
+      boundaryDigest: `sha256:${"0".repeat(64)}`,
+    },
+  });
+  assert.equal(forgedBoundaryLaunch.status, "blocked");
+  assert.equal(forgedBoundaryLaunch.blockerCode, "direct_workspace_parent_authority_invalid");
+  const reconstructedBoundaryLaunch = pool.launch({
+    childAgentId: "arcagi3-worker-reconstructed-boundary",
+    taskName: "arcagi3_worker_reconstructed_boundary",
+    projectId: parentProject.id,
+    primaryThreadId: "primary_arcagi3_workspace_workers",
+    message: "A digest-valid reconstructed packet must not become workspace authority.",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "implementation_worker",
+    project: parentProject,
+    parentAuthorityPacket: { ...harnessImplementationAuthority },
+  });
+  assert.equal(reconstructedBoundaryLaunch.status, "blocked");
+  assert.equal(reconstructedBoundaryLaunch.blockerCode, "direct_workspace_parent_authority_invalid");
   const launchA = pool.launch({
     childAgentId: "arcagi3-worker-a",
     taskName: "arcagi3_worker_a",
@@ -329,6 +430,7 @@ try {
     reasoningEffort: "xhigh",
     forkTurns: "all",
     parentContextMessages,
+    parentAuthorityPacket: harnessImplementationAuthority,
   });
   const launchB = pool.launch({
     childAgentId: "arcagi3-worker-b",
@@ -344,6 +446,7 @@ try {
     reasoningEffort: "xhigh",
     forkTurns: "all",
     parentContextMessages,
+    parentAuthorityPacket: harnessImplementationAuthority,
   });
   assert.equal(pool.descriptor().activeChildren, 2, "both isolated workers must hold active pool leases concurrently");
   const [waitA, waitB] = await Promise.all([
@@ -362,12 +465,12 @@ try {
   ]);
   const recordA = waitA.updates[0];
   const recordB = waitB.updates[0];
-  assert.equal(recordA.state, "completed");
-  assert.equal(recordB.state, "completed");
+  assert.equal(recordA.state, "completed", JSON.stringify(recordA, null, 2));
+  assert.equal(recordB.state, "completed", JSON.stringify(recordB, null, 2));
   assert.equal(recordA.workspaceMode, "isolated_worktree");
   assert.equal(recordA.toolProfile, "implementation_worker");
-  assert.equal(recordA.workspaceExecution.toolResultCount, 3);
-  assert.equal(recordB.workspaceExecution.toolResultCount, 3);
+  assert.equal(recordA.workspaceExecution.toolResultCount, 6);
+  assert.equal(recordB.workspaceExecution.toolResultCount, 6);
   assert.notEqual(recordA.workspaceExecution.binding.bindingId, recordB.workspaceExecution.binding.bindingId);
   assert.notEqual(recordA.workspaceExecution.binding.branch, recordB.workspaceExecution.binding.branch);
   assert.equal(recordA.epistemicCaptureComplete, true);
@@ -375,16 +478,52 @@ try {
   assert.equal(recordA.evidenceConfidence, "exact");
   assert.equal(recordB.evidenceConfidence, "exact");
   assert.deepEqual(workerTokenUsage.get(launchA.childAgentId), {
-    inputTokens: 40,
-    cachedInputTokens: 8,
-    outputTokens: 12,
-    reasoningOutputTokens: 4,
-    totalTokens: 52,
+    inputTokens: 70,
+    cachedInputTokens: 14,
+    outputTokens: 21,
+    reasoningOutputTokens: 7,
+    totalTokens: 91,
   });
 
   const realizationA = privateRealizations.get(launchA.childAgentId);
   const realizationB = privateRealizations.get(launchB.childAgentId);
+  const liveWorkerRequestSignalForwarding = [...workspaceRequestSignalForwarding];
   assert.notEqual(realizationA.nativeRoot, realizationB.nativeRoot);
+  assert.notEqual(realizationA.backendSessionId, realizationB.backendSessionId);
+  await assert.rejects(
+    () => realizationA.workspaceRequest("inspectWorkspaceRepository", {
+      bindingDigest: realizationB.binding.bindingDigest,
+    }, 30_000),
+    (error) => error?.code === "workspace_worker_binding_mismatch",
+    "a well-formed digest from another resident worker session must be rejected",
+  );
+  await assert.rejects(
+    () => realizationA.workspaceRequest("runDirectTest", {
+      bindingDigest: realizationA.binding.bindingDigest,
+      profileDigest: realizationA.testProfile.profileDigest,
+      action: "test_focus",
+      targets: ["tests/test_worker_fixture.py tests/test_worker_fixture.py::test_worker_value"],
+      timeoutMs: 30_000,
+    }, 40_000),
+    (error) => error?.code === "workspace_worker_test_target_invalid",
+    "one Arc target element must not flatten into multiple pytest nodeids",
+  );
+  for (const invalidTarget of [
+    'tests/test_worker_fixture.py"',
+    "tests\\test_worker_fixture.py",
+  ]) {
+    await assert.rejects(
+      () => realizationA.workspaceRequest("runDirectTest", {
+        bindingDigest: realizationA.binding.bindingDigest,
+        profileDigest: realizationA.testProfile.profileDigest,
+        action: "test_focus",
+        targets: [invalidTarget],
+        timeoutMs: 30_000,
+      }, 40_000),
+      (error) => error?.code === "workspace_worker_test_target_invalid",
+      `Arc target grammar must reject ${JSON.stringify(invalidTarget)}`,
+    );
+  }
   assert.equal(
     path.relative(tempRoot, realizationA.nativeRoot).startsWith(".."),
     false,
@@ -406,12 +545,51 @@ try {
   const contractB = contracts.get(launchB.childAgentId);
   assertWorkspaceWorkerContractSafe(contractA);
   assertWorkspaceWorkerContractSafe(contractB);
-  assert.deepEqual(contractA.authority.declaredTools, ["read_file", "apply_patch", "run_test"]);
+  assert.deepEqual(contractA.authority.declaredTools, [
+    "inspect_repository",
+    "list_files",
+    "match_files",
+    "search_text",
+    "read_file",
+    "apply_patch",
+    "run_test",
+  ]);
   assert.equal(contractA.authority.recursiveSpawnAllowed, false);
   assert.equal(contractA.authority.remoteMutationAllowed, false);
   assert.equal(contractA.authority.bottomUpMessagingAllowed, false);
   assert.equal(contractA.contextAdmission.admittedMessageCount, 2);
-  assert.equal(contractA.testProfile.profileId, "python_pytest");
+  assert.equal(contractA.testProfile.profileId, "arcagi3_pinned_make_actions");
+  assert.deepEqual(contractA.testProfile.actionsAllowed, ["test_focus", "check", "test"]);
+  assert.equal(contractA.repositoryPolicy.profileId, "arcagi3-odeu-local");
+  assert.equal(contractA.repositoryPolicy.validationPosture, "exact");
+  assert.equal(contractA.policyCompilation.parentAuthorityExplicit, true);
+  assert.equal(contractA.policyCompilation.substrateCapabilityExplicit, true);
+  assert.equal(contractA.policyCompilation.authorityProvenance.parentAuthority, "harness_owned_upstream_authority_packet");
+  assert.equal(contractA.policyCompilation.wideningPerformed, false);
+  let invalidRuntimeTargetDispatched = false;
+  await assert.rejects(
+    () => executeWorkspaceTool({
+      obligation: {
+        name: "run_test",
+        callId: "call_invalid_flattened_target",
+        argumentsText: JSON.stringify({
+          action: "test_focus",
+          targets: ["tests/test_worker_fixture.py tests/test_worker_fixture.py::test_worker_value"],
+        }),
+      },
+      contract: contractA,
+      provisioned: {
+        workspaceRequest: async () => {
+          invalidRuntimeTargetDispatched = true;
+          return {};
+        },
+      },
+      stepOrdinal: 1,
+    }),
+    (error) => error?.code === "direct_workspace_worker_test_target_invalid",
+  );
+  assert.equal(invalidRuntimeTargetDispatched, false);
+  assert.equal(contractA.authority.requestedToolProfileAdvisory, true);
   assert.equal(contractA.authority.testProcessIsolationGuaranteed, false);
   assert.equal(contractA.authority.testNetworkIsolationGuaranteed, false);
 
@@ -424,11 +602,29 @@ try {
     toolProfile: "read_only_worker",
     binding: realizationA.binding,
     testProfile: realizationA.testProfile,
+    parentAuthorityPacket: createWorkspaceParentAuthorityPacket({
+      boundaryId: "arcagi3_read_only_fixture_parent",
+      allowedTools: ["inspect_repository", "list_files", "match_files", "search_text", "read_file"],
+      upstreamPolicyId: "arcagi3_read_only_fixture_tool_policy",
+      upstreamAllowedTools: WORKSPACE_WORKER_TOOLS,
+    }),
     contextMessages: parentContextMessages,
     contextHandoffMode: "full",
   }).contract;
-  assert.deepEqual(readOnlyContract.authority.declaredTools, ["read_file"]);
-  assert.deepEqual(workspaceWorkerToolSchemas(readOnlyContract).map((tool) => tool.name), ["read_file"]);
+  assert.deepEqual(readOnlyContract.authority.declaredTools, [
+    "inspect_repository",
+    "list_files",
+    "match_files",
+    "search_text",
+    "read_file",
+  ]);
+  assert.deepEqual(workspaceWorkerToolSchemas(readOnlyContract).map((tool) => tool.name), [
+    "inspect_repository",
+    "list_files",
+    "match_files",
+    "search_text",
+    "read_file",
+  ]);
   await assert.rejects(
     () => executeWorkspaceTool({
       obligation: {
@@ -487,12 +683,26 @@ try {
 
   for (const entry of providerBodies) {
     const names = (entry.body.tools || []).map((tool) => tool.name);
-    assert.deepEqual(names, ["read_file", "apply_patch", "run_test"]);
+    assert.deepEqual(names, [
+      "inspect_repository",
+      "list_files",
+      "match_files",
+      "search_text",
+      "read_file",
+      "apply_patch",
+      "run_test",
+    ]);
     assert.equal(names.includes("run_command"), false);
     assert.equal(names.includes("spawn_agent"), false);
     assert.equal(names.includes("send_message"), false);
     assert.equal(entry.body.parallel_tool_calls, false);
   }
+  assert(liveWorkerRequestSignalForwarding.length > 0);
+  assert.equal(
+    liveWorkerRequestSignalForwarding.every((entry) => entry.forwarded),
+    true,
+    `every live worker tool request must carry the worker cancellation signal: ${JSON.stringify(liveWorkerRequestSignalForwarding)}`,
+  );
   const publicJson = JSON.stringify([recordA, recordB, pool.statusSurface({
     projectId: parentProject.id,
     workThreadId: "work_thread_arcagi3_workspace_workers",
@@ -513,18 +723,28 @@ try {
     const captureTurn = sessionStore.readTurn(captureSessionId, captureSession.turns[0].turnId);
     assert.equal(captureTurn.requestShape.workspaceWorkerContractDigest, contract.contractDigest);
     assert.equal(captureTurn.requestShape.workspaceBindingDigest, contract.binding.bindingDigest);
-    assert.equal(captureTurn.requestShape.workspaceWorkerToolResultCount, 3);
-    assert.equal(captureTurn.toolResults.length, 3);
-    assert.deepEqual(captureTurn.toolResults.map((result) => result.tool), ["read_file", "apply_patch", "run_test"]);
+    assert.equal(captureTurn.requestShape.workspaceWorkerToolResultCount, 6);
+    assert.equal(captureTurn.toolResults.length, 6);
+    assert.deepEqual(captureTurn.toolResults.map((result) => result.tool), [
+      "inspect_repository",
+      "list_files",
+      "search_text",
+      "read_file",
+      "apply_patch",
+      "run_test",
+    ]);
   }
 
   for (const [childAgentId, contract] of contracts.entries()) {
+    const realization = privateRealizations.get(childAgentId);
     for (const [key, session] of [...manager.sessions.entries()]) {
       if (session.project.id.endsWith(`__${childAgentId}`)) {
         session.dispose();
         manager.sessions.delete(key);
       }
     }
+    run("git", ["restore", "--worktree", "--staged", "."], realization.nativeRoot);
+    assert.equal(gitStatus(realization.nativeRoot).length, 0, "regression teardown must not require force removal");
     const cleanup = await parentSession.request("removeGitWorktree", {
       workerKey: contract.binding.workerKey,
       branch: contract.binding.branch,

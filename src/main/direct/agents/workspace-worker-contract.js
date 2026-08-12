@@ -1,21 +1,21 @@
 "use strict";
 
-const crypto = require("node:crypto");
+const {
+  REQUESTED_ROLE_PROFILES,
+  WORKSPACE_WORKER_TOOLS,
+  compileWorkspaceWorkerPolicy,
+  digestFor,
+  parentAuthorityBoundaryFromPacket,
+} = require("./workspace-worker-policy-profile");
+const {
+  repositoryToolSchemas,
+} = require("./workspace-worker-repository-tools");
 
 const DIRECT_WORKSPACE_WORKER_CONTRACT_SCHEMA = "direct_workspace_worker_contract@1";
 const DIRECT_WORKSPACE_WORKER_CONTEXT_ADMISSION_SCHEMA = "direct_workspace_worker_context_admission@1";
 const WORKSPACE_MODE_REASONING_ONLY = "reasoning_only";
 const WORKSPACE_MODE_ISOLATED_WORKTREE = "isolated_worktree";
-const TOOL_PROFILES = Object.freeze({
-  read_only_worker: Object.freeze({
-    declaredTools: Object.freeze(["read_file"]),
-    workspaceMutationAllowed: false,
-  }),
-  implementation_worker: Object.freeze({
-    declaredTools: Object.freeze(["read_file", "apply_patch", "run_test"]),
-    workspaceMutationAllowed: true,
-  }),
-});
+const TOOL_PROFILES = REQUESTED_ROLE_PROFILES;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -23,17 +23,6 @@ function isPlainObject(value) {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
-}
-
-function stableStringify(value) {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
-}
-
-function digestFor(domain, value) {
-  return `sha256:${crypto.createHash("sha256").update(`${domain}\0${stableStringify(value)}`).digest("hex")}`;
 }
 
 function normalizeWorkspaceMode(value) {
@@ -91,12 +80,30 @@ function publicWorkspaceBinding(binding = {}) {
     branch: normalizeString(source.branch, ""),
     baseCommit: normalizeString(source.baseCommit, ""),
     rootEvidenceDigest: normalizeString(source.rootEvidenceDigest, ""),
+    sourceRepositoryDigest: normalizeString(source.sourceRepositoryDigest, ""),
     retainedAfterCompletion: source.retainedAfterCompletion !== false,
     rawWorkspacePathIncluded: false,
   };
-  if (!result.bindingId || !result.bindingDigest || !result.branch || !result.baseCommit || !result.rootEvidenceDigest) {
+  if (
+    !result.bindingId ||
+    !result.bindingDigest ||
+    !result.branch ||
+    !result.baseCommit ||
+    !result.rootEvidenceDigest ||
+    !result.sourceRepositoryDigest
+  ) {
     const error = new Error("Workspace worker binding evidence is incomplete.");
     error.code = "direct_workspace_worker_binding_incomplete";
+    throw error;
+  }
+  if (
+    !/^sha256:[a-f0-9]{64}$/i.test(result.bindingDigest) ||
+    !/^sha256:[a-f0-9]{64}$/i.test(result.rootEvidenceDigest) ||
+    !/^sha256:[a-f0-9]{64}$/i.test(result.sourceRepositoryDigest) ||
+    !/^[a-f0-9]{40,64}$/i.test(result.baseCommit)
+  ) {
+    const error = new Error("Workspace worker binding digests or base commit are malformed.");
+    error.code = "direct_workspace_worker_binding_evidence_invalid";
     throw error;
   }
   if (!result.branch.startsWith("codex/worker/")) {
@@ -109,11 +116,18 @@ function publicWorkspaceBinding(binding = {}) {
 
 function publicTestProfile(profile = {}) {
   if (!profile?.available) return null;
+  const actionsAllowed = (Array.isArray(profile.actionsAllowed) ? profile.actionsAllowed : [])
+    .map((entry) => normalizeString(entry, ""))
+    .filter(Boolean)
+    .slice(0, 12);
   const result = {
     schema: "direct_workspace_worker_test_profile@1",
     profileId: normalizeString(profile.profileId, ""),
     profileDigest: normalizeString(profile.profileDigest, ""),
     targetsAllowed: profile.targetsAllowed === true,
+    actionsAllowed,
+    defaultAction: normalizeString(profile.defaultAction, actionsAllowed[0] || "test"),
+    targetedAction: normalizeString(profile.targetedAction, ""),
     available: true,
     rawCommandIncluded: false,
   };
@@ -142,7 +156,34 @@ function safeWorkspaceExecutionProjection(value = {}) {
     "command",
     "baseargs",
   ]);
+  function containsNativePath(entry) {
+    const candidates = [entry];
+    for (let index = 0; index < 2; index += 1) {
+      try {
+        const decoded = decodeURIComponent(candidates.at(-1));
+        if (decoded === candidates.at(-1)) break;
+        candidates.push(decoded);
+      } catch {
+        break;
+      }
+    }
+    return candidates.some((candidate) => {
+      const text = candidate.trim();
+      return /^\//.test(text) ||
+        /^[A-Za-z]:[\\/]/.test(text) ||
+        /^\\\\/.test(text) ||
+        /^file:/i.test(text);
+    });
+  }
   function inspect(current) {
+    if (typeof current === "string") {
+      if (containsNativePath(current)) {
+        const error = new Error("Workspace worker execution projection contains an absolute native path.");
+        error.code = "direct_workspace_worker_execution_native_path_present";
+        throw error;
+      }
+      return;
+    }
     if (Array.isArray(current)) {
       for (const entry of current) inspect(entry);
       return;
@@ -152,14 +193,6 @@ function safeWorkspaceExecutionProjection(value = {}) {
       if (forbiddenKeys.has(key.toLowerCase())) {
         const error = new Error("Workspace worker execution projection contains a private realization field.");
         error.code = "direct_workspace_worker_execution_private_realization_present";
-        throw error;
-      }
-      if (
-        typeof entry === "string" &&
-        (/^\//.test(entry) || /^[A-Za-z]:[\\/]/.test(entry) || /^\\\\/.test(entry))
-      ) {
-        const error = new Error("Workspace worker execution projection contains an absolute native path.");
-        error.code = "direct_workspace_worker_execution_native_path_present";
         throw error;
       }
       inspect(entry);
@@ -182,7 +215,6 @@ function compileWorkspaceWorkerContract(input = {}) {
     throw error;
   }
   const toolProfile = normalizeToolProfile(input.toolProfile || input.tool_profile);
-  const profile = TOOL_PROFILES[toolProfile];
   const binding = publicWorkspaceBinding(input.binding);
   const projectId = normalizeString(input.projectId, binding.projectId);
   const childAgentId = normalizeString(input.childAgentId, "");
@@ -196,17 +228,31 @@ function compileWorkspaceWorkerContract(input = {}) {
     error.code = "direct_workspace_worker_child_identity_missing";
     throw error;
   }
-  const testProfile = publicTestProfile(input.testProfile);
+  const parentAuthority = input.parentAuthorityPacket
+    ? parentAuthorityBoundaryFromPacket(input.parentAuthorityPacket)
+    : undefined;
+  const compiledPolicy = compileWorkspaceWorkerPolicy({
+    requestedProfileId: toolProfile,
+    parentAuthority,
+    repositoryPolicy: input.repositoryPolicy || input.testProfile?.repositoryPolicy,
+    substrateCapabilities: input.substrateCapabilities || input.testProfile?.substrateCapabilities,
+    testProfile: input.testProfile,
+  });
+  const testProfile = compiledPolicy.declaredTools.includes("run_test")
+    ? publicTestProfile(input.testProfile)
+    : null;
   const context = buildWorkspaceWorkerContextAdmission(
     input.contextMessages,
     input.contextHandoffMode,
   );
-  const declaredTools = profile.declaredTools.filter((toolName) => toolName !== "run_test" || testProfile);
+  const declaredTools = [...compiledPolicy.declaredTools];
   const authority = {
     schema: "direct_workspace_worker_authority@1",
     toolProfile,
+    requestedToolProfileAdvisory: true,
     declaredTools,
-    workspaceReadAllowed: declaredTools.includes("read_file"),
+    repositoryInspectionAllowed: declaredTools.includes("inspect_repository"),
+    workspaceReadAllowed: declaredTools.some((toolName) => ["read_file", "list_files", "match_files", "search_text"].includes(toolName)),
     workspaceMutationAllowed: declaredTools.includes("apply_patch"),
     boundedTestExecutionAllowed: declaredTools.includes("run_test"),
     arbitraryCommandAllowed: false,
@@ -230,6 +276,8 @@ function compileWorkspaceWorkerContract(input = {}) {
     workspaceMode,
     binding,
     contextAdmission: context.record,
+    repositoryPolicy: compiledPolicy.repositoryPolicy,
+    policyCompilation: compiledPolicy.compilation,
     testProfile,
     authority,
     maxToolSteps: Math.max(1, Math.min(24, Number(input.maxToolSteps || 12) || 12)),
@@ -252,19 +300,7 @@ function compileWorkspaceWorkerContract(input = {}) {
 function workspaceWorkerToolSchemas(contract = {}) {
   assertWorkspaceWorkerContractSafe(contract);
   const schemas = {
-    read_file: {
-      type: "function",
-      name: "read_file",
-      description: "Read one UTF-8 text file from this worker's isolated Git worktree by project-relative path.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Project-relative path inside this worker's worktree." },
-        },
-        required: ["path"],
-        additionalProperties: false,
-      },
-    },
+    ...repositoryToolSchemas(),
     apply_patch: {
       type: "function",
       name: "apply_patch",
@@ -291,6 +327,11 @@ function workspaceWorkerToolSchemas(contract = {}) {
             items: { type: "string" },
             description: "Optional contained test paths when the compiled profile permits targeted tests.",
           },
+          action: {
+            type: "string",
+            enum: contract.testProfile?.actionsAllowed?.length ? contract.testProfile.actionsAllowed : undefined,
+            description: "One action admitted by the pinned repository test profile.",
+          },
           timeout_ms: { type: "number", description: "Timeout from 1000 through 120000 milliseconds." },
         },
         additionalProperties: false,
@@ -302,13 +343,17 @@ function workspaceWorkerToolSchemas(contract = {}) {
 
 function workspaceWorkerInstructions(contract = {}) {
   assertWorkspaceWorkerContractSafe(contract);
+  const inherited = contract.repositoryPolicy.selectedConstraints.length
+    ? ` Inherited repository constraints: ${contract.repositoryPolicy.selectedConstraints.join(" ")}`
+    : "";
   return [
     "You are a bounded Direct workspace worker in one isolated Git worktree.",
     "Complete only the delegated task using only the declared tools.",
     "Treat tool results as evidence; do not invent file contents, patch outcomes, or test outcomes.",
-    "You cannot select another workspace, execute arbitrary commands, mutate remotes, message other agents, or spawn children.",
+    "Repository discovery and reads are limited to the Git-canonical tracked/non-ignored-untracked manifest. Never infer omitted, ignored, sensitive, binary, symlinked, or Git-metadata content.",
+    "You cannot select another workspace, execute arbitrary commands, mutate remotes, message upstream or other agents, request human input, or spawn children.",
     "Request at most one tool call per response. Answer final only when the delegated task is complete or genuinely blocked.",
-    `Constitution: ${contract.contractId}. Tool profile: ${contract.authority.toolProfile}.`,
+    `Constitution: ${contract.contractId}. Requested tool profile is advisory: ${contract.authority.toolProfile}. Compiled tools: ${contract.authority.declaredTools.join(", ")}.${inherited}`,
   ].join(" ");
 }
 
@@ -319,10 +364,10 @@ function assertWorkspaceWorkerContractSafe(contract = {}) {
   if (contract.workspaceMode !== WORKSPACE_MODE_ISOLATED_WORKTREE) {
     throw new Error("direct_workspace_worker_contract_mode_unsafe");
   }
-  if (!Array.isArray(contract.authority?.declaredTools) || !contract.authority.declaredTools.length) {
+  if (!Array.isArray(contract.authority?.declaredTools)) {
     throw new Error("direct_workspace_worker_contract_tools_missing");
   }
-  const allowed = new Set(["read_file", "apply_patch", "run_test"]);
+  const allowed = new Set(WORKSPACE_WORKER_TOOLS);
   if (contract.authority.declaredTools.some((name) => !allowed.has(name))) {
     throw new Error("direct_workspace_worker_contract_tool_unsafe");
   }
@@ -350,6 +395,21 @@ function assertWorkspaceWorkerContractSafe(contract = {}) {
   }
   if (Object.prototype.hasOwnProperty.call(contract.binding || {}, "worktreePath")) {
     throw new Error("direct_workspace_worker_binding_private_path_present");
+  }
+  if (contract.authority?.requestedToolProfileAdvisory !== true || contract.policyCompilation?.requestedProfileAdvisory !== true) {
+    throw new Error("direct_workspace_worker_requested_profile_not_advisory");
+  }
+  if (contract.policyCompilation?.wideningPerformed !== false) {
+    throw new Error("direct_workspace_worker_policy_widening_detected");
+  }
+  if (
+    JSON.stringify(contract.policyCompilation?.declaredTools || []) !==
+    JSON.stringify(contract.authority.declaredTools)
+  ) {
+    throw new Error("direct_workspace_worker_policy_authority_mismatch");
+  }
+  if (contract.repositoryPolicy?.rawPolicyTextIncluded !== false || contract.repositoryPolicy?.rawWorkspacePathIncluded !== false) {
+    throw new Error("direct_workspace_worker_repository_policy_raw_evidence_leak");
   }
   return true;
 }

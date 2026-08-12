@@ -83,7 +83,7 @@ const liveRoute = createDirectProviderBackedSubAgentRoute({
       epistemicCapture: {
         status: "captured",
         errorCode: "",
-        receiptDigest: "sha256:capture_receipt_fixture",
+        receiptDigest: `sha256:${"a".repeat(64)}`,
         sessionId: "direct_child_session_fixture",
         turnId: "direct_child_turn_fixture",
       },

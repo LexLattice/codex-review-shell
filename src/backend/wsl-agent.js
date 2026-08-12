@@ -15,8 +15,24 @@ const fsSync = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
+const { AsyncLocalStorage } = require("node:async_hooks");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
+const { TextDecoder } = require("node:util");
+const {
+  DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA,
+  WORKSPACE_WORKER_TOOLS,
+  genericWorkspaceRepositoryProfile,
+  pinnedWorkspaceRepositoryProfiles,
+} = require("../main/direct/agents/workspace-worker-policy-profile");
+const {
+  sameNativePath,
+} = require("../shared/native-path-identity");
+const {
+  pinnedWorkspaceMarkerIsExact,
+  searchBoundedWorkspaceRepositoryText,
+} = require("../shared/workspace-repository-boundary");
+const { terminateWorkspaceProcessTree } = require("./workspace-process-tree");
 
 const PROTOCOL_VERSION = 1;
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
@@ -56,6 +72,23 @@ const DIRECT_EPISTEMIC_PROFILE_SOURCE_BYTES = 8 * 1024 * 1024;
 const DIRECT_WORKSPACE_WORKER_TIMEOUT_MS = 120 * 1000;
 const DIRECT_WORKSPACE_WORKER_TARGET_LIMIT = 16;
 const DIRECT_WORKSPACE_WORKER_TARGET_CHARS = 500;
+const DIRECT_WORKSPACE_WORKER_MANIFEST_BYTES = 8 * 1024 * 1024;
+const DIRECT_WORKSPACE_WORKER_MANIFEST_FILE_LIMIT = 8_000;
+const DIRECT_WORKSPACE_WORKER_LIST_LIMIT = 200;
+const DIRECT_WORKSPACE_WORKER_SEARCH_FILE_LIMIT = 2_000;
+const DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES = 1024 * 1024;
+const DIRECT_WORKSPACE_WORKER_SEARCH_TOTAL_BYTES = 16 * 1024 * 1024;
+const DIRECT_WORKSPACE_WORKER_SEARCH_RESULT_LIMIT = 120;
+const DIRECT_WORKSPACE_WORKER_READ_LIMIT = 48 * 1024;
+const TRUSTED_UNSHARE_PATH = "/usr/bin/unshare";
+const SAFE_COMMAND_ENV_OVERRIDES = new Set([
+  "CI",
+  "NO_COLOR",
+  "TERM",
+  "LANG",
+  "LC_ALL",
+  "TZ",
+]);
 const ARO_REALIZATION_CONTEXT_FILE_LIMIT = 12;
 const ARO_REALIZATION_CONTEXT_EXCERPT_BYTES = 12 * 1024;
 const ARO_REALIZATION_CONTEXT_TOTAL_BYTES = 96 * 1024;
@@ -80,11 +113,16 @@ const SENSITIVE_READ_FILE_PATTERNS = [
   /(?:^|\/)id_rsa$/i,
   /(?:^|\/)id_ed25519$/i,
   /(?:^|\/)secrets(?:\/|$)/i,
+  /(?:^|\/)(?:secrets?|credentials?)(?:\.[^/]*)?$/i,
+  /(?:^|\/)(?:\.npmrc|\.pypirc|\.netrc)$/i,
   /(?:^|\/)\.ssh(?:\/|$)/i,
   /(?:^|\/)\.git\/config$/i,
 ];
 let reviewShellIgnorePromise = null;
 let gitWorktreeMutationQueue = Promise.resolve();
+let authoritativeWorkspaceWorkerBinding = null;
+let workspaceWorkerBindingInitialization = null;
+let trustedUnshareIdentity = null;
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -136,7 +174,188 @@ let outputClosed = false;
 let shutdownTimer = null;
 let forceShutdownTimer = null;
 const activeChildProcesses = new Set();
+// POSIX descendants may outlive and be re-parented after the direct child has
+// emitted `close`. Keep the process-group identity until the owning request has
+// positively verified that the whole group is absent.
+const activeProcessGroups = new Map();
 const terminatingChildProcesses = new WeakSet();
+const cancellableRequestContext = new AsyncLocalStorage();
+const cancellableRequestScopes = new Map();
+const completedCancellableRequests = new Map();
+const REQUEST_CANCELLATION_POLICIES = Object.freeze({
+  hello: "cancellable_read",
+  listTree: "cancellable_read",
+  readFile: "cancellable_read",
+  applyPatch: "two_phase_mutation",
+  applyWorkspaceWorkerPatch: "two_phase_mutation",
+  readFileTransfer: "cancellable_read",
+  repositorySemanticSnapshot: "cancellable_read",
+  directEpistemicRepositoryObservation: "cancellable_read",
+  repositoryRealizationContext: "cancellable_read",
+  listMatchingFiles: "cancellable_read",
+  resolvePath: "cancellable_read",
+  runCommand: "cancellable_process",
+  runDirectCommand: "cancellable_process",
+  provisionGitWorktree: "two_phase_mutation",
+  removeGitWorktree: "two_phase_mutation",
+  initializeWorkspaceWorkerBinding: "cancellable_read",
+  directTestProfile: "cancellable_read",
+  runDirectTest: "cancellable_process",
+  inspectWorkspaceRepository: "cancellable_read",
+  listWorkspaceRepositoryFiles: "cancellable_read",
+  matchWorkspaceRepositoryFiles: "cancellable_read",
+  searchWorkspaceRepositoryText: "cancellable_read",
+  readWorkspaceRepositoryFile: "cancellable_read",
+  ensureCodexSandboxArtifactIgnored: "two_phase_mutation",
+  watchStatus: "cancellable_read",
+  listCodexThreads: "cancellable_read",
+  readCodexThreadTranscript: "cancellable_read",
+  analyzeCodexThread: "cancellable_read",
+  stageAttachment: "two_phase_mutation",
+  removeAttachmentDraft: "two_phase_mutation",
+  importFile: "two_phase_mutation",
+});
+const COMPLETED_CANCELLABLE_REQUEST_LIMIT = 256;
+
+function requestCancellationError(scope) {
+  const error = new Error(`Workspace backend request cancelled: ${scope?.method || "operation"}`);
+  error.name = "AbortError";
+  error.code = "workspace_backend_request_cancelled";
+  error.requestId = scope?.requestId || "";
+  error.backendQuiesced = scope?.quiescenceVerified === true;
+  error.cancellationAcknowledged = scope?.quiescenceVerified === true;
+  return error;
+}
+
+function throwIfCurrentRequestCancelled() {
+  const scope = cancellableRequestContext.getStore();
+  if (scope?.cancellationRequested && scope.phase !== "commit") {
+    throw requestCancellationError(scope);
+  }
+}
+
+function rememberCompletedCancellableRequest(scope) {
+  completedCancellableRequests.set(scope.requestId, {
+    method: scope.method,
+    completedAt: new Date().toISOString(),
+    quiescenceVerified: scope.quiescenceVerified === true,
+    mutationOutcome: scope.mutationOutcome || null,
+  });
+  while (completedCancellableRequests.size > COMPLETED_CANCELLABLE_REQUEST_LIMIT) {
+    completedCancellableRequests.delete(completedCancellableRequests.keys().next().value);
+  }
+}
+
+function requestCancellationPolicy(method, params = {}) {
+  const declared = REQUEST_CANCELLATION_POLICIES[method] || "unsupported";
+  if (method === "applyPatch" && params.mode !== "apply") return "cancellable_read";
+  return declared;
+}
+
+function createCancellableRequestScope(requestId, method, policy) {
+  let resolveDone;
+  const done = new Promise((resolve) => { resolveDone = resolve; });
+  return {
+    requestId,
+    method,
+    policy,
+    phase: policy === "two_phase_mutation" ? "precommit" : "execution",
+    children: new Set(),
+    processGroups: new Map(),
+    terminationPromises: new Map(),
+    cancellationRequested: false,
+    cancellationReasonCode: "",
+    quiescenceVerified: false,
+    mutationOutcome: null,
+    completed: false,
+    done,
+    resolveDone,
+  };
+}
+
+function beginCurrentRequestCommit(commitKind) {
+  const scope = cancellableRequestContext.getStore();
+  if (!scope || scope.policy !== "two_phase_mutation") {
+    const error = new Error("Workspace mutation is missing an exact two-phase cancellation scope.");
+    error.code = "workspace_backend_mutation_scope_missing";
+    throw error;
+  }
+  throwIfCurrentRequestCancelled();
+  if (scope.phase !== "precommit") {
+    const error = new Error("Workspace mutation commit point was entered more than once.");
+    error.code = "workspace_backend_mutation_commit_reentered";
+    throw error;
+  }
+  scope.phase = "commit";
+  scope.commitKind = String(commitKind || scope.method);
+}
+
+function completeCurrentRequestCommit(result, details = {}) {
+  const scope = cancellableRequestContext.getStore();
+  if (!scope || scope.phase !== "commit") {
+    const error = new Error("Workspace mutation completed without an exact commit point.");
+    error.code = "workspace_backend_mutation_commit_missing";
+    throw error;
+  }
+  const receipt = {
+    schema: "workspace_backend_mutation_outcome@1",
+    requestId: scope.requestId,
+    method: scope.method,
+    commitKind: scope.commitKind,
+    committed: true,
+    retainedForInspection: details.retainedForInspection === true,
+    resultDigest: sha256Digest(canonicalJson(result)),
+    rawPathIncluded: false,
+  };
+  receipt.outcomeDigest = sha256Digest(canonicalJson(receipt));
+  scope.mutationOutcome = receipt;
+  scope.phase = "committed";
+  return { ...result, requestOutcome: receipt };
+}
+
+function failedMutationOutcome(scope, error) {
+  if (!scope || scope.phase !== "commit") return null;
+  const failureCode = String(error?.code || "workspace_backend_mutation_commit_failed")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 160) || "workspace_backend_mutation_commit_failed";
+  const receipt = {
+    schema: "workspace_backend_mutation_outcome@1",
+    requestId: scope.requestId,
+    method: scope.method,
+    commitKind: scope.commitKind,
+    committed: false,
+    indeterminate: true,
+    partialMutationPossible: true,
+    retainedForInspection: true,
+    failureCode,
+    rawPathIncluded: false,
+  };
+  receipt.outcomeDigest = sha256Digest(canonicalJson(receipt));
+  scope.mutationOutcome = receipt;
+  scope.phase = "commit_failed_indeterminate";
+  return receipt;
+}
+
+function mutationCommitFailureError(scope, error) {
+  const mutationOutcome = failedMutationOutcome(scope, error);
+  if (!mutationOutcome) return error;
+  const failure = new Error(
+    "Workspace backend mutation failed after entering its commit phase; partial mutation may have occurred.",
+  );
+  failure.code = "workspace_backend_mutation_commit_failed_indeterminate";
+  failure.causeCode = mutationOutcome.failureCode;
+  failure.mutationOutcome = mutationOutcome;
+  return failure;
+}
+
+function completeCancellableRequestScope(scope) {
+  if (!scope || scope.completed) return;
+  scope.completed = true;
+  cancellableRequestScopes.delete(scope.requestId);
+  rememberCompletedCancellableRequest(scope);
+  scope.resolveDone();
+}
 
 function isClosedPipeError(error) {
   return ["EPIPE", "ERR_STREAM_DESTROYED", "ERR_STREAM_WRITE_AFTER_END"].includes(error?.code);
@@ -161,6 +380,9 @@ function requestShutdown(code = 0) {
   for (const child of activeChildProcesses) {
     terminateChild(child);
   }
+  for (const group of activeProcessGroups.values()) {
+    terminateRetainedProcessGroup(null, group, "SIGTERM", { allowDuringCommit: true }).catch(() => {});
+  }
   if (!forceShutdownTimer) {
     forceShutdownTimer = setTimeout(() => {
       process.exit(process.exitCode ?? code);
@@ -171,29 +393,148 @@ function requestShutdown(code = 0) {
 }
 
 function terminateChild(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child) return;
+  const retainedGroup = process.platform !== "win32" && child.pid
+    ? activeProcessGroups.get(child.pid)
+    : null;
+  if ((child.exitCode !== null || child.signalCode !== null) && !retainedGroup) return;
+  if (retainedGroup) {
+    terminateRetainedProcessGroup(retainedGroup.requestScope, retainedGroup, "SIGTERM", {
+      allowDuringCommit: true,
+    }).catch(() => {});
+    return;
+  }
   if (terminatingChildProcesses.has(child)) return;
   terminatingChildProcesses.add(child);
-  try {
-    child.kill("SIGTERM");
-  } catch {}
+  terminateWorkspaceProcessTree(child, { signal: "SIGTERM", timeoutMs: 1200 })
+    .then((receipt) => {
+      if (!receipt.quiesced && child.exitCode === null && child.signalCode === null) {
+        return terminateWorkspaceProcessTree(child, { signal: "SIGKILL", timeoutMs: 1200 });
+      }
+      return receipt;
+    })
+    .catch(() => {});
   const timer = setTimeout(() => {
     if (child.exitCode !== null || child.signalCode !== null) return;
-    try {
-      child.kill("SIGKILL");
-    } catch {}
+    terminateWorkspaceProcessTree(child, { signal: "SIGKILL", timeoutMs: 1200 }).catch(() => {});
   }, 1200);
   timer.unref?.();
   child.once("close", () => clearTimeout(timer));
 }
 
-function trackChildProcess(child) {
+function trackChildProcess(child, options = {}) {
+  const requestScope = options.systemOwned === true
+    ? null
+    : cancellableRequestContext.getStore();
   activeChildProcesses.add(child);
+  if (requestScope) requestScope.children.add(child);
+  if (process.platform !== "win32" && child?.pid) {
+    const group = { pid: child.pid, child, requestScope };
+    activeProcessGroups.set(group.pid, group);
+    requestScope?.processGroups.set(group.pid, group);
+  }
   child.once("close", () => {
     activeChildProcesses.delete(child);
+    // Windows ancestry is lossy after the leader exits. Retain its custody
+    // identity through request finalization so only a Job Object close receipt
+    // could prove that detached descendants are gone. Today process creation is
+    // denied on Windows before this point; this also keeps future routes closed
+    // if they accidentally bypass that gate.
+    if (process.platform !== "win32") requestScope?.children.delete(child);
+    // Do not delete the POSIX group here. A descendant can keep that group
+    // alive after the leader has exited.
   });
   if (stdinClosed) terminateChild(child);
+  if (requestScope?.cancellationRequested && requestScope.phase !== "commit") {
+    terminateScopeChild(requestScope, child, "SIGTERM");
+  }
   return child;
+}
+
+function releaseRetainedProcessGroup(scope, group) {
+  if (!group?.pid) return;
+  if (activeProcessGroups.get(group.pid) === group) activeProcessGroups.delete(group.pid);
+  if (scope?.processGroups.get(group.pid) === group) scope.processGroups.delete(group.pid);
+}
+
+function terminateRetainedProcessGroup(scope, group, signal = "SIGTERM", options = {}) {
+  if (!group?.pid || !group.child) return Promise.resolve({
+    quiesced: false,
+    blockerCode: "workspace_backend_process_group_identity_missing",
+  });
+  if (scope?.phase === "commit" && options.allowDuringCommit !== true) {
+    return Promise.resolve({
+      quiesced: false,
+      blockerCode: "workspace_backend_mutation_commit_in_progress",
+    });
+  }
+  const key = `process_group:${group.pid}`;
+  if (scope?.terminationPromises.has(key)) return scope.terminationPromises.get(key);
+  // A command inside a fresh PID namespace becomes PID 1 and therefore does
+  // not receive ordinary default-fatal signal semantics. Cancellation revokes
+  // workspace mutation authority immediately, so terminate the outer namespace
+  // group with SIGKILL; `--kill-child=SIGKILL` and namespace teardown then kill
+  // every inner session before quiescence is acknowledged.
+  const effectiveSignal = group.child.workspaceProcessContainment?.guaranteed === true
+    ? "SIGKILL"
+    : signal;
+  const pending = terminateWorkspaceProcessTree(group.child, { signal: effectiveSignal, timeoutMs: 2_000 })
+    .then((receipt) => {
+      if (receipt?.quiesced === true) releaseRetainedProcessGroup(scope, group);
+      return receipt;
+    })
+    .catch((error) => ({
+      quiesced: false,
+      blockerCode: error?.code || "workspace_backend_process_tree_termination_failed",
+    }));
+  scope?.terminationPromises.set(key, pending);
+  return pending;
+}
+
+function terminateScopeChild(scope, child, signal = "SIGTERM", options = {}) {
+  if (!scope || !child) return Promise.resolve({
+    quiesced: false,
+    blockerCode: "workspace_backend_cancel_scope_missing",
+  });
+  if (scope.phase === "commit" && options.allowDuringCommit !== true) {
+    return Promise.resolve({
+      quiesced: false,
+      blockerCode: "workspace_backend_mutation_commit_in_progress",
+    });
+  }
+  const retainedGroup = process.platform !== "win32" && child?.pid
+    ? scope.processGroups.get(child.pid)
+    : null;
+  if (retainedGroup) return terminateRetainedProcessGroup(scope, retainedGroup, signal);
+  if (scope.terminationPromises.has(child)) return scope.terminationPromises.get(child);
+  const pending = terminateWorkspaceProcessTree(child, { signal, timeoutMs: 2_000 })
+    .then(async (receipt) => {
+      if (receipt.quiesced) return receipt;
+      return terminateWorkspaceProcessTree(child, { signal: "SIGKILL", timeoutMs: 2_000 });
+    })
+    .catch((error) => ({
+      quiesced: false,
+      blockerCode: error?.code || "workspace_backend_process_tree_termination_failed",
+    }));
+  scope.terminationPromises.set(child, pending);
+  return pending;
+}
+
+async function finalizeRequestProcessCustody(scope) {
+  if (!scope) return true;
+  const pending = [];
+  for (const group of scope.processGroups.values()) {
+    pending.push(terminateRetainedProcessGroup(scope, group, "SIGTERM", { allowDuringCommit: true }));
+  }
+  if (process.platform === "win32") {
+    for (const child of scope.children) {
+      pending.push(terminateScopeChild(scope, child, "SIGTERM", { allowDuringCommit: true }));
+    }
+  }
+  const receipts = await Promise.all([...scope.terminationPromises.values(), ...pending]);
+  return scope.children.size === 0 &&
+    scope.processGroups.size === 0 &&
+    receipts.every((receipt) => receipt?.quiesced === true);
 }
 
 process.stdout.on("error", (error) => {
@@ -373,11 +714,16 @@ function normalizePatchPath(value = "") {
   return displayRelPath(normalizeRelPath(text));
 }
 
-function assertPatchPathAllowed(relPath) {
+function assertPatchPathAllowed(relPath, options = {}) {
   const normalized = displayRelPath(normalizeRelPath(relPath));
   if (PATCH_DENY_PATTERNS.some((pattern) => pattern.test(normalized))) {
     const error = new Error("Patch target is blocked by workspace policy.");
     error.code = "PATCH_GENERATED_PATH_BLOCKED";
+    throw error;
+  }
+  if (options.rejectSensitivePaths === true && sensitiveReadFileReason(normalized)) {
+    const error = new Error("Patch target is blocked by the workspace worker sensitive-path policy.");
+    error.code = "workspace_worker_repository_patch_path_denied";
     throw error;
   }
   return normalized;
@@ -632,8 +978,8 @@ function locateHunkStart(beforeLines, hunk, preferredIndex, cursor) {
   return preferredIndex;
 }
 
-async function resolvePatchTarget(relPath) {
-  const normalizedRel = assertPatchPathAllowed(relPath);
+async function resolvePatchTarget(relPath, options = {}) {
+  const normalizedRel = assertPatchPathAllowed(relPath, options);
   const resolved = resolveWithinRoot(normalizedRel);
   const realRoot = await fs.realpath(root);
   const parentDir = path.dirname(resolved.fullPath);
@@ -646,16 +992,19 @@ async function resolvePatchTarget(relPath) {
   return { ...resolved, displayRel: displayRelPath(normalizedRel), realRoot, realParent };
 }
 
-async function applyPatchPlan(params = {}) {
+async function applyPatchPlan(params = {}, options = {}) {
   const patchText = String(params.patch || "");
   const mode = params.mode === "apply" ? "apply" : "dryRun";
   const parsedFiles = parseUnifiedPatch(patchText);
+  for (const filePatch of parsedFiles) {
+    assertPatchPathAllowed(filePatch.relPath, options);
+  }
   const seen = new Set();
   const filePlans = [];
   for (const filePatch of parsedFiles) {
-    const target = await resolvePatchTarget(filePatch.relPath);
+    const target = await resolvePatchTarget(filePatch.relPath, options);
     const normalizedKey = process.platform === "win32"
-      ? target.displayRel.toLocaleLowerCase().normalize("NFC")
+      ? target.displayRel.toLowerCase().normalize("NFC")
       : target.displayRel.normalize("NFC");
     if (seen.has(normalizedKey)) throw new Error("Patch has colliding target paths after normalization.");
     seen.add(normalizedKey);
@@ -692,6 +1041,7 @@ async function applyPatchPlan(params = {}) {
   }
 
   if (mode === "apply") {
+    beginCurrentRequestCommit("apply_patch_files");
     for (const file of filePlans) {
       await fs.mkdir(path.dirname(file._fullPath), { recursive: true });
       const tempPath = `${file._fullPath}.codex-patch-${process.pid}-${Date.now()}.tmp`;
@@ -702,7 +1052,7 @@ async function applyPatchPlan(params = {}) {
   }
 
   const publicPlans = filePlans.map(({ _fullPath, _afterText, ...file }) => file);
-  return {
+  const result = {
     schema: "workspace_apply_patch_result@1",
     mode,
     status: mode === "apply" ? "applied" : "dry_run_passed",
@@ -720,6 +1070,9 @@ async function applyPatchPlan(params = {}) {
     },
     rawPathsExposed: false,
   };
+  return mode === "apply"
+    ? completeCurrentRequestCommit(result, { retainedForInspection: true })
+    : result;
 }
 
 function assertNoEncodedTraversal(relPath = "") {
@@ -771,24 +1124,26 @@ async function stageAttachment(params = {}) {
   const relPath = path.posix.join(ATTACHMENT_STAGING_ROOT, draftId, fileName);
   const { fullPath, displayRel } = resolveWithinRoot(relPath);
   const draftDir = path.dirname(fullPath);
+  beginCurrentRequestCommit("stage_attachment");
   await ensureAttachmentIgnore();
   await fs.mkdir(draftDir, { recursive: true });
   await fs.writeFile(fullPath, content, { flag: "wx" });
   const manifest = params.manifest && typeof params.manifest === "object" ? params.manifest : {};
   await fs.writeFile(path.join(draftDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
-  return {
+  return completeCurrentRequestCommit({
     relPath: displayRel,
     stagedRelPath: displayRel,
     sizeBytes: content.length,
-  };
+  }, { retainedForInspection: true });
 }
 
 async function removeAttachmentDraft(params = {}) {
   const draftId = safeAttachmentSegment(params.draftId, "draft id");
   const relPath = path.posix.join(ATTACHMENT_STAGING_ROOT, draftId);
   const { fullPath } = resolveWithinRoot(relPath);
+  beginCurrentRequestCommit("remove_attachment_draft");
   await fs.rm(fullPath, { recursive: true, force: true });
-  return { ok: true, draftId };
+  return completeCurrentRequestCommit({ ok: true, draftId });
 }
 
 function safeImportFileName(value) {
@@ -826,6 +1181,7 @@ async function importFile(params = {}) {
   if (!content.length) throw new Error("Import file content is empty.");
   if (content.length > MAX_IMPORT_FILE_BYTES) throw new Error("Import file exceeds size limit.");
   const { fullPath: dirPath, displayRel: dirDisplayRel } = resolveWithinRoot(relDir);
+  beginCurrentRequestCommit("import_file");
   await ensureAttachmentIgnore();
   await fs.mkdir(dirPath, { recursive: true });
   const { handle, fullPath } = await uniqueFilePath(dirPath, fileName);
@@ -835,10 +1191,10 @@ async function importFile(params = {}) {
     await handle.close();
   }
   const relPath = path.join(dirDisplayRel, path.basename(fullPath));
-  return {
+  return completeCurrentRequestCommit({
     relPath: displayRelPath(relPath),
     sizeBytes: content.length,
-  };
+  }, { retainedForInspection: true });
 }
 
 function direntType(dirent) {
@@ -1200,8 +1556,8 @@ function directEpistemicProfileRequest(params = {}) {
 
 async function directEpistemicFileDigest(relativePath, maxBytes) {
   const resolved = await resolveFileWithinRoot(relativePath);
-  if (path.resolve(resolved.realRoot) !== path.resolve(root) ||
-      path.resolve(resolved.fullPath) !== path.resolve(resolved.requestedFullPath)) {
+  if (!sameNativePath(resolved.realRoot, root) ||
+      !sameNativePath(resolved.fullPath, resolved.requestedFullPath)) {
     throw new Error("direct_epistemic_physical_path_rejected");
   }
   const requestedStat = await fs.lstat(resolved.requestedFullPath);
@@ -1290,7 +1646,7 @@ async function directEpistemicGitCapture() {
   const lines = identity.stdout.toString("utf8").split(/\r?\n/).filter(Boolean);
   const realRoot = await fs.realpath(root);
   const realGitRoot = await fs.realpath(lines[0] || root);
-  if (path.resolve(realRoot) !== path.resolve(realGitRoot)) throw new Error("direct_epistemic_repository_root_mismatch");
+  if (!sameNativePath(realRoot, realGitRoot)) throw new Error("direct_epistemic_repository_root_mismatch");
   const [status, diff, untracked] = await Promise.all([
     captureDigestProcess("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: root, timeoutMs: 20_000 }),
     captureDigestProcess("git", ["diff", "--no-ext-diff", "--binary", "HEAD", "--"], { cwd: root, timeoutMs: 60_000, captureLimit: 0 }),
@@ -1741,15 +2097,35 @@ async function repositoryRealizationContext(
   };
 }
 
-function looksBinary(buffer) {
+function looksBinary(buffer, { scanEntireBuffer = false } = {}) {
   if (!buffer.length) return false;
-  const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
+  const sample = scanEntireBuffer
+    ? buffer
+    : buffer.subarray(0, Math.min(buffer.length, 8192));
   let suspicious = 0;
   for (const byte of sample) {
     if (byte === 0) return true;
     if (byte < 7 || (byte > 13 && byte < 32)) suspicious += 1;
   }
   return suspicious / sample.length > 0.12;
+}
+
+function decodeWorkspaceWorkerUtf8(buffer, { truncated = false } = {}) {
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const text = decoder.decode(buffer, { stream: truncated });
+    return {
+      text,
+      textByteCount: Buffer.byteLength(text, "utf8"),
+      utf8BoundaryAdjustedBytes: truncated
+        ? Math.max(0, buffer.length - Buffer.byteLength(text, "utf8"))
+        : 0,
+    };
+  } catch {
+    const error = new Error("Repository file is not valid UTF-8 text.");
+    error.code = "workspace_worker_repository_utf8_invalid";
+    throw error;
+  }
 }
 
 function mimeTypeForFileName(fileName) {
@@ -2004,12 +2380,17 @@ async function captureDigestProcess(command, args, options = {}) {
     ? Math.max(0, Number(options.captureLimit))
     : DIRECT_EPISTEMIC_CAPTURE_LIMIT_BYTES;
   return new Promise((resolve, reject) => {
-    const child = trackChildProcess(spawn(command, args, {
-      cwd: options.cwd || root,
-      env: options.env || minimalCommandEnv(),
-      shell: false,
-      windowsHide: true,
-    }));
+    let spawned;
+    try {
+      spawned = spawnWorkspaceProcess(command, args, {
+        cwd: options.cwd || root,
+        env: options.env || minimalCommandEnv(),
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const child = trackChildProcess(spawned);
     const stdoutHash = crypto.createHash("sha256");
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -2063,15 +2444,26 @@ async function runCommand(params = {}) {
   const timeoutMs = Number.isFinite(Number(params.timeoutMs))
     ? Math.max(1000, Math.min(Number(params.timeoutMs), 10 * 60_000))
     : DEFAULT_COMMAND_TIMEOUT_MS;
+  const containment = await workspaceProcessContainmentStatus();
+  if (containment.available !== true) {
+    const error = new Error("Command execution requires a proven process-containment primitive.");
+    error.code = containment.blockerCode || "workspace_process_containment_unavailable";
+    throw error;
+  }
 
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
-    const child = trackChildProcess(spawn(command, args, {
-      cwd: fullPath,
-      env: { ...process.env, ...(params.env && typeof params.env === "object" ? params.env : {}) },
-      shell: false,
-      windowsHide: true,
-    }));
+    let spawned;
+    try {
+      spawned = spawnWorkspaceProcess(command, args, {
+        cwd: fullPath,
+        env: minimalCommandEnv(params.env),
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const child = trackChildProcess(spawned);
 
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -2121,24 +2513,134 @@ function minimalCommandEnv(extraEnv = {}) {
   }
   base.CI = "1";
   base.NO_COLOR = "1";
-  return { ...base, ...(extraEnv && typeof extraEnv === "object" ? extraEnv : {}) };
+  if (extraEnv && typeof extraEnv === "object") {
+    for (const [key, value] of Object.entries(extraEnv)) {
+      if (!SAFE_COMMAND_ENV_OVERRIDES.has(key) || typeof value !== "string") continue;
+      if (value.length > 4096 || /[\0\r\n]/.test(value)) continue;
+      base[key] = value;
+    }
+  }
+  return base;
+}
+
+function openTrustedUnshareLauncher() {
+  const noFollow = Number(fsSync.constants.O_NOFOLLOW || 0);
+  let fd;
+  try {
+    fd = fsSync.openSync(TRUSTED_UNSHARE_PATH, fsSync.constants.O_RDONLY | noFollow);
+    const before = fsSync.fstatSync(fd);
+    if (
+      !before.isFile() ||
+      before.uid !== 0 ||
+      (before.mode & 0o022) !== 0 ||
+      (before.mode & 0o111) === 0
+    ) {
+      const error = new Error("The Linux process-containment launcher failed its ownership or mode invariant.");
+      error.code = "workspace_linux_pid_namespace_launcher_untrusted";
+      throw error;
+    }
+    const digest = sha256Digest(fsSync.readFileSync(fd));
+    const after = fsSync.fstatSync(fd);
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      before.ctimeMs !== after.ctimeMs
+    ) {
+      const error = new Error("The Linux process-containment launcher changed during verification.");
+      error.code = "workspace_linux_pid_namespace_launcher_changed";
+      throw error;
+    }
+    const identity = {
+      dev: String(after.dev),
+      ino: String(after.ino),
+      size: after.size,
+      mode: after.mode & 0o777,
+      uid: after.uid,
+      gid: after.gid,
+      digest,
+    };
+    const identityJson = canonicalJson(identity);
+    if (trustedUnshareIdentity && canonicalJson(trustedUnshareIdentity) !== identityJson) {
+      const error = new Error("The pinned Linux process-containment launcher identity drifted.");
+      error.code = "workspace_linux_pid_namespace_launcher_identity_drift";
+      throw error;
+    }
+    if (!trustedUnshareIdentity) trustedUnshareIdentity = identity;
+    return { fd, identity };
+  } catch (error) {
+    if (fd !== undefined) {
+      try { fsSync.closeSync(fd); } catch {}
+    }
+    if (!error.code) error.code = "workspace_linux_pid_namespace_launcher_unavailable";
+    throw error;
+  }
+}
+
+function containedWorkspaceProcessSpawn(command, args, options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform !== "linux") {
+    const error = new Error(
+      "Workspace process containment is unavailable on this host; execution is denied instead of relying on lossy process ancestry.",
+    );
+    error.code = platform === "win32"
+      ? "workspace_windows_job_object_containment_unavailable"
+      : "workspace_process_containment_unavailable";
+    throw error;
+  }
+  const { fd, identity } = openTrustedUnshareLauncher();
+  const requestedStdio = Array.isArray(options.stdio)
+    ? options.stdio.slice(0, 3)
+    : ["ignore", "pipe", "pipe"];
+  while (requestedStdio.length < 3) requestedStdio.push("pipe");
+  let child;
+  try {
+    child = spawn("/proc/self/fd/3", [
+      "--user",
+      "--map-current-user",
+      "--pid",
+      "--fork",
+      "--kill-child=SIGKILL",
+      "--mount-proc",
+      "--",
+      command,
+      ...args,
+    ], {
+      ...options,
+      env: minimalCommandEnv(options.env),
+      stdio: [...requestedStdio, fd],
+      shell: false,
+      windowsHide: true,
+      detached: true,
+    });
+    child.workspaceProcessContainment = {
+      guaranteed: true,
+      kind: "linux_pid_namespace",
+      launcherDigest: identity.digest,
+    };
+    return child;
+  } finally {
+    fsSync.closeSync(fd);
+  }
+}
+
+function spawnWorkspaceProcess(command, args, options = {}) {
+  // Every backend subprocess participates in request-level custody, including
+  // apparently read-only Git probes: helpers, hooks, or configured filters can
+  // outlive the leader and mutate the workspace. Until the Windows backend has
+  // a production Job Object broker, do not create a process that the harness
+  // cannot prove quiescent.
+  return containedWorkspaceProcessSpawn(command, args, options);
 }
 
 function killProcessTree(child, signal) {
-  if (!child || !child.pid) return;
-  try {
-    if (process.platform !== "win32") {
-      process.kill(-child.pid, signal);
-      return;
-    }
-  } catch {
-    // Fall back to killing the parent process if process-group cleanup failed.
-  }
-  try {
-    child.kill(signal);
-  } catch {
-    // Ignore cleanup races.
-  }
+  const scope = cancellableRequestContext.getStore();
+  if (scope) return terminateScopeChild(scope, child, signal);
+  return terminateWorkspaceProcessTree(child, { signal, timeoutMs: 2_000 }).catch(() => ({
+    quiesced: false,
+    blockerCode: "workspace_backend_process_tree_termination_failed",
+  }));
 }
 
 function parseGitStatusPorcelain(text) {
@@ -2227,6 +2729,7 @@ function workspaceEffectSummary(before, after) {
 }
 
 async function runDirectCommand(params = {}) {
+  throwIfCurrentRequestCancelled();
   const command = String(params.command || "").trim();
   if (!command) throw new Error("Command is required.");
   const args = Array.isArray(params.args) ? params.args.map((arg) => String(arg)) : [];
@@ -2234,25 +2737,38 @@ async function runDirectCommand(params = {}) {
   const timeoutMs = Number.isFinite(Number(params.timeoutMs))
     ? Math.max(1000, Math.min(Number(params.timeoutMs), 2 * 60_000))
     : DEFAULT_COMMAND_TIMEOUT_MS;
+  const containment = await workspaceProcessContainmentStatus();
+  if (params.requireProcessContainment !== false && containment.available !== true) {
+    const error = new Error("This command requires a proven process-containment primitive.");
+    error.code = containment.blockerCode || "workspace_process_containment_unavailable";
+    throw error;
+  }
   const backendCapabilities = {
     shellFalseSupported: true,
     cwdContainmentSupported: true,
     timeoutKillSupported: true,
     envSanitizationSupported: true,
     networkIsolationSupported: false,
-    processTreeKillSupported: process.platform !== "win32",
+    processTreeKillSupported: containment.available === true,
+    processContainmentGuaranteed: containment.available === true,
+    processContainmentKind: containment.available === true ? containment.kind : "unavailable",
+    processContainmentBlockerCode: containment.available === true ? "" : containment.blockerCode,
     workspaceEffectScanSupported: true,
   };
   const beforeEffects = await workspaceEffectSnapshot();
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
-    const child = spawn(command, args, {
-      cwd: fullPath,
-      env: minimalCommandEnv(params.env),
-      shell: false,
-      windowsHide: true,
-      detached: process.platform !== "win32",
-    });
+    let containedChild;
+    try {
+      containedChild = spawnWorkspaceProcess(command, args, {
+        cwd: fullPath,
+        env: minimalCommandEnv(params.env),
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const child = trackChildProcess(containedChild);
 
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -2278,7 +2794,13 @@ async function runDirectCommand(params = {}) {
     child.on("error", async (error) => {
       clearTimeout(timer);
       settled = true;
-      const afterEffects = await workspaceEffectSnapshot();
+      const afterEffects = await workspaceEffectSnapshot().catch(() => ({
+        supported: false,
+        scanScope: "none",
+        scanFailed: true,
+        digest: "",
+        entries: [],
+      }));
       resolve({
         command,
         args,
@@ -2304,7 +2826,13 @@ async function runDirectCommand(params = {}) {
     child.on("close", async (exitCode, signal) => {
       clearTimeout(timer);
       settled = true;
-      const afterEffects = await workspaceEffectSnapshot();
+      const afterEffects = await workspaceEffectSnapshot().catch(() => ({
+        supported: false,
+        scanScope: "none",
+        scanFailed: true,
+        digest: "",
+        entries: [],
+      }));
       resolve({
         command,
         args,
@@ -2330,20 +2858,29 @@ async function runDirectCommand(params = {}) {
 }
 
 function captureProcess(command, args, options = {}) {
+  throwIfCurrentRequestCancelled();
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
-    const child = trackChildProcess(spawn(command, args, {
-      cwd: options.cwd || root,
-      env: { ...process.env, ...(options.env && typeof options.env === "object" ? options.env : {}) },
-      shell: false,
-      windowsHide: true,
-    }));
+    let spawned;
+    try {
+      spawned = spawnWorkspaceProcess(command, args, {
+        cwd: options.cwd || root,
+        env: minimalCommandEnv(options.env),
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const child = trackChildProcess(spawned);
     const stdoutChunks = [];
     const stderrChunks = [];
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
-      terminateChild(child);
+      killProcessTree(child, "SIGTERM");
+      setTimeout(() => {
+        if (!settled) killProcessTree(child, "SIGKILL");
+      }, 1200).unref?.();
     }, timeoutMs);
     child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
     child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
@@ -2430,6 +2967,12 @@ function workspaceWorkerRootFor(topLevel, workerKey) {
 }
 
 async function provisionGitWorktree(params = {}) {
+  const containment = await workspaceProcessContainmentStatus();
+  if (containment.available !== true) {
+    const error = new Error("Workspace-worker provisioning requires a proven process-containment primitive.");
+    error.code = containment.blockerCode || "workspace_process_containment_unavailable";
+    throw error;
+  }
   const workerKey = safeWorkspaceWorkerKey(params.workerKey);
   const branch = safeWorkspaceWorkerBranch(params.branch);
   const baseRef = String(params.baseRef || "HEAD").trim();
@@ -2479,6 +3022,7 @@ async function provisionGitWorktree(params = {}) {
     throw error;
   }
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+  beginCurrentRequestCommit("git_worktree_add");
   const add = await captureProcess("git", ["worktree", "add", "-b", branch, worktreePath, baseCommit], {
     cwd: git.topLevel,
     timeoutMs: 30_000,
@@ -2489,6 +3033,7 @@ async function provisionGitWorktree(params = {}) {
     throw error;
   }
   const rootEvidenceDigest = sha256Digest(await fs.realpath(worktreePath));
+  const sourceRepositoryDigest = sha256Digest(git.topLevel);
   const bindingBase = {
     schema: "direct_workspace_worker_binding@1",
     projectId,
@@ -2497,24 +3042,32 @@ async function provisionGitWorktree(params = {}) {
     branch,
     baseCommit,
     rootEvidenceDigest,
+    sourceRepositoryDigest,
     retainedAfterCompletion: true,
     rawWorkspacePathIncluded: false,
   };
   const bindingDigest = sha256Digest(canonicalJson(bindingBase));
-  return {
+  return completeCurrentRequestCommit({
     ...bindingBase,
     bindingId: `workspace_worker_binding_${bindingDigest.slice(7, 31)}`,
     bindingDigest,
     worktreePath,
-  };
+  }, { retainedForInspection: true });
 }
 
 async function removeGitWorktree(params = {}) {
+  const containment = await workspaceProcessContainmentStatus();
+  if (containment.available !== true) {
+    const error = new Error("Workspace-worker cleanup requires a proven process-containment primitive.");
+    error.code = containment.blockerCode || "workspace_process_containment_unavailable";
+    throw error;
+  }
   const workerKey = safeWorkspaceWorkerKey(params.workerKey);
   const branch = safeWorkspaceWorkerBranch(params.branch);
   const git = await exactGitWorkspace();
   const worktreePath = workspaceWorkerRootFor(git.topLevel, workerKey);
-  const remove = await captureProcess("git", ["worktree", "remove", "--force", worktreePath], {
+  beginCurrentRequestCommit("git_worktree_remove_non_force");
+  const remove = await captureProcess("git", ["worktree", "remove", worktreePath], {
     cwd: git.topLevel,
     timeoutMs: 30_000,
   });
@@ -2525,20 +3078,20 @@ async function removeGitWorktree(params = {}) {
   }
   let branchRemoved = false;
   if (params.deleteBranch === true) {
-    const deleted = await captureProcess("git", ["branch", "-D", branch], {
+    const deleted = await captureProcess("git", ["branch", "-d", branch], {
       cwd: git.topLevel,
       timeoutMs: 10_000,
     });
     branchRemoved = deleted.exitCode === 0;
   }
-  return {
+  return completeCurrentRequestCommit({
     schema: "direct_workspace_worker_cleanup@1",
     workerKey,
     branch,
     worktreeRemoved: !(await pathExists(worktreePath)),
     branchRemoved,
     rawWorkspacePathIncluded: false,
-  };
+  });
 }
 
 function serializeGitWorktreeMutation(operation) {
@@ -2547,49 +3100,546 @@ function serializeGitWorktreeMutation(operation) {
   return pending;
 }
 
+function workspaceWorkerBindingDigest(value) {
+  const digest = String(value || "").trim();
+  if (!/^sha256:[a-f0-9]{64}$/i.test(digest)) {
+    const error = new Error("Workspace repository tools require one frozen binding digest.");
+    error.code = "workspace_worker_repository_binding_missing";
+    throw error;
+  }
+  return digest;
+}
+
+function workspaceWorkerBindingBase(value = {}) {
+  return {
+    schema: "direct_workspace_worker_binding@1",
+    projectId: String(value.projectId || "").trim(),
+    workerKey: safeWorkspaceWorkerKey(value.workerKey),
+    workspaceKind: String(value.workspaceKind || "").trim(),
+    branch: safeWorkspaceWorkerBranch(value.branch),
+    baseCommit: String(value.baseCommit || "").trim(),
+    rootEvidenceDigest: workspaceWorkerBindingDigest(value.rootEvidenceDigest),
+    sourceRepositoryDigest: workspaceWorkerBindingDigest(value.sourceRepositoryDigest),
+    retainedAfterCompletion: value.retainedAfterCompletion !== false,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+async function workspaceWorkerGitIdentity() {
+  const git = await exactGitWorkspace();
+  const [branchResult, headResult] = await Promise.all([
+    captureProcess("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+      cwd: git.topLevel,
+      timeoutMs: 10_000,
+    }),
+    captureProcess("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
+      cwd: git.topLevel,
+      timeoutMs: 10_000,
+    }),
+  ]);
+  const branch = String(branchResult.stdout || "").trim();
+  const headCommit = String(headResult.stdout || "").trim();
+  if (branchResult.exitCode !== 0 || !branch || headResult.exitCode !== 0 || !/^[a-f0-9]{40,64}$/i.test(headCommit)) {
+    const error = new Error("Workspace worker Git identity is unavailable or detached.");
+    error.code = "workspace_worker_binding_git_identity_unavailable";
+    throw error;
+  }
+  return {
+    branch,
+    headCommit,
+    rootEvidenceDigest: sha256Digest(await fs.realpath(root)),
+  };
+}
+
+async function verifyWorkspaceWorkerBindingRealization(binding, options = {}) {
+  const identity = await workspaceWorkerGitIdentity();
+  const expectedSessionProjectId = `${binding.projectId}__${binding.workerKey}`.slice(0, 180);
+  if (projectId !== expectedSessionProjectId) {
+    const error = new Error("Workspace worker binding project does not match the resident session.");
+    error.code = "workspace_worker_binding_project_mismatch";
+    throw error;
+  }
+  if (binding.workspaceKind !== workspaceKind) {
+    const error = new Error("Workspace worker binding kind does not match the resident session.");
+    error.code = "workspace_worker_binding_kind_mismatch";
+    throw error;
+  }
+  if (binding.rootEvidenceDigest !== identity.rootEvidenceDigest) {
+    const error = new Error("Workspace worker binding root does not match the resident session.");
+    error.code = "workspace_worker_binding_root_mismatch";
+    throw error;
+  }
+  if (binding.branch !== identity.branch) {
+    const error = new Error("Workspace worker binding branch changed or belongs to another session.");
+    error.code = "workspace_worker_binding_branch_mismatch";
+    throw error;
+  }
+  if (options.requireBaseHead === true && binding.baseCommit !== identity.headCommit) {
+    const error = new Error("Workspace worker binding base is not the session's initial HEAD.");
+    error.code = "workspace_worker_binding_base_mismatch";
+    throw error;
+  }
+  const ancestor = await captureProcess("git", ["merge-base", "--is-ancestor", binding.baseCommit, identity.headCommit], {
+    cwd: root,
+    timeoutMs: 10_000,
+  });
+  if (ancestor.exitCode !== 0) {
+    const error = new Error("Workspace worker binding base is no longer an ancestor of the resident session HEAD.");
+    error.code = "workspace_worker_binding_base_drift";
+    throw error;
+  }
+  return identity;
+}
+
+async function initializeWorkspaceWorkerBinding(params = {}) {
+  const binding = workspaceWorkerBindingBase(params.binding);
+  if (!binding.projectId || !/^[a-f0-9]{40,64}$/i.test(binding.baseCommit)) {
+    const error = new Error("Workspace worker binding evidence is incomplete.");
+    error.code = "workspace_worker_binding_incomplete";
+    throw error;
+  }
+  const bindingDigest = workspaceWorkerBindingDigest(params.binding?.bindingDigest);
+  const expectedDigest = sha256Digest(canonicalJson(binding));
+  const expectedBindingId = `workspace_worker_binding_${expectedDigest.slice(7, 31)}`;
+  if (bindingDigest !== expectedDigest || params.binding?.bindingId !== expectedBindingId) {
+    const error = new Error("Workspace worker binding digest does not match its immutable evidence.");
+    error.code = "workspace_worker_binding_digest_mismatch";
+    throw error;
+  }
+  const candidate = { ...binding, bindingId: expectedBindingId, bindingDigest };
+  const candidateCanonical = canonicalJson(candidate);
+  if (authoritativeWorkspaceWorkerBinding) {
+    if (canonicalJson(authoritativeWorkspaceWorkerBinding) !== candidateCanonical) {
+      const error = new Error("Workspace worker session binding is immutable.");
+      error.code = "workspace_worker_binding_already_initialized";
+      throw error;
+    }
+    await verifyWorkspaceWorkerBindingRealization(candidate);
+  } else {
+    if (workspaceWorkerBindingInitialization) {
+      if (workspaceWorkerBindingInitialization.canonicalCandidate !== candidateCanonical) {
+        const error = new Error("Workspace worker session has a conflicting immutable binding initialization in flight.");
+        error.code = "workspace_worker_binding_already_initialized";
+        throw error;
+      }
+      await workspaceWorkerBindingInitialization.promise;
+    } else {
+      const pending = { canonicalCandidate: candidateCanonical, promise: null };
+      pending.promise = (async () => {
+        await verifyWorkspaceWorkerBindingRealization(candidate, { requireBaseHead: true });
+        authoritativeWorkspaceWorkerBinding = Object.freeze(candidate);
+      })().finally(() => {
+        if (workspaceWorkerBindingInitialization === pending) {
+          workspaceWorkerBindingInitialization = null;
+        }
+      });
+      workspaceWorkerBindingInitialization = pending;
+      await pending.promise;
+    }
+  }
+  return {
+    schema: "direct_workspace_worker_binding_initialization@1",
+    bindingId: candidate.bindingId,
+    bindingDigest: candidate.bindingDigest,
+    backendSessionId: sessionId,
+    projectId: candidate.projectId,
+    workerKey: candidate.workerKey,
+    workspaceKind: candidate.workspaceKind,
+    branch: candidate.branch,
+    baseCommit: candidate.baseCommit,
+    rootEvidenceDigest: candidate.rootEvidenceDigest,
+    immutable: true,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+async function verifyWorkspaceWorkerBinding(value) {
+  const digest = workspaceWorkerBindingDigest(value);
+  if (!authoritativeWorkspaceWorkerBinding) {
+    const error = new Error("Workspace worker repository session has no authoritative binding.");
+    error.code = "workspace_worker_binding_uninitialized";
+    throw error;
+  }
+  if (digest !== authoritativeWorkspaceWorkerBinding.bindingDigest) {
+    const error = new Error("Workspace worker repository request belongs to another binding or session.");
+    error.code = "workspace_worker_binding_mismatch";
+    throw error;
+  }
+  await verifyWorkspaceWorkerBindingRealization(authoritativeWorkspaceWorkerBinding);
+  return digest;
+}
+
+async function applyWorkspaceWorkerPatch(params = {}) {
+  await verifyWorkspaceWorkerBinding(params.bindingDigest);
+  return applyPatchPlan(params, { rejectSensitivePaths: true });
+}
+
+function workspaceWorkerSafeManifestPath(value) {
+  const raw = String(value || "");
+  if (!raw || raw !== raw.trim() || /[\0-\x1f\x7f]/.test(raw)) return "";
+  let normalized;
+  try {
+    normalized = displayRelPath(normalizeRelPath(raw));
+  } catch {
+    return "";
+  }
+  if (normalized !== raw) return "";
+  if (!normalized || normalized.split("/").some((part) => part.toLowerCase() === ".git")) return "";
+  if (sensitiveReadFileReason(normalized)) return "";
+  return normalized;
+}
+
+function workspaceWorkerParseGitManifest(buffer) {
+  const paths = [];
+  let excludedEntryCount = 0;
+  let start = 0;
+  for (let index = 0; index <= buffer.length; index += 1) {
+    if (index < buffer.length && buffer[index] !== 0) continue;
+    if (index > start) {
+      let raw = "";
+      try {
+        raw = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(start, index));
+      } catch {}
+      const safePath = raw ? workspaceWorkerSafeManifestPath(raw) : "";
+      if (safePath) paths.push(safePath);
+      else excludedEntryCount += 1;
+    }
+    start = index + 1;
+  }
+  return { paths, excludedEntryCount };
+}
+
+async function workspaceWorkerCanonicalFileEntry(relativePath, trackedPaths) {
+  const safePath = workspaceWorkerSafeManifestPath(relativePath);
+  if (!safePath) return null;
+  try {
+    const resolved = await resolveFileWithinRoot(safePath);
+    const requestedPath = path.resolve(resolved.requestedFullPath);
+    const physicalPath = path.resolve(resolved.fullPath);
+    if (!sameNativePath(resolved.realRoot, root) || !sameNativePath(requestedPath, physicalPath)) return null;
+    const requestedStat = await fs.lstat(resolved.requestedFullPath);
+    if (requestedStat.isSymbolicLink() || !requestedStat.isFile()) return null;
+    return {
+      path: safePath,
+      size: requestedStat.size,
+      tracked: trackedPaths.has(safePath),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function workspaceWorkerCanonicalManifest() {
+  await exactGitWorkspace();
+  const [trackedResult, manifestResult] = await Promise.all([
+    captureDigestProcess("git", ["ls-files", "--cached", "-z"], {
+      cwd: root,
+      timeoutMs: 20_000,
+      captureLimit: DIRECT_WORKSPACE_WORKER_MANIFEST_BYTES,
+    }),
+    captureDigestProcess("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+      cwd: root,
+      timeoutMs: 20_000,
+      captureLimit: DIRECT_WORKSPACE_WORKER_MANIFEST_BYTES,
+    }),
+  ]);
+  if ([trackedResult, manifestResult].some((result) => result.exitCode !== 0)) {
+    const error = new Error("Git could not enumerate the canonical workspace manifest.");
+    error.code = "workspace_worker_repository_manifest_unavailable";
+    throw error;
+  }
+  if (trackedResult.stdoutTruncated || manifestResult.stdoutTruncated) {
+    const error = new Error("The canonical workspace manifest exceeded its byte budget.");
+    error.code = "workspace_worker_repository_manifest_bytes_exceeded";
+    throw error;
+  }
+  const trackedManifest = workspaceWorkerParseGitManifest(trackedResult.stdout);
+  const candidateManifest = workspaceWorkerParseGitManifest(manifestResult.stdout);
+  const trackedPaths = new Set(trackedManifest.paths);
+  const candidatePaths = [...new Set(candidateManifest.paths)].sort();
+  if (candidateManifest.paths.length > DIRECT_WORKSPACE_WORKER_MANIFEST_FILE_LIMIT) {
+    const error = new Error("The canonical workspace manifest exceeded its file-count budget.");
+    error.code = "workspace_worker_repository_manifest_file_limit_exceeded";
+    throw error;
+  }
+  const entries = [];
+  let excludedEntryCount = candidateManifest.excludedEntryCount;
+  for (let offset = 0; offset < candidatePaths.length; offset += 32) {
+    const batch = await Promise.all(candidatePaths.slice(offset, offset + 32)
+      .map((relativePath) => workspaceWorkerCanonicalFileEntry(relativePath, trackedPaths)));
+    for (const entry of batch) {
+      if (entry) entries.push(entry);
+      else excludedEntryCount += 1;
+    }
+  }
+  const manifestDigest = sha256Digest(canonicalJson(entries));
+  return {
+    entries,
+    manifestDigest,
+    trackedFileCount: entries.filter((entry) => entry.tracked).length,
+    untrackedFileCount: entries.filter((entry) => !entry.tracked).length,
+    excludedEntryCount,
+  };
+}
+
+async function workspaceWorkerPinnedProfileEvidence() {
+  for (const profile of pinnedWorkspaceRepositoryProfiles()) {
+    const markerResults = [];
+    for (const marker of profile.markers) {
+      let exact = false;
+      try {
+        const resolved = await resolveFileWithinRoot(marker);
+        const stat = await fs.lstat(resolved.requestedFullPath);
+        exact = pinnedWorkspaceMarkerIsExact({
+          requestedFullPath: resolved.requestedFullPath,
+          resolvedFullPath: resolved.fullPath,
+          isSymbolicLink: stat.isSymbolicLink(),
+        });
+      } catch {}
+      markerResults.push({ marker, exact });
+    }
+    if (markerResults.some((entry) => !entry.exact)) continue;
+    const sourceRefs = [];
+    for (const source of profile.policySources) {
+      try {
+        const observed = await directEpistemicFileDigest(source.path, DIRECT_EPISTEMIC_PROFILE_SOURCE_BYTES);
+        sourceRefs.push({
+          id: source.id,
+          path: source.path,
+          facet: source.facet,
+          contentDigest: observed.contentDigest,
+          validationPosture: observed.contentDigest === source.contentDigest ? "exact" : "digest_mismatch",
+        });
+      } catch {
+        sourceRefs.push({
+          id: source.id,
+          path: source.path,
+          facet: source.facet,
+          contentDigest: source.contentDigest,
+          validationPosture: "unavailable",
+        });
+      }
+    }
+    if (sourceRefs.some((entry) => entry.validationPosture !== "exact")) continue;
+    return { profile, sourceRefs };
+  }
+  return null;
+}
+
+async function workspaceWorkerRepositoryPolicy() {
+  const pinned = await workspaceWorkerPinnedProfileEvidence();
+  if (pinned) {
+    return {
+      schema: DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA,
+      profileId: pinned.profile.profileId,
+      profileRevision: pinned.profile.revision,
+      profileDigest: pinned.profile.profileDigest,
+      validationPosture: "exact",
+      allowedTools: [...pinned.profile.allowedTools],
+      selectedConstraints: [...pinned.profile.selectedConstraints],
+      sourceRefs: pinned.sourceRefs,
+      omissionLedger: pinned.profile.omittedPolicyFacets.map((reason) => ({
+        source: pinned.profile.profileId,
+        reason,
+        count: 1,
+      })),
+      testProfile: pinned.profile.testProfile,
+      rawPolicyTextIncluded: false,
+      rawWorkspacePathIncluded: false,
+    };
+  }
+  return { ...genericWorkspaceRepositoryProfile() };
+}
+
+function workspaceWorkerSubstrateCapabilities(testAvailable, containment = {}) {
+  const availableTools = WORKSPACE_WORKER_TOOLS.filter((toolName) => toolName !== "run_test" || testAvailable);
+  const base = {
+    schema: "direct_workspace_worker_substrate_capability@1",
+    capabilityProfileId: "resident_git_workspace_tools_v1",
+    availableTools,
+    arbitraryCommandAvailableToWorker: false,
+    remoteMutationAvailableToWorker: false,
+    processContainmentGuaranteed: containment.available === true,
+    processContainmentKind: containment.available === true ? containment.kind : "unavailable",
+    processContainmentBlockerCode: containment.available === true
+      ? ""
+      : String(containment.blockerCode || "").trim() || "workspace_process_containment_unavailable",
+    rawWorkspacePathIncluded: false,
+  };
+  return { ...base, capabilityDigest: sha256Digest(canonicalJson(base)) };
+}
+
+function workspaceWorkerTestProfile(base, repositoryPolicy, containment) {
+  const profileBase = {
+    schema: "direct_workspace_worker_test_profile@1",
+    ...base,
+    workspaceKind,
+    repositoryPolicyDigest: repositoryPolicy.profileDigest,
+  };
+  return {
+    ...profileBase,
+    profileDigest: sha256Digest(canonicalJson(profileBase)),
+    available: true,
+    repositoryPolicy,
+    substrateCapabilities: workspaceWorkerSubstrateCapabilities(true, containment),
+  };
+}
+
+let workspaceProcessContainmentProbePromise = null;
+
+function probeLinuxWorkspaceProcessContainment() {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = trackChildProcess(containedWorkspaceProcessSpawn("true", [], {
+        cwd: root,
+        env: minimalCommandEnv(),
+      }), { systemOwned: true });
+    } catch (error) {
+      resolve({ available: false, blockerCode: error?.code || "workspace_linux_pid_namespace_containment_unavailable" });
+      return;
+    }
+    let settled = false;
+    let timer = null;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const retainedGroup = child?.pid ? activeProcessGroups.get(child.pid) : null;
+      if (!retainedGroup) {
+        resolve(result);
+        return;
+      }
+      terminateRetainedProcessGroup(
+        retainedGroup.requestScope || null,
+        retainedGroup,
+        "SIGKILL",
+        { allowDuringCommit: true },
+      )
+        .then((receipt) => resolve(receipt?.quiesced === true ? result : {
+          available: false,
+          blockerCode: receipt?.blockerCode || "workspace_linux_pid_namespace_probe_quiescence_unproven",
+        }));
+    };
+    child.once("error", (error) => finish({
+      available: false,
+      blockerCode: error?.code || "workspace_linux_pid_namespace_containment_unavailable",
+    }));
+    child.once("close", (exitCode) => finish(exitCode === 0 ? {
+      available: true,
+      kind: "linux_pid_namespace",
+      blockerCode: "",
+      launcherDigest: child.workspaceProcessContainment?.launcherDigest || "",
+    } : {
+      available: false,
+      blockerCode: "workspace_linux_pid_namespace_containment_unavailable",
+    }));
+    timer = setTimeout(() => {
+      finish({
+        available: false,
+        blockerCode: "workspace_linux_pid_namespace_containment_probe_timeout",
+      });
+    }, 5_000);
+  });
+}
+
+async function workspaceProcessContainmentStatus() {
+  if (workspaceProcessContainmentProbePromise) return workspaceProcessContainmentProbePromise;
+  workspaceProcessContainmentProbePromise = (async () => {
+    if (process.platform !== "linux") {
+      return {
+        available: false,
+        kind: "unavailable",
+        blockerCode: process.platform === "win32"
+          ? "workspace_windows_job_object_containment_unavailable"
+          : "workspace_process_containment_unavailable",
+      };
+    }
+    const probe = await probeLinuxWorkspaceProcessContainment();
+    return probe.available === true
+      ? probe
+      : { ...probe, kind: "unavailable" };
+  })();
+  return workspaceProcessContainmentProbePromise;
+}
+
 async function directTestProfile() {
+  const repositoryPolicy = await workspaceWorkerRepositoryPolicy();
+  const containment = await workspaceProcessContainmentStatus();
+  if (!containment.available) {
+    return {
+      schema: "direct_workspace_worker_test_profile@1",
+      profileId: "",
+      profileDigest: "",
+      available: false,
+      unavailableReason: containment.blockerCode,
+      targetsAllowed: false,
+      workspaceKind,
+      actions: [],
+      actionsAllowed: [],
+      defaultAction: "",
+      targetedAction: "",
+      repositoryPolicy,
+      substrateCapabilities: workspaceWorkerSubstrateCapabilities(false, containment),
+    };
+  }
+  if (repositoryPolicy.validationPosture === "exact" && repositoryPolicy.testProfile) {
+    const pinned = repositoryPolicy.testProfile;
+    return workspaceWorkerTestProfile({
+      profileId: pinned.profileId,
+      command: "make",
+      actions: pinned.actions,
+      actionsAllowed: pinned.actions.map((action) => action.name),
+      defaultAction: pinned.defaultAction,
+      targetedAction: pinned.targetedAction,
+      targetsAllowed: pinned.actions.some((action) => action.targetsAllowed),
+    }, repositoryPolicy, containment);
+  }
   const packageJsonPath = path.join(root, "package.json");
   if (await pathExists(packageJsonPath)) {
     try {
       const packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
       if (typeof packageJson?.scripts?.test === "string" && packageJson.scripts.test.trim()) {
-        const base = {
-          schema: "direct_workspace_worker_test_profile@1",
+        return workspaceWorkerTestProfile({
           profileId: "node_package_test",
           command: "npm",
           baseArgs: ["test"],
+          actions: [{ name: "test", targetsAllowed: false }],
+          actionsAllowed: ["test"],
+          defaultAction: "test",
+          targetedAction: "",
           targetsAllowed: false,
-          workspaceKind,
-        };
-        return { ...base, profileDigest: sha256Digest(canonicalJson(base)), available: true };
+        }, repositoryPolicy, containment);
       }
     } catch {}
   }
   const pythonMarkers = ["pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini"];
   if ((await Promise.all(pythonMarkers.map((name) => pathExists(path.join(root, name))))).some(Boolean)) {
-    const base = {
-      schema: "direct_workspace_worker_test_profile@1",
+    return workspaceWorkerTestProfile({
       profileId: "python_pytest",
       command: process.platform === "win32" ? "python" : "python3",
       baseArgs: ["-m", "pytest"],
+      actions: [{ name: "test", targetsAllowed: true }],
+      actionsAllowed: ["test"],
+      defaultAction: "test",
+      targetedAction: "test",
       targetsAllowed: true,
-      workspaceKind,
-    };
-    return { ...base, profileDigest: sha256Digest(canonicalJson(base)), available: true };
+    }, repositoryPolicy, containment);
   }
   const makefilePath = path.join(root, "Makefile");
   if (await pathExists(makefilePath)) {
     const body = await fs.readFile(makefilePath, "utf8").catch(() => "");
     if (/^test\s*:/m.test(body)) {
-      const base = {
-        schema: "direct_workspace_worker_test_profile@1",
+      return workspaceWorkerTestProfile({
         profileId: "make_test",
         command: "make",
         baseArgs: ["test"],
+        actions: [{ name: "test", makeTarget: "test", targetsAllowed: false }],
+        actionsAllowed: ["test"],
+        defaultAction: "test",
+        targetedAction: "",
         targetsAllowed: false,
-        workspaceKind,
-      };
-      return { ...base, profileDigest: sha256Digest(canonicalJson(base)), available: true };
+      }, repositoryPolicy, containment);
     }
   }
   return {
@@ -2599,10 +3649,223 @@ async function directTestProfile() {
     available: false,
     targetsAllowed: false,
     workspaceKind,
+    actions: [],
+    actionsAllowed: [],
+    defaultAction: "",
+    targetedAction: "",
+    repositoryPolicy,
+    substrateCapabilities: workspaceWorkerSubstrateCapabilities(false, containment),
   };
 }
 
-function safeTestTargets(values = []) {
+async function inspectWorkspaceRepository(params = {}) {
+  const workspaceBindingDigest = await verifyWorkspaceWorkerBinding(params.bindingDigest);
+  const [manifest, repositoryPolicy] = await Promise.all([
+    workspaceWorkerCanonicalManifest(),
+    workspaceWorkerRepositoryPolicy(),
+  ]);
+  const topLevelEntries = [...new Set(manifest.entries.map((entry) => entry.path.split("/", 1)[0]))].sort().slice(0, 80);
+  return {
+    schema: "direct_workspace_worker_repository_inspection@1",
+    workspaceBindingDigest,
+    gitCanonical: true,
+    manifestDigest: manifest.manifestDigest,
+    fileCount: manifest.entries.length,
+    trackedFileCount: manifest.trackedFileCount,
+    untrackedFileCount: manifest.untrackedFileCount,
+    excludedEntryCount: manifest.excludedEntryCount,
+    topLevelEntries,
+    repositoryPolicy,
+    manifestTruncated: false,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+function workspaceWorkerPrefixMatch(filePath, prefix) {
+  return !prefix || filePath === prefix || filePath.startsWith(`${prefix}/`);
+}
+
+function workspaceWorkerSafePrefix(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const prefix = workspaceWorkerSafeManifestPath(raw);
+  if (!prefix) {
+    const error = new Error("Repository prefix is invalid, sensitive, or private Git metadata.");
+    error.code = "workspace_worker_repository_prefix_denied";
+    throw error;
+  }
+  return prefix;
+}
+
+async function listWorkspaceRepositoryFiles(params = {}) {
+  const workspaceBindingDigest = await verifyWorkspaceWorkerBinding(params.bindingDigest);
+  const prefix = workspaceWorkerSafePrefix(params.prefix);
+  const limit = Math.max(1, Math.min(Number(params.limit || 100) || 100, DIRECT_WORKSPACE_WORKER_LIST_LIMIT));
+  const manifest = await workspaceWorkerCanonicalManifest();
+  const matches = manifest.entries.filter((entry) => workspaceWorkerPrefixMatch(entry.path, prefix));
+  return {
+    schema: "direct_workspace_worker_repository_file_list@1",
+    workspaceBindingDigest,
+    prefix,
+    entries: matches.slice(0, limit),
+    totalMatches: matches.length,
+    truncated: matches.length > limit,
+    manifestDigest: manifest.manifestDigest,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+async function matchWorkspaceRepositoryFiles(params = {}) {
+  const workspaceBindingDigest = await verifyWorkspaceWorkerBinding(params.bindingDigest);
+  const patterns = (Array.isArray(params.patterns) ? params.patterns : []).map((entry) => String(entry || "").trim());
+  if (!patterns.length || patterns.length > 8 || patterns.some((entry) => !entry || entry.length > 256 || /[\0\r\n]/.test(entry))) {
+    const error = new Error("Repository match patterns exceed the bounded grammar.");
+    error.code = "workspace_worker_repository_match_patterns_invalid";
+    throw error;
+  }
+  const regexes = patterns.map(globToRegex);
+  for (const pattern of patterns) {
+    const pathProbe = pattern.replace(/[?*]+/g, "x");
+    if (!workspaceWorkerSafeManifestPath(pathProbe)) {
+      const error = new Error("Repository match pattern addresses an invalid, sensitive, or private path.");
+      error.code = "workspace_worker_repository_match_pattern_denied";
+      throw error;
+    }
+  }
+  const limit = Math.max(1, Math.min(Number(params.limit || 100) || 100, DIRECT_WORKSPACE_WORKER_LIST_LIMIT));
+  const manifest = await workspaceWorkerCanonicalManifest();
+  const matches = manifest.entries.filter((entry) => matchesAnyPattern(entry.path, regexes));
+  return {
+    schema: "direct_workspace_worker_repository_file_matches@1",
+    workspaceBindingDigest,
+    patterns,
+    entries: matches.slice(0, limit),
+    totalMatches: matches.length,
+    truncated: matches.length > limit,
+    manifestDigest: manifest.manifestDigest,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+async function readWorkspaceWorkerCanonicalEntry(entry, maxBytes) {
+  const resolved = await resolveFileWithinRoot(entry.path);
+  const requestedStat = await fs.lstat(resolved.requestedFullPath);
+  if (
+    requestedStat.isSymbolicLink() ||
+    !requestedStat.isFile() ||
+    !sameNativePath(resolved.requestedFullPath, resolved.fullPath)
+  ) {
+    const error = new Error("Repository file changed to an inadmissible realization.");
+    error.code = "workspace_worker_repository_file_realization_changed";
+    throw error;
+  }
+  const bytesToRead = Math.min(requestedStat.size, maxBytes);
+  const noFollow = Number(fsSync.constants.O_NOFOLLOW || 0);
+  const handle = await fs.open(resolved.requestedFullPath, fsSync.constants.O_RDONLY | noFollow);
+  let bytesRead = 0;
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.dev !== requestedStat.dev || before.ino !== requestedStat.ino) {
+      throw new Error("workspace_worker_repository_file_changed_during_read");
+    }
+    const buffer = Buffer.alloc(bytesToRead);
+    if (bytesToRead) {
+      const result = await handle.read(buffer, 0, bytesToRead, 0);
+      bytesRead = Number(result.bytesRead || 0);
+      if (bytesRead !== bytesToRead) {
+        throw new Error("workspace_worker_repository_file_changed_during_read");
+      }
+    }
+    const after = await handle.stat();
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+      throw new Error("workspace_worker_repository_file_changed_during_read");
+    }
+    return { buffer, size: after.size, truncated: after.size > maxBytes };
+  } catch (error) {
+    if (error && typeof error === "object") {
+      error.workspaceWorkerBytesRead = bytesRead;
+    }
+    throw error;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readWorkspaceRepositoryFile(params = {}) {
+  const workspaceBindingDigest = await verifyWorkspaceWorkerBinding(params.bindingDigest);
+  const relativePath = workspaceWorkerSafeManifestPath(params.relPath);
+  if (!relativePath) {
+    const error = new Error("Repository read path is invalid or sensitive.");
+    error.code = "workspace_worker_repository_read_path_denied";
+    throw error;
+  }
+  const maxBytes = Math.max(1, Math.min(Number(params.maxBytes || DIRECT_WORKSPACE_WORKER_READ_LIMIT) || DIRECT_WORKSPACE_WORKER_READ_LIMIT, DIRECT_WORKSPACE_WORKER_READ_LIMIT));
+  const manifest = await workspaceWorkerCanonicalManifest();
+  const entry = manifest.entries.find((candidate) => candidate.path === relativePath);
+  if (!entry) {
+    const error = new Error("Repository read path is outside the Git-canonical manifest.");
+    error.code = "workspace_worker_repository_read_not_canonical";
+    throw error;
+  }
+  const read = await readWorkspaceWorkerCanonicalEntry(entry, maxBytes);
+  if (looksBinary(read.buffer, { scanEntireBuffer: true })) {
+    const error = new Error("Binary repository files are not admitted to workspace workers.");
+    error.code = "workspace_worker_repository_binary_denied";
+    throw error;
+  }
+  const decoded = decodeWorkspaceWorkerUtf8(read.buffer, {
+    truncated: read.truncated,
+  });
+  return {
+    schema: "direct_workspace_worker_repository_file_read@1",
+    workspaceBindingDigest,
+    relPath: relativePath,
+    size: read.size,
+    text: decoded.text,
+    textByteCount: decoded.textByteCount,
+    utf8BoundaryAdjustedBytes: decoded.utf8BoundaryAdjustedBytes,
+    truncated: read.truncated,
+    manifestDigest: manifest.manifestDigest,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+async function searchWorkspaceRepositoryText(params = {}) {
+  const workspaceBindingDigest = await verifyWorkspaceWorkerBinding(params.bindingDigest);
+  const query = String(params.query || "");
+  if (!query || query.length > 256 || /[\0\r\n]/.test(query)) {
+    const error = new Error("Repository search requires one bounded single-line literal query.");
+    error.code = "workspace_worker_repository_search_query_invalid";
+    throw error;
+  }
+  const prefix = workspaceWorkerSafePrefix(params.prefix);
+  const caseSensitive = params.caseSensitive === true;
+  const maxResults = Math.max(1, Math.min(Number(params.maxResults || 60) || 60, DIRECT_WORKSPACE_WORKER_SEARCH_RESULT_LIMIT));
+  const manifest = await workspaceWorkerCanonicalManifest();
+  const prefixedEntries = manifest.entries.filter((entry) =>
+    workspaceWorkerPrefixMatch(entry.path, prefix));
+  const search = await searchBoundedWorkspaceRepositoryText({
+    entries: prefixedEntries,
+    query,
+    caseSensitive,
+    maxResults,
+    fileLimit: DIRECT_WORKSPACE_WORKER_SEARCH_FILE_LIMIT,
+    fileByteLimit: DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES,
+    totalByteLimit: DIRECT_WORKSPACE_WORKER_SEARCH_TOTAL_BYTES,
+    readEntry: readWorkspaceWorkerCanonicalEntry,
+    looksBinary,
+    decodeUtf8: decodeWorkspaceWorkerUtf8,
+  });
+  return {
+    schema: "direct_workspace_worker_repository_text_search@1",
+    workspaceBindingDigest,
+    ...search,
+    manifestDigest: manifest.manifestDigest,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+function safeTestTargets(values = [], options = {}) {
   const source = Array.isArray(values) ? values : [];
   if (source.length > DIRECT_WORKSPACE_WORKER_TARGET_LIMIT) {
     const error = new Error("Workspace worker test target count exceeded the compiled limit.");
@@ -2610,24 +3873,34 @@ function safeTestTargets(values = []) {
     throw error;
   }
   return source.map((value) => {
-    const target = String(value || "").trim();
+    const rawTarget = typeof value === "string" ? value : "";
+    const target = rawTarget.trim();
+    const filePart = target.split("::", 1)[0];
+    const nodeIds = target.split("::");
+    const arcPytestTarget = options.profileId === "arcagi3_pinned_make_actions";
     if (
       !target ||
       target.length > DIRECT_WORKSPACE_WORKER_TARGET_CHARS ||
       target.startsWith("-") ||
-      /[\0\r\n|&;`$<>]/.test(target)
+      /[\0\r\n|&;`$<>]/.test(target) ||
+      (arcPytestTarget && (
+        rawTarget !== target ||
+        /[\s'"\\]/.test(target) ||
+        !filePart.endsWith(".py") ||
+        nodeIds.some((part) => !part)
+      ))
     ) {
       const error = new Error("Workspace worker test target is invalid.");
       error.code = "workspace_worker_test_target_invalid";
       throw error;
     }
-    const filePart = target.split("::", 1)[0];
     resolveWithinRoot(filePart);
     return target.replace(/\\/g, "/");
   });
 }
 
 async function runDirectTest(params = {}) {
+  await verifyWorkspaceWorkerBinding(params.bindingDigest);
   const profile = await directTestProfile();
   if (!profile.available) {
     const error = new Error("No bounded test profile is available in this workspace.");
@@ -2639,26 +3912,49 @@ async function runDirectTest(params = {}) {
     error.code = "workspace_worker_test_profile_drift";
     throw error;
   }
-  const targets = safeTestTargets(params.targets);
-  if (targets.length && profile.targetsAllowed !== true) {
+  const targets = safeTestTargets(params.targets, { profileId: profile.profileId });
+  const actionName = String(params.action || (targets.length && profile.targetedAction ? profile.targetedAction : profile.defaultAction) || "test").trim();
+  const action = (Array.isArray(profile.actions) ? profile.actions : []).find((candidate) => candidate?.name === actionName);
+  if (!action || !(Array.isArray(profile.actionsAllowed) ? profile.actionsAllowed : []).includes(actionName)) {
+    const error = new Error("The requested test action is outside the compiled repository profile.");
+    error.code = "workspace_worker_test_action_not_admitted";
+    throw error;
+  }
+  if (targets.length && action.targetsAllowed !== true) {
     const error = new Error("The compiled test profile does not permit provider-selected targets.");
     error.code = "workspace_worker_test_targets_not_allowed";
+    throw error;
+  }
+  if (!targets.length && action.targetsRequired === true) {
+    const error = new Error("The compiled test action requires at least one bounded target.");
+    error.code = "workspace_worker_test_targets_required";
     throw error;
   }
   const timeoutMs = Number.isFinite(Number(params.timeoutMs))
     ? Math.max(1000, Math.min(Number(params.timeoutMs), DIRECT_WORKSPACE_WORKER_TIMEOUT_MS))
     : DIRECT_WORKSPACE_WORKER_TIMEOUT_MS;
+  let executionArgs;
+  if (profile.profileId === "arcagi3_pinned_make_actions") {
+    executionArgs = [
+      ...(targets.length ? [`TESTS=${targets.join(" ")}`] : []),
+      action.makeTarget,
+    ];
+  } else {
+    executionArgs = [...(profile.baseArgs || []), ...targets];
+  }
   const result = await runDirectCommand({
     command: profile.command,
-    args: [...profile.baseArgs, ...targets],
+    args: executionArgs,
     cwdRelPath: "",
     timeoutMs,
+    requireProcessContainment: true,
   });
   return {
     ...result,
     schema: "direct_workspace_worker_test_result@1",
     command: profile.profileId,
     args: targets,
+    action: actionName,
     testProfileId: profile.profileId,
     testProfileDigest: profile.profileDigest,
     rawCommandIncluded: false,
@@ -2712,15 +4008,16 @@ async function ensureCodexSandboxArtifactIgnored() {
 
   const separator = existing && !existing.endsWith("\n") ? "\n" : "";
   const addition = `${separator}${existing ? "\n" : ""}${CODEX_SANDBOX_ARTIFACT_EXCLUDE_COMMENT}\n${pattern}\n`;
+  beginCurrentRequestCommit("git_exclude_append");
   await fs.mkdir(path.dirname(excludePath), { recursive: true });
   await fs.appendFile(excludePath, addition, "utf8");
-  return {
+  return completeCurrentRequestCommit({
     available: true,
     changed: true,
     pattern,
     excludePath,
     reason: "added-local-git-exclude",
-  };
+  });
 }
 
 async function watchStatus() {
@@ -4406,6 +5703,8 @@ async function handleRequest(method, params = {}) {
   if (method === "hello") {
     const stat = await fs.stat(root);
     if (!stat.isDirectory()) throw new Error("Workspace root is not a directory.");
+    const containment = await workspaceProcessContainmentStatus();
+    const processBacked = containment.available === true;
     return {
       protocolVersion: PROTOCOL_VERSION,
       sessionId,
@@ -4420,17 +5719,24 @@ async function handleRequest(method, params = {}) {
         listTree: true,
         readFilePreview: true,
         applyPatch: true,
+        applyWorkspaceWorkerPatch: processBacked,
         readFileTransfer: true,
-        repositorySemanticSnapshot: true,
-        directEpistemicRepositoryObservation: true,
+        repositorySemanticSnapshot: processBacked,
+        directEpistemicRepositoryObservation: processBacked,
         repositoryRealizationContext: true,
-        runCommand: true,
-        runDirectCommand: true,
-        provisionGitWorktree: true,
-        removeGitWorktree: true,
+        runCommand: processBacked,
+        runDirectCommand: processBacked,
+        provisionGitWorktree: processBacked,
+        removeGitWorktree: processBacked,
+        initializeWorkspaceWorkerBinding: processBacked,
         directTestProfile: true,
-        runDirectTest: true,
-        ensureCodexSandboxArtifactIgnored: true,
+        runDirectTest: processBacked,
+        inspectWorkspaceRepository: processBacked,
+        listWorkspaceRepositoryFiles: processBacked,
+        matchWorkspaceRepositoryFiles: processBacked,
+        searchWorkspaceRepositoryText: processBacked,
+        readWorkspaceRepositoryFile: processBacked,
+        ensureCodexSandboxArtifactIgnored: processBacked,
         listMatchingFiles: true,
         resolvePath: true,
         watchScaffold: true,
@@ -4446,6 +5752,7 @@ async function handleRequest(method, params = {}) {
   if (method === "listTree") return listTree(params);
   if (method === "readFile") return readFilePreview(params);
   if (method === "applyPatch") return applyPatchPlan(params);
+  if (method === "applyWorkspaceWorkerPatch") return applyWorkspaceWorkerPatch(params);
   if (method === "readFileTransfer") return readFileTransfer(params);
   if (method === "repositorySemanticSnapshot") {
     return repositorySemanticSnapshot(params);
@@ -4471,8 +5778,14 @@ async function handleRequest(method, params = {}) {
   if (method === "removeGitWorktree") {
     return serializeGitWorktreeMutation(() => removeGitWorktree(params));
   }
+  if (method === "initializeWorkspaceWorkerBinding") return initializeWorkspaceWorkerBinding(params);
   if (method === "directTestProfile") return directTestProfile(params);
   if (method === "runDirectTest") return runDirectTest(params);
+  if (method === "inspectWorkspaceRepository") return inspectWorkspaceRepository(params);
+  if (method === "listWorkspaceRepositoryFiles") return listWorkspaceRepositoryFiles(params);
+  if (method === "matchWorkspaceRepositoryFiles") return matchWorkspaceRepositoryFiles(params);
+  if (method === "searchWorkspaceRepositoryText") return searchWorkspaceRepositoryText(params);
+  if (method === "readWorkspaceRepositoryFile") return readWorkspaceRepositoryFile(params);
   if (method === "ensureCodexSandboxArtifactIgnored") return ensureCodexSandboxArtifactIgnored(params);
   if (method === "watchStatus") return watchStatus(params);
   if (method === "listCodexThreads") return listCodexThreads(params);
@@ -4482,6 +5795,84 @@ async function handleRequest(method, params = {}) {
   if (method === "removeAttachmentDraft") return removeAttachmentDraft(params);
   if (method === "importFile") return importFile(params);
   throw new Error(`Unknown workspace-agent method: ${method}`);
+}
+
+async function cancelScopedRequest(params = {}) {
+  const targetRequestId = String(params.requestId || "").trim();
+  if (!targetRequestId) {
+    const error = new Error("Workspace backend cancellation requires an exact request ID.");
+    error.code = "workspace_backend_cancel_request_id_missing";
+    throw error;
+  }
+  const completed = completedCancellableRequests.get(targetRequestId);
+  if (completed) {
+    if (completed.quiescenceVerified !== true) {
+      const error = new Error("Workspace backend request completion did not prove process quiescence.");
+      error.code = "workspace_backend_cancel_quiescence_unproven";
+      error.backendQuiesced = false;
+      error.mutationOutcome = completed.mutationOutcome || null;
+      throw error;
+    }
+    return {
+      targetRequestId,
+      acknowledged: true,
+      quiesced: true,
+      acknowledgementKind: "request_already_completed",
+      outcomeDigest: completed.mutationOutcome?.outcomeDigest || "",
+      mutationOutcome: completed.mutationOutcome || null,
+      rawProcessDetailsIncluded: false,
+    };
+  }
+  const scope = cancellableRequestScopes.get(targetRequestId);
+  if (!scope) {
+    const error = new Error("Workspace backend request is absent or does not own a cancellable execution.");
+    error.code = "workspace_backend_cancel_target_unavailable";
+    throw error;
+  }
+  scope.cancellationRequested = true;
+  scope.cancellationReasonCode = String(params.reasonCode || "workspace_backend_request_aborted").trim();
+  const terminationPromises = scope.phase === "commit"
+    ? []
+    : process.platform === "win32"
+      ? [...scope.children].map((child) => terminateScopeChild(scope, child, "SIGTERM"))
+      : [...scope.processGroups.values()].map((group) =>
+          terminateRetainedProcessGroup(scope, group, "SIGTERM"));
+  await scope.done;
+  const terminationReceipts = await Promise.all(terminationPromises);
+  const terminationVerified = terminationReceipts.every((receipt) => receipt?.quiesced === true);
+  scope.quiescenceVerified = scope.quiescenceVerified === true && terminationVerified;
+  if (!scope.quiescenceVerified) {
+    const error = new Error("Workspace backend request completion did not prove process quiescence.");
+    error.code = "workspace_backend_cancel_quiescence_unproven";
+    throw error;
+  }
+  return {
+    targetRequestId,
+    acknowledged: true,
+    quiesced: true,
+    acknowledgementKind: scope.mutationOutcome?.committed === true
+      ? "mutation_commit_outcome_retained"
+      : scope.mutationOutcome?.partialMutationPossible === true
+        ? "mutation_commit_failed_indeterminate"
+      : "request_execution_quiesced",
+    outcomeDigest: scope.mutationOutcome?.outcomeDigest || "",
+    mutationOutcome: scope.mutationOutcome || null,
+    rawProcessDetailsIncluded: false,
+  };
+}
+
+function serializedRequestError(error, scope = null) {
+  const mutationOutcome = error?.mutationOutcome || scope?.mutationOutcome || null;
+  return {
+    message: mutationOutcome?.partialMutationPossible === true
+      ? "Workspace backend mutation failed after entering its commit phase; partial mutation may have occurred."
+      : error?.message || "Workspace backend request failed.",
+    code: error?.code || "",
+    stack: mutationOutcome ? "" : error?.stack,
+    backendRequestCompleted: true,
+    backendQuiesced: scope ? scope.quiescenceVerified === true : error?.backendQuiesced === true,
+    mutationOutcome,
+  };
 }
 
 async function handleLine(line) {
@@ -4498,12 +5889,76 @@ async function handleLine(line) {
     return;
   }
   const id = request.id;
+  if (request.method === "cancelRequest") {
+    try {
+      const result = await cancelScopedRequest(request.params || {});
+      send({ id, result });
+    } catch (error) {
+      send({ id, error: serializedRequestError(error) });
+    } finally {
+      activeRequests -= 1;
+      if (stdinClosed && activeRequests === 0) requestShutdown();
+    }
+    return;
+  }
+  const requestId = String(id ?? "").trim();
+  const cancellationPolicy = requestCancellationPolicy(request.method, request.params || {});
+  const cancellable = cancellationPolicy !== "unsupported";
+  let requestScope = null;
+  if (cancellable) {
+    if (!requestId || cancellableRequestScopes.has(requestId)) {
+      send({
+        id,
+        error: {
+          message: "Cancellable workspace backend request ID is missing or already active.",
+          code: "workspace_backend_request_id_invalid",
+        },
+      });
+      activeRequests -= 1;
+      if (stdinClosed && activeRequests === 0) requestShutdown();
+      return;
+    }
+    requestScope = createCancellableRequestScope(requestId, request.method, cancellationPolicy);
+    cancellableRequestScopes.set(requestId, requestScope);
+  }
+  let result;
+  let requestError;
   try {
-    const result = await handleRequest(request.method, request.params || {});
-    send({ id, result });
+    result = requestScope
+      ? await cancellableRequestContext.run(
+          requestScope,
+          () => handleRequest(request.method, request.params || {}),
+        )
+      : await handleRequest(request.method, request.params || {});
   } catch (error) {
-    send({ id, error: { message: error.message, code: error.code || "", stack: error.stack } });
+    requestError = mutationCommitFailureError(requestScope, error);
   } finally {
+    if (requestScope) {
+      requestScope.quiescenceVerified = await finalizeRequestProcessCustody(requestScope);
+      if (!requestScope.quiescenceVerified && !requestError) {
+        requestError = new Error("Workspace backend request completion did not prove process quiescence.");
+        requestError.code = "workspace_backend_request_quiescence_unproven";
+        requestError.mutationOutcome = requestScope.mutationOutcome || null;
+      }
+    }
+    if (requestScope?.cancellationRequested && requestScope.mutationOutcome?.committed === true && !requestError) {
+      send({ id, result });
+    }
+    if (
+      requestScope?.cancellationRequested &&
+      requestError &&
+      requestScope.mutationOutcome
+    ) {
+      send({ id, error: serializedRequestError(requestError, requestScope) });
+    }
+    completeCancellableRequestScope(requestScope);
+    if (!requestScope?.cancellationRequested) {
+      if (requestError) {
+        send({ id, error: serializedRequestError(requestError, requestScope) });
+      } else {
+        send({ id, result });
+      }
+    }
     activeRequests -= 1;
     if (stdinClosed && activeRequests === 0) requestShutdown();
   }

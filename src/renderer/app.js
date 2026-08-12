@@ -39,6 +39,11 @@ const SUB_AGENT_TOOL_LIKE_THOUGHT_TYPES = new Set([
   "webSearch",
 ]);
 
+function publicBackendErrorCode(value, fallback = "workspace_backend_unavailable") {
+  const code = typeof value === "string" ? value.trim() : "";
+  return /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(code) ? code : fallback;
+}
+
 function zoomPolicyValue(name, fallback = NORMAL_ZOOM_FALLBACK) {
   const value = Number(ZOOM_POLICY?.[name]);
   return Number.isFinite(value) ? value : fallback;
@@ -1270,8 +1275,8 @@ function backendStatusText(project) {
   if (!status) return "backend attaching…";
   const transport = status.transport ? ` · ${status.transport}` : "";
   if (status.status === "attached") return `backend attached${transport}`;
-  if (status.status === "failed") return `backend failed${status.lastError ? ` · ${status.lastError}` : ""}`;
-  if (status.status === "closed") return `backend closed${status.lastError ? ` · ${status.lastError}` : ""}`;
+  if (status.status === "failed") return `backend failed${status.lastErrorCode ? ` · ${status.lastErrorCode}` : ""}`;
+  if (status.status === "closed") return `backend closed${status.lastErrorCode ? ` · ${status.lastErrorCode}` : ""}`;
   return `backend ${status.status || "unknown"}${transport}`;
 }
 
@@ -7456,7 +7461,10 @@ async function selectProject(projectId) {
     } catch (error) {
       if (isRequestStale("project", projectVersion) || isProjectRequestStale(project.id, projectVersion)) return;
       state.codexThreads = [];
-      state.workspaceStatuses[project.id] = { status: "failed", lastError: error.message };
+      state.workspaceStatuses[project.id] = {
+        status: "failed",
+        lastErrorCode: publicBackendErrorCode(error?.code, "workspace_backend_attach_failed"),
+      };
       renderSelectedProject();
       renderThreadsWorkbench();
       await loadAnalyticsThreads({ projectId: project.id, projectVersion });
@@ -8923,9 +8931,11 @@ function bindEvents() {
     if (event.type === "backend-status" && event.session?.projectId) {
       state.workspaceStatuses[event.session.projectId] = event.session;
       renderSelectedProject();
-      if (event.error) setLastEvent(`Workspace backend error: ${event.error}`);
+      if (event.errorCode) {
+        setLastEvent(`Workspace backend error: ${publicBackendErrorCode(event.errorCode)}`);
+      }
       else if (event.session.status === "attached") setLastEvent(`Workspace backend attached: ${event.session.transport}`);
-      else if (event.session.status === "failed") setLastEvent(`Workspace backend failed: ${event.session.lastError || "unknown"}`);
+      else if (event.session.status === "failed") setLastEvent(`Workspace backend failed: ${event.session.lastErrorCode || "unknown"}`);
     }
     if (event.type === "chatgpt-download-started") {
       setLastEvent(`ChatGPT download started: ${event.fileName || "download"}.`);

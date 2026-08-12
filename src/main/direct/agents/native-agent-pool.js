@@ -13,11 +13,19 @@ const {
   normalizeWorkspaceMode,
   safeWorkspaceExecutionProjection,
 } = require("./workspace-worker-contract");
+const {
+  validateWorkspaceParentAuthorityPacket,
+} = require("./workspace-worker-policy-profile");
+const {
+  admittedWorkspaceWorkerCancellationReceipt,
+  validateWorkspaceWorkerCancellationReceipt,
+} = require("./workspace-worker-runtime");
 
 const DIRECT_NATIVE_AGENT_POOL_SCHEMA = "direct_native_agent_pool@1";
 const DIRECT_NATIVE_AGENT_LAUNCH_SCHEMA = "direct_native_agent_launch@1";
 const DIRECT_NATIVE_AGENT_STATUS_SCHEMA = "direct_native_agent_status@1";
 const TERMINAL_STATES = new Set(["completed", "failed", "timeout", "cancelled"]);
+const CANCELLATION_REASON_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -25,6 +33,26 @@ function isPlainObject(value) {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function normalizeCancellationReason(value, fallback = "direct_agent_cancelled") {
+  const reasonCode = normalizeString(value, fallback);
+  return CANCELLATION_REASON_PATTERN.test(reasonCode) ? reasonCode : fallback;
+}
+
+function publicAgentErrorCode(value, fallback = "direct_agent_runtime_exception") {
+  const code = normalizeString(value, "");
+  return /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(code) ? code : fallback;
+}
+
+function publicResultDigest(value) {
+  const digest = normalizeString(value, "");
+  return /^sha256:[a-f0-9]{64}$/.test(digest) ? digest : "";
+}
+
+function publicEvidenceConfidence(value, fallback = "unknown") {
+  const confidence = normalizeString(value, fallback);
+  return new Set(["exact", "partial", "unknown"]).has(confidence) ? confidence : fallback;
 }
 
 function boundedInteger(value, fallback, min, max) {
@@ -43,6 +71,73 @@ function stableStringify(value) {
 
 function digestFor(domain, value) {
   return `sha256:${crypto.createHash("sha256").update(`${domain}\0${stableStringify(value)}`).digest("hex")}`;
+}
+
+function safeMutationOutcome(value) {
+  if (!isPlainObject(value) || value.schema !== "workspace_backend_mutation_outcome@1") return null;
+  const outcomeDigest = normalizeString(value.outcomeDigest, "");
+  const base = {
+    schema: "workspace_backend_mutation_outcome@1",
+    requestId: normalizeString(value.requestId, ""),
+    method: normalizeString(value.method, ""),
+    commitKind: normalizeString(value.commitKind, ""),
+    committed: value.committed === true,
+    ...(value.committed === true ? {} : {
+      indeterminate: value.indeterminate === true,
+      partialMutationPossible: value.partialMutationPossible === true,
+    }),
+    retainedForInspection: value.retainedForInspection === true,
+    ...(value.committed === true
+      ? { resultDigest: normalizeString(value.resultDigest, "") }
+      : { failureCode: publicAgentErrorCode(value.failureCode, "") }),
+    rawPathIncluded: false,
+  };
+  if (
+    !base.requestId || !base.method || !base.commitKind ||
+    value.rawPathIncluded !== false ||
+    (base.committed && !/^sha256:[a-f0-9]{64}$/.test(base.resultDigest)) ||
+    (!base.committed && (
+      base.indeterminate !== true ||
+      base.partialMutationPossible !== true ||
+      !base.failureCode
+    ))
+  ) {
+    return null;
+  }
+  const expectedDigest = `sha256:${crypto.createHash("sha256").update(stableStringify(base)).digest("hex")}`;
+  return outcomeDigest === expectedDigest ? { ...base, outcomeDigest } : null;
+}
+
+function buildPreStartCancellationReceipt(record) {
+  const base = {
+    schema: "direct_workspace_worker_cancellation_receipt@1",
+    targetRequestId: normalizeString(record.childAgentId, ""),
+    launchDigest: normalizeString(record.launchDigest, ""),
+    lifecycleSessionId: normalizeString(record._lifecycleSessionId, ""),
+    lifecycleLeaseId: normalizeString(record._lifecycleProjection?.leaseId, ""),
+    reasonCode: normalizeString(record._cancelReasonCode, "direct_agent_cancelled"),
+    acknowledged: true,
+    quiesced: true,
+    acknowledgementKind: "cancelled_before_runner_start",
+    outcomeDigest: "",
+    rawProcessDetailsIncluded: false,
+  };
+  return {
+    ...base,
+    receiptDigest: digestFor("direct-workspace-worker-cancellation-receipt@1", base),
+  };
+}
+
+function preStartCancellationReceipt(record, evidence = {}) {
+  if (
+    evidence?.cancelledBeforeStart !== true ||
+    record?._runnerStarted === true ||
+    record?._cancelRequested !== true
+  ) return null;
+  const receipt = buildPreStartCancellationReceipt(record);
+  return stableStringify(evidence.cancellationReceipt) === stableStringify(receipt)
+    ? receipt
+    : null;
 }
 
 function nowIso(now = Date.now) {
@@ -108,6 +203,15 @@ class DirectNativeAgentPool extends EventEmitter {
     this.workspaceWorkerRunner = typeof options.workspaceWorkerRunner === "function"
       ? options.workspaceWorkerRunner
       : null;
+    this.workspaceWorkerLifecycleRegistry = options.workspaceWorkerLifecycleRegistry || null;
+    const recovery = this.workspaceWorkerLifecycleRegistry?.recoverySnapshot?.() || {
+      status: "clean",
+      candidates: [],
+    };
+    this.recoveredSessionIds = new Set(
+      (Array.isArray(recovery.candidates) ? recovery.candidates : []).map((row) => row.sessionId),
+    );
+    this.settlementRetryAttempts = boundedInteger(options.settlementRetryAttempts, 3, 1, 10);
     this.now = typeof options.now === "function" ? options.now : Date.now;
     this.routes = new Map();
     this.jobs = new Map();
@@ -116,14 +220,22 @@ class DirectNativeAgentPool extends EventEmitter {
     this.activeCount = 0;
     this.sequence = 0;
     this.closed = false;
+    this.closeReasonCode = "";
+    this.cancellationRequestedAll = false;
   }
 
   descriptor() {
+    const recovery = this.recoverySnapshot();
     const descriptor = {
       schema: DIRECT_NATIVE_AGENT_POOL_SCHEMA,
       maxActiveChildren: this.maxActiveChildren,
       maxQueuedChildren: this.maxQueuedChildren,
       activeChildren: this.activeCount,
+      cancellingChildren: [...this.jobs.values()].filter((record) => record.state === "cancelling").length,
+      cancellationUnacknowledgedChildren: [...this.jobs.values()].filter((record) => record.state === "cancellation_unacknowledged").length,
+      settlementBlockedChildren: [...this.jobs.values()].filter((record) => record.state === "settlement_blocked").length,
+      durableRecoveryStatus: recovery.status,
+      durableRecoveryCandidateCount: recovery.candidateCount,
       queuedChildren: this.queue.length,
       totalChildren: this.jobs.size,
       providerTransportAvailable: Boolean(this.providerTurnRunner),
@@ -132,6 +244,8 @@ class DirectNativeAgentPool extends EventEmitter {
       supportedWorkspaceToolProfiles: ["read_only_worker", "implementation_worker"],
       closed: this.closed,
       acceptingNewChildren: !this.closed,
+      cancellationRequestedAll: this.cancellationRequestedAll,
+      drainComplete: this.closed && this.activeCount === 0 && recovery.status === "clean",
       capacityScope: "direct_runtime_process_shared_across_agent_tree",
       capacityIncludesPrimaryAgent: false,
       contextHandoffIndependentOfModel: true,
@@ -141,6 +255,36 @@ class DirectNativeAgentPool extends EventEmitter {
     };
     descriptor.poolDigest = digestFor("direct-native-agent-pool@1", descriptor);
     return descriptor;
+  }
+
+  recoverySnapshot() {
+    const durable = this.workspaceWorkerLifecycleRegistry?.recoverySnapshot?.() || {
+      schema: "direct_workspace_worker_recovery_snapshot@1",
+      candidates: [],
+    };
+    const candidates = (Array.isArray(durable.candidates) ? durable.candidates : [])
+      .filter((row) => this.recoveredSessionIds.has(row.sessionId));
+    return {
+      schema: "direct_workspace_worker_pool_recovery@1",
+      status: candidates.length ? "reconciliation_required" : "clean",
+      candidateCount: candidates.length,
+      candidates,
+      automaticReplayAllowed: false,
+      rawWorkspacePathIncluded: false,
+    };
+  }
+
+  reconcileRecoveredSession(input = {}) {
+    const sessionId = normalizeString(input.sessionId || input.receipt?.sessionId, "");
+    if (!this.recoveredSessionIds.has(sessionId)) {
+      const error = new Error("direct_workspace_worker_recovery_candidate_missing");
+      error.code = "direct_workspace_worker_recovery_candidate_missing";
+      throw error;
+    }
+    const session = this.workspaceWorkerLifecycleRegistry.reconcileInterruptedSession(sessionId, input);
+    this.recoveredSessionIds.delete(sessionId);
+    this.emit("changed", { type: "durable-recovery-reconciled", recovery: this.recoverySnapshot() });
+    return this.safeLifecycleProjection(session);
   }
 
   routeFor(record) {
@@ -192,6 +336,20 @@ class DirectNativeAgentPool extends EventEmitter {
     if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && !isPlainObject(input.project)) {
       return this.launchResult(null, "blocked", "workspace_worker_project_binding_missing");
     }
+    if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && this.recoverySnapshot().status !== "clean") {
+      return this.launchResult(null, "blocked", "direct_workspace_worker_restart_reconciliation_required");
+    }
+    let parentAuthorityPacket = null;
+    if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE) {
+      if (!isPlainObject(input.parentAuthorityPacket)) {
+        return this.launchResult(null, "blocked", "direct_workspace_parent_authority_missing");
+      }
+      try {
+        parentAuthorityPacket = validateWorkspaceParentAuthorityPacket(input.parentAuthorityPacket);
+      } catch (error) {
+        return this.launchResult(null, "blocked", normalizeString(error?.code, "direct_workspace_parent_authority_invalid"));
+      }
+    }
     const task = normalizeString(input.message || input.prompt || input.task, "");
     if (!task) return this.launchResult(null, "blocked", "missing_spawn_prompt");
     const projectId = normalizeString(input.projectId, "project_direct_agents");
@@ -218,6 +376,17 @@ class DirectNativeAgentPool extends EventEmitter {
       input.childAgentId,
       `direct_child_${++this.sequence}_${crypto.randomUUID().replace(/-/g, "").slice(0, 10)}`,
     );
+    if (this.jobs.has(childAgentId) || this.workspaceWorkerLifecycleRegistry?.sessionForChild?.(childAgentId)) {
+      return this.launchResult(null, "blocked", "direct_agent_child_identity_reused");
+    }
+    const launchId = `direct_agent_launch_${crypto.randomUUID().replace(/-/g, "")}`;
+    const launchDigest = digestFor("direct-native-agent-launch-identity@1", {
+      launchId,
+      childAgentId,
+      projectId,
+      workThreadId,
+      primaryThreadId,
+    });
     const record = {
       schema: DIRECT_NATIVE_AGENT_STATUS_SCHEMA,
       childAgentId,
@@ -225,6 +394,7 @@ class DirectNativeAgentPool extends EventEmitter {
       projectId,
       workThreadId,
       primaryThreadId,
+      launchDigest,
       parentAgentId,
       role: normalizeString(input.agentType || input.agent_type || input.role, "sub_agent_worker"),
       displayLabel: normalizeString(input.displayLabel, taskName),
@@ -255,6 +425,8 @@ class DirectNativeAgentPool extends EventEmitter {
       resultSummary: "",
       blockerCode: "",
       resultDigest: "",
+      mutationOutcome: null,
+      partialMutationPossible: false,
       epistemicCapture: {
         status: "pending",
         errorCode: "",
@@ -270,13 +442,48 @@ class DirectNativeAgentPool extends EventEmitter {
       _task: task,
       _contextMessages: contextMessages,
       _project: workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE ? input.project : null,
+      _parentAuthorityPacket: parentAuthorityPacket,
       _waiters: new Set(),
       _settled: false,
       _leaseActive: false,
       _abortController: null,
       _externalSignal: input.signal || null,
       _externalAbortListener: null,
+      _runnerStarted: false,
+      _runnerPromise: null,
+      _cancelRequested: false,
+      _cancelReasonCode: "",
+      _cancelRequestedAt: "",
+      _cancelAcknowledgedAt: "",
+      _cancellationReceipt: null,
+      _pendingSettlement: null,
+      _settlementAttempts: 0,
+      _lifecycleSessionId: "",
+      _lifecycleProjection: null,
+      _lifecycleErrorCode: "",
     };
+    if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && this.workspaceWorkerLifecycleRegistry) {
+      try {
+        const session = this.workspaceWorkerLifecycleRegistry.openSession({
+          sessionId: `workspace_worker_session_${childAgentId}`,
+          leaseId: `workspace_worker_lease_${childAgentId}`,
+          childAgentId,
+          projectId,
+          workThreadId,
+          primaryThreadId,
+          launchDigest,
+          toolProfile,
+          operationId: `pool-open:${childAgentId}`,
+        });
+        record._lifecycleSessionId = session.sessionId;
+        record._lifecycleProjection = this.safeLifecycleProjection(session);
+      } catch (error) {
+        return this.launchResult(null, "blocked", normalizeString(
+          error?.code,
+          "direct_workspace_worker_lifecycle_registration_failed",
+        ));
+      }
+    }
     this.jobs.set(childAgentId, record);
     this.taskIndex.set(taskKey, childAgentId);
     if (record._externalSignal?.addEventListener) {
@@ -299,6 +506,7 @@ class DirectNativeAgentPool extends EventEmitter {
       status,
       blockerCode: normalizeString(blockerCode, ""),
       childAgentId: normalizeString(record?.childAgentId, ""),
+      launchDigest: normalizeString(record?.launchDigest, ""),
       taskName: normalizeString(record?.taskName, ""),
       state: normalizeString(record?.state, status),
       model: normalizeString(record?.model, ""),
@@ -329,13 +537,34 @@ class DirectNativeAgentPool extends EventEmitter {
       this.cancelRecord(record, "direct_agent_launch_aborted");
       return;
     }
-    record.state = "running";
-    record.startedAt = nowIso(this.now);
     record._leaseActive = true;
     record._abortController = new AbortController();
     this.activeCount += 1;
-    Promise.resolve().then(async () => {
-      if (record._settled || this.closed) return;
+    if (record._lifecycleSessionId) {
+      const lifecycleError = this.transitionLifecycle(record, "activateLease", {
+        operationId: `pool-activate:${record.childAgentId}`,
+      });
+      if (lifecycleError) {
+        this.settleRecord(record, {
+          state: "failed",
+          blockerCode: lifecycleError,
+          resultSummary: lifecycleError,
+          evidenceConfidence: "partial",
+        });
+        return;
+      }
+    }
+    record.state = "running";
+    record.startedAt = nowIso(this.now);
+    const runnerPromise = Promise.resolve().then(async () => {
+      if (record._settled) return { cancelledBeforeStart: true };
+      if (record._cancelRequested) return {
+        cancelledBeforeStart: true,
+        cancellationAcknowledged: true,
+        backendQuiesced: true,
+        cancellationReceipt: buildPreStartCancellationReceipt(record),
+      };
+      record._runnerStarted = true;
       const commonInput = {
         childAgentId: record.childAgentId,
         displayLabel: record.displayLabel,
@@ -348,16 +577,77 @@ class DirectNativeAgentPool extends EventEmitter {
         projectId: record.projectId,
         workThreadId: record.workThreadId,
         primaryThreadId: record.primaryThreadId,
+        launchDigest: record.launchDigest,
+        lifecycleSessionId: record._lifecycleSessionId,
+        lifecycleLeaseId: normalizeString(record._lifecycleProjection?.leaseId, ""),
         signal: record._abortController.signal,
       };
-      const result = record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
+      return record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
         ? await this.workspaceWorkerRunner({
             ...commonInput,
             workspaceMode: record.workspaceMode,
             toolProfile: record.toolProfile,
+            parentAuthorityPacket: record._parentAuthorityPacket,
             project: record._project,
           })
         : await this.routeFor(record).spawnAndRun(commonInput);
+    });
+    record._runnerPromise = runnerPromise;
+    runnerPromise.then((result) => {
+      if (record._settled) return;
+      if (
+        record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE &&
+        result?.backendOwnershipUnresolved === true &&
+        !record._cancelRequested
+      ) {
+        this.markBackendQuiescenceUnacknowledged(record, result);
+        return;
+      }
+      if (record._cancelRequested) {
+        const mutationOutcome = safeMutationOutcome(result?.mutationOutcome);
+        if (!this.workspaceCancellationQuiesced(record, result)) {
+          this.markCancellationUnacknowledged(record, result);
+          return;
+        }
+        record._cancelAcknowledgedAt = nowIso(this.now);
+        const cancellationReceipt = preStartCancellationReceipt(record, result) ||
+          admittedWorkspaceWorkerCancellationReceipt(result, {
+            childAgentId: record.childAgentId,
+            projectId: record.projectId,
+            workThreadId: record.workThreadId,
+            primaryThreadId: record.primaryThreadId,
+            launchDigest: record.launchDigest,
+            lifecycleSessionId: record._lifecycleSessionId,
+            lifecycleLeaseId: normalizeString(record._lifecycleProjection?.leaseId, ""),
+            cancellationReasonCode: record._cancelReasonCode,
+          });
+        if (mutationOutcome?.partialMutationPossible === true) {
+          this.settleRecord(record, {
+            state: "failed",
+            blockerCode: "workspace_backend_mutation_commit_failed_indeterminate",
+            resultSummary: "Workspace mutation may be partial; inspect retained evidence before any retry.",
+            resultDigest: normalizeString(result?.resultDigest, ""),
+            mutationOutcome,
+            epistemicCapture: result?.epistemicCapture,
+            evidenceConfidence: "partial",
+            workspaceExecution: result?.workspaceExecution,
+            cancellationReceipt,
+          });
+          return;
+        }
+        this.settleRecord(record, {
+          state: "cancelled",
+          blockerCode: record._cancelReasonCode,
+          resultSummary: record._cancelReasonCode,
+          epistemicCapture: result?.epistemicCapture,
+          evidenceConfidence: "partial",
+          workspaceExecution: result?.workspaceExecution,
+          resultDigest: normalizeString(result?.resultDigest, ""),
+          mutationOutcome,
+          cancellationReceipt,
+        });
+        return;
+      }
       this.settleRecord(record, {
         state: TERMINAL_STATES.has(result.status) ? result.status : "failed",
         blockerCode: normalizeString(result.blockerCode, ""),
@@ -369,16 +659,48 @@ class DirectNativeAgentPool extends EventEmitter {
         epistemicCapture: result.epistemicCapture,
         evidenceConfidence: normalizeString(result.resultEnvelope?.confidence, "unknown"),
         workspaceExecution: result.workspaceExecution,
+        mutationOutcome: result.mutationOutcome,
       });
     }).catch((error) => {
+      if (record._settled) return;
+      if (
+        record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE &&
+        error?.workspaceBackendRequest === true &&
+        error?.backendQuiesced !== true &&
+        !record._cancelRequested
+      ) {
+        this.markBackendQuiescenceUnacknowledged(record, error);
+        return;
+      }
       const aborted = record._abortController?.signal.aborted || error?.name === "AbortError";
+      const mutationOutcome = safeMutationOutcome(error?.mutationOutcome);
+      if (record._cancelRequested && !this.workspaceCancellationQuiesced(record, error)) {
+        this.markCancellationUnacknowledged(record, error);
+        return;
+      }
+      if (
+        mutationOutcome?.partialMutationPossible === true &&
+        (!record._cancelRequested || this.workspaceCancellationQuiesced(record, error))
+      ) {
+        if (record._cancelRequested) record._cancelAcknowledgedAt = nowIso(this.now);
+        this.settleRecord(record, {
+          state: "failed",
+          blockerCode: "workspace_backend_mutation_commit_failed_indeterminate",
+          resultSummary: "Workspace mutation may be partial; inspect retained evidence before any retry.",
+          mutationOutcome,
+          epistemicCapture: { status: "unavailable", errorCode: mutationOutcome.failureCode },
+          evidenceConfidence: "partial",
+        });
+        return;
+      }
       const blockerCode = aborted
         ? "direct_agent_provider_aborted"
-        : normalizeString(error?.code, "direct_agent_runtime_exception");
+        : publicAgentErrorCode(error?.code, "direct_agent_runtime_exception");
+      if (record._cancelRequested) record._cancelAcknowledgedAt = nowIso(this.now);
       this.settleRecord(record, {
         state: aborted ? "cancelled" : "failed",
-        blockerCode,
-        resultSummary: blockerCode,
+        blockerCode: record._cancelRequested ? record._cancelReasonCode : blockerCode,
+        resultSummary: record._cancelRequested ? record._cancelReasonCode : blockerCode,
         epistemicCapture: {
           status: "unavailable",
           errorCode: blockerCode,
@@ -388,8 +710,269 @@ class DirectNativeAgentPool extends EventEmitter {
     });
   }
 
+  workspaceCancellationQuiesced(record, evidence = {}) {
+    if (record?.workspaceMode !== WORKSPACE_MODE_ISOLATED_WORKTREE) return true;
+    if (preStartCancellationReceipt(record, evidence)) return true;
+    return Boolean(admittedWorkspaceWorkerCancellationReceipt(evidence, {
+      childAgentId: record.childAgentId,
+      projectId: record.projectId,
+      workThreadId: record.workThreadId,
+      primaryThreadId: record.primaryThreadId,
+      launchDigest: record.launchDigest,
+      lifecycleSessionId: record._lifecycleSessionId,
+      lifecycleLeaseId: normalizeString(record._lifecycleProjection?.leaseId, ""),
+      cancellationReasonCode: record._cancelReasonCode,
+    }));
+  }
+
+  markCancellationUnacknowledged(record, evidence = {}) {
+    const mutationOutcome = safeMutationOutcome(evidence?.mutationOutcome);
+    if (mutationOutcome) {
+      const lifecycleError = this.transitionLifecycle(record, "recordMutationOutcome", {
+        operationId: `pool-record-mutation-outcome:${record.childAgentId}:${mutationOutcome.outcomeDigest.slice(7, 31)}`,
+        mutationOutcome,
+      });
+      if (lifecycleError) record._lifecycleErrorCode = lifecycleError;
+      record.mutationOutcome = mutationOutcome;
+      record.partialMutationPossible = mutationOutcome.partialMutationPossible === true;
+    }
+    record.state = "cancellation_unacknowledged";
+    record.blockerCode = normalizeString(
+      publicAgentErrorCode(
+        evidence?.code || evidence?.blockerCode,
+        "direct_workspace_worker_cancellation_unacknowledged",
+      ),
+      "direct_workspace_worker_cancellation_unacknowledged",
+    );
+    record.resultSummary = record.blockerCode;
+    record._lifecycleErrorCode = record.blockerCode;
+    this.emit("changed", this.publicRecord(record));
+  }
+
+  markBackendQuiescenceUnacknowledged(record, evidence = {}) {
+    const reasonCode = normalizeCancellationReason(
+      publicAgentErrorCode(
+        evidence?.code || evidence?.blockerCode,
+        "direct_workspace_worker_backend_quiescence_unacknowledged",
+      ),
+      "direct_workspace_worker_backend_quiescence_unacknowledged",
+    );
+    record._cancelRequested = true;
+    record._cancelReasonCode = reasonCode;
+    record._cancelRequestedAt = nowIso(this.now);
+    const lifecycleError = this.transitionLifecycle(record, "requestCancellation", {
+      operationId: `pool-request-cancel:${record.childAgentId}`,
+      reasonCode,
+    });
+    if (lifecycleError) record._lifecycleErrorCode = lifecycleError;
+    if (record._abortController && !record._abortController.signal.aborted) {
+      record._abortController.abort(reasonCode);
+    }
+    this.markCancellationUnacknowledged(record, evidence);
+  }
+
+  safeLifecycleProjection(session) {
+    if (!session) return null;
+    return {
+      schema: session.schema,
+      sessionId: session.sessionId,
+      leaseId: session.leaseId,
+      state: session.state,
+      leaseState: session.leaseState,
+      processState: session.processState,
+      revision: session.revision,
+      bindingDigest: normalizeString(session.binding?.bindingDigest, ""),
+      mutationOutcomeDigest: normalizeString(session.mutationOutcome?.outcomeDigest, ""),
+      partialMutationPossible: session.mutationOutcome?.partialMutationPossible === true,
+      launchDigest: normalizeString(session.launchDigest, ""),
+      cancellationReceiptDigest: normalizeString(session.cancellationReceipt?.receiptDigest, ""),
+      rawWorkspacePathIncluded: false,
+    };
+  }
+
+  transitionLifecycle(record, method, input = {}) {
+    if (!record?._lifecycleSessionId || !this.workspaceWorkerLifecycleRegistry) return "";
+    try {
+      const session = this.workspaceWorkerLifecycleRegistry[method](record._lifecycleSessionId, input);
+      record._lifecycleProjection = this.safeLifecycleProjection(session);
+      record._lifecycleErrorCode = "";
+      return "";
+    } catch (error) {
+      const code = normalizeString(error?.code, "direct_workspace_worker_lifecycle_transition_failed");
+      record._lifecycleErrorCode = code;
+      return code;
+    }
+  }
+
+  bindWorkspaceForChild(childAgentId, input = {}) {
+    const record = this.jobs.get(normalizeString(childAgentId, ""));
+    if (!record || !record._lifecycleSessionId) {
+      const error = new Error("direct_workspace_worker_lifecycle_session_missing");
+      error.code = "direct_workspace_worker_lifecycle_session_missing";
+      throw error;
+    }
+    const lifecycleError = this.transitionLifecycle(record, "bindWorkspace", {
+      operationId: normalizeString(input.operationId, `pool-bind:${record.childAgentId}`),
+      binding: input.binding,
+    });
+    if (lifecycleError) {
+      const error = new Error(lifecycleError);
+      error.code = lifecycleError;
+      throw error;
+    }
+    this.emit("changed", this.publicRecord(record));
+    return record._lifecycleProjection;
+  }
+
+  beginWorkspaceProvisioning(childAgentId, input = {}) {
+    const record = this.jobs.get(normalizeString(childAgentId, ""));
+    if (!record || !record._lifecycleSessionId) {
+      const error = new Error("direct_workspace_worker_lifecycle_session_missing");
+      error.code = "direct_workspace_worker_lifecycle_session_missing";
+      throw error;
+    }
+    const lifecycleError = this.transitionLifecycle(record, "beginProvisioning", {
+      operationId: normalizeString(input.operationId, `pool-provision:${record.childAgentId}`),
+      workerKey: input.workerKey,
+      branchName: input.branchName,
+    });
+    if (lifecycleError) {
+      const error = new Error(lifecycleError);
+      error.code = lifecycleError;
+      throw error;
+    }
+    this.emit("changed", this.publicRecord(record));
+    return record._lifecycleProjection;
+  }
+
+  commitLifecycleSettlement(record, patch = {}) {
+    if (!record?._lifecycleSessionId || !this.workspaceWorkerLifecycleRegistry) return "";
+    try {
+      const session = this.workspaceWorkerLifecycleRegistry.session(record._lifecycleSessionId);
+      if (!session) return "direct_workspace_worker_lifecycle_session_missing";
+      if (TERMINAL_STATES.has(session.state)) {
+        const expectedState = patch.state === "completed"
+          ? "completed"
+          : patch.state === "cancelled" ? "cancelled" : "failed";
+        if (session.state !== expectedState) {
+          return "direct_workspace_worker_lifecycle_settlement_conflict";
+        }
+        const expectedMutationOutcome = safeMutationOutcome(patch.mutationOutcome);
+        const storedMutationOutcome = safeMutationOutcome(session.mutationOutcome);
+        if (
+          normalizeString(expectedMutationOutcome?.outcomeDigest, "") !==
+          normalizeString(storedMutationOutcome?.outcomeDigest, "")
+        ) return "direct_workspace_worker_lifecycle_settlement_conflict";
+        const expectedReceipt = isPlainObject(patch.cancellationReceipt)
+          ? patch.cancellationReceipt
+          : null;
+        const expectedCancellationReason = expectedReceipt
+          ? normalizeString(record._cancelReasonCode, patch.blockerCode)
+          : "";
+        const canonicalExpectedReceipt = expectedReceipt
+          ? validateWorkspaceWorkerCancellationReceipt(expectedReceipt, expectedMutationOutcome, {
+              launchDigest: record.launchDigest,
+              lifecycleSessionId: record._lifecycleSessionId,
+              lifecycleLeaseId: normalizeString(record._lifecycleProjection?.leaseId, ""),
+              cancellationReasonCode: expectedCancellationReason,
+            })
+          : null;
+        if (expectedReceipt && !canonicalExpectedReceipt) {
+          return "direct_workspace_worker_lifecycle_settlement_conflict";
+        }
+        if (
+          normalizeString(session.blockerCode, "") !== normalizeString(patch.blockerCode, "") ||
+          normalizeString(session.resultDigest, "") !== normalizeString(patch.resultDigest, "") ||
+          normalizeString(session.cancellationReceipt?.runtimeReceiptDigest, "") !==
+            normalizeString(canonicalExpectedReceipt?.receiptDigest, "") ||
+          normalizeString(session.cancellationReceipt?.outcomeDigest, "") !==
+            normalizeString(canonicalExpectedReceipt?.outcomeDigest, "") ||
+          normalizeString(session.cancellationReceipt?.launchDigest, "") !==
+            normalizeString(canonicalExpectedReceipt?.launchDigest, "") ||
+          normalizeString(session.cancellationReceipt?.runtimeLifecycleSessionId, "") !==
+            normalizeString(canonicalExpectedReceipt?.lifecycleSessionId, "") ||
+          normalizeString(session.cancellationReceipt?.runtimeLifecycleLeaseId, "") !==
+            normalizeString(canonicalExpectedReceipt?.lifecycleLeaseId, "") ||
+          normalizeString(session.cancellationReceipt?.targetRequestId, "") !==
+            normalizeString(canonicalExpectedReceipt?.targetRequestId, "") ||
+          normalizeString(session.cancellationReceipt?.acknowledgementKind, "") !==
+            normalizeString(canonicalExpectedReceipt?.acknowledgementKind, "") ||
+          normalizeString(session.cancellationReceipt?.reasonCode, "") !== expectedCancellationReason
+        ) return "direct_workspace_worker_lifecycle_settlement_conflict";
+        record._lifecycleProjection = this.safeLifecycleProjection(session);
+        return "";
+      }
+      if (patch.state === "cancelled") {
+        if (session.state === "registered" || session.state === "active") {
+          const requestError = this.transitionLifecycle(record, "requestCancellation", {
+            operationId: `pool-request-cancel:${record.childAgentId}`,
+            reasonCode: record._cancelReasonCode || patch.blockerCode,
+          });
+          if (requestError) return requestError;
+        }
+        const current = this.workspaceWorkerLifecycleRegistry.session(record._lifecycleSessionId);
+        if (current.state === "cancelled") {
+          record._lifecycleProjection = this.safeLifecycleProjection(current);
+          return "";
+        }
+        return this.transitionLifecycle(record, "acknowledgeCancellation", {
+          operationId: `pool-ack-cancel:${record.childAgentId}`,
+          reasonCode: record._cancelReasonCode || patch.blockerCode,
+          blockerCode: patch.blockerCode,
+          resultDigest: patch.resultDigest,
+          mutationOutcome: patch.mutationOutcome,
+          cancellationReceipt: patch.cancellationReceipt,
+        });
+      }
+      return this.transitionLifecycle(record, "settleSession", {
+        operationId: `pool-settle:${record.childAgentId}:${patch.state}`,
+        state: patch.state === "completed" ? "completed" : "failed",
+        blockerCode: patch.blockerCode,
+        resultDigest: patch.resultDigest,
+        mutationOutcome: patch.mutationOutcome,
+        cancellationReceipt: patch.cancellationReceipt,
+      });
+    } catch (error) {
+      const code = normalizeString(error?.code, "direct_workspace_worker_lifecycle_settlement_failed");
+      record._lifecycleErrorCode = code;
+      return code;
+    }
+  }
+
   settleRecord(record, patch = {}) {
     if (!record || record._settled) return false;
+    let settledState = TERMINAL_STATES.has(patch.state) ? patch.state : "failed";
+    const isolatedWorkspace = record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE;
+    if (isolatedWorkspace && settledState === "timeout") settledState = "failed";
+    const originalBlockerCode = normalizeString(patch.blockerCode, "");
+    const blockerFallback = settledState === "completed"
+      ? ""
+      : settledState === "cancelled"
+        ? "direct_agent_cancelled"
+        : isolatedWorkspace && patch.state === "timeout"
+          ? "direct_workspace_worker_timeout"
+        : `direct_agent_child_${settledState}`;
+    const blockerCode = settledState === "completed"
+      ? ""
+      : publicAgentErrorCode(originalBlockerCode, blockerFallback);
+    const suppliedSummary = normalizeString(patch.resultSummary, "");
+    const projectedMutationOutcome = safeMutationOutcome(patch.mutationOutcome);
+    const isolatedSummary = settledState === "completed"
+      ? "Workspace worker completed."
+      : projectedMutationOutcome?.partialMutationPossible === true
+        ? "Workspace mutation may be partial; inspect retained evidence before any retry."
+        : blockerCode;
+    patch = {
+      ...patch,
+      state: settledState,
+      blockerCode,
+      resultSummary: isolatedWorkspace
+        ? isolatedSummary
+        : suppliedSummary && suppliedSummary !== originalBlockerCode
+          ? suppliedSummary
+          : blockerCode || "Child agent completed.",
+      resultDigest: publicResultDigest(patch.resultDigest),
+    };
     let workspaceExecution = null;
     if (isPlainObject(patch.workspaceExecution)) {
       try {
@@ -410,14 +993,36 @@ class DirectNativeAgentPool extends EventEmitter {
         };
       }
     }
+    const lifecycleError = this.commitLifecycleSettlement(record, patch);
+    if (lifecycleError) {
+      record._settlementAttempts += 1;
+      record.state = "settlement_blocked";
+      record.blockerCode = lifecycleError;
+      record.resultSummary = lifecycleError;
+      record._pendingSettlement = { ...patch };
+      this.emit("changed", this.publicRecord(record));
+      return false;
+    }
     record._settled = true;
-    record.state = TERMINAL_STATES.has(patch.state) ? patch.state : "failed";
-    record.blockerCode = normalizeString(patch.blockerCode, "");
+    record.state = patch.state;
+    record.blockerCode = patch.blockerCode;
     record.resultSummary = normalizeString(
       patch.resultSummary || record.blockerCode,
       record.state === "completed" ? "Child agent completed." : `Child agent ${record.state}.`,
     );
-    record.resultDigest = normalizeString(patch.resultDigest, record.resultDigest);
+    record.resultDigest = patch.resultDigest;
+    const mutationOutcome = safeMutationOutcome(patch.mutationOutcome);
+    if (mutationOutcome) {
+      record.mutationOutcome = mutationOutcome;
+      record.partialMutationPossible = mutationOutcome.partialMutationPossible === true;
+    }
+    if (isPlainObject(patch.cancellationReceipt)) {
+      record._cancellationReceipt = {
+        receiptDigest: normalizeString(patch.cancellationReceipt.receiptDigest, ""),
+        acknowledgementKind: normalizeString(patch.cancellationReceipt.acknowledgementKind, ""),
+        outcomeDigest: normalizeString(patch.cancellationReceipt.outcomeDigest, ""),
+      };
+    }
     if (workspaceExecution) record.workspaceExecution = workspaceExecution;
     const capture = normalizeEpistemicCapture(patch.epistemicCapture || record.epistemicCapture);
     record.epistemicCapture = {
@@ -429,7 +1034,7 @@ class DirectNativeAgentPool extends EventEmitter {
     };
     record.epistemicCaptureComplete = capture.complete;
     record.epistemicCaptureOmission = capture.omission;
-    record.evidenceConfidence = normalizeString(
+    record.evidenceConfidence = publicEvidenceConfidence(
       patch.evidenceConfidence,
       capture.complete ? "exact" : "partial",
     );
@@ -437,6 +1042,8 @@ class DirectNativeAgentPool extends EventEmitter {
     record._task = "";
     record._contextMessages = [];
     record._project = null;
+    record._parentAuthorityPacket = null;
+    record._pendingSettlement = null;
     this.queue = this.queue.filter((childAgentId) => childAgentId !== record.childAgentId);
     if (record._leaseActive) {
       record._leaseActive = false;
@@ -456,30 +1063,183 @@ class DirectNativeAgentPool extends EventEmitter {
 
   cancelRecord(record, blockerCode = "direct_agent_pool_closed") {
     if (!record || record._settled) return false;
-    if (record._abortController && !record._abortController.signal.aborted) {
-      record._abortController.abort(blockerCode);
-    }
-    return this.settleRecord(record, {
-      state: "cancelled",
-      blockerCode,
-      resultSummary: blockerCode,
-      epistemicCapture: {
-        status: "unavailable",
-        errorCode: blockerCode,
-      },
-      evidenceConfidence: "partial",
+    if (record._cancelRequested) return true;
+    const reasonCode = normalizeCancellationReason(blockerCode);
+    record._cancelRequested = true;
+    record._cancelReasonCode = reasonCode;
+    record._cancelRequestedAt = nowIso(this.now);
+    const lifecycleError = this.transitionLifecycle(record, "requestCancellation", {
+      operationId: `pool-request-cancel:${record.childAgentId}`,
+      reasonCode,
     });
+    if (lifecycleError) record._lifecycleErrorCode = lifecycleError;
+    if (!record._leaseActive) {
+      record._cancelAcknowledgedAt = nowIso(this.now);
+      return this.settleRecord(record, {
+        state: "cancelled",
+        blockerCode: reasonCode,
+        resultSummary: reasonCode,
+        epistemicCapture: {
+          status: "unavailable",
+          errorCode: reasonCode,
+        },
+        evidenceConfidence: "partial",
+      });
+    }
+    record.state = "cancelling";
+    if (record._abortController && !record._abortController.signal.aborted) {
+      record._abortController.abort(reasonCode);
+    }
+    this.emit("changed", this.publicRecord(record));
+    return true;
   }
 
   close(options = {}) {
-    if (this.closed) return this.descriptor();
+    this.stopAccepting(options);
+    this.requestCancellationForAll(options);
+    return this.descriptor();
+  }
+
+  stopAccepting(options = {}) {
     this.closed = true;
     const blockerCode = normalizeString(options.reasonCode, "direct_agent_pool_closed");
-    const pending = [...this.jobs.values()].filter((record) => !record._settled);
+    this.closeReasonCode = blockerCode;
+    return this.descriptor();
+  }
+
+  requestCancellationForAll(options = {}) {
+    if (!this.closed) this.stopAccepting(options);
+    if (this.cancellationRequestedAll) return this.descriptor();
+    const blockerCode = normalizeString(
+      options.reasonCode,
+      this.closeReasonCode || "direct_agent_pool_closed",
+    );
+    this.retryPendingSettlements({ attempts: this.settlementRetryAttempts });
+    this.cancellationRequestedAll = true;
+    const pending = [...this.jobs.values()].filter((record) =>
+      !record._settled && !record._pendingSettlement);
     this.queue = [];
     for (const record of pending) this.cancelRecord(record, blockerCode);
     this.routes.clear();
     return this.descriptor();
+  }
+
+  async drainAndClose(options = {}) {
+    const recovery = this.recoverySnapshot();
+    if (recovery.status !== "clean") {
+      this.stopAccepting(options);
+      return {
+        status: "reconciliation_required",
+        blockerCode: "direct_workspace_worker_restart_reconciliation_required",
+        recovery,
+        pool: this.descriptor(),
+      };
+    }
+    this.close(options);
+    this.retryPendingSettlements({ attempts: this.settlementRetryAttempts });
+    const timeoutMs = boundedInteger(options.timeoutMs, 30_000, 0, 300_000);
+    if (this.activeCount === 0) {
+      return { status: "drained", blockerCode: "", pool: this.descriptor() };
+    }
+    if (timeoutMs === 0) {
+      return { status: "timeout", blockerCode: "direct_agent_pool_drain_timeout", pool: this.descriptor() };
+    }
+    return new Promise((resolve) => {
+      let finished = false;
+      let retryTimer = null;
+      const finish = (status) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        clearInterval(retryTimer);
+        this.removeListener("changed", onChanged);
+        resolve({
+          status,
+          blockerCode: status === "drained" ? "" : "direct_agent_pool_drain_timeout",
+          pool: this.descriptor(),
+        });
+      };
+      const onChanged = () => {
+        this.retryPendingSettlements({ attempts: this.settlementRetryAttempts });
+        if (this.activeCount === 0) finish("drained");
+      };
+      this.on("changed", onChanged);
+      const timer = setTimeout(() => finish("timeout"), timeoutMs);
+      retryTimer = setInterval(onChanged, Math.min(50, Math.max(10, timeoutMs)));
+      retryTimer.unref?.();
+      onChanged();
+    });
+  }
+
+  interrupt(input = {}) {
+    const record = this.resolveTarget(
+      input.target || input.childAgentId || input.taskName || input.task_name,
+      input,
+    );
+    if (!record) {
+      return { status: "blocked", blockerCode: "target_agent_missing", record: null, pool: this.descriptor() };
+    }
+    const requestedReasonCode = normalizeString(input.reasonCode, "direct_agent_interrupted");
+    if (!CANCELLATION_REASON_PATTERN.test(requestedReasonCode)) {
+      return {
+        status: "blocked",
+        blockerCode: "direct_agent_cancellation_reason_invalid",
+        record: this.publicRecord(record),
+        pool: this.descriptor(),
+      };
+    }
+    this.cancelRecord(record, requestedReasonCode);
+    return {
+      status: TERMINAL_STATES.has(record.state) ? "completed" : "cancelling",
+      blockerCode: "",
+      record: this.publicRecord(record),
+      pool: this.descriptor(),
+    };
+  }
+
+  retrySettlement(input = {}) {
+    const record = this.resolveTarget(
+      input.target || input.childAgentId || input.taskName || input.task_name,
+      input,
+    );
+    if (!record || !record._pendingSettlement) return false;
+    const patch = record._pendingSettlement;
+    record._pendingSettlement = null;
+    return this.settleRecord(record, patch);
+  }
+
+  retryPendingSettlements(input = {}) {
+    if (this._retryingSettlements) {
+      return {
+        status: "reconciliation_required",
+        blockerCode: "direct_workspace_worker_settlement_retry_in_progress",
+        remainingChildAgentIds: [...this.jobs.values()]
+          .filter((record) => !record._settled && record._pendingSettlement)
+          .map((record) => record.childAgentId),
+        attempts: 0,
+      };
+    }
+    const attempts = boundedInteger(input.attempts, this.settlementRetryAttempts, 1, 10);
+    this._retryingSettlements = true;
+    try {
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const pending = [...this.jobs.values()].filter((record) =>
+          !record._settled && record._pendingSettlement &&
+          record._settlementAttempts < this.settlementRetryAttempts);
+        if (!pending.length) break;
+        for (const record of pending) this.retrySettlement({ childAgentId: record.childAgentId });
+      }
+    } finally {
+      this._retryingSettlements = false;
+    }
+    const remaining = [...this.jobs.values()].filter((record) =>
+      !record._settled && record._pendingSettlement);
+    return {
+      status: remaining.length ? "reconciliation_required" : "settled",
+      blockerCode: remaining.length ? "direct_workspace_worker_settlement_reconciliation_required" : "",
+      remainingChildAgentIds: remaining.map((record) => record.childAgentId),
+      attempts,
+    };
   }
 
   drain() {
@@ -500,6 +1260,7 @@ class DirectNativeAgentPool extends EventEmitter {
       projectId: record.projectId,
       workThreadId: record.workThreadId,
       primaryThreadId: record.primaryThreadId,
+      launchDigest: record.launchDigest,
       parentAgentId: record.parentAgentId,
       role: record.role,
       displayLabel: record.displayLabel,
@@ -522,12 +1283,30 @@ class DirectNativeAgentPool extends EventEmitter {
       resultSummary: record.resultSummary,
       blockerCode: record.blockerCode,
       resultDigest: record.resultDigest,
+      mutationOutcome: record.mutationOutcome ? { ...record.mutationOutcome } : null,
+      partialMutationPossible: record.partialMutationPossible === true,
       epistemicCapture: { ...record.epistemicCapture },
       epistemicCaptureComplete: record.epistemicCaptureComplete === true,
       epistemicCaptureOmission: record.epistemicCaptureOmission
         ? { ...record.epistemicCaptureOmission }
         : null,
       evidenceConfidence: record.evidenceConfidence,
+      cancellation: {
+        requested: record._cancelRequested === true,
+        reasonCode: record._cancelReasonCode,
+        requestedAt: record._cancelRequestedAt,
+        acknowledged: Boolean(record._cancelAcknowledgedAt),
+        acknowledgedAt: record._cancelAcknowledgedAt,
+        leaseActive: record._leaseActive === true,
+        receiptDigest: normalizeString(
+          record._lifecycleProjection?.cancellationReceiptDigest,
+          normalizeString(record._cancellationReceipt?.receiptDigest, ""),
+        ),
+        acknowledgementKind: normalizeString(record._cancellationReceipt?.acknowledgementKind, ""),
+        outcomeDigest: normalizeString(record._cancellationReceipt?.outcomeDigest, ""),
+      },
+      workspaceLifecycle: record._lifecycleProjection ? { ...record._lifecycleProjection } : null,
+      lifecycleErrorCode: record._lifecycleErrorCode,
       rawTaskIncluded: false,
       rawContextIncluded: false,
     };
@@ -638,7 +1417,7 @@ class DirectNativeAgentPool extends EventEmitter {
           listProjection: {
             schema: "direct_native_agent_list_projection@1",
             rowCount: rows.length,
-            activeCount: rows.filter((row) => ["running", "accepted"].includes(row.state)).length,
+            activeCount: rows.filter((row) => ["running", "accepted", "cancelling", "cancellation_unacknowledged", "settlement_blocked"].includes(row.state)).length,
             queuedCount: rows.filter((row) => row.state === "queued").length,
             terminalCount: rows.filter((row) => TERMINAL_STATES.has(row.state)).length,
             rows,

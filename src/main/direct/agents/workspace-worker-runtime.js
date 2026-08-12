@@ -1,5 +1,7 @@
 "use strict";
 
+const crypto = require("node:crypto");
+
 const {
   buildImplementationToolInitialRequest,
 } = require("../transport/codex-responses-transport");
@@ -16,6 +18,11 @@ const {
   workspaceWorkerInstructions,
   workspaceWorkerToolSchemas,
 } = require("./workspace-worker-contract");
+const {
+  boundedProviderEvidenceJson,
+  executeWorkspaceRepositoryTool,
+  safeRepositoryRelativePath,
+} = require("./workspace-worker-repository-tools");
 
 const DIRECT_WORKSPACE_WORKER_RESULT_SCHEMA = "direct_workspace_worker_result@1";
 const DIRECT_WORKSPACE_WORKER_EXECUTION_SCHEMA = "direct_workspace_worker_execution@1";
@@ -23,6 +30,7 @@ const DIRECT_WORKSPACE_WORKER_TOOL_RESULT_SCHEMA = "direct_workspace_worker_tool
 const MAX_PROVIDER_EVIDENCE_CHARS = 96 * 1024;
 const MAX_TOOL_OUTPUT_CHARS = 48 * 1024;
 const MAX_PARENT_SUMMARY_CHARS = 1600;
+const ADMITTED_CANCELLATION_RESULTS = new WeakMap();
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -30,6 +38,200 @@ function isPlainObject(value) {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function cancellationReasonCode(value, fallback = "direct_workspace_worker_cancelled") {
+  const reasonCode = normalizeString(value, fallback);
+  return /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(reasonCode)
+    ? reasonCode
+    : fallback;
+}
+
+function publicRuntimeErrorCode(value, fallback = "direct_workspace_worker_runtime_exception") {
+  const code = normalizeString(value, "");
+  return /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(code) ? code : fallback;
+}
+
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+}
+
+function safeMutationOutcome(value) {
+  if (!isPlainObject(value) || value.schema !== "workspace_backend_mutation_outcome@1") return null;
+  const committed = value.committed === true;
+  const base = {
+    schema: "workspace_backend_mutation_outcome@1",
+    requestId: normalizeString(value.requestId, ""),
+    method: normalizeString(value.method, ""),
+    commitKind: normalizeString(value.commitKind, ""),
+    committed,
+    ...(committed ? {} : {
+      indeterminate: value.indeterminate === true,
+      partialMutationPossible: value.partialMutationPossible === true,
+    }),
+    retainedForInspection: value.retainedForInspection === true,
+    ...(committed
+      ? { resultDigest: normalizeString(value.resultDigest, "") }
+      : { failureCode: publicRuntimeErrorCode(value.failureCode, "") }),
+    rawPathIncluded: false,
+  };
+  const outcomeDigest = normalizeString(value.outcomeDigest, "");
+  const expectedOutcomeDigest = `sha256:${crypto.createHash("sha256")
+    .update(stableStringify(base)).digest("hex")}`;
+  if (
+    !base.requestId ||
+    !base.method ||
+    !base.commitKind ||
+    outcomeDigest !== expectedOutcomeDigest ||
+    (committed && !/^sha256:[a-f0-9]{64}$/.test(base.resultDigest)) ||
+    (!committed && (
+      base.indeterminate !== true ||
+      base.partialMutationPossible !== true ||
+      !base.failureCode
+    )) ||
+    value.rawPathIncluded !== false
+  ) {
+    return null;
+  }
+  return { ...base, outcomeDigest };
+}
+
+function canonicalCancellationReceipt(value, mutationOutcome = null, binding = {}, options = {}) {
+  if (!isPlainObject(value) || value.acknowledged !== true || value.quiesced !== true) return null;
+  const suppliedOutcomeDigest = normalizeString(value.outcomeDigest, "");
+  const mutationOutcomeDigest = normalizeString(mutationOutcome?.outcomeDigest, "");
+  if (
+    suppliedOutcomeDigest && mutationOutcomeDigest &&
+    suppliedOutcomeDigest !== mutationOutcomeDigest
+  ) return null;
+  const outcomeDigest = suppliedOutcomeDigest || mutationOutcomeDigest;
+  if (outcomeDigest && !/^sha256:[a-f0-9]{64}$/.test(outcomeDigest)) return null;
+  if (!mutationOutcome && outcomeDigest) return null;
+  const acknowledgementKind = normalizeString(value.acknowledgementKind, "");
+  if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/.test(acknowledgementKind)) return null;
+  const launchDigest = normalizeString(binding.launchDigest, "");
+  const lifecycleSessionId = normalizeString(binding.lifecycleSessionId, "");
+  const lifecycleLeaseId = normalizeString(binding.lifecycleLeaseId, "");
+  const reasonCode = normalizeString(binding.cancellationReasonCode, "");
+  if (
+    !/^sha256:[a-f0-9]{64}$/.test(launchDigest) ||
+    !/^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(reasonCode) ||
+    (value.launchDigest && value.launchDigest !== launchDigest) ||
+    (value.lifecycleSessionId && value.lifecycleSessionId !== lifecycleSessionId) ||
+    (value.lifecycleLeaseId && value.lifecycleLeaseId !== lifecycleLeaseId) ||
+    (value.reasonCode && value.reasonCode !== reasonCode)
+  ) return null;
+  if (
+    options.requireExplicitBinding === true &&
+    (
+      value.launchDigest !== launchDigest ||
+      value.lifecycleSessionId !== lifecycleSessionId ||
+      value.lifecycleLeaseId !== lifecycleLeaseId ||
+      value.reasonCode !== reasonCode
+    )
+  ) return null;
+  const base = {
+    schema: "direct_workspace_worker_cancellation_receipt@1",
+    targetRequestId: normalizeString(value.targetRequestId, ""),
+    launchDigest,
+    lifecycleSessionId,
+    lifecycleLeaseId,
+    reasonCode,
+    acknowledged: true,
+    quiesced: true,
+    acknowledgementKind,
+    outcomeDigest,
+    rawProcessDetailsIncluded: false,
+  };
+  if (mutationOutcome && base.targetRequestId !== mutationOutcome.requestId) return null;
+  const receiptDigest = digestFor("direct-workspace-worker-cancellation-receipt@1", base);
+  if (value.receiptDigest && value.receiptDigest !== receiptDigest) return null;
+  return { ...base, receiptDigest };
+}
+
+function validateWorkspaceWorkerCancellationReceipt(value, mutationOutcome, binding = {}) {
+  return canonicalCancellationReceipt(value, mutationOutcome, binding, {
+    requireExplicitBinding: true,
+  });
+}
+
+function cancellationAdmissionIdentity(input = {}) {
+  return Object.freeze({
+    childAgentId: normalizeString(input.childAgentId, "workspace_worker_unbound"),
+    projectId: normalizeString(input.projectId, "project_direct_agents"),
+    workThreadId: normalizeString(input.workThreadId, ""),
+    primaryThreadId: normalizeString(input.primaryThreadId, ""),
+    launchDigest: normalizeString(input.launchDigest, ""),
+    lifecycleSessionId: normalizeString(input.lifecycleSessionId, ""),
+    lifecycleLeaseId: normalizeString(input.lifecycleLeaseId, ""),
+    cancellationReasonCode: normalizeString(input.cancellationReasonCode, ""),
+  });
+}
+
+function admissionIdentityMatches(actual = {}, expected = {}) {
+  return [
+    "childAgentId",
+    "projectId",
+    "workThreadId",
+    "primaryThreadId",
+    "launchDigest",
+    "lifecycleSessionId",
+    "lifecycleLeaseId",
+    "cancellationReasonCode",
+  ].every((key) =>
+    !normalizeString(expected[key], "") || actual[key] === normalizeString(expected[key], ""));
+}
+
+function admittedWorkspaceWorkerCancellationReceipt(result, expectedIdentity = {}) {
+  if (!isPlainObject(result)) return null;
+  const admissionIdentity = ADMITTED_CANCELLATION_RESULTS.get(result);
+  if (!admissionIdentity || !admissionIdentityMatches(admissionIdentity, expectedIdentity)) return null;
+  const mutationOutcome = safeMutationOutcome(result.mutationOutcome);
+  const receipt = validateWorkspaceWorkerCancellationReceipt(
+    result.cancellationReceipt,
+    mutationOutcome,
+    admissionIdentity,
+  );
+  if (
+    !receipt ||
+    result.cancellationAcknowledged !== true ||
+    result.backendQuiesced !== true
+  ) return null;
+  return { ...receipt, admissionIdentity: { ...admissionIdentity } };
+}
+
+function projectAdmittedWorkspaceWorkerResult(source, projection = {}) {
+  if (!isPlainObject(source) || !isPlainObject(projection)) {
+    const error = new Error("Workspace worker result projection requires admitted objects.");
+    error.code = "direct_workspace_worker_result_projection_invalid";
+    throw error;
+  }
+  const admissionIdentity = ADMITTED_CANCELLATION_RESULTS.get(source);
+  const admittedReceipt = admittedWorkspaceWorkerCancellationReceipt(source);
+  const result = { ...source, ...projection };
+  if (admittedReceipt) {
+    for (const key of [
+      "status",
+      "blockerCode",
+      "cancellationAcknowledged",
+      "backendQuiesced",
+      "mutationOutcome",
+      "cancellationReceipt",
+      "resultDigest",
+    ]) {
+      if (Object.hasOwn(projection, key) && stableStringify(projection[key]) !== stableStringify(source[key])) {
+        const error = new Error("Workspace worker projection cannot rewrite admitted cancellation evidence.");
+        error.code = "direct_workspace_worker_cancellation_projection_conflict";
+        throw error;
+      }
+    }
+    Object.freeze(result);
+    ADMITTED_CANCELLATION_RESULTS.set(result, admissionIdentity);
+  }
+  return result;
 }
 
 function boundedText(value, limit = MAX_TOOL_OUTPUT_CHARS) {
@@ -97,30 +299,7 @@ function redactNativeRoot(value, nativeRoot) {
   return text;
 }
 
-function safeRelativePath(value) {
-  const text = normalizeString(value, "").replace(/\\/g, "/");
-  if (
-    !text ||
-    text.startsWith("/") ||
-    /^[A-Za-z]:\//.test(text) ||
-    text.includes("://") ||
-    /[\0\r\n]/.test(text) ||
-    text.split("/").includes("..")
-  ) {
-    const error = new Error("Workspace worker tools require a contained project-relative path.");
-    error.code = "direct_workspace_worker_path_invalid";
-    throw error;
-  }
-  const relativePath = text.replace(/^\.\/+/, "");
-  if (/(?:^|\/)\.git(?:\/|$)/i.test(relativePath)) {
-    const error = new Error("Workspace worker tools cannot read or address private Git realization metadata.");
-    error.code = "direct_workspace_worker_git_metadata_forbidden";
-    throw error;
-  }
-  return relativePath;
-}
-
-function safeTestTargets(value = []) {
+function safeTestTargets(value = [], profileId = "") {
   const source = Array.isArray(value) ? value : [];
   if (source.length > 16) {
     const error = new Error("Workspace worker test target count exceeded the compiled limit.");
@@ -128,10 +307,22 @@ function safeTestTargets(value = []) {
     throw error;
   }
   return source.map((entry) => {
-    const target = normalizeString(entry, "");
+    const rawTarget = typeof entry === "string" ? entry : "";
+    const target = normalizeString(rawTarget, "");
     const filePart = target.split("::", 1)[0];
-    safeRelativePath(filePart);
-    if (target.startsWith("-") || /[|&;`$<>]/.test(target)) {
+    safeRepositoryRelativePath(filePart);
+    const arcPytestTarget = profileId === "arcagi3_pinned_make_actions";
+    const nodeIds = target.split("::");
+    if (
+      target.startsWith("-") ||
+      /[|&;`$<>]/.test(target) ||
+      (arcPytestTarget && (
+        rawTarget !== rawTarget.trim() ||
+        /[\s'"\\]/.test(target) ||
+        !filePart.endsWith(".py") ||
+        nodeIds.some((part) => !part)
+      ))
+    ) {
       const error = new Error("Workspace worker test target is outside the compiled argument grammar.");
       error.code = "direct_workspace_worker_test_target_invalid";
       throw error;
@@ -152,13 +343,20 @@ function providerPrompt(task, contextMessages = [], evidence = []) {
   }
   sections.push("[DELEGATED TASK]", task, "[END DELEGATED TASK]");
   if (evidence.length) {
-    const joined = evidence.join("\n\n");
+    const admittedEvidence = [];
+    let admittedChars = 0;
+    for (let index = evidence.length - 1; index >= 0; index -= 1) {
+      const row = evidence[index];
+      const separatorChars = admittedEvidence.length ? 2 : 0;
+      if (row.length + admittedChars + separatorChars > MAX_PROVIDER_EVIDENCE_CHARS) break;
+      admittedEvidence.unshift(row);
+      admittedChars += row.length + separatorChars;
+    }
+    const joined = admittedEvidence.join("\n\n");
     sections.push(
       "",
       "[ADMITTED LOCAL TOOL RESULT EVIDENCE]",
-      joined.length > MAX_PROVIDER_EVIDENCE_CHARS
-        ? joined.slice(joined.length - MAX_PROVIDER_EVIDENCE_CHARS)
-        : joined,
+      joined,
       "[END ADMITTED LOCAL TOOL RESULT EVIDENCE]",
       "Continue the same delegated task. Request at most one next declared tool, or answer final.",
     );
@@ -168,6 +366,19 @@ function providerPrompt(task, contextMessages = [], evidence = []) {
 
 function toolResult(input = {}) {
   const callId = normalizeString(input.callId, "");
+  const providerOutputText = typeof input.providerOutputText === "string" ? input.providerOutputText : "";
+  if (providerOutputText.length > MAX_TOOL_OUTPUT_CHARS) {
+    const error = new Error("Workspace worker tool evidence exceeded its structural output budget.");
+    error.code = "direct_workspace_worker_tool_result_too_large";
+    throw error;
+  }
+  try {
+    JSON.parse(providerOutputText);
+  } catch {
+    const error = new Error("Workspace worker tool evidence is not one structurally complete JSON envelope.");
+    error.code = "direct_workspace_worker_tool_result_json_invalid";
+    throw error;
+  }
   const base = {
     schema: DIRECT_WORKSPACE_WORKER_TOOL_RESULT_SCHEMA,
     stepOrdinal: Number(input.stepOrdinal || 0),
@@ -183,7 +394,8 @@ function toolResult(input = {}) {
     sideEffectExecuted: input.sideEffectExecuted === true,
     workspaceBindingId: normalizeString(input.workspaceBindingId, ""),
     workspaceBindingDigest: normalizeString(input.workspaceBindingDigest, ""),
-    providerOutputText: boundedText(input.providerOutputText, MAX_TOOL_OUTPUT_CHARS),
+    providerOutputText,
+    mutationOutcome: safeMutationOutcome(input.mutationOutcome),
     rawWorkspacePathIncluded: false,
     rawProviderPayloadIncluded: false,
   };
@@ -208,32 +420,19 @@ async function executeWorkspaceTool(input = {}) {
     workspaceBindingId: contract.binding.bindingId,
     workspaceBindingDigest: contract.binding.bindingDigest,
   };
-  if (toolName === "read_file") {
-    const relPath = safeRelativePath(args.path || args.relPath);
-    const raw = await provisioned.workspaceRequest("readFile", {
-      relPath,
-      rejectSensitive: true,
-    }, 30_000);
-    const text = redactNativeRoot(boundedText(raw?.text, MAX_TOOL_OUTPUT_CHARS), provisioned.nativeRoot);
-    const scan = scanToolResultTextForSecrets(text);
-    if (scan.status === "blocked") {
-      const error = new Error("Workspace worker read result contained auth-like material and was withheld.");
-      error.code = "direct_workspace_worker_read_redaction_failed";
-      throw error;
-    }
-    const providerOutput = {
-      kind: "read_file_result",
-      path: normalizeString(raw?.relPath, relPath),
-      text,
-      size: Number(raw?.size || 0),
-      truncated: raw?.truncated === true,
-      binary: raw?.binary === true,
-      rawWorkspacePathIncluded: false,
-    };
+  const requestOptions = input.signal ? { signal: input.signal } : {};
+  if (["inspect_repository", "list_files", "match_files", "search_text", "read_file"].includes(toolName)) {
+    const repositoryResult = await executeWorkspaceRepositoryTool({
+      toolName,
+      args,
+      contract,
+      provisioned,
+      signal: input.signal,
+    });
     return toolResult({
       ...common,
-      summary: `${providerOutput.path} · ${providerOutput.size} bytes${providerOutput.truncated ? " · truncated" : ""}`,
-      providerOutputText: JSON.stringify(providerOutput),
+      summary: repositoryResult.summary,
+      providerOutputText: repositoryResult.providerOutputText,
       sideEffectExecuted: false,
     });
   }
@@ -244,12 +443,21 @@ async function executeWorkspaceTool(input = {}) {
       error.code = "direct_workspace_worker_patch_missing";
       throw error;
     }
-    const plan = await provisioned.workspaceRequest("applyPatch", { mode: "dryRun", patch }, 30_000);
-    const applied = await provisioned.workspaceRequest("applyPatch", {
+    const plan = await provisioned.workspaceRequest("applyWorkspaceWorkerPatch", {
+      bindingDigest: contract.binding.bindingDigest,
+      mode: "dryRun",
+      patch,
+    }, 30_000, requestOptions);
+    const applied = await provisioned.workspaceRequest("applyWorkspaceWorkerPatch", {
+      bindingDigest: contract.binding.bindingDigest,
       mode: "apply",
       patch,
       patchPlanId: plan?.patchPlanId,
-    }, 30_000);
+    }, 30_000, requestOptions);
+    const appliedMutationOutcome = safeMutationOutcome(applied?.requestOutcome);
+    if (typeof input.onMutationOutcome === "function" && appliedMutationOutcome) {
+      input.onMutationOutcome(appliedMutationOutcome);
+    }
     const files = (Array.isArray(applied?.files) ? applied.files : []).map((file) => ({
       path: normalizeString(file.displayPath, ""),
       operation: normalizeString(file.operation, "update"),
@@ -272,8 +480,9 @@ async function executeWorkspaceTool(input = {}) {
       summary: files.length
         ? files.map((file) => `${file.operation} ${file.path}`).join("; ")
         : "Patch applied with no reported file rows.",
-      providerOutputText: JSON.stringify(providerOutput),
+      providerOutputText: boundedProviderEvidenceJson(providerOutput),
       sideEffectExecuted: true,
+      mutationOutcome: appliedMutationOutcome,
     });
   }
   if (toolName === "run_test") {
@@ -282,13 +491,26 @@ async function executeWorkspaceTool(input = {}) {
       error.code = "direct_workspace_worker_test_not_admitted";
       throw error;
     }
-    const targets = safeTestTargets(args.targets);
+    const targets = safeTestTargets(args.targets, contract.testProfile.profileId);
+    const action = normalizeString(
+      args.action,
+      targets.length && contract.testProfile.targetedAction
+        ? contract.testProfile.targetedAction
+        : contract.testProfile.defaultAction,
+    );
+    if (contract.testProfile.actionsAllowed.length && !contract.testProfile.actionsAllowed.includes(action)) {
+      const error = new Error("Workspace worker requested a test action outside the compiled profile.");
+      error.code = "direct_workspace_worker_test_action_not_admitted";
+      throw error;
+    }
     const timeoutMs = Math.max(1000, Math.min(120_000, Number(args.timeout_ms || args.timeoutMs || 120_000) || 120_000));
     const raw = await provisioned.workspaceRequest("runDirectTest", {
+      bindingDigest: contract.binding.bindingDigest,
       profileDigest: contract.testProfile.profileDigest,
+      action,
       targets,
       timeoutMs,
-    }, timeoutMs + 10_000);
+    }, timeoutMs + 10_000, requestOptions);
     const stdout = redactNativeRoot(boundedText(raw?.stdout, MAX_TOOL_OUTPUT_CHARS / 2), provisioned.nativeRoot);
     const stderr = redactNativeRoot(boundedText(raw?.stderr, MAX_TOOL_OUTPUT_CHARS / 2), provisioned.nativeRoot);
     const scan = scanToolResultTextForSecrets(`${stdout}\n${stderr}`);
@@ -296,6 +518,7 @@ async function executeWorkspaceTool(input = {}) {
     const providerOutput = {
       kind: "run_test_result",
       testProfileId: contract.testProfile.profileId,
+      action,
       targets,
       exitCode: Number.isFinite(Number(raw?.exitCode)) ? Number(raw.exitCode) : null,
       timedOut: raw?.timedOut === true,
@@ -310,7 +533,10 @@ async function executeWorkspaceTool(input = {}) {
       ...common,
       status: providerOutput.exitCode === 0 && !providerOutput.timedOut ? "completed" : "failed",
       summary: `${contract.testProfile.profileId} · exit ${providerOutput.exitCode ?? "unknown"}${providerOutput.timedOut ? " · timed out" : ""}`,
-      providerOutputText: JSON.stringify(providerOutput),
+      providerOutputText: boundedProviderEvidenceJson(providerOutput, {
+        redactionErrorCode: "direct_workspace_worker_test_result_redaction_failed",
+        redactionMessage: "Workspace worker test evidence contained auth-like material and was withheld.",
+      }),
       sideEffectExecuted: true,
     });
   }
@@ -332,12 +558,16 @@ function publicToolResult(result = {}) {
     workspaceBindingId: result.workspaceBindingId,
     workspaceBindingDigest: result.workspaceBindingDigest,
     resultDigest: result.resultDigest,
+    mutationOutcome: result.mutationOutcome ? { ...result.mutationOutcome } : null,
     rawWorkspacePathIncluded: false,
     rawProviderPayloadIncluded: false,
   };
 }
 
-function executionProjection(contract, results = [], status = "running") {
+function executionProjection(contract, results = [], status = "running", pendingMutationOutcome = null) {
+  const latestMutationOutcome = safeMutationOutcome(pendingMutationOutcome) || [...results].reverse()
+    .map((result) => safeMutationOutcome(result?.mutationOutcome))
+    .find(Boolean) || null;
   const projection = {
     schema: DIRECT_WORKSPACE_WORKER_EXECUTION_SCHEMA,
     status,
@@ -348,10 +578,14 @@ function executionProjection(contract, results = [], status = "running") {
     declaredTools: [...contract.authority.declaredTools],
     binding: { ...contract.binding },
     contextAdmission: { ...contract.contextAdmission },
+    repositoryPolicy: { ...contract.repositoryPolicy },
+    policyCompilation: { ...contract.policyCompilation },
     testProfile: contract.testProfile ? { ...contract.testProfile } : null,
     toolResults: results.map(publicToolResult),
     toolResultCount: results.length,
-    workspaceMutationStarted: results.some((result) => result.sideEffectExecuted === true),
+    workspaceMutationStarted: Boolean(latestMutationOutcome) ||
+      results.some((result) => result.sideEffectExecuted === true),
+    latestMutationOutcome,
     retainedForInspection: contract.binding.retainedAfterCompletion === true,
     recursiveSpawnAllowed: false,
     remoteMutationAllowed: false,
@@ -368,6 +602,21 @@ function executionProjection(contract, results = [], status = "running") {
 }
 
 function resultFor(input = {}) {
+  const mutationOutcome = safeMutationOutcome(
+    input.mutationOutcome || input.workspaceExecution?.latestMutationOutcome,
+  );
+  const receiptInput = isPlainObject(input.cancellationReceipt) ? {
+    ...input.cancellationReceipt,
+    launchDigest: normalizeString(input.admissionIdentity?.launchDigest, ""),
+    lifecycleSessionId: normalizeString(input.admissionIdentity?.lifecycleSessionId, ""),
+    lifecycleLeaseId: normalizeString(input.admissionIdentity?.lifecycleLeaseId, ""),
+    reasonCode: normalizeString(input.admissionIdentity?.cancellationReasonCode, ""),
+  } : null;
+  const cancellationReceipt = canonicalCancellationReceipt(
+    receiptInput,
+    mutationOutcome,
+    input.admissionIdentity,
+  );
   const result = {
     schema: DIRECT_WORKSPACE_WORKER_RESULT_SCHEMA,
     status: normalizeString(input.status, "failed"),
@@ -384,6 +633,12 @@ function resultFor(input = {}) {
     recursiveSpawnStarted: false,
     remoteMutationStarted: false,
     bottomUpMessagingStarted: false,
+    cancellationAcknowledged: cancellationReceipt?.acknowledged === true,
+    backendQuiesced: cancellationReceipt?.quiesced === true,
+    backendOwnershipUnresolved: input.backendOwnershipUnresolved === true,
+    mutationOutcome,
+    partialMutationPossible: mutationOutcome?.partialMutationPossible === true,
+    cancellationReceipt,
     rawWorkspacePathIncluded: false,
     rawPromptIncluded: false,
     rawContextIncluded: false,
@@ -397,19 +652,59 @@ function resultFor(input = {}) {
       normalizedEventCount: result.captureResult.normalizedEvents?.length || 0,
     } : null,
   });
+  if (cancellationReceipt) {
+    Object.freeze(cancellationReceipt);
+    if (mutationOutcome) Object.freeze(mutationOutcome);
+    Object.freeze(result);
+    ADMITTED_CANCELLATION_RESULTS.set(
+      result,
+      cancellationAdmissionIdentity(input.admissionIdentity),
+    );
+  }
   return result;
 }
 
 async function runDirectWorkspaceWorker(input = {}) {
+  const launchDigest = /^sha256:[a-f0-9]{64}$/.test(normalizeString(input.launchDigest, ""))
+    ? input.launchDigest
+    : digestFor("direct-workspace-worker-standalone-launch@1", {
+        launchId: crypto.randomUUID(),
+        childAgentId: normalizeString(input.childAgentId, "workspace_worker_unbound"),
+        projectId: normalizeString(input.projectId, "project_direct_agents"),
+      });
+  const baseAdmissionIdentity = cancellationAdmissionIdentity({ ...input, launchDigest });
+  const workerResult = (resultInput = {}) => resultFor({
+    ...resultInput,
+    admissionIdentity: cancellationAdmissionIdentity({
+      ...baseAdmissionIdentity,
+      cancellationReasonCode: normalizeString(
+        cancellationReasonCode(
+          input.signal?.reason,
+          cancellationReasonCode(resultInput.blockerCode),
+        ),
+      ),
+    }),
+  });
   if (typeof input.workspaceProvisioner !== "function") {
-    return resultFor({ status: "blocked", blockerCode: "direct_workspace_worker_provisioner_missing" });
+    return workerResult({ status: "blocked", blockerCode: "direct_workspace_worker_provisioner_missing" });
   }
   if (typeof input.providerRequestRunner !== "function") {
-    return resultFor({ status: "blocked", blockerCode: "direct_workspace_worker_provider_runner_missing" });
+    return workerResult({ status: "blocked", blockerCode: "direct_workspace_worker_provider_runner_missing" });
   }
   const task = normalizeString(input.prompt || input.task || input.message, "");
-  if (!task) return resultFor({ status: "blocked", blockerCode: "missing_spawn_prompt" });
-  if (input.signal?.aborted) return resultFor({ status: "cancelled", blockerCode: "direct_workspace_worker_aborted" });
+  if (!task) return workerResult({ status: "blocked", blockerCode: "missing_spawn_prompt" });
+  if (input.signal?.aborted) return workerResult({
+    status: "cancelled",
+    blockerCode: "direct_workspace_worker_aborted",
+    cancellationAcknowledged: true,
+    backendQuiesced: true,
+    cancellationReceipt: {
+      targetRequestId: "",
+      acknowledged: true,
+      quiesced: true,
+      acknowledgementKind: "cancelled_before_provisioning",
+    },
+  });
   let provisioned;
   let contract;
   let admittedContextMessages = [];
@@ -426,11 +721,17 @@ async function runDirectWorkspaceWorker(input = {}) {
     try {
       await provisioned?.release?.();
     } catch {}
-    return resultFor({
+    return workerResult({
       status: input.signal?.aborted ? "cancelled" : "failed",
-      blockerCode: normalizeString(error?.code, "direct_workspace_worker_provision_failed"),
+      blockerCode: publicRuntimeErrorCode(error?.code, "direct_workspace_worker_provision_failed"),
+      cancellationAcknowledged: error?.cancellationAcknowledged === true,
+      backendQuiesced: error?.backendQuiesced === true,
+      backendOwnershipUnresolved: error?.workspaceBackendRequest === true && error?.backendQuiesced !== true,
+      cancellationReceipt: error?.cancellationReceipt,
+      mutationOutcome: error?.mutationOutcome,
     });
   }
+  let retainProvisionedBackend = false;
   try {
     const tools = workspaceWorkerToolSchemas(contract);
     const instructions = workspaceWorkerInstructions(contract);
@@ -439,14 +740,18 @@ async function runDirectWorkspaceWorker(input = {}) {
     const evidence = [];
     let responseId = "";
     let latestProviderResult = null;
+    let activeOperation = "provider";
+    let activeToolMutationOutcome = null;
     try {
       for (let stepOrdinal = 1; stepOrdinal <= contract.maxToolSteps + 1; stepOrdinal += 1) {
         if (input.signal?.aborted) {
-          return resultFor({
+          const execution = executionProjection(contract, results, "cancelled");
+          const latestMutationOutcome = execution.latestMutationOutcome;
+          return workerResult({
             status: "cancelled",
             blockerCode: "direct_workspace_worker_aborted",
             tokenUsage: aggregateTokenUsage(allEvents),
-            workspaceExecution: executionProjection(contract, results, "cancelled"),
+            workspaceExecution: execution,
             captureResult: {
               normalizedEvents: allEvents,
               terminal: { state: "aborted", error: null },
@@ -455,6 +760,15 @@ async function runDirectWorkspaceWorker(input = {}) {
               workspaceWorkerContract: contract,
             },
             providerRequestStarted: allEvents.length > 0,
+            cancellationAcknowledged: true,
+            backendQuiesced: true,
+            cancellationReceipt: {
+              targetRequestId: latestMutationOutcome?.requestId || "",
+              acknowledged: true,
+              quiesced: true,
+              acknowledgementKind: "cancelled_between_requests",
+              outcomeDigest: latestMutationOutcome?.outcomeDigest || "",
+            },
           });
         }
         const requestBody = buildImplementationToolInitialRequest({
@@ -464,12 +778,42 @@ async function runDirectWorkspaceWorker(input = {}) {
           reasoningEffort: input.reasoningEffort,
           tools,
         });
+        activeOperation = "provider";
+        activeToolMutationOutcome = null;
         latestProviderResult = await input.providerRequestRunner({
           requestBody,
           signal: input.signal,
           contract,
           stepOrdinal,
         });
+        if (input.signal?.aborted) {
+          const execution = executionProjection(contract, results, "cancelled");
+          const latestMutationOutcome = execution.latestMutationOutcome;
+          return workerResult({
+            status: "cancelled",
+            blockerCode: "direct_workspace_worker_aborted",
+            responseId,
+            tokenUsage: aggregateTokenUsage(allEvents),
+            workspaceExecution: execution,
+            captureResult: {
+              normalizedEvents: allEvents,
+              terminal: { state: "aborted", error: null },
+              responseId,
+              workspaceWorkerToolResults: results,
+              workspaceWorkerContract: contract,
+            },
+            providerRequestStarted: true,
+            cancellationAcknowledged: true,
+            backendQuiesced: true,
+            cancellationReceipt: {
+              targetRequestId: latestMutationOutcome?.requestId || "",
+              acknowledged: true,
+              quiesced: true,
+              acknowledgementKind: "provider_result_discarded_after_cancel",
+              outcomeDigest: latestMutationOutcome?.outcomeDigest || "",
+            },
+          });
+        }
         const stepEvents = renumberEvents(latestProviderResult?.normalizedEvents, allEvents.length);
         allEvents.push(...stepEvents);
         responseId = normalizeString(latestProviderResult?.responseId, responseId);
@@ -477,7 +821,7 @@ async function runDirectWorkspaceWorker(input = {}) {
         if (terminal.state === "completed") {
           const outputText = assistantText(stepEvents);
           const execution = executionProjection(contract, results, "completed");
-          return resultFor({
+          return workerResult({
             status: "completed",
             outputText: outputText || "Workspace worker completed without a textual summary.",
             responseId,
@@ -496,16 +840,18 @@ async function runDirectWorkspaceWorker(input = {}) {
           });
         }
         if (terminal.state !== "tool_waiting") {
-          const blockerCode = normalizeString(
+          const blockerCode = publicRuntimeErrorCode(
             terminal.error?.code || latestProviderResult?.error?.code,
             "direct_workspace_worker_provider_failed",
           );
-          return resultFor({
+          const execution = executionProjection(contract, results, "failed");
+          const latestMutationOutcome = execution.latestMutationOutcome;
+          return workerResult({
             status: terminal.state === "aborted" ? "cancelled" : "failed",
             blockerCode,
             responseId,
             tokenUsage: aggregateTokenUsage(allEvents),
-            workspaceExecution: executionProjection(contract, results, "failed"),
+            workspaceExecution: execution,
             captureResult: {
               ...latestProviderResult,
               normalizedEvents: allEvents,
@@ -514,11 +860,20 @@ async function runDirectWorkspaceWorker(input = {}) {
               workspaceWorkerContract: contract,
             },
             providerRequestStarted: true,
+            cancellationAcknowledged: terminal.state === "aborted",
+            backendQuiesced: terminal.state === "aborted",
+            cancellationReceipt: terminal.state === "aborted" ? {
+              targetRequestId: latestMutationOutcome?.requestId || "",
+              acknowledged: true,
+              quiesced: true,
+              acknowledgementKind: "provider_request_completed_after_cancel",
+              outcomeDigest: latestMutationOutcome?.outcomeDigest || "",
+            } : null,
           });
         }
         if (stepOrdinal > contract.maxToolSteps) {
           const blockerCode = "direct_workspace_worker_tool_step_limit";
-          return resultFor({
+          return workerResult({
             status: "failed",
             blockerCode,
             responseId,
@@ -545,25 +900,63 @@ async function runDirectWorkspaceWorker(input = {}) {
           error.code = obligations.length ? "direct_workspace_worker_multiple_tool_calls" : "direct_workspace_worker_tool_call_incomplete";
           throw error;
         }
+        activeOperation = "workspace_tool";
         const executed = await executeWorkspaceTool({
           obligation: obligations[0],
           contract,
           provisioned,
           stepOrdinal,
+          signal: input.signal,
+          onMutationOutcome: (mutationOutcome) => {
+            activeToolMutationOutcome = mutationOutcome;
+          },
         });
         results.push(executed);
         evidence.push(executed.providerOutputText);
+        activeOperation = "provider";
       }
     } catch (error) {
+      const backendOwnershipUnresolved = error?.workspaceBackendRequest === true && error?.backendQuiesced !== true;
+      if (backendOwnershipUnresolved) retainProvisionedBackend = true;
       const blockerCode = input.signal?.aborted
         ? "direct_workspace_worker_aborted"
-        : normalizeString(error?.code, "direct_workspace_worker_runtime_exception");
-      return resultFor({
+        : publicRuntimeErrorCode(error?.code, "direct_workspace_worker_runtime_exception");
+      const errorMutationOutcome = activeOperation === "workspace_tool"
+        ? safeMutationOutcome(error?.mutationOutcome)
+        : null;
+      const effectiveMutationOutcome = activeToolMutationOutcome || errorMutationOutcome ||
+        executionProjection(contract, results, "failed").latestMutationOutcome;
+      const execution = executionProjection(
+        contract,
+        results,
+        input.signal?.aborted ? "cancelled" : "failed",
+        effectiveMutationOutcome,
+      );
+      const cancellationQuiesced = input.signal?.aborted === true &&
+        error?.cancellationAcknowledged === true &&
+        error?.backendQuiesced === true &&
+        error?.cancellationReceipt?.acknowledged === true &&
+        error?.cancellationReceipt?.quiesced === true;
+      const aggregateCancellationReceipt = cancellationQuiesced ? {
+        targetRequestId: effectiveMutationOutcome?.requestId ||
+          normalizeString(error?.cancellationReceipt?.targetRequestId, ""),
+        acknowledged: true,
+        quiesced: true,
+        acknowledgementKind: effectiveMutationOutcome
+          ? "provider_cancelled_after_workspace_mutation"
+          : normalizeString(
+              error?.cancellationReceipt?.acknowledgementKind,
+              "provider_request_cancelled",
+            ),
+        outcomeDigest: effectiveMutationOutcome?.outcomeDigest || "",
+        rawProcessDetailsIncluded: false,
+      } : error?.cancellationReceipt;
+      return workerResult({
         status: input.signal?.aborted ? "cancelled" : "failed",
         blockerCode,
         responseId,
         tokenUsage: aggregateTokenUsage(allEvents),
-        workspaceExecution: executionProjection(contract, results, input.signal?.aborted ? "cancelled" : "failed"),
+        workspaceExecution: execution,
         captureResult: {
           ...(latestProviderResult || {}),
           normalizedEvents: allEvents,
@@ -576,25 +969,35 @@ async function runDirectWorkspaceWorker(input = {}) {
           workspaceWorkerContract: contract,
         },
         providerRequestStarted: allEvents.length > 0,
+        cancellationAcknowledged: error?.cancellationAcknowledged === true,
+        backendQuiesced: error?.backendQuiesced === true,
+        backendOwnershipUnresolved,
+        cancellationReceipt: aggregateCancellationReceipt,
+        mutationOutcome: effectiveMutationOutcome,
       });
     }
-    return resultFor({
+    return workerResult({
       status: "failed",
       blockerCode: "direct_workspace_worker_loop_exhausted",
       tokenUsage: aggregateTokenUsage(allEvents),
       workspaceExecution: executionProjection(contract, results, "failed"),
     });
   } finally {
-    try {
-      await provisioned.release?.();
-    } catch {}
+    if (!retainProvisionedBackend) {
+      try {
+        await provisioned.release?.();
+      } catch {}
+    }
   }
 }
 
 module.exports = {
+  admittedWorkspaceWorkerCancellationReceipt,
   DIRECT_WORKSPACE_WORKER_EXECUTION_SCHEMA,
   DIRECT_WORKSPACE_WORKER_RESULT_SCHEMA,
   DIRECT_WORKSPACE_WORKER_TOOL_RESULT_SCHEMA,
   executeWorkspaceTool,
+  projectAdmittedWorkspaceWorkerResult,
   runDirectWorkspaceWorker,
+  validateWorkspaceWorkerCancellationReceipt,
 };

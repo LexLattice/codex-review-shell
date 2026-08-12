@@ -18,6 +18,48 @@ const fs = require("node:fs");
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const ATTACH_TIMEOUT_MS = 30_000;
+const MUTATION_COMMIT_KINDS_BY_METHOD = Object.freeze({
+  applyPatch: new Set(["apply_patch_files"]),
+  applyWorkspaceWorkerPatch: new Set(["apply_patch_files"]),
+  provisionGitWorktree: new Set(["git_worktree_add"]),
+  removeGitWorktree: new Set(["git_worktree_remove_non_force"]),
+  ensureCodexSandboxArtifactIgnored: new Set(["git_exclude_append"]),
+  stageAttachment: new Set(["stage_attachment"]),
+  removeAttachmentDraft: new Set(["remove_attachment_draft"]),
+  importFile: new Set(["import_file"]),
+});
+const PUBLIC_BACKEND_CAPABILITY_NAMES = Object.freeze([
+  "listTree",
+  "readFilePreview",
+  "applyPatch",
+  "applyWorkspaceWorkerPatch",
+  "readFileTransfer",
+  "repositorySemanticSnapshot",
+  "directEpistemicRepositoryObservation",
+  "repositoryRealizationContext",
+  "runCommand",
+  "runDirectCommand",
+  "provisionGitWorktree",
+  "removeGitWorktree",
+  "initializeWorkspaceWorkerBinding",
+  "directTestProfile",
+  "runDirectTest",
+  "inspectWorkspaceRepository",
+  "listWorkspaceRepositoryFiles",
+  "matchWorkspaceRepositoryFiles",
+  "searchWorkspaceRepositoryText",
+  "readWorkspaceRepositoryFile",
+  "ensureCodexSandboxArtifactIgnored",
+  "listMatchingFiles",
+  "resolvePath",
+  "watchScaffold",
+  "listCodexThreads",
+  "readCodexThreadTranscript",
+  "analyzeCodexThread",
+  "stageAttachment",
+  "removeAttachmentDraft",
+  "importFile",
+]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -25,6 +67,86 @@ function isPlainObject(value) {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function publicBackendErrorCode(value, fallback = "workspace_backend_unavailable") {
+  const code = normalizeString(value, "");
+  return /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(code)
+    ? code
+    : fallback;
+}
+
+function publicBackendCapabilities(value) {
+  const source = isPlainObject(value) ? value : {};
+  return Object.fromEntries(PUBLIC_BACKEND_CAPABILITY_NAMES.map((name) => [
+    name,
+    source[name] === true,
+  ]));
+}
+
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+}
+
+function normalizeBackendMutationOutcome(value, pending = {}, resultEnvelope = null) {
+  if (!isPlainObject(value) || value.schema !== "workspace_backend_mutation_outcome@1") return null;
+  const outcomeDigest = normalizeString(value.outcomeDigest, "");
+  if (!/^sha256:[a-f0-9]{64}$/.test(outcomeDigest)) return null;
+  const requestId = normalizeString(value.requestId, "");
+  const method = normalizeString(value.method, "");
+  const commitKind = normalizeString(value.commitKind, "");
+  if (
+    !requestId || !method || !commitKind ||
+    (pending.requestId && requestId !== pending.requestId) ||
+    (pending.method && method !== pending.method) ||
+    !MUTATION_COMMIT_KINDS_BY_METHOD[method]?.has(commitKind) ||
+    value.rawPathIncluded !== false
+  ) {
+    return null;
+  }
+  const committed = value.committed === true;
+  const indeterminate = value.indeterminate === true;
+  const partialMutationPossible = value.partialMutationPossible === true;
+  const failureCode = value.committed === true
+    ? ""
+    : publicBackendErrorCode(value.failureCode, "");
+  const resultDigest = normalizeString(value.resultDigest, "");
+  if (
+    (committed && (indeterminate || partialMutationPossible || failureCode || !/^sha256:[a-f0-9]{64}$/.test(resultDigest))) ||
+    (!committed && (!indeterminate || !partialMutationPossible || !failureCode || resultDigest))
+  ) {
+    return null;
+  }
+  const base = {
+    schema: "workspace_backend_mutation_outcome@1",
+    requestId,
+    method,
+    commitKind,
+    committed,
+    ...(committed ? {} : { indeterminate, partialMutationPossible }),
+    retainedForInspection: value.retainedForInspection === true,
+    ...(committed ? { resultDigest } : { failureCode }),
+    rawPathIncluded: false,
+  };
+  const expectedDigest = `sha256:${crypto.createHash("sha256").update(stableStringify(base)).digest("hex")}`;
+  if (outcomeDigest !== expectedDigest) return null;
+  if (committed && resultEnvelope) {
+    const resultBase = { ...resultEnvelope };
+    delete resultBase.requestOutcome;
+    const expectedResultDigest = `sha256:${crypto.createHash("sha256")
+      .update(stableStringify(resultBase)).digest("hex")}`;
+    if (resultDigest !== expectedResultDigest) return null;
+  }
+  return { ...base, outcomeDigest };
+}
+
+function backendIntakeClosedError() {
+  const error = new Error("Workspace backend intake is closed for ordered drain.");
+  error.code = "workspace_backend_manager_intake_closed";
+  return error;
 }
 
 function normalizeWorkspace(input, repoPath, fallbackRoot) {
@@ -94,6 +216,57 @@ function workspaceLabel(project, fallbackRoot) {
     return `Windows ${workspace.windowsPath}`;
   }
   return `Local ${workspace.localPath}`;
+}
+
+const PRIVATE_BACKEND_STATUS_KEYS = new Set([
+  "args",
+  "command",
+  "cwd",
+  "env",
+  "key",
+  "localpath",
+  "linuxpath",
+  "nativeroot",
+  "repopath",
+  "root",
+  "windowspath",
+  "workspace",
+  "worktreepath",
+]);
+
+function rawPathVariants(value) {
+  const source = normalizeString(value, "");
+  if (!source) return [];
+  return [...new Set([
+    source,
+    source.replace(/\\/g, "/"),
+    source.replace(/\//g, "\\"),
+  ].filter(Boolean))].sort((left, right) => right.length - left.length);
+}
+
+function redactBackendNativePaths(value, nativePaths = []) {
+  let text = typeof value === "string" ? value : "";
+  for (const nativePath of nativePaths.flatMap(rawPathVariants)) {
+    if (!nativePath) continue;
+    text = text.replaceAll(nativePath, "<workspace>");
+    const escaped = nativePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(escaped, "gi"), "<workspace>");
+  }
+  return text
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\s"'<>]+/g, "<native-path>")
+    .replace(/(^|[\s("'=])\/(?:[^\s"'<>]+)/g, (_match, prefix) => `${prefix}<native-path>`);
+}
+
+function safeBackendPublicValue(value, nativePaths = []) {
+  if (typeof value === "string") return redactBackendNativePaths(value, nativePaths);
+  if (Array.isArray(value)) return value.map((entry) => safeBackendPublicValue(entry, nativePaths));
+  if (!isPlainObject(value)) return value;
+  const result = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (PRIVATE_BACKEND_STATUS_KEYS.has(key.toLowerCase())) continue;
+    result[key] = safeBackendPublicValue(entry, nativePaths);
+  }
+  return result;
 }
 
 function workspaceSessionKey(project, fallbackRoot) {
@@ -258,13 +431,137 @@ class NdjsonTransport extends EventEmitter {
 
     if (message.id !== undefined && this.pending.has(message.id)) {
       const pending = this.pending.get(message.id);
-      this.pending.delete(message.id);
-      clearTimeout(pending.timer);
+      this.clearPending(message.id);
+      if (pending.kind === "cancel_control") {
+        const target = this.pending.get(pending.targetRequestId);
+        if (!target) return;
+        if (
+          message.error ||
+          message.result?.targetRequestId !== pending.targetRequestId ||
+          message.result?.acknowledged !== true ||
+          message.result?.quiesced !== true
+        ) {
+          target.cancellationControlError = normalizeString(
+            message.error?.code || message.result?.blockerCode,
+            "workspace_backend_cancel_unacknowledged",
+          );
+          return;
+        }
+        const mutationOutcome = normalizeBackendMutationOutcome(message.result?.mutationOutcome, target);
+        if (message.result?.mutationOutcome && !mutationOutcome) {
+          target.cancellationControlError = "workspace_backend_mutation_outcome_invalid";
+          return;
+        }
+        if (mutationOutcome?.committed === true) {
+          // A cancellation receipt can prove that the commit happened, but it
+          // cannot bind or reconstruct the result payload. Retain ownership
+          // until the original response arrives and its resultDigest is checked
+          // against that exact payload.
+          clearTimeout(target.timer);
+          target.timer = null;
+          this.detachPendingSignal(target);
+          target.committedOutcomeReceipt = mutationOutcome;
+          return;
+        }
+        this.clearPending(pending.targetRequestId);
+        const error = mutationOutcome?.partialMutationPossible === true
+          ? this.backendError({
+              message: "Workspace backend mutation failed after entering its commit phase; partial mutation may have occurred.",
+              code: "workspace_backend_mutation_commit_failed_indeterminate",
+              backendRequestCompleted: true,
+              backendQuiesced: true,
+              mutationOutcome,
+            }, target)
+          : this.abortError(target, message.result);
+        if (!target.clientSettled) {
+          target.clientSettled = true;
+          target.reject(error);
+        }
+        return;
+      }
+      let requestOutcome = null;
+      if (message.result?.requestOutcome !== undefined) {
+        requestOutcome = normalizeBackendMutationOutcome(
+          message.result.requestOutcome,
+          pending,
+          message.result,
+        );
+        if (!requestOutcome) {
+          if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+          if (!pending.clientSettled) {
+            pending.clientSettled = true;
+            pending.reject(this.backendError({
+              message: "Workspace backend returned an invalid or foreign mutation outcome.",
+              code: "workspace_backend_mutation_outcome_invalid",
+              backendRequestCompleted: true,
+              backendQuiesced: pending.committedOutcomeReceipt ? true : false,
+              mutationOutcome: pending.committedOutcomeReceipt || null,
+            }, pending));
+          }
+          return;
+        }
+        if (
+          pending.committedOutcomeReceipt &&
+          pending.committedOutcomeReceipt.outcomeDigest !== requestOutcome.outcomeDigest
+        ) {
+          if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+          if (!pending.clientSettled) {
+            pending.clientSettled = true;
+            pending.reject(this.backendError({
+              message: "Workspace backend commit receipts conflicted across cancellation and result delivery.",
+              code: "workspace_backend_mutation_outcome_conflict",
+              backendRequestCompleted: true,
+              backendQuiesced: true,
+              mutationOutcome: pending.committedOutcomeReceipt,
+            }, pending));
+          }
+          return;
+        }
+        message.result = { ...message.result, requestOutcome };
+      }
+      if (pending.committedOutcomeReceipt && requestOutcome?.committed !== true) {
+        if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+        if (!pending.clientSettled) {
+          pending.clientSettled = true;
+          pending.reject(this.backendError({
+            message: "Workspace backend proved that a mutation committed but did not return its exact body-bound result receipt.",
+            code: "workspace_backend_committed_result_receipt_missing",
+            backendRequestCompleted: true,
+            backendQuiesced: true,
+            mutationOutcome: pending.committedOutcomeReceipt,
+          }, pending));
+        }
+        return;
+      }
+      if (pending.abortRequested) {
+        if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+        if (message.error) {
+          if (!pending.clientSettled) {
+            pending.clientSettled = true;
+            pending.reject(this.backendError(message.error, pending));
+          }
+          return;
+        }
+        if (requestOutcome?.committed === true) {
+          if (!pending.clientSettled) {
+            pending.clientSettled = true;
+            pending.resolve(message.result);
+          }
+          return;
+        }
+        if (!pending.clientSettled) {
+          pending.clientSettled = true;
+          pending.reject(this.abortError(pending, {
+            acknowledged: true,
+            quiesced: true,
+            acknowledgementKind: "request_completed_after_cancel",
+            targetRequestId: message.id,
+          }));
+        }
+        return;
+      }
       if (message.error) {
-        const error = new Error(message.error.message || "Workspace backend request failed.");
-        error.code = normalizeString(message.error.code, "");
-        error.backendStack = message.error.stack;
-        pending.reject(error);
+        pending.reject(this.backendError(message.error, pending));
       } else {
         pending.resolve(message.result);
       }
@@ -274,32 +571,221 @@ class NdjsonTransport extends EventEmitter {
     this.emit("event", { type: "unmatched-message", message });
   }
 
-  request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  clearPending(id) {
+    const pending = this.pending.get(id);
+    if (!pending) return null;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    this.detachPendingSignal(pending);
+    return pending;
+  }
+
+  detachPendingSignal(pending) {
+    if (pending?.signal?.removeEventListener && pending.abortListener) {
+      pending.signal.removeEventListener("abort", pending.abortListener);
+    }
+    if (pending) pending.abortListener = null;
+  }
+
+  backendError(messageError = {}, pending = {}) {
+    const mutationOutcome = normalizeBackendMutationOutcome(messageError.mutationOutcome, pending);
+    const error = new Error(messageError.message || "Workspace backend request failed.");
+    error.code = normalizeString(messageError.code, "");
+    error.backendStack = messageError.stack;
+    error.requestId = normalizeString(pending.requestId, "");
+    error.backendRequestCompleted = messageError.backendRequestCompleted === true;
+    error.backendQuiesced = messageError.backendQuiesced === true;
+    error.cancellationAcknowledged = (
+      pending.abortRequested === true &&
+      error.backendRequestCompleted === true &&
+      error.backendQuiesced === true
+    );
+    error.workspaceBackendRequest = true;
+    error.mutationOutcome = mutationOutcome;
+    error.partialMutationPossible = mutationOutcome?.partialMutationPossible === true;
+    if (error.cancellationAcknowledged) {
+      error.cancellationReceipt = {
+        targetRequestId: normalizeString(pending.requestId, ""),
+        acknowledged: true,
+        quiesced: true,
+        acknowledgementKind: "request_terminal_error_after_cancel",
+        outcomeDigest: normalizeString(mutationOutcome?.outcomeDigest, ""),
+        rawProcessDetailsIncluded: false,
+      };
+    }
+    return error;
+  }
+
+  abortError(pending, cancellationReceipt = {}) {
+    const error = new Error(`Workspace backend request cancelled: ${pending.method}`);
+    error.name = "AbortError";
+    error.code = pending.timeoutTriggered
+      ? "workspace_backend_request_timeout"
+      : "workspace_backend_request_cancelled";
+    error.requestId = pending.requestId;
+    error.backendQuiesced = cancellationReceipt.quiesced === true;
+    error.cancellationAcknowledged = cancellationReceipt.acknowledged === true;
+    error.backendRequestCompleted = cancellationReceipt.quiesced === true;
+    error.workspaceBackendRequest = true;
+    error.cancellationReceipt = {
+      targetRequestId: normalizeString(cancellationReceipt.targetRequestId, pending.requestId),
+      acknowledged: cancellationReceipt.acknowledged === true,
+      quiesced: cancellationReceipt.quiesced === true,
+      acknowledgementKind: normalizeString(cancellationReceipt.acknowledgementKind, "backend_cancel_acknowledged"),
+      outcomeDigest: normalizeString(cancellationReceipt.outcomeDigest, ""),
+      rawProcessDetailsIncluded: false,
+    };
+    error.mutationOutcome = normalizeBackendMutationOutcome(cancellationReceipt.mutationOutcome, pending);
+    error.partialMutationPossible = error.mutationOutcome?.partialMutationPossible === true;
+    return error;
+  }
+
+  sendCancellationRequest(pending, options = {}) {
+    if (!pending || pending.cancelRequestId || this.closed) return;
+    const cancelRequestId = crypto.randomUUID();
+    pending.cancelRequestId = cancelRequestId;
+    const payload = {
+      id: cancelRequestId,
+      method: normalizeString(options.cancellationMethod, "cancelRequest"),
+      params: {
+        requestId: pending.requestId,
+        reasonCode: normalizeString(options.reasonCode, "workspace_backend_request_aborted"),
+      },
+    };
+    this.pending.set(cancelRequestId, {
+      kind: "cancel_control",
+      requestId: cancelRequestId,
+      targetRequestId: pending.requestId,
+      method: payload.method,
+      timer: null,
+      signal: null,
+      abortListener: null,
+    });
+    this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
+      if (!error) return;
+      this.clearPending(cancelRequestId);
+      pending.cancellationControlError = normalizeString(
+        error?.code,
+        "workspace_backend_cancel_write_failed",
+      );
+    });
+  }
+
+  request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, options = {}) {
+    if (typeof timeoutMs === "object" && timeoutMs !== null) {
+      options = timeoutMs;
+      timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    }
     if (this.closed) return Promise.reject(new Error("Workspace backend transport is closed."));
     const id = crypto.randomUUID();
     const payload = { id, method, params };
+    const signal = options.signal || null;
+    if (signal?.aborted) {
+      const pending = { requestId: id, method };
+      return Promise.reject(this.abortError(pending, {
+        acknowledged: true,
+        quiesced: true,
+        acknowledgementKind: "cancelled_before_send",
+        targetRequestId: id,
+      }));
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Workspace backend request timed out: ${method}`));
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        pending.timer = null;
+        pending.abortRequested = true;
+        pending.timeoutTriggered = true;
+        this.detachPendingSignal(pending);
+        this.sendCancellationRequest(pending, {
+          cancellationMethod: options.cancellationMethod,
+          reasonCode: pending.signal?.reason || "workspace_backend_request_timeout",
+        });
+        // A request deadline starts cancellation. It does not prove that the
+        // request, its process tree, or a two-phase mutation has stopped.
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer, method });
+      const pending = {
+        kind: "request",
+        requestId: id,
+        resolve,
+        reject,
+        timer,
+        method,
+        signal,
+        abortListener: null,
+        abortRequested: false,
+        abortRequestedBeforeTimeout: false,
+        timeoutTriggered: false,
+        clientSettled: false,
+        cancelRequestId: "",
+        cancellationControlError: "",
+      };
+      if (signal?.addEventListener) {
+        pending.abortListener = () => {
+          if (!this.pending.has(id) || pending.abortRequested) return;
+          pending.abortRequested = true;
+          pending.abortRequestedBeforeTimeout = true;
+          this.sendCancellationRequest(pending, {
+            cancellationMethod: options.cancellationMethod,
+            reasonCode: signal.reason,
+          });
+        };
+        signal.addEventListener("abort", pending.abortListener, { once: true });
+      }
+      this.pending.set(id, pending);
       this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
         if (!error) return;
-        clearTimeout(timer);
-        this.pending.delete(id);
-        reject(error);
+        const failedPending = this.clearPending(id);
+        if (failedPending?.cancelRequestId) this.clearPending(failedPending.cancelRequestId);
+        error.backendQuiesced = false;
+        error.cancellationAcknowledged = false;
+        error.backendRequestCompleted = false;
+        error.workspaceBackendRequest = true;
+        if (!failedPending?.clientSettled) {
+          failedPending.clientSettled = true;
+          reject(error);
+        }
       });
     });
+  }
+
+  pendingRequestCount() {
+    return [...this.pending.values()].filter((pending) => pending.kind === "request").length;
+  }
+
+  async waitForDrain(options = {}) {
+    const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+      ? Math.max(0, Math.min(300_000, Math.floor(Number(options.timeoutMs))))
+      : 30_000;
+    if (this.pendingRequestCount() === 0) return { status: "drained", pendingRequests: 0 };
+    if (timeoutMs === 0) {
+      return { status: "timeout", blockerCode: "workspace_backend_drain_timeout", pendingRequests: this.pendingRequestCount() };
+    }
+    const startedAt = Date.now();
+    while (this.pendingRequestCount() > 0 && Date.now() - startedAt < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(10, timeoutMs)));
+    }
+    return this.pendingRequestCount() === 0
+      ? { status: "drained", blockerCode: "", pendingRequests: 0 }
+      : { status: "timeout", blockerCode: "workspace_backend_drain_timeout", pendingRequests: this.pendingRequestCount() };
   }
 
   close(error) {
     if (this.closed) return;
     this.closed = true;
     for (const [id, pending] of this.pending.entries()) {
-      clearTimeout(pending.timer);
-      pending.reject(error || new Error("Workspace backend transport closed."));
-      this.pending.delete(id);
+      this.clearPending(id);
+      if (pending.kind !== "request") continue;
+      const closeError = new Error(error?.message || "Workspace backend transport closed.");
+      closeError.code = normalizeString(error?.code, "workspace_backend_transport_closed");
+      closeError.backendRequestCompleted = false;
+      closeError.backendQuiesced = false;
+      closeError.cancellationAcknowledged = false;
+      closeError.workspaceBackendRequest = true;
+      if (!pending.clientSettled) {
+        pending.clientSettled = true;
+        pending.reject(closeError);
+      }
     }
     this.emit("closed", error);
   }
@@ -335,7 +821,10 @@ class WorkspaceSession extends EventEmitter {
     this.lastError = null;
     this.readySeen = false;
     this.hygiene = null;
+    this.workspaceWorkerBinding = null;
+    this.workspaceWorkerBindingInitialization = null;
     this.recentDiagnostics = [];
+    this.acceptingRequests = true;
   }
 
   snapshot() {
@@ -350,6 +839,79 @@ class WorkspaceSession extends EventEmitter {
       lastError: this.lastError,
       readySeen: this.readySeen,
       hygiene: this.hygiene,
+      workspaceWorkerBinding: this.workspaceWorkerBinding,
+    };
+  }
+
+  nativePathCandidates() {
+    const workspace = this.descriptor?.workspace || normalizeWorkspace(
+      this.project.workspace,
+      this.project.repoPath,
+      this.options.fallbackRoot,
+    );
+    return [
+      workspace?.localPath,
+      workspace?.linuxPath,
+      workspace?.windowsPath,
+      this.descriptor?.cwd,
+      this.hello?.root,
+      this.hello?.cwd,
+    ].map((entry) => normalizeString(entry, "")).filter(Boolean);
+  }
+
+  publicSnapshot() {
+    const hello = this.hello ? {
+      protocolVersion: this.hello.protocolVersion,
+      sessionId: normalizeString(this.hello.sessionId, ""),
+      projectId: normalizeString(this.hello.projectId, this.project.id),
+      workspaceKind: normalizeString(this.hello.workspaceKind, ""),
+      platform: normalizeString(this.hello.platform, "unknown"),
+      node: normalizeString(this.hello.node, ""),
+      capabilities: publicBackendCapabilities(this.hello.capabilities),
+      rawWorkspacePathIncluded: false,
+    } : null;
+    return {
+      schema: "workspace_backend_public_session@1",
+      sessionKeyDigest: `sha256:${crypto.createHash("sha256").update(this.key).digest("hex")}`,
+      projectId: normalizeString(this.project.id, ""),
+      projectName: normalizeString(this.project.name, ""),
+      status: this.status,
+      transport: this.descriptor?.transport || "not-started",
+      workspaceKind: normalizeString(
+        this.descriptor?.workspace?.kind || this.project.workspace?.kind,
+        "local",
+      ),
+      hello,
+      lastErrorCode: this.lastError
+        ? publicBackendErrorCode(this.lastError?.code)
+        : "",
+      readySeen: this.readySeen,
+      hygiene: isPlainObject(this.hygiene) ? {
+        available: this.hygiene.available === true,
+        changed: this.hygiene.changed === true,
+        skipped: this.hygiene.skipped === true,
+        reason: normalizeString(this.hygiene.reason, ""),
+      } : null,
+      workspaceWorkerBinding: safeBackendPublicValue(
+        this.workspaceWorkerBinding,
+        this.nativePathCandidates(),
+      ),
+      rawWorkspacePathIncluded: false,
+    };
+  }
+
+  publicAgentEvent(event = {}) {
+    return {
+      event: normalizeString(event.event || event.type, "backend-event"),
+      platform: normalizeString(event.platform, ""),
+      protocolVersion: Number(event.protocolVersion || 0),
+      projectId: normalizeString(event.projectId, this.project.id),
+      workspaceKind: normalizeString(event.workspaceKind, this.project.workspace?.kind || ""),
+      errorCode: event.error || event.code
+        ? publicBackendErrorCode(event.error?.code || event.code, "workspace_backend_event_error")
+        : "",
+      rawWorkspacePathIncluded: false,
+      rawProtocolFrameIncluded: false,
     };
   }
 
@@ -374,17 +936,42 @@ class WorkspaceSession extends EventEmitter {
     details.push(`readySeen=${this.readySeen ? "yes" : "no"}`);
     const recent = this.recentDiagnostics.map((item) => `${item.type}: ${item.text}`).join(" | ");
     if (recent) details.push(`recent=${recent}`);
-    return `${error.message}${details.length ? ` (${details.join("; ")})` : ""}`;
+    return redactBackendNativePaths(
+      `${error.message}${details.length ? ` (${details.join("; ")})` : ""}`,
+      this.nativePathCandidates(),
+    );
   }
 
   emitStatus(type, extra = {}) {
-    const payload = { type, session: this.snapshot(), at: new Date().toISOString(), ...extra };
+    const payload = {
+      type,
+      session: this.publicSnapshot(),
+      at: new Date().toISOString(),
+      errorCode: extra.error || extra.errorCode
+        ? publicBackendErrorCode(extra.error?.code || extra.errorCode)
+        : "",
+      rawWorkspacePathIncluded: false,
+    };
     this.emit("status", payload);
   }
 
   async attach(options = {}) {
-    if (this.status === "attached" && this.transport && !this.transport.closed) return this;
-    if (this.attachPromise) return this.attachPromise;
+    if (!this.acceptingRequests && options.allowDuringDrain !== true) {
+      throw backendIntakeClosedError();
+    }
+    if (this.status === "attached" && this.transport && !this.transport.closed) {
+      if (options.workspaceWorkerBinding) {
+        await this.initializeWorkspaceWorkerBinding(options.workspaceWorkerBinding);
+      }
+      return this;
+    }
+    if (this.attachPromise) {
+      const attached = await this.attachPromise;
+      if (options.workspaceWorkerBinding) {
+        await this.initializeWorkspaceWorkerBinding(options.workspaceWorkerBinding);
+      }
+      return attached;
+    }
 
     this.attachPromise = this.attachInner(options)
       .then(() => {
@@ -402,16 +989,19 @@ class WorkspaceSession extends EventEmitter {
     this.status = "starting";
     this.lastError = null;
     this.readySeen = false;
+    this.workspaceWorkerBinding = null;
+    this.workspaceWorkerBindingInitialization = null;
     this.recentDiagnostics = [];
     this.descriptor = launchDescriptor(this.project, this.options);
     this.emitStatus("backend-starting");
 
     if (!fs.existsSync(this.options.agentPath)) {
-      const message = `Workspace backend agent is missing: ${this.options.agentPath}`;
+      const error = new Error("Workspace backend agent is unavailable.");
+      error.code = "workspace_backend_agent_missing";
       this.status = "failed";
-      this.lastError = message;
-      this.emitStatus("backend-failed", { error: message });
-      throw new Error(message);
+      this.lastError = error;
+      this.emitStatus("backend-failed", { error });
+      throw error;
     }
 
     this.child = spawn(this.descriptor.command, this.descriptor.args, {
@@ -422,7 +1012,11 @@ class WorkspaceSession extends EventEmitter {
     });
     this.transport = new NdjsonTransport(this.child);
     this.transport.on("event", (event) => {
-      this.emit("agent-event", { session: this.snapshot(), event });
+      this.emit("agent-event", {
+        session: this.publicSnapshot(),
+        event: this.publicAgentEvent(event),
+        rawWorkspacePathIncluded: false,
+      });
       if (event.event === "ready") {
         this.readySeen = true;
         this.noteDiagnostic("agent-ready", `${event.platform || "unknown"} pid=${event.pid || "unknown"}`);
@@ -453,6 +1047,9 @@ class WorkspaceSession extends EventEmitter {
     this.status = "attaching";
     try {
       this.hello = await this.transport.request("hello", {}, ATTACH_TIMEOUT_MS);
+      if (options.workspaceWorkerBinding) {
+        await this.initializeWorkspaceWorkerBinding(options.workspaceWorkerBinding);
+      }
       if (options.workspaceHygiene !== false) {
         try {
           this.hygiene = await this.transport.request("ensureCodexSandboxArtifactIgnored", {}, DEFAULT_REQUEST_TIMEOUT_MS);
@@ -474,19 +1071,102 @@ class WorkspaceSession extends EventEmitter {
       this.status = "attached";
       this.emitStatus("backend-attached");
     } catch (error) {
-      const message = this.attachFailureMessage(error);
+      const privateMessage = this.attachFailureMessage(error);
+      const errorCode = publicBackendErrorCode(error?.code, "workspace_backend_attach_failed");
       this.status = "failed";
-      this.lastError = message;
-      this.emitStatus("backend-failed", { error: message });
+      const publicError = new Error("Workspace backend attach failed.");
+      publicError.code = errorCode;
+      this.lastError = publicError;
+      this.noteDiagnostic("attach-failed", privateMessage);
+      this.emitStatus("backend-failed", { error: publicError });
       this.dispose();
-      throw new Error(message);
+      throw publicError;
     }
   }
 
-  async request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
-    await this.attach();
+  async request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, requestOptions = {}) {
+    const cancellationControl = method === "cancelRequest";
+    if (!this.acceptingRequests && !cancellationControl) throw backendIntakeClosedError();
+    await this.attach({ allowDuringDrain: true });
     if (!this.transport) throw new Error("Workspace backend transport is unavailable.");
-    return this.transport.request(method, params, timeoutMs);
+    return this.transport.request(method, params, timeoutMs, requestOptions);
+  }
+
+  beginDrain() {
+    this.acceptingRequests = false;
+    return {
+      status: "draining",
+      pendingRequests: this.transport?.pendingRequestCount?.() || 0,
+    };
+  }
+
+  async drain(options = {}) {
+    if (!this.transport) return { status: "drained", blockerCode: "", pendingRequests: 0 };
+    return this.transport.waitForDrain(options);
+  }
+
+  async initializeWorkspaceWorkerBinding(binding) {
+    if (!this.transport || this.transport.closed) {
+      throw new Error("Workspace backend transport is unavailable for worker binding initialization.");
+    }
+    const requestedDigest = normalizeString(binding?.bindingDigest, "");
+    if (!requestedDigest) {
+      const error = new Error("Workspace worker binding initialization requires one binding digest.");
+      error.code = "workspace_worker_binding_missing";
+      throw error;
+    }
+    if (this.workspaceWorkerBinding?.bindingDigest === requestedDigest) {
+      return this.workspaceWorkerBinding;
+    }
+    if (this.workspaceWorkerBinding) {
+      const error = new Error("Workspace backend session already has a different immutable worker binding.");
+      error.code = "workspace_worker_binding_already_initialized";
+      throw error;
+    }
+    if (this.workspaceWorkerBindingInitialization) {
+      if (this.workspaceWorkerBindingInitialization.bindingDigest !== requestedDigest) {
+        const error = new Error("Workspace backend session has a conflicting binding initialization in flight.");
+        error.code = "workspace_worker_binding_already_initialized";
+        throw error;
+      }
+      return this.workspaceWorkerBindingInitialization.promise;
+    }
+    const pending = { bindingDigest: requestedDigest, promise: null };
+    pending.promise = this.transport.request(
+      "initializeWorkspaceWorkerBinding",
+      { binding },
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    ).then((initialized) => {
+      if (
+        normalizeString(initialized?.bindingDigest, "") !== requestedDigest ||
+        initialized?.immutable !== true
+      ) {
+        const error = new Error("Workspace backend did not acknowledge the requested immutable worker binding.");
+        error.code = "workspace_worker_binding_initialization_unacknowledged";
+        throw error;
+      }
+      this.workspaceWorkerBinding = {
+        schema: normalizeString(initialized.schema, "direct_workspace_worker_binding_initialization@1"),
+        bindingId: normalizeString(initialized.bindingId, ""),
+        bindingDigest: requestedDigest,
+        backendSessionId: normalizeString(initialized.backendSessionId, ""),
+        projectId: normalizeString(initialized.projectId, ""),
+        workerKey: normalizeString(initialized.workerKey, ""),
+        workspaceKind: normalizeString(initialized.workspaceKind, ""),
+        branch: normalizeString(initialized.branch, ""),
+        baseCommit: normalizeString(initialized.baseCommit, ""),
+        rootEvidenceDigest: normalizeString(initialized.rootEvidenceDigest, ""),
+        immutable: true,
+        rawWorkspacePathIncluded: false,
+      };
+      return this.workspaceWorkerBinding;
+    }).finally(() => {
+      if (this.workspaceWorkerBindingInitialization === pending) {
+        this.workspaceWorkerBindingInitialization = null;
+      }
+    });
+    this.workspaceWorkerBindingInitialization = pending;
+    return pending.promise;
   }
 
   dispose() {
@@ -501,12 +1181,14 @@ class WorkspaceBackendManager extends EventEmitter {
     super();
     this.options = options;
     this.sessions = new Map();
+    this.intakeState = "accepting";
   }
 
   sessionForProject(project) {
     const key = workspaceSessionKey(project, this.options.fallbackRoot);
     let session = this.sessions.get(key);
     if (!session) {
+      if (this.intakeState !== "accepting") throw backendIntakeClosedError();
       session = new WorkspaceSession(project, this.options);
       session.on("status", (payload) => this.emit("status", payload));
       session.on("agent-event", (payload) => this.emit("agent-event", payload));
@@ -518,17 +1200,39 @@ class WorkspaceBackendManager extends EventEmitter {
   }
 
   async ensureForProject(project, options = {}) {
+    if (this.intakeState !== "accepting") throw backendIntakeClosedError();
     const session = this.sessionForProject(project);
     await session.attach(options);
     return session;
   }
 
-  async requestForProject(project, method, params = {}, timeoutMs) {
+  async requestForProject(project, method, params = {}, timeoutMs, requestOptions = {}) {
+    if (this.intakeState !== "accepting" && method !== "cancelRequest") {
+      throw backendIntakeClosedError();
+    }
+    if (this.intakeState !== "accepting") {
+      const key = workspaceSessionKey(project, this.options.fallbackRoot);
+      const ownedSession = this.sessions.get(key);
+      if (!ownedSession) throw backendIntakeClosedError();
+      return ownedSession.request(method, params, timeoutMs, requestOptions);
+    }
     const session = await this.ensureForProject(project);
-    return session.request(method, params, timeoutMs);
+    return session.request(method, params, timeoutMs, requestOptions);
   }
 
   statusForProject(project) {
+    const key = workspaceSessionKey(project, this.options.fallbackRoot);
+    const session = this.sessions.get(key);
+    if (session) return session.publicSnapshot();
+    if (this.intakeState !== "accepting") return null;
+    return this.sessionForProject(project).publicSnapshot();
+  }
+
+  privateStatusForProject(project) {
+    const key = workspaceSessionKey(project, this.options.fallbackRoot);
+    const session = this.sessions.get(key);
+    if (session) return session.snapshot();
+    if (this.intakeState !== "accepting") return null;
     return this.sessionForProject(project).snapshot();
   }
 
@@ -542,14 +1246,34 @@ class WorkspaceBackendManager extends EventEmitter {
   }
 
   disposeAll() {
+    this.intakeState = "disposed";
     for (const session of this.sessions.values()) session.dispose();
     this.sessions.clear();
+  }
+
+  async drainAll(options = {}) {
+    this.intakeState = "draining";
+    for (const session of this.sessions.values()) session.beginDrain();
+    const rows = await Promise.all([...this.sessions.values()].map(async (session) => ({
+      key: session.key,
+      ...(await session.drain(options)),
+    })));
+    const blocked = rows.filter((row) => row.status !== "drained");
+    return {
+      status: blocked.length ? "timeout" : "drained",
+      blockerCode: blocked.length ? "workspace_backend_manager_drain_timeout" : "",
+      sessions: rows,
+      pendingRequests: rows.reduce((total, row) => total + Number(row.pendingRequests || 0), 0),
+    };
   }
 }
 
 module.exports = {
+  NdjsonTransport,
+  WorkspaceSession,
   WorkspaceBackendManager,
   normalizeWorkspace,
+  publicBackendErrorCode,
   workspaceLabel,
   workspaceRoot,
   workspaceRootIsAbsolute,

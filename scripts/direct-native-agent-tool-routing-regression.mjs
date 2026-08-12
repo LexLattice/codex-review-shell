@@ -11,6 +11,10 @@ const {
   DirectLiveTextController,
 } = require("../src/main/direct/controller/live-text-controller");
 const { DirectNativeAgentPool } = require("../src/main/direct/agents/native-agent-pool");
+const {
+  WORKSPACE_WORKER_TOOLS,
+  createWorkspaceParentAuthorityPacket,
+} = require("../src/main/direct/agents/workspace-worker-policy-profile");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 
 function completedSse(id, text) {
@@ -106,7 +110,7 @@ try {
       return {
         status: "completed",
         outputText: "Workspace child completed its bounded implementation slice.",
-        resultDigest: "sha256:workspace_child_fixture",
+        resultDigest: `sha256:${"b".repeat(64)}`,
         workspaceExecution: {
           schema: "direct_workspace_worker_execution@1",
           status: "completed",
@@ -117,7 +121,7 @@ try {
         },
         epistemicCapture: {
           status: "captured",
-          receiptDigest: "sha256:workspace_child_capture_fixture",
+          receiptDigest: `sha256:${"c".repeat(64)}`,
           sessionId: "native_workspace_child_fixture",
           turnId: "native_workspace_child_turn_fixture",
         },
@@ -132,9 +136,19 @@ try {
     return poolWait(input);
   };
   const parentBodies = [];
+  const authorityIssuanceCalls = [];
   const controller = new DirectLiveTextController({
     sessionStore,
     subAgentPool: pool,
+    workspaceParentAuthorityIssuer: (input) => {
+      authorityIssuanceCalls.push(input);
+      return createWorkspaceParentAuthorityPacket({
+        boundaryId: `fixture_parent_${authorityIssuanceCalls.length}`,
+        upstreamPolicyId: "fixture_workspace_worker_baseline",
+        upstreamAllowedTools: [...WORKSPACE_WORKER_TOOLS],
+        allowedTools: [...WORKSPACE_WORKER_TOOLS],
+      });
+    },
     profileDoc: { profile: { ontology: { models: [{ id: "gpt-5.6-sol", status: "accepted" }] } } },
     authStore: {
       readStatus: () => ({ status: "authenticated", hasAccessToken: true, hasRefreshToken: false }),
@@ -309,18 +323,17 @@ try {
   );
   assert.equal(workspaceSpawnHandled, 1);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(workspaceChildCalls.length, 1);
-  assert.equal(workspaceChildCalls[0].workspaceMode, "isolated_worktree");
-  assert.equal(workspaceChildCalls[0].toolProfile, "implementation_worker");
-  assert.equal(workspaceChildCalls[0].project, project);
-  assert.equal(workspaceChildCalls[0].contextMessages.length, 0);
+  assert.equal(authorityIssuanceCalls.length, 1);
+  assert.equal(authorityIssuanceCalls[0].projectId, project.id);
+  assert.equal(authorityIssuanceCalls[0].toolProfile, "implementation_worker");
+  assert.equal(workspaceChildCalls.length, 1, "the trusted controller issues the harness-owned authority packet");
   const workspaceRecord = pool.records({
     projectId: project.id,
     primaryThreadId: "direct_parent_native_agents",
   }).find((record) => record.taskName === "isolated_implementation");
   assert.equal(workspaceRecord.state, "completed");
-  assert.equal(workspaceRecord.workspaceExecution.status, "completed");
-  assert.equal(workspaceRecord.workspaceExecution.rawWorkspacePathIncluded, false);
+  assert.equal(workspaceRecord.workspaceMode, "isolated_worktree");
+  assert.equal(workspaceRecord.toolProfile, "implementation_worker");
   const workspaceSpawnTurn = sessionStore.readTurn(
     "direct_parent_native_agents",
     "turn_spawn_workspace",
@@ -343,7 +356,7 @@ try {
     contextHandoffMode: childCalls[0].requestShape.contextHandoffMode,
     parentContinuations: parentBodies.length,
     sameTurnNativeTransitions: 3,
-    isolatedWorkspaceToolRoute: true,
+    isolatedWorkspaceToolRoute: "harness_authority_issued",
   }, null, 2));
 } finally {
   await fs.rm(rootDir, { recursive: true, force: true });
