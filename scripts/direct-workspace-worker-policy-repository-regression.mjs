@@ -296,6 +296,40 @@ try {
   assert.equal(boundedClassificationSearch.matches.length, 0,
     "binary and invalid UTF-8 reads must exhaust the same aggregate budget as decoded text");
 
+  const unicodeFoldSearch = await searchBoundedWorkspaceRepositoryText({
+    entries: [{ path: "unicode-fold.txt", size: Buffer.byteLength("İx\n") }],
+    query: "x",
+    caseSensitive: false,
+    maxResults: 10,
+    fileLimit: 10,
+    fileByteLimit: 64,
+    totalByteLimit: 64,
+    readEntry: async () => ({
+      buffer: Buffer.from("İx\n", "utf8"),
+      size: Buffer.byteLength("İx\n"),
+      truncated: false,
+    }),
+    looksBinary: binaryClassifier,
+    decodeUtf8: strictUtf8,
+  });
+  assert.equal(unicodeFoldSearch.matches.length, 1);
+  assert.equal(unicodeFoldSearch.matches[0].column, 2,
+    "case folding expansions must map match offsets back to original UTF-16 columns");
+  const localeStableSearch = await searchBoundedWorkspaceRepositoryText({
+    entries: [{ path: "locale-stable.txt", size: 2 }],
+    query: "i",
+    caseSensitive: false,
+    maxResults: 10,
+    fileLimit: 10,
+    fileByteLimit: 64,
+    totalByteLimit: 64,
+    readEntry: async () => ({ buffer: Buffer.from("I\n"), size: 2, truncated: false }),
+    looksBinary: binaryClassifier,
+    decodeUtf8: strictUtf8,
+  });
+  assert.equal(localeStableSearch.matches.length, 1,
+    "case-insensitive repository search must not depend on the host locale");
+
   const failedNativePath = path.join(tempRoot, "must-not-leak.txt");
   const boundedFailureSearch = await searchBoundedWorkspaceRepositoryText({
     entries: [
@@ -369,6 +403,24 @@ try {
     () => session.request("readWorkspaceRepositoryFile", { bindingDigest, relPath: "invalid-utf8.txt" }, 30_000),
     (error) => error?.code === "workspace_worker_repository_utf8_invalid",
   );
+  const sensitivePatch = [
+    "diff --git a/.npmrc b/.npmrc",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/.npmrc",
+    "@@ -0,0 +1,1 @@",
+    "+token=must-not-be-written",
+    "",
+  ].join("\n");
+  for (const mode of ["dryRun", "apply"]) {
+    await assert.rejects(
+      () => session.request("applyWorkspaceWorkerPatch", { bindingDigest, mode, patch: sensitivePatch }, 30_000),
+      (error) => error?.code === "workspace_worker_repository_patch_path_denied",
+      `workspace worker ${mode} must reject sensitive patch targets`,
+    );
+  }
+  assert.equal(fs.existsSync(path.join(tempRoot, ".npmrc")), false,
+    "sensitive patch rejection must occur before any workspace mutation");
   await assert.rejects(
     () => session.request("listWorkspaceRepositoryFiles", { bindingDigest, prefix: ".git", limit: 10 }, 30_000),
     (error) => error?.code === "workspace_worker_repository_prefix_denied",

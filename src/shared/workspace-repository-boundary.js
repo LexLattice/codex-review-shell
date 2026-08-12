@@ -33,11 +33,26 @@ function searchOmittedFileCount(counts) {
     counts.readOrRevalidationFailure + counts.invalidUtf8;
 }
 
+function stableCaseFoldWithOffsets(value) {
+  let folded = "";
+  const originalOffsets = [];
+  let originalOffset = 0;
+  for (const symbol of String(value || "")) {
+    const foldedSymbol = symbol.toLowerCase();
+    folded += foldedSymbol;
+    for (let index = 0; index < foldedSymbol.length; index += 1) {
+      originalOffsets.push(originalOffset);
+    }
+    originalOffset += symbol.length;
+  }
+  return { folded, originalOffsets };
+}
+
 async function searchBoundedWorkspaceRepositoryText(input = {}) {
   const entries = Array.isArray(input.entries) ? input.entries : [];
   const query = String(input.query || "");
   const caseSensitive = input.caseSensitive === true;
-  const needle = caseSensitive ? query : query.toLocaleLowerCase();
+  const needle = caseSensitive ? query : stableCaseFoldWithOffsets(query).folded;
   const maxResults = Math.max(1, boundedCount(input.maxResults, Number.MAX_SAFE_INTEGER));
   const fileLimit = Math.max(1, boundedCount(input.fileLimit, Number.MAX_SAFE_INTEGER));
   const fileByteLimit = Math.max(1, boundedCount(input.fileByteLimit, Number.MAX_SAFE_INTEGER));
@@ -109,13 +124,19 @@ async function searchBoundedWorkspaceRepositoryText(input = {}) {
     filesScanned += 1;
     const lines = String(decoded?.text || "").split(/\r?\n/);
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-      const haystack = caseSensitive ? lines[lineIndex] : lines[lineIndex].toLocaleLowerCase();
+      const foldedLine = caseSensitive
+        ? { folded: lines[lineIndex], originalOffsets: null }
+        : stableCaseFoldWithOffsets(lines[lineIndex]);
+      const haystack = foldedLine.folded;
       const column = haystack.indexOf(needle);
       if (column < 0) continue;
+      const originalColumn = caseSensitive
+        ? column
+        : foldedLine.originalOffsets[column] ?? lines[lineIndex].length;
       matches.push({
         path: entry.path,
         line: lineIndex + 1,
-        column: column + 1,
+        column: originalColumn + 1,
         text: lines[lineIndex].slice(0, 500),
       });
       if (matches.length >= maxResults) {

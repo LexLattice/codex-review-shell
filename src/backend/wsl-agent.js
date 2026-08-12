@@ -399,11 +399,16 @@ function normalizePatchPath(value = "") {
   return displayRelPath(normalizeRelPath(text));
 }
 
-function assertPatchPathAllowed(relPath) {
+function assertPatchPathAllowed(relPath, options = {}) {
   const normalized = displayRelPath(normalizeRelPath(relPath));
   if (PATCH_DENY_PATTERNS.some((pattern) => pattern.test(normalized))) {
     const error = new Error("Patch target is blocked by workspace policy.");
     error.code = "PATCH_GENERATED_PATH_BLOCKED";
+    throw error;
+  }
+  if (options.rejectSensitivePaths === true && sensitiveReadFileReason(normalized)) {
+    const error = new Error("Patch target is blocked by the workspace worker sensitive-path policy.");
+    error.code = "workspace_worker_repository_patch_path_denied";
     throw error;
   }
   return normalized;
@@ -658,8 +663,8 @@ function locateHunkStart(beforeLines, hunk, preferredIndex, cursor) {
   return preferredIndex;
 }
 
-async function resolvePatchTarget(relPath) {
-  const normalizedRel = assertPatchPathAllowed(relPath);
+async function resolvePatchTarget(relPath, options = {}) {
+  const normalizedRel = assertPatchPathAllowed(relPath, options);
   const resolved = resolveWithinRoot(normalizedRel);
   const realRoot = await fs.realpath(root);
   const parentDir = path.dirname(resolved.fullPath);
@@ -672,16 +677,19 @@ async function resolvePatchTarget(relPath) {
   return { ...resolved, displayRel: displayRelPath(normalizedRel), realRoot, realParent };
 }
 
-async function applyPatchPlan(params = {}) {
+async function applyPatchPlan(params = {}, options = {}) {
   const patchText = String(params.patch || "");
   const mode = params.mode === "apply" ? "apply" : "dryRun";
   const parsedFiles = parseUnifiedPatch(patchText);
+  for (const filePatch of parsedFiles) {
+    assertPatchPathAllowed(filePatch.relPath, options);
+  }
   const seen = new Set();
   const filePlans = [];
   for (const filePatch of parsedFiles) {
-    const target = await resolvePatchTarget(filePatch.relPath);
+    const target = await resolvePatchTarget(filePatch.relPath, options);
     const normalizedKey = process.platform === "win32"
-      ? target.displayRel.toLocaleLowerCase().normalize("NFC")
+      ? target.displayRel.toLowerCase().normalize("NFC")
       : target.displayRel.normalize("NFC");
     if (seen.has(normalizedKey)) throw new Error("Patch has colliding target paths after normalization.");
     seen.add(normalizedKey);
@@ -1226,8 +1234,8 @@ function directEpistemicProfileRequest(params = {}) {
 
 async function directEpistemicFileDigest(relativePath, maxBytes) {
   const resolved = await resolveFileWithinRoot(relativePath);
-  if (path.resolve(resolved.realRoot) !== path.resolve(root) ||
-      path.resolve(resolved.fullPath) !== path.resolve(resolved.requestedFullPath)) {
+  if (!sameNativePath(resolved.realRoot, root) ||
+      !sameNativePath(resolved.fullPath, resolved.requestedFullPath)) {
     throw new Error("direct_epistemic_physical_path_rejected");
   }
   const requestedStat = await fs.lstat(resolved.requestedFullPath);
@@ -1316,7 +1324,7 @@ async function directEpistemicGitCapture() {
   const lines = identity.stdout.toString("utf8").split(/\r?\n/).filter(Boolean);
   const realRoot = await fs.realpath(root);
   const realGitRoot = await fs.realpath(lines[0] || root);
-  if (path.resolve(realRoot) !== path.resolve(realGitRoot)) throw new Error("direct_epistemic_repository_root_mismatch");
+  if (!sameNativePath(realRoot, realGitRoot)) throw new Error("direct_epistemic_repository_root_mismatch");
   const [status, diff, untracked] = await Promise.all([
     captureDigestProcess("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: root, timeoutMs: 20_000 }),
     captureDigestProcess("git", ["diff", "--no-ext-diff", "--binary", "HEAD", "--"], { cwd: root, timeoutMs: 60_000, captureLimit: 0 }),
@@ -2763,7 +2771,7 @@ async function verifyWorkspaceWorkerBinding(value) {
 
 async function applyWorkspaceWorkerPatch(params = {}) {
   await verifyWorkspaceWorkerBinding(params.bindingDigest);
-  return applyPatchPlan(params);
+  return applyPatchPlan(params, { rejectSensitivePaths: true });
 }
 
 function workspaceWorkerSafeManifestPath(value) {
