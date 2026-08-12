@@ -21,6 +21,7 @@ const {
 } = require("../src/main/direct/agents/workspace-worker-policy-profile");
 const {
   executeWorkspaceTool,
+  runDirectWorkspaceWorker,
 } = require("../src/main/direct/agents/workspace-worker-runtime");
 const {
   WorkspaceWorkerLifecycleRegistry,
@@ -172,6 +173,35 @@ const stalePool = new DirectNativeAgentPool({
   workspaceWorkerRunner: async () => ({ status: "completed" }),
 });
 assert.equal(stalePool.launch(poolLaunchBase).blockerCode, "direct_workspace_worker_delegation_policy_stale");
+
+let expiredProvisioningCalls = 0;
+let expiredProviderCalls = 0;
+const expiredBeforeProvisioning = await runDirectWorkspaceWorker({
+  childAgentId: "direct_child_expired_before_provisioning",
+  projectId,
+  workThreadId,
+  primaryThreadId: "direct_parent_provider_workspace",
+  prompt: "Do not provision after the queued delegation expires.",
+  workspaceMode: "isolated_worktree",
+  toolProfile: "implementation_worker",
+  parentAuthorityPacket: packet,
+  now: () => Date.parse(packet.delegationPolicyRef.expiresAt) + 1,
+  workspaceProvisioner: async () => {
+    expiredProvisioningCalls += 1;
+    throw new Error("expired delegation must block before provisioning");
+  },
+  providerRequestRunner: async () => {
+    expiredProviderCalls += 1;
+    throw new Error("expired delegation must block before provider execution");
+  },
+});
+assert.equal(expiredBeforeProvisioning.status, "blocked");
+assert.equal(
+  expiredBeforeProvisioning.blockerCode,
+  "direct_workspace_worker_delegation_policy_stale",
+);
+assert.equal(expiredProvisioningCalls, 0);
+assert.equal(expiredProviderCalls, 0);
 
 const forgedPolicy = JSON.parse(JSON.stringify(activePolicy));
 await assert.rejects(
@@ -658,6 +688,38 @@ try {
   assert.equal(restartReplay.providerOutput.childAgentId, firstChildId);
   assert.equal(restartReplay.sideEffectExecuted, false);
   assert.equal(restartedRunnerCalls, 0);
+  const restartedRecord = restartedPool.inspect({
+    projectId,
+    primaryThreadId: "direct_parent_provider_workspace",
+    target: firstChildId,
+  });
+  assert.equal(restartedRecord.state, "completed");
+  assert.equal(restartedRecord.resultSummary, "direct_workspace_worker_completed");
+  assert.equal(restartedRecord.resultSummaryKind, "typed_status_code");
+  assert.equal(restartedRecord.epistemicCaptureComplete, false);
+  assert.equal(restartedRecord.evidenceConfidence, "partial");
+
+  const restartedWait = await restartedController.buildNativeSubAgentRuntimeEnvelope(
+    "direct_parent_provider_workspace",
+    "turn_provider_workspace_restart_wait",
+    {
+      name: "wait_agent",
+      callId: "call_provider_workspace_restart_wait",
+      obligationId: "obligation_provider_workspace_restart_wait",
+      argumentsText: JSON.stringify({ targets: [firstChildId], timeout_ms: 0 }),
+    },
+    project,
+  );
+  assert.equal(restartedWait.status, "ready_for_provider_continuation");
+  assert.equal(restartedWait.providerOutput.updates[0].childAgentId, firstChildId);
+  assert.equal(restartedWait.providerOutput.updates[0].state, "completed");
+  const restartedList = restartedPool.statusSurface({
+    projectId,
+    workThreadId,
+    primaryThreadId: "direct_parent_provider_workspace",
+  }).listAgents();
+  assert.equal(restartedList.result.listProjection.rowCount, 1);
+  assert.equal(restartedList.result.listProjection.rows[0].childAgentId, firstChildId);
 } finally {
   durableRegistry.close();
   fs.rmSync(durableRoot, { recursive: true, force: true });

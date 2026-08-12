@@ -410,12 +410,17 @@ function assertCurrentDelegationLease(input = {}, contract = {}) {
   if (typeof input.workspaceOperationLeaseValidator === "function") {
     input.workspaceOperationLeaseValidator();
   }
-  if (!contract.workspaceWorkerDelegationPolicyRef) return null;
+  const delegated = contract.workspaceWorkerDelegationPolicyRef ||
+    input.parentAuthorityPacket?.delegationPolicyRef;
+  if (!delegated) return null;
   return validateWorkspaceDelegatedParentAuthorityPacket(input.parentAuthorityPacket, {
-    projectId: contract.projectId,
-    workThreadId: contract.workThreadId,
+    projectId: normalizeString(contract.projectId, normalizeString(input.projectId, "")),
+    workThreadId: normalizeString(contract.workThreadId, normalizeString(input.workThreadId, "")),
     roleLane: "implementation_worker",
-    requestedProfileId: contract.authority?.toolProfile,
+    requestedProfileId: normalizeString(
+      contract.authority?.toolProfile,
+      normalizeString(input.toolProfile, ""),
+    ),
     nowMs: typeof input.now === "function" ? Number(input.now()) : Date.now(),
   });
 }
@@ -732,6 +737,17 @@ async function runDirectWorkspaceWorker(input = {}) {
   let provisioned;
   let contract;
   let admittedContextMessages = [];
+  try {
+    assertCurrentDelegationLease(input);
+  } catch (error) {
+    return workerResult({
+      status: "blocked",
+      blockerCode: publicRuntimeErrorCode(
+        error?.code,
+        "direct_workspace_worker_delegation_policy_invalid",
+      ),
+    });
+  }
   try {
     provisioned = await input.workspaceProvisioner(input);
     const compiled = compileWorkspaceWorkerContract({

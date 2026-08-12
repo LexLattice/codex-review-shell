@@ -784,6 +784,22 @@ class DirectNativeAgentPool extends EventEmitter {
   }
 
   lifecycleReplayLaunchResult(session = {}) {
+    const record = this.materializeLifecycleReplayRecord(session);
+    if (!record) {
+      return this.launchResult(
+        null,
+        "blocked",
+        "direct_workspace_worker_restart_reconciliation_required",
+        { replayed: true },
+      );
+    }
+    return this.launchResult(record, record.state, "", { replayed: true });
+  }
+
+  materializeLifecycleReplayRecord(session = {}) {
+    if (!TERMINAL_STATES.has(session.state)) return null;
+    const existing = this.jobs.get(normalizeString(session.childAgentId, ""));
+    if (existing) return existing;
     const ref = session.delegationAuthority
       ? {
           schema: "direct_workspace_worker_delegation_policy_ref@1",
@@ -799,10 +815,34 @@ class DirectNativeAgentPool extends EventEmitter {
           roleLane: session.delegationAuthority.roleLane,
         }
       : null;
-    return this.launchResult({
+    const blockerCode = session.state === "completed"
+      ? ""
+      : safeWorkspaceStatusCode(
+          session.blockerCode,
+          `direct_workspace_worker_${session.state}`,
+        );
+    const capture = normalizeEpistemicCapture({
+      status: "unavailable",
+      errorCode: "direct_workspace_worker_replay_capture_unavailable",
+    });
+    const mutationOutcome = safeMutationOutcome(session.mutationOutcome);
+    const taskName = normalizeString(session.launchIdentity?.taskName, session.childAgentId);
+    const record = {
+      schema: DIRECT_NATIVE_AGENT_STATUS_SCHEMA,
       childAgentId: session.childAgentId,
-      taskName: session.launchIdentity?.taskName,
+      taskName,
+      projectId: session.projectId,
+      workThreadId: session.workThreadId,
+      primaryThreadId: session.primaryThreadId,
+      launchDigest: normalizeString(session.launchDigest, ""),
+      parentAgentId: "",
+      role: normalizeString(session.delegationAuthority?.roleLane, "implementation_worker"),
+      providerRoleLabelAcceptedAsAuthority: false,
+      providerRoleLabelIgnored: false,
+      displayLabel: taskName,
       state: session.state,
+      model: "",
+      reasoningEffort: "",
       workspaceMode: session.workspaceMode,
       toolProfile: session.toolProfile,
       workspaceExecution: {
@@ -813,8 +853,69 @@ class DirectNativeAgentPool extends EventEmitter {
         workspaceWorkerDelegationPolicyRef: ref,
         rawWorkspacePathIncluded: false,
       },
+      contextHandoff: null,
+      contextMessageCount: 0,
+      contextDigest: "",
+      taskDigest: "",
       runtimeProfileIndependentOfContext: true,
-    }, session.state, "", { replayed: true });
+      createdAt: normalizeString(session.createdAt, ""),
+      startedAt: "",
+      completedAt: normalizeString(session.updatedAt, ""),
+      resultSummary: session.state === "completed"
+        ? "direct_workspace_worker_completed"
+        : blockerCode,
+      resultSummaryKind: "typed_status_code",
+      blockerCode,
+      resultDigest: publicResultDigest(session.resultDigest),
+      mutationOutcome,
+      partialMutationPossible: mutationOutcome?.partialMutationPossible === true,
+      epistemicCapture: {
+        status: capture.status,
+        errorCode: capture.errorCode,
+        receiptDigest: capture.receiptDigest,
+        sessionId: capture.sessionId,
+        turnId: capture.turnId,
+      },
+      epistemicCaptureComplete: false,
+      epistemicCaptureOmission: capture.omission,
+      evidenceConfidence: "partial",
+      rawTaskPersisted: false,
+      rawContextPersisted: false,
+      _task: "",
+      _contextMessages: [],
+      _project: null,
+      _parentAuthorityPacket: null,
+      _delegationAuthority: session.delegationAuthority || null,
+      _launchIdentity: session.launchIdentity || null,
+      _waiters: new Set(),
+      _settled: true,
+      _leaseActive: false,
+      _abortController: null,
+      _externalSignal: null,
+      _externalAbortListener: null,
+      _runnerStarted: false,
+      _runnerPromise: null,
+      _cancelRequested: session.cancellation?.requested === true,
+      _cancelReasonCode: normalizeString(session.cancellation?.reasonCode, ""),
+      _cancelRequestedAt: normalizeString(session.cancellation?.requestedAt, ""),
+      _cancelAcknowledgedAt: normalizeString(session.cancellation?.acknowledgedAt, ""),
+      _cancellationReceipt: session.cancellationReceipt
+        ? {
+            receiptDigest: normalizeString(session.cancellationReceipt.receiptDigest, ""),
+            acknowledgementKind: normalizeString(session.cancellationReceipt.acknowledgementKind, ""),
+            outcomeDigest: normalizeString(session.cancellationReceipt.outcomeDigest, ""),
+          }
+        : null,
+      _pendingSettlement: null,
+      _settlementAttempts: 0,
+      _lifecycleSessionId: normalizeString(session.sessionId, ""),
+      _lifecycleProjection: this.safeLifecycleProjection(session),
+      _lifecycleErrorCode: "",
+    };
+    this.jobs.set(record.childAgentId, record);
+    this.taskIndex.set(`${scopeKey(record.projectId, record.primaryThreadId)}::${taskName}`, record.childAgentId);
+    this.emit("changed", this.publicRecord(record));
+    return record;
   }
 
   startRecord(record) {
