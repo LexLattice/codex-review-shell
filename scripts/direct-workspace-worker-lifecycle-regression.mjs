@@ -80,6 +80,35 @@ try {
     /direct_workspace_worker_operation_id_conflict/,
     "an operation ID cannot replay another session's registration",
   );
+  const legacyRegistry = new WorkspaceWorkerLifecycleRegistry({ db: new DatabaseSync(":memory:") });
+  legacyRegistry.openSession({
+    sessionId: "session_legacy_operation",
+    leaseId: "lease_legacy_operation",
+    childAgentId: "child_legacy_operation",
+    projectId: "project_legacy_original",
+    operationId: "legacy_blank_operation",
+  });
+  const legacyEventRow = legacyRegistry.db.prepare(
+    "select event_json from workspace_worker_lifecycle_events where operation_id = ?",
+  ).get("legacy_blank_operation");
+  const legacyEvent = JSON.parse(legacyEventRow.event_json);
+  delete legacyEvent.operationDigest;
+  legacyRegistry.db.prepare(`
+    update workspace_worker_lifecycle_events
+    set operation_digest = '', event_json = ? where operation_id = ?
+  `).run(JSON.stringify(legacyEvent), "legacy_blank_operation");
+  assert.throws(
+    () => legacyRegistry.openSession({
+      sessionId: "session_legacy_operation",
+      leaseId: "lease_legacy_operation",
+      childAgentId: "child_legacy_operation",
+      projectId: "project_legacy_conflicting",
+      operationId: "legacy_blank_operation",
+    }),
+    /direct_workspace_worker_operation_digest_unverifiable/,
+    "a migrated blank operation digest cannot act as a wildcard for conflicting canonical input",
+  );
+  legacyRegistry.close();
 
   const binding = normalizeBinding({
     workerKey: "worker_fixture",
@@ -562,6 +591,37 @@ try {
   assert.equal(unverifiableWindowsTreeKill.quiesced, false);
   assert.equal(unverifiableWindowsTreeKill.method, "taskkill_tree_force");
 
+  const posixTreeChild = new EventEmitter();
+  posixTreeChild.pid = 4444;
+  posixTreeChild.exitCode = null;
+  posixTreeChild.signalCode = null;
+  let posixGroupAlive = true;
+  const posixSignals = [];
+  const verifiedPosixTreeKill = await terminateWorkspaceProcessTree(posixTreeChild, {
+    platform: "linux",
+    timeoutMs: 20,
+    pollMs: 1,
+    killImpl: (pid, signal) => {
+      assert.equal(pid, -posixTreeChild.pid);
+      if (signal === 0) {
+        if (posixGroupAlive) return true;
+        const error = new Error("group absent");
+        error.code = "ESRCH";
+        throw error;
+      }
+      posixSignals.push(signal);
+      if (signal === "SIGTERM") {
+        posixTreeChild.exitCode = 0;
+        posixTreeChild.emit("exit", 0, null);
+      }
+      if (signal === "SIGKILL") posixGroupAlive = false;
+      return true;
+    },
+  });
+  assert.equal(verifiedPosixTreeKill.quiesced, true);
+  assert.equal(verifiedPosixTreeKill.method, "posix_process_group_signal_escalated");
+  assert.deepEqual(posixSignals, ["SIGTERM", "SIGKILL"], "direct-child exit cannot substitute for process-group quiescence");
+
   const fakeChild = new FakeChild();
   const transport = new NdjsonTransport(fakeChild);
   const writes = [];
@@ -656,20 +716,45 @@ try {
   assert.match(retainedMutation.bindingDigest, /^sha256:[a-f0-9]{64}$/);
   assert.equal(transport.pendingRequestCount(), 0);
 
+  const lateCommitWriteStart = writes.length;
+  let lateCommitSettled = false;
+  const lateCommitPromise = transport.request(
+    "provisionGitWorktree",
+    { workerKey: "late-commit", branch: "codex/worker/late-commit", baseRef: "HEAD" },
+    30,
+  ).finally(() => { lateCommitSettled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(writes[lateCommitWriteStart + 1].method, "cancelRequest");
+  assert.equal(lateCommitSettled, false, "mutation timeout retains request ownership until an exact outcome arrives");
+  assert.equal(transport.pendingRequestCount(), 1);
+  fakeChild.stdout.write(`${JSON.stringify({
+    id: writes[lateCommitWriteStart].id,
+    result: {
+      workerKey: "late-commit",
+      retainedAfterCompletion: true,
+      requestOutcome: {
+        schema: "workspace_backend_mutation_outcome@1",
+        committed: true,
+        outcomeDigest: `sha256:${"f".repeat(64)}`,
+      },
+    },
+  })}\n`);
+  const lateCommittedMutation = await lateCommitPromise;
+  assert.equal(lateCommittedMutation.requestOutcome.committed, true, "a committed mutation result wins after timeout");
+  assert.equal(transport.pendingRequestCount(), 0);
+
   const timeoutWriteStart = writes.length;
   const timeoutPromise = transport.request(
     "runDirectWorkspaceWorkerTest",
     { target: "ordinary_timeout" },
     30,
   );
-  await assert.rejects(timeoutPromise, (error) => {
-    assert.equal(error.code, "workspace_backend_request_timeout");
-    assert.equal(error.backendQuiesced, false);
-    return true;
-  });
-  await tick();
+  let timeoutSettled = false;
+  timeoutPromise.finally(() => { timeoutSettled = true; }).catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(writes.length, timeoutWriteStart + 2, "a timed-out request must issue backend cancellation");
   assert.equal(writes[timeoutWriteStart + 1].method, "cancelRequest");
+  assert.equal(timeoutSettled, false, "timeout alone cannot settle an owned backend request");
   assert.equal(transport.pendingRequestCount(), 1, "an unquiesced timeout remains in drain accounting");
   assert.equal((await transport.waitForDrain({ timeoutMs: 0 })).status, "timeout");
   fakeChild.stdout.write(`${JSON.stringify({
@@ -681,7 +766,12 @@ try {
       acknowledgementKind: "fixture_timeout_process_exit",
     },
   })}\n`);
-  await tick();
+  await assert.rejects(timeoutPromise, (error) => {
+    assert.equal(error.code, "workspace_backend_request_timeout");
+    assert.equal(error.backendQuiesced, true);
+    assert.equal(error.cancellationAcknowledged, true);
+    return true;
+  });
   assert.equal(transport.pendingRequestCount(), 0);
   assert.equal((await transport.waitForDrain({ timeoutMs: 0 })).status, "drained");
 
@@ -694,15 +784,16 @@ try {
   );
   await tick();
   unacknowledgedController.abort("fixture_backend_cancel_unacknowledged");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(transport.pendingRequestCount(), 1);
+  assert.equal((await transport.waitForDrain({ timeoutMs: 0 })).status, "timeout");
+  transport.dispose();
   await assert.rejects(unacknowledgedPromise, (error) => {
-    assert.equal(error.code, "workspace_backend_cancel_unacknowledged");
+    assert.equal(error.code, "workspace_backend_transport_closed");
     assert.equal(error.backendQuiesced, false);
     assert.equal(error.cancellationAcknowledged, false);
     return true;
   });
-  assert.equal(transport.pendingRequestCount(), 1);
-  assert.equal((await transport.waitForDrain({ timeoutMs: 0 })).status, "timeout");
-  transport.dispose();
 
   const unacknowledgedPool = new DirectNativeAgentPool({
     maxActiveChildren: 1,
@@ -768,6 +859,32 @@ try {
   assert.equal(missingAcknowledgementRecord.state, "cancellation_unacknowledged");
   assert.equal(missingAcknowledgementRecord.cancellation.leaseActive, true);
   assert.equal(missingAcknowledgementPool.descriptor().activeChildren, 1);
+
+  const unresolvedBackendPool = new DirectNativeAgentPool({
+    maxActiveChildren: 1,
+    workspaceWorkerRunner: async () => ({
+      status: "failed",
+      blockerCode: "workspace_backend_transport_closed",
+      backendOwnershipUnresolved: true,
+      cancellationAcknowledged: false,
+      backendQuiesced: false,
+    }),
+  });
+  const unresolvedBackendLaunch = unresolvedBackendPool.launch({
+    projectId: "project_unresolved_backend",
+    primaryThreadId: "primary_unresolved_backend",
+    taskName: "unresolved_backend_worker",
+    message: "retain capacity until backend quiescence is proved",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "read_only_worker",
+    parentAuthorityPacket: lifecycleAuthorityPacket,
+    project: { id: "project_unresolved_backend" },
+  });
+  await tick();
+  const unresolvedBackendRecord = unresolvedBackendPool.inspect({ target: unresolvedBackendLaunch.childAgentId });
+  assert.equal(unresolvedBackendRecord.state, "cancellation_unacknowledged");
+  assert.equal(unresolvedBackendRecord.cancellation.leaseActive, true);
+  assert.equal(unresolvedBackendPool.descriptor().activeChildren, 1, "unresolved backend ownership cannot release worker capacity");
 
   const settlementRegistry = new WorkspaceWorkerLifecycleRegistry({ db: new DatabaseSync(":memory:") });
   const settlementGate = deferred();
@@ -881,6 +998,47 @@ try {
   });
   assert.equal(blockedShutdown.status, "blocked");
   assert.equal(unsafeDisposalStarted, false, "backends stay alive until child acknowledgement");
+
+  const intakeBarrierManager = new WorkspaceBackendManager({
+    agentPath: path.resolve("src/backend/wsl-agent.js"),
+    fallbackRoot: temporaryRoot,
+  });
+  const ownedBarrierProject = {
+    id: "project_backend_drain_barrier",
+    repoPath: temporaryRoot,
+    workspace: { kind: "local", localPath: temporaryRoot },
+  };
+  const ownedBarrierSession = intakeBarrierManager.sessionForProject(ownedBarrierProject);
+  const barrierDrainGate = deferred();
+  ownedBarrierSession.beginDrain = () => { ownedBarrierSession.acceptingRequests = false; };
+  ownedBarrierSession.drain = async () => {
+    await barrierDrainGate.promise;
+    return { status: "drained", blockerCode: "", pendingRequests: 0 };
+  };
+  ownedBarrierSession.request = async (method) => ({ method });
+  const barrierDrain = intakeBarrierManager.drainAll({ timeoutMs: 1_000 });
+  assert.throws(
+    () => intakeBarrierManager.sessionForProject({
+      id: "project_admitted_during_drain",
+      repoPath: path.join(temporaryRoot, "late"),
+      workspace: { kind: "local", localPath: path.join(temporaryRoot, "late") },
+    }),
+    /Workspace backend intake is closed/,
+    "drain atomically closes new backend-session admission",
+  );
+  await assert.rejects(
+    intakeBarrierManager.requestForProject(ownedBarrierProject, "readFile", {}),
+    (error) => error.code === "workspace_backend_manager_intake_closed",
+    "ordinary requests are rejected after drain starts",
+  );
+  assert.equal(
+    (await intakeBarrierManager.requestForProject(ownedBarrierProject, "cancelRequest", { requestId: "owned" })).method,
+    "cancelRequest",
+    "an exact control request for an owned session remains admissible during drain",
+  );
+  barrierDrainGate.resolve();
+  assert.equal((await barrierDrain).status, "drained");
+  intakeBarrierManager.disposeAll();
 
   const liveBackendRoot = path.join(temporaryRoot, "live-backend");
   fs.mkdirSync(liveBackendRoot, { recursive: true });
@@ -999,11 +1157,13 @@ try {
   const mainSource = fs.readFileSync(path.resolve("src/main.js"), "utf8");
   const backendSource = fs.readFileSync(path.resolve("src/backend/wsl-agent.js"), "utf8");
   for (const method of [
-    "hello", "listTree", "readFile", "applyPatch", "readFileTransfer",
+    "hello", "listTree", "readFile", "applyPatch", "applyWorkspaceWorkerPatch", "readFileTransfer",
     "repositorySemanticSnapshot", "directEpistemicRepositoryObservation",
     "repositoryRealizationContext", "listMatchingFiles", "resolvePath", "runCommand",
-    "runDirectCommand", "provisionGitWorktree", "removeGitWorktree", "directTestProfile",
-    "runDirectTest", "ensureCodexSandboxArtifactIgnored", "watchStatus", "listCodexThreads",
+    "runDirectCommand", "provisionGitWorktree", "removeGitWorktree", "initializeWorkspaceWorkerBinding",
+    "directTestProfile", "runDirectTest", "inspectWorkspaceRepository", "listWorkspaceRepositoryFiles",
+    "matchWorkspaceRepositoryFiles", "searchWorkspaceRepositoryText", "readWorkspaceRepositoryFile",
+    "ensureCodexSandboxArtifactIgnored", "watchStatus", "listCodexThreads",
     "readCodexThreadTranscript", "analyzeCodexThread", "stageAttachment",
     "removeAttachmentDraft", "importFile",
   ]) {
@@ -1019,6 +1179,9 @@ try {
     /removeGitWorktree/,
     "failed or cancelled provisioning retains the worktree for inspection",
   );
+  const rendererSource = fs.readFileSync(path.resolve("src/renderer/app.js"), "utf8");
+  assert.doesNotMatch(rendererSource, /status\.lastError\b/, "workspace status consumers use only the safe error code");
+  assert.doesNotMatch(rendererSource, /event\.session\.lastError\b/, "backend event consumers cannot expect a private error string");
 
   console.log(JSON.stringify({
     ok: true,

@@ -26,6 +26,39 @@ function waitForChildExit(child, timeoutMs) {
   });
 }
 
+function posixProcessGroupAlive(pid, killImpl = process.kill) {
+  try {
+    killImpl(-pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    return true;
+  }
+}
+
+function waitForPosixProcessGroupExit(pid, timeoutMs, options = {}) {
+  const killImpl = options.killImpl || process.kill;
+  const pollMs = Number.isFinite(Number(options.pollMs))
+    ? Math.max(1, Math.min(100, Math.floor(Number(options.pollMs))))
+    : 10;
+  if (!posixProcessGroupAlive(pid, killImpl)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const poll = () => {
+      if (!posixProcessGroupAlive(pid, killImpl)) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        resolve(false);
+        return;
+      }
+      setTimeout(poll, Math.min(pollMs, timeoutMs));
+    };
+    poll();
+  });
+}
+
 function runTaskkill(pid, options = {}) {
   const spawnImpl = options.spawnImpl || spawn;
   return new Promise((resolve) => {
@@ -69,7 +102,7 @@ async function terminateWorkspaceProcessTree(child, options = {}) {
       blockerCode: childExited(child) ? "" : "workspace_process_identity_missing",
     };
   }
-  if (childExited(child)) {
+  if (platform === "win32" && childExited(child)) {
     return { quiesced: true, method: "already_exited", blockerCode: "" };
   }
 
@@ -90,9 +123,13 @@ async function terminateWorkspaceProcessTree(child, options = {}) {
     };
   }
 
+  const killImpl = options.killImpl || process.kill;
+  if (!posixProcessGroupAlive(child.pid, killImpl)) {
+    return { quiesced: true, method: "posix_process_group_absent", blockerCode: "" };
+  }
   let signalDelivered = false;
   try {
-    process.kill(-child.pid, signal);
+    killImpl(-child.pid, signal);
     signalDelivered = true;
   } catch {
     try {
@@ -106,14 +143,24 @@ async function terminateWorkspaceProcessTree(child, options = {}) {
       blockerCode: "workspace_posix_process_tree_signal_failed",
     };
   }
-  const exited = await waitForChildExit(child, timeoutMs);
+  let exited = await waitForPosixProcessGroupExit(child.pid, timeoutMs, options);
+  let escalated = false;
+  if (!exited && signal !== "SIGKILL") {
+    escalated = true;
+    try {
+      killImpl(-child.pid, "SIGKILL");
+      exited = await waitForPosixProcessGroupExit(child.pid, timeoutMs, options);
+    } catch {}
+  }
   return {
     quiesced: exited,
-    method: "posix_process_group_signal",
-    blockerCode: exited ? "" : "workspace_posix_process_tree_exit_unverified",
+    method: escalated ? "posix_process_group_signal_escalated" : "posix_process_group_signal",
+    blockerCode: exited ? "" : "workspace_posix_process_group_exit_unverified",
   };
 }
 
 module.exports = {
+  posixProcessGroupAlive,
   terminateWorkspaceProcessTree,
+  waitForPosixProcessGroupExit,
 };

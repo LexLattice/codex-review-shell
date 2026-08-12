@@ -490,6 +490,14 @@ class DirectNativeAgentPool extends EventEmitter {
     record._runnerPromise = runnerPromise;
     runnerPromise.then((result) => {
       if (record._settled) return;
+      if (
+        record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE &&
+        result?.backendOwnershipUnresolved === true &&
+        !record._cancelRequested
+      ) {
+        this.markBackendQuiescenceUnacknowledged(record, result);
+        return;
+      }
       if (record._cancelRequested) {
         if (!this.workspaceCancellationQuiesced(record, result)) {
           this.markCancellationUnacknowledged(record, result);
@@ -520,6 +528,15 @@ class DirectNativeAgentPool extends EventEmitter {
       });
     }).catch((error) => {
       if (record._settled) return;
+      if (
+        record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE &&
+        error?.workspaceBackendRequest === true &&
+        error?.backendQuiesced !== true &&
+        !record._cancelRequested
+      ) {
+        this.markBackendQuiescenceUnacknowledged(record, error);
+        return;
+      }
       if (record._cancelRequested && !this.workspaceCancellationQuiesced(record, error)) {
         this.markCancellationUnacknowledged(record, error);
         return;
@@ -556,6 +573,25 @@ class DirectNativeAgentPool extends EventEmitter {
     record.resultSummary = record.blockerCode;
     record._lifecycleErrorCode = record.blockerCode;
     this.emit("changed", this.publicRecord(record));
+  }
+
+  markBackendQuiescenceUnacknowledged(record, evidence = {}) {
+    const reasonCode = normalizeString(
+      evidence?.code || evidence?.blockerCode,
+      "direct_workspace_worker_backend_quiescence_unacknowledged",
+    );
+    record._cancelRequested = true;
+    record._cancelReasonCode = reasonCode;
+    record._cancelRequestedAt = nowIso(this.now);
+    const lifecycleError = this.transitionLifecycle(record, "requestCancellation", {
+      operationId: `pool-request-cancel:${record.childAgentId}`,
+      reasonCode,
+    });
+    if (lifecycleError) record._lifecycleErrorCode = lifecycleError;
+    if (record._abortController && !record._abortController.signal.aborted) {
+      record._abortController.abort(reasonCode);
+    }
+    this.markCancellationUnacknowledged(record, evidence);
   }
 
   safeLifecycleProjection(session) {

@@ -411,6 +411,7 @@ function resultFor(input = {}) {
     bottomUpMessagingStarted: false,
     cancellationAcknowledged: input.cancellationAcknowledged === true,
     backendQuiesced: input.backendQuiesced === true,
+    backendOwnershipUnresolved: input.backendOwnershipUnresolved === true,
     cancellationReceipt: isPlainObject(input.cancellationReceipt)
       ? {
           targetRequestId: normalizeString(input.cancellationReceipt.targetRequestId, ""),
@@ -476,11 +477,13 @@ async function runDirectWorkspaceWorker(input = {}) {
     return resultFor({
       status: input.signal?.aborted ? "cancelled" : "failed",
       blockerCode: normalizeString(error?.code, "direct_workspace_worker_provision_failed"),
-      cancellationAcknowledged: input.signal?.aborted && error?.cancellationAcknowledged === true,
-      backendQuiesced: input.signal?.aborted && error?.backendQuiesced === true,
+      cancellationAcknowledged: error?.cancellationAcknowledged === true,
+      backendQuiesced: error?.backendQuiesced === true,
+      backendOwnershipUnresolved: error?.workspaceBackendRequest === true && error?.backendQuiesced !== true,
       cancellationReceipt: error?.cancellationReceipt,
     });
   }
+  let retainProvisionedBackend = false;
   try {
     const tools = workspaceWorkerToolSchemas(contract);
     const instructions = workspaceWorkerInstructions(contract);
@@ -622,6 +625,8 @@ async function runDirectWorkspaceWorker(input = {}) {
         evidence.push(executed.providerOutputText);
       }
     } catch (error) {
+      const backendOwnershipUnresolved = error?.workspaceBackendRequest === true && error?.backendQuiesced !== true;
+      if (backendOwnershipUnresolved) retainProvisionedBackend = true;
       const blockerCode = input.signal?.aborted
         ? "direct_workspace_worker_aborted"
         : normalizeString(error?.code, "direct_workspace_worker_runtime_exception");
@@ -643,8 +648,9 @@ async function runDirectWorkspaceWorker(input = {}) {
           workspaceWorkerContract: contract,
         },
         providerRequestStarted: allEvents.length > 0,
-        cancellationAcknowledged: input.signal?.aborted && error?.cancellationAcknowledged === true,
-        backendQuiesced: input.signal?.aborted && error?.backendQuiesced === true,
+        cancellationAcknowledged: error?.cancellationAcknowledged === true,
+        backendQuiesced: error?.backendQuiesced === true,
+        backendOwnershipUnresolved,
         cancellationReceipt: error?.cancellationReceipt,
       });
     }
@@ -655,9 +661,11 @@ async function runDirectWorkspaceWorker(input = {}) {
       workspaceExecution: executionProjection(contract, results, "failed"),
     });
   } finally {
-    try {
-      await provisioned.release?.();
-    } catch {}
+    if (!retainProvisionedBackend) {
+      try {
+        await provisioned.release?.();
+      } catch {}
+    }
   }
 }
 

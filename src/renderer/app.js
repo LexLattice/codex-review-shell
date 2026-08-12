@@ -1270,8 +1270,8 @@ function backendStatusText(project) {
   if (!status) return "backend attaching…";
   const transport = status.transport ? ` · ${status.transport}` : "";
   if (status.status === "attached") return `backend attached${transport}`;
-  if (status.status === "failed") return `backend failed${status.lastError ? ` · ${status.lastError}` : ""}`;
-  if (status.status === "closed") return `backend closed${status.lastError ? ` · ${status.lastError}` : ""}`;
+  if (status.status === "failed") return `backend failed${status.lastErrorCode ? ` · ${status.lastErrorCode}` : ""}`;
+  if (status.status === "closed") return `backend closed${status.lastErrorCode ? ` · ${status.lastErrorCode}` : ""}`;
   return `backend ${status.status || "unknown"}${transport}`;
 }
 
@@ -8925,7 +8925,7 @@ function bindEvents() {
       renderSelectedProject();
       if (event.error) setLastEvent(`Workspace backend error: ${event.error}`);
       else if (event.session.status === "attached") setLastEvent(`Workspace backend attached: ${event.session.transport}`);
-      else if (event.session.status === "failed") setLastEvent(`Workspace backend failed: ${event.session.lastError || "unknown"}`);
+      else if (event.session.status === "failed") setLastEvent(`Workspace backend failed: ${event.session.lastErrorCode || "unknown"}`);
     }
     if (event.type === "chatgpt-download-started") {
       setLastEvent(`ChatGPT download started: ${event.fileName || "download"}.`);

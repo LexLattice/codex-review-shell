@@ -27,6 +27,12 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function backendIntakeClosedError() {
+  const error = new Error("Workspace backend intake is closed for ordered drain.");
+  error.code = "workspace_backend_manager_intake_closed";
+  return error;
+}
+
 function normalizeWorkspace(input, repoPath, fallbackRoot) {
   const raw = isPlainObject(input) ? input : null;
   if (raw?.kind === "wsl") {
@@ -357,6 +363,9 @@ class NdjsonTransport extends EventEmitter {
         const error = new Error(message.error.message || "Workspace backend request failed.");
         error.code = normalizeString(message.error.code, "");
         error.backendStack = message.error.stack;
+        error.backendRequestCompleted = true;
+        error.backendQuiesced = true;
+        error.workspaceBackendRequest = true;
         pending.reject(error);
       } else {
         pending.resolve(message.result);
@@ -386,15 +395,20 @@ class NdjsonTransport extends EventEmitter {
   abortError(pending, cancellationReceipt = {}) {
     const error = new Error(`Workspace backend request cancelled: ${pending.method}`);
     error.name = "AbortError";
-    error.code = "workspace_backend_request_cancelled";
+    error.code = pending.timeoutTriggered
+      ? "workspace_backend_request_timeout"
+      : "workspace_backend_request_cancelled";
     error.requestId = pending.requestId;
     error.backendQuiesced = cancellationReceipt.quiesced === true;
     error.cancellationAcknowledged = cancellationReceipt.acknowledged === true;
+    error.backendRequestCompleted = cancellationReceipt.quiesced === true;
+    error.workspaceBackendRequest = true;
     error.cancellationReceipt = {
       targetRequestId: normalizeString(cancellationReceipt.targetRequestId, pending.requestId),
       acknowledged: cancellationReceipt.acknowledged === true,
       quiesced: cancellationReceipt.quiesced === true,
       acknowledgementKind: normalizeString(cancellationReceipt.acknowledgementKind, "backend_cancel_acknowledged"),
+      outcomeDigest: normalizeString(cancellationReceipt.outcomeDigest, ""),
       rawProcessDetailsIncluded: false,
     };
     return error;
@@ -461,20 +475,8 @@ class NdjsonTransport extends EventEmitter {
           cancellationMethod: options.cancellationMethod,
           reasonCode: pending.signal?.reason || "workspace_backend_request_timeout",
         });
-        const error = new Error(
-          pending.abortRequestedBeforeTimeout
-            ? `Workspace backend cancellation was not acknowledged: ${method}`
-            : `Workspace backend request timed out: ${method}`,
-        );
-        error.code = pending.abortRequestedBeforeTimeout
-          ? "workspace_backend_cancel_unacknowledged"
-          : "workspace_backend_request_timeout";
-        error.requestId = id;
-        error.backendQuiesced = false;
-        error.cancellationAcknowledged = false;
-        error.cancellationControlError = pending.cancellationControlError || "";
-        pending.clientSettled = true;
-        reject(error);
+        // A request deadline starts cancellation. It does not prove that the
+        // request, its process tree, or a two-phase mutation has stopped.
       }, timeoutMs);
       const pending = {
         kind: "request",
@@ -511,6 +513,8 @@ class NdjsonTransport extends EventEmitter {
         if (failedPending?.cancelRequestId) this.clearPending(failedPending.cancelRequestId);
         error.backendQuiesced = false;
         error.cancellationAcknowledged = false;
+        error.backendRequestCompleted = false;
+        error.workspaceBackendRequest = true;
         if (!failedPending?.clientSettled) {
           failedPending.clientSettled = true;
           reject(error);
@@ -546,11 +550,12 @@ class NdjsonTransport extends EventEmitter {
     for (const [id, pending] of this.pending.entries()) {
       this.clearPending(id);
       if (pending.kind !== "request") continue;
-      const closeError = error || new Error("Workspace backend transport closed.");
-      if (pending.abortRequested) {
-        closeError.backendQuiesced = closeError.backendQuiesced === true;
-        closeError.cancellationAcknowledged = closeError.cancellationAcknowledged === true;
-      }
+      const closeError = new Error(error?.message || "Workspace backend transport closed.");
+      closeError.code = normalizeString(error?.code, "workspace_backend_transport_closed");
+      closeError.backendRequestCompleted = false;
+      closeError.backendQuiesced = false;
+      closeError.cancellationAcknowledged = false;
+      closeError.workspaceBackendRequest = true;
       if (!pending.clientSettled) {
         pending.clientSettled = true;
         pending.reject(closeError);
@@ -593,6 +598,7 @@ class WorkspaceSession extends EventEmitter {
     this.workspaceWorkerBinding = null;
     this.workspaceWorkerBindingInitialization = null;
     this.recentDiagnostics = [];
+    this.acceptingRequests = true;
   }
 
   snapshot() {
@@ -718,6 +724,9 @@ class WorkspaceSession extends EventEmitter {
   }
 
   async attach(options = {}) {
+    if (!this.acceptingRequests && options.allowDuringDrain !== true) {
+      throw backendIntakeClosedError();
+    }
     if (this.status === "attached" && this.transport && !this.transport.closed) {
       if (options.workspaceWorkerBinding) {
         await this.initializeWorkspaceWorkerBinding(options.workspaceWorkerBinding);
@@ -841,9 +850,19 @@ class WorkspaceSession extends EventEmitter {
   }
 
   async request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, requestOptions = {}) {
-    await this.attach();
+    const cancellationControl = method === "cancelRequest";
+    if (!this.acceptingRequests && !cancellationControl) throw backendIntakeClosedError();
+    await this.attach({ allowDuringDrain: true });
     if (!this.transport) throw new Error("Workspace backend transport is unavailable.");
     return this.transport.request(method, params, timeoutMs, requestOptions);
+  }
+
+  beginDrain() {
+    this.acceptingRequests = false;
+    return {
+      status: "draining",
+      pendingRequests: this.transport?.pendingRequestCount?.() || 0,
+    };
   }
 
   async drain(options = {}) {
@@ -927,12 +946,14 @@ class WorkspaceBackendManager extends EventEmitter {
     super();
     this.options = options;
     this.sessions = new Map();
+    this.intakeState = "accepting";
   }
 
   sessionForProject(project) {
     const key = workspaceSessionKey(project, this.options.fallbackRoot);
     let session = this.sessions.get(key);
     if (!session) {
+      if (this.intakeState !== "accepting") throw backendIntakeClosedError();
       session = new WorkspaceSession(project, this.options);
       session.on("status", (payload) => this.emit("status", payload));
       session.on("agent-event", (payload) => this.emit("agent-event", payload));
@@ -944,21 +965,39 @@ class WorkspaceBackendManager extends EventEmitter {
   }
 
   async ensureForProject(project, options = {}) {
+    if (this.intakeState !== "accepting") throw backendIntakeClosedError();
     const session = this.sessionForProject(project);
     await session.attach(options);
     return session;
   }
 
   async requestForProject(project, method, params = {}, timeoutMs, requestOptions = {}) {
+    if (this.intakeState !== "accepting" && method !== "cancelRequest") {
+      throw backendIntakeClosedError();
+    }
+    if (this.intakeState !== "accepting") {
+      const key = workspaceSessionKey(project, this.options.fallbackRoot);
+      const ownedSession = this.sessions.get(key);
+      if (!ownedSession) throw backendIntakeClosedError();
+      return ownedSession.request(method, params, timeoutMs, requestOptions);
+    }
     const session = await this.ensureForProject(project);
     return session.request(method, params, timeoutMs, requestOptions);
   }
 
   statusForProject(project) {
+    const key = workspaceSessionKey(project, this.options.fallbackRoot);
+    const session = this.sessions.get(key);
+    if (session) return session.publicSnapshot();
+    if (this.intakeState !== "accepting") return null;
     return this.sessionForProject(project).publicSnapshot();
   }
 
   privateStatusForProject(project) {
+    const key = workspaceSessionKey(project, this.options.fallbackRoot);
+    const session = this.sessions.get(key);
+    if (session) return session.snapshot();
+    if (this.intakeState !== "accepting") return null;
     return this.sessionForProject(project).snapshot();
   }
 
@@ -972,11 +1011,14 @@ class WorkspaceBackendManager extends EventEmitter {
   }
 
   disposeAll() {
+    this.intakeState = "disposed";
     for (const session of this.sessions.values()) session.dispose();
     this.sessions.clear();
   }
 
   async drainAll(options = {}) {
+    this.intakeState = "draining";
+    for (const session of this.sessions.values()) session.beginDrain();
     const rows = await Promise.all([...this.sessions.values()].map(async (session) => ({
       key: session.key,
       ...(await session.drain(options)),

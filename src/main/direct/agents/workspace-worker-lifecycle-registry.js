@@ -450,11 +450,14 @@ class WorkspaceWorkerLifecycleRegistry {
       where operation_id = ?`).get(operationId);
     if (!row) return null;
     const event = parseJson(row.event_json, "direct_workspace_worker_event_json_invalid");
-    const legacyDigest = !normalizeString(row.operation_digest || event.operationDigest, "");
+    const storedOperationDigest = normalizeString(row.operation_digest || event.operationDigest, "");
+    if (!storedOperationDigest) {
+      fail("direct_workspace_worker_operation_digest_unverifiable");
+    }
     if (
       row.session_id !== expected.sessionId ||
       row.event_kind !== expected.eventKind ||
-      (!legacyDigest && normalizeString(row.operation_digest || event.operationDigest, "") !== expected.operationDigest)
+      storedOperationDigest !== expected.operationDigest
     ) fail("direct_workspace_worker_operation_id_conflict");
     return parseJson(row.after_session_json, "direct_workspace_worker_session_json_invalid");
   }
