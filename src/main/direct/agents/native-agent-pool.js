@@ -244,6 +244,9 @@ class DirectNativeAgentPool extends EventEmitter {
     if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && !isPlainObject(input.project)) {
       return this.launchResult(null, "blocked", "workspace_worker_project_binding_missing");
     }
+    if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && this.recoverySnapshot().status !== "clean") {
+      return this.launchResult(null, "blocked", "direct_workspace_worker_restart_reconciliation_required");
+    }
     let parentAuthorityPacket = null;
     if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE) {
       if (!isPlainObject(input.parentAuthorityPacket)) {
@@ -254,9 +257,6 @@ class DirectNativeAgentPool extends EventEmitter {
       } catch (error) {
         return this.launchResult(null, "blocked", normalizeString(error?.code, "direct_workspace_parent_authority_invalid"));
       }
-    }
-    if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && this.recoverySnapshot().status !== "clean") {
-      return this.launchResult(null, "blocked", "direct_workspace_worker_restart_reconciliation_required");
     }
     const task = normalizeString(input.message || input.prompt || input.task, "");
     if (!task) return this.launchResult(null, "blocked", "missing_spawn_prompt");

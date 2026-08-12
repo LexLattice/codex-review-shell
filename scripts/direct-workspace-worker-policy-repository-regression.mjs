@@ -117,6 +117,7 @@ try {
     branch: "codex/worker/worker-policy-fixture",
     baseCommit: run("git", ["rev-parse", "HEAD"], tempRoot),
     rootEvidenceDigest: digest(fs.realpathSync(tempRoot)),
+    sourceRepositoryDigest: digest(fs.realpathSync(tempRoot)),
     retainedAfterCompletion: true,
     rawWorkspacePathIncluded: false,
   };
@@ -174,6 +175,7 @@ try {
     branch: "codex/worker/backend-binding-race",
     baseCommit: run("git", ["rev-parse", "HEAD"], backendRaceRoot),
     rootEvidenceDigest: digest(fs.realpathSync(backendRaceRoot)),
+    sourceRepositoryDigest: digest(fs.realpathSync(backendRaceRoot)),
     retainedAfterCompletion: true,
     rawWorkspacePathIncluded: false,
   };

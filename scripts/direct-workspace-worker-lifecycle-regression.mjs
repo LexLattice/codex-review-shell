@@ -12,6 +12,10 @@ const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite");
 const { DirectNativeAgentPool } = require("../src/main/direct/agents/native-agent-pool");
 const {
+  WORKSPACE_WORKER_TOOLS,
+  createWorkspaceParentAuthorityPacket,
+} = require("../src/main/direct/agents/workspace-worker-policy-profile");
+const {
   WorkspaceWorkerLifecycleRegistry,
   buildWorkspaceWorkerReconciliationReceipt,
   normalizeBinding,
@@ -44,6 +48,12 @@ function tick() {
 }
 
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-worker-lifecycle-"));
+const lifecycleAuthorityPacket = createWorkspaceParentAuthorityPacket({
+  boundaryId: "workspace_worker_lifecycle_fixture_authority",
+  upstreamPolicyId: "workspace_worker_lifecycle_fixture_policy",
+  upstreamAllowedTools: [...WORKSPACE_WORKER_TOOLS],
+  allowedTools: [...WORKSPACE_WORKER_TOOLS],
+});
 try {
   const dbPath = path.join(temporaryRoot, "worker-lifecycle.sqlite");
   let registry = new WorkspaceWorkerLifecycleRegistry({ dbPath });
@@ -370,6 +380,7 @@ try {
     message: "first",
     workspaceMode: "isolated_worktree",
     toolProfile: "read_only_worker",
+    parentAuthorityPacket: lifecycleAuthorityPacket,
     project: { id: "project_pool_lifecycle" },
   });
   const second = pool.launch({
@@ -380,6 +391,7 @@ try {
     message: "second",
     workspaceMode: "isolated_worktree",
     toolProfile: "read_only_worker",
+    parentAuthorityPacket: lifecycleAuthorityPacket,
     project: { id: "project_pool_lifecycle" },
   });
   await tick();
@@ -458,6 +470,7 @@ try {
     message: "must not execute",
     workspaceMode: "isolated_worktree",
     toolProfile: "read_only_worker",
+    parentAuthorityPacket: lifecycleAuthorityPacket,
     project: { id: "project_pool_lifecycle" },
   });
   assert.equal(reusedIdentity.blockerCode, "direct_agent_child_identity_reused");
@@ -708,6 +721,7 @@ try {
     message: "retain lease",
     workspaceMode: "isolated_worktree",
     toolProfile: "read_only_worker",
+    parentAuthorityPacket: lifecycleAuthorityPacket,
     project: { id: "project_unacknowledged" },
   });
   await tick();
@@ -741,6 +755,7 @@ try {
     message: "do not release capacity without a positive receipt",
     workspaceMode: "isolated_worktree",
     toolProfile: "read_only_worker",
+    parentAuthorityPacket: lifecycleAuthorityPacket,
     project: { id: "project_missing_acknowledgement" },
   });
   await tick();
@@ -768,6 +783,7 @@ try {
     message: "retain the lease across a registry read failure",
     workspaceMode: "isolated_worktree",
     toolProfile: "read_only_worker",
+    parentAuthorityPacket: lifecycleAuthorityPacket,
     project: { id: "project_settlement_failure" },
   });
   await tick();
@@ -803,6 +819,7 @@ try {
     message: "retry before cancellation",
     workspaceMode: "isolated_worktree",
     toolProfile: "read_only_worker",
+    parentAuthorityPacket: lifecycleAuthorityPacket,
     project: { id: "project_automatic_settlement_retry" },
   });
   await tick();
@@ -900,15 +917,16 @@ try {
     command: `node ${liveBackendRoot}/worker.js`,
   });
   assert.equal(JSON.stringify(livePublicEvent).includes(liveBackendRoot), false);
-  const liveProfile = await liveSession.request("directTestProfile", {}, 5_000);
   const liveRegistry = new WorkspaceWorkerLifecycleRegistry({ db: new DatabaseSync(":memory:") });
   const livePool = new DirectNativeAgentPool({
     maxActiveChildren: 1,
     workspaceWorkerLifecycleRegistry: liveRegistry,
     workspaceWorkerRunner: async ({ signal }) => {
       try {
-        await liveSession.request("runDirectTest", {
-          profileDigest: liveProfile.profileDigest,
+        await liveSession.request("runDirectCommand", {
+          command: process.execPath,
+          args: ["long-test.js"],
+          cwdRelPath: "",
           timeoutMs: 30_000,
         }, 35_000, { signal });
         return { status: "completed" };
@@ -931,6 +949,7 @@ try {
     message: "run until cancelled",
     workspaceMode: "isolated_worktree",
     toolProfile: "implementation_worker",
+    parentAuthorityPacket: lifecycleAuthorityPacket,
     project: liveProject,
   });
   await new Promise((resolve) => setTimeout(resolve, 350));

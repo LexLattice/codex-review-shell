@@ -80,10 +80,18 @@ function publicWorkspaceBinding(binding = {}) {
     branch: normalizeString(source.branch, ""),
     baseCommit: normalizeString(source.baseCommit, ""),
     rootEvidenceDigest: normalizeString(source.rootEvidenceDigest, ""),
+    sourceRepositoryDigest: normalizeString(source.sourceRepositoryDigest, ""),
     retainedAfterCompletion: source.retainedAfterCompletion !== false,
     rawWorkspacePathIncluded: false,
   };
-  if (!result.bindingId || !result.bindingDigest || !result.branch || !result.baseCommit || !result.rootEvidenceDigest) {
+  if (
+    !result.bindingId ||
+    !result.bindingDigest ||
+    !result.branch ||
+    !result.baseCommit ||
+    !result.rootEvidenceDigest ||
+    !result.sourceRepositoryDigest
+  ) {
     const error = new Error("Workspace worker binding evidence is incomplete.");
     error.code = "direct_workspace_worker_binding_incomplete";
     throw error;
@@ -91,6 +99,7 @@ function publicWorkspaceBinding(binding = {}) {
   if (
     !/^sha256:[a-f0-9]{64}$/i.test(result.bindingDigest) ||
     !/^sha256:[a-f0-9]{64}$/i.test(result.rootEvidenceDigest) ||
+    !/^sha256:[a-f0-9]{64}$/i.test(result.sourceRepositoryDigest) ||
     !/^[a-f0-9]{40,64}$/i.test(result.baseCommit)
   ) {
     const error = new Error("Workspace worker binding digests or base commit are malformed.");

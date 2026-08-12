@@ -645,14 +645,10 @@ class WorkspaceSession extends EventEmitter {
       projectName: normalizeString(this.project.name, ""),
       status: this.status,
       transport: this.descriptor?.transport || "not-started",
-      workspace: {
-        kind: normalizeString(this.descriptor?.workspace?.kind || this.project.workspace?.kind, "local"),
-        label: `${normalizeString(
-          this.descriptor?.workspace?.kind || this.project.workspace?.kind,
-          "local",
-        ).toUpperCase()} workspace`,
-        rawWorkspacePathIncluded: false,
-      },
+      workspaceKind: normalizeString(
+        this.descriptor?.workspace?.kind || this.project.workspace?.kind,
+        "local",
+      ),
       hello,
       lastErrorCode: normalizeString(this.lastError?.code, this.lastError ? "workspace_backend_unavailable" : ""),
       readySeen: this.readySeen,

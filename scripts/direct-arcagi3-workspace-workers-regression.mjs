@@ -487,6 +487,7 @@ try {
 
   const realizationA = privateRealizations.get(launchA.childAgentId);
   const realizationB = privateRealizations.get(launchB.childAgentId);
+  const liveWorkerRequestSignalForwarding = [...workspaceRequestSignalForwarding];
   assert.notEqual(realizationA.nativeRoot, realizationB.nativeRoot);
   assert.notEqual(realizationA.backendSessionId, realizationB.backendSessionId);
   await assert.rejects(
@@ -696,11 +697,11 @@ try {
     assert.equal(names.includes("send_message"), false);
     assert.equal(entry.body.parallel_tool_calls, false);
   }
-  assert(workspaceRequestSignalForwarding.length > 0);
+  assert(liveWorkerRequestSignalForwarding.length > 0);
   assert.equal(
-    workspaceRequestSignalForwarding.every((entry) => entry.forwarded),
+    liveWorkerRequestSignalForwarding.every((entry) => entry.forwarded),
     true,
-    "every workspace tool request must carry the worker cancellation signal",
+    `every live worker tool request must carry the worker cancellation signal: ${JSON.stringify(liveWorkerRequestSignalForwarding)}`,
   );
   const publicJson = JSON.stringify([recordA, recordB, pool.statusSurface({
     projectId: parentProject.id,
