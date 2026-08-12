@@ -412,6 +412,22 @@ function resultFor(input = {}) {
     cancellationAcknowledged: input.cancellationAcknowledged === true,
     backendQuiesced: input.backendQuiesced === true,
     backendOwnershipUnresolved: input.backendOwnershipUnresolved === true,
+    mutationOutcome: isPlainObject(input.mutationOutcome)
+      ? {
+          schema: normalizeString(input.mutationOutcome.schema, ""),
+          requestId: normalizeString(input.mutationOutcome.requestId, ""),
+          method: normalizeString(input.mutationOutcome.method, ""),
+          commitKind: normalizeString(input.mutationOutcome.commitKind, ""),
+          committed: input.mutationOutcome.committed === true,
+          indeterminate: input.mutationOutcome.indeterminate === true,
+          partialMutationPossible: input.mutationOutcome.partialMutationPossible === true,
+          retainedForInspection: input.mutationOutcome.retainedForInspection === true,
+          failureCode: normalizeString(input.mutationOutcome.failureCode, ""),
+          outcomeDigest: normalizeString(input.mutationOutcome.outcomeDigest, ""),
+          rawPathIncluded: false,
+        }
+      : null,
+    partialMutationPossible: input.mutationOutcome?.partialMutationPossible === true,
     cancellationReceipt: isPlainObject(input.cancellationReceipt)
       ? {
           targetRequestId: normalizeString(input.cancellationReceipt.targetRequestId, ""),
@@ -481,6 +497,7 @@ async function runDirectWorkspaceWorker(input = {}) {
       backendQuiesced: error?.backendQuiesced === true,
       backendOwnershipUnresolved: error?.workspaceBackendRequest === true && error?.backendQuiesced !== true,
       cancellationReceipt: error?.cancellationReceipt,
+      mutationOutcome: error?.mutationOutcome,
     });
   }
   let retainProvisionedBackend = false;
@@ -652,6 +669,7 @@ async function runDirectWorkspaceWorker(input = {}) {
         backendQuiesced: error?.backendQuiesced === true,
         backendOwnershipUnresolved,
         cancellationReceipt: error?.cancellationReceipt,
+        mutationOutcome: error?.mutationOutcome,
       });
     }
     return resultFor({

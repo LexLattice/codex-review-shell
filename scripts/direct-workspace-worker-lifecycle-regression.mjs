@@ -716,6 +716,52 @@ try {
   assert.match(retainedMutation.bindingDigest, /^sha256:[a-f0-9]{64}$/);
   assert.equal(transport.pendingRequestCount(), 0);
 
+  const indeterminateController = new AbortController();
+  const indeterminatePromise = transport.request(
+    "provisionGitWorktree",
+    { workerKey: "indeterminate-worker", branch: "codex/worker/indeterminate-worker", baseRef: "HEAD" },
+    2_000,
+    { signal: indeterminateController.signal },
+  );
+  await tick();
+  const indeterminateRequest = writes.at(-1);
+  indeterminateController.abort("fixture_cancel_during_failed_commit");
+  await tick();
+  const indeterminateCancel = writes.at(-1);
+  assert.equal(indeterminateCancel.method, "cancelRequest");
+  const indeterminateOutcome = {
+    schema: "workspace_backend_mutation_outcome@1",
+    requestId: indeterminateRequest.id,
+    method: "provisionGitWorktree",
+    commitKind: "git_worktree_add",
+    committed: false,
+    indeterminate: true,
+    partialMutationPossible: true,
+    retainedForInspection: true,
+    failureCode: "fixture_commit_failure",
+    outcomeDigest: `sha256:${"1".repeat(64)}`,
+    rawPathIncluded: false,
+  };
+  fakeChild.stdout.write(`${JSON.stringify({
+    id: indeterminateRequest.id,
+    error: {
+      message: "partial mutation may have occurred",
+      code: "workspace_backend_mutation_commit_failed_indeterminate",
+      backendRequestCompleted: true,
+      backendQuiesced: true,
+      mutationOutcome: indeterminateOutcome,
+    },
+  })}\n`);
+  await assert.rejects(indeterminatePromise, (error) => {
+    assert.equal(error.name, "Error", "an indeterminate mutation must not collapse into AbortError");
+    assert.equal(error.code, "workspace_backend_mutation_commit_failed_indeterminate");
+    assert.equal(error.backendQuiesced, true);
+    assert.equal(error.partialMutationPossible, true);
+    assert.deepEqual(error.mutationOutcome, indeterminateOutcome);
+    return true;
+  });
+  assert.equal(transport.pendingRequestCount(), 0);
+
   const lateCommitWriteStart = writes.length;
   let lateCommitSettled = false;
   const lateCommitPromise = transport.request(
@@ -1075,6 +1121,51 @@ try {
     command: `node ${liveBackendRoot}/worker.js`,
   });
   assert.equal(JSON.stringify(livePublicEvent).includes(liveBackendRoot), false);
+  const escapedDescendantMarker = path.join(liveBackendRoot, "escaped-descendant-marker.txt");
+  fs.writeFileSync(path.join(liveBackendRoot, "escaped-descendant.js"), [
+    'const fs = require("node:fs");',
+    `setTimeout(() => fs.writeFileSync(${JSON.stringify(escapedDescendantMarker)}, "escaped"), 750);`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n"));
+  fs.writeFileSync(path.join(liveBackendRoot, "short-leader.js"), [
+    'const { spawn } = require("node:child_process");',
+    'spawn(process.execPath, ["escaped-descendant.js"], { stdio: "ignore" }).unref();',
+  ].join("\n"));
+  const shortLeaderResult = await liveSession.request("runDirectCommand", {
+    command: process.execPath,
+    args: ["short-leader.js"],
+    cwdRelPath: "",
+    timeoutMs: 5_000,
+  }, 8_000);
+  assert.equal(shortLeaderResult.exitCode, 0);
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  assert.equal(
+    fs.existsSync(escapedDescendantMarker),
+    false,
+    "request completion must retain and quiesce the process group after its direct leader exits",
+  );
+
+  const commitBlocker = path.join(liveBackendRoot, "commit-blocker");
+  fs.writeFileSync(commitBlocker, "not a directory");
+  await assert.rejects(
+    liveSession.request("importFile", {
+      relDir: "commit-blocker",
+      fileName: "partial.txt",
+      contentBase64: Buffer.from("fixture").toString("base64"),
+    }, 5_000),
+    (error) => {
+      assert.equal(error.code, "workspace_backend_mutation_commit_failed_indeterminate");
+      assert.equal(error.backendQuiesced, true);
+      assert.equal(error.partialMutationPossible, true);
+      assert.equal(error.mutationOutcome?.schema, "workspace_backend_mutation_outcome@1");
+      assert.equal(error.mutationOutcome?.committed, false);
+      assert.equal(error.mutationOutcome?.indeterminate, true);
+      assert.equal(error.mutationOutcome?.partialMutationPossible, true);
+      assert.match(error.mutationOutcome?.outcomeDigest || "", /^sha256:[a-f0-9]{64}$/);
+      return true;
+    },
+    "a post-commit failure must retain an explicit indeterminate mutation receipt",
+  );
   const liveRegistry = new WorkspaceWorkerLifecycleRegistry({ db: new DatabaseSync(":memory:") });
   const livePool = new DirectNativeAgentPool({
     maxActiveChildren: 1,

@@ -27,6 +27,25 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function normalizeBackendMutationOutcome(value) {
+  if (!isPlainObject(value) || value.schema !== "workspace_backend_mutation_outcome@1") return null;
+  const outcomeDigest = normalizeString(value.outcomeDigest, "");
+  if (!/^sha256:[a-f0-9]{64}$/.test(outcomeDigest)) return null;
+  return {
+    schema: "workspace_backend_mutation_outcome@1",
+    requestId: normalizeString(value.requestId, ""),
+    method: normalizeString(value.method, ""),
+    commitKind: normalizeString(value.commitKind, ""),
+    committed: value.committed === true,
+    indeterminate: value.indeterminate === true,
+    partialMutationPossible: value.partialMutationPossible === true,
+    retainedForInspection: value.retainedForInspection === true,
+    failureCode: normalizeString(value.failureCode, ""),
+    outcomeDigest,
+    rawPathIncluded: false,
+  };
+}
+
 function backendIntakeClosedError() {
   const error = new Error("Workspace backend intake is closed for ordered drain.");
   error.code = "workspace_backend_manager_intake_closed";
@@ -332,7 +351,16 @@ class NdjsonTransport extends EventEmitter {
           return;
         }
         this.clearPending(pending.targetRequestId);
-        const error = this.abortError(target, message.result);
+        const mutationOutcome = normalizeBackendMutationOutcome(message.result?.mutationOutcome);
+        const error = mutationOutcome?.partialMutationPossible === true
+          ? this.backendError({
+              message: "Workspace backend mutation failed after entering its commit phase; partial mutation may have occurred.",
+              code: "workspace_backend_mutation_commit_failed_indeterminate",
+              backendRequestCompleted: true,
+              backendQuiesced: true,
+              mutationOutcome,
+            }, target)
+          : this.abortError(target, message.result);
         if (!target.clientSettled) {
           target.clientSettled = true;
           target.reject(error);
@@ -341,6 +369,13 @@ class NdjsonTransport extends EventEmitter {
       }
       if (pending.abortRequested) {
         if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+        if (message.error) {
+          if (!pending.clientSettled) {
+            pending.clientSettled = true;
+            pending.reject(this.backendError(message.error, pending));
+          }
+          return;
+        }
         if (message.result?.requestOutcome?.committed === true) {
           if (!pending.clientSettled) {
             pending.clientSettled = true;
@@ -360,13 +395,7 @@ class NdjsonTransport extends EventEmitter {
         return;
       }
       if (message.error) {
-        const error = new Error(message.error.message || "Workspace backend request failed.");
-        error.code = normalizeString(message.error.code, "");
-        error.backendStack = message.error.stack;
-        error.backendRequestCompleted = true;
-        error.backendQuiesced = true;
-        error.workspaceBackendRequest = true;
-        pending.reject(error);
+        pending.reject(this.backendError(message.error, pending));
       } else {
         pending.resolve(message.result);
       }
@@ -392,6 +421,20 @@ class NdjsonTransport extends EventEmitter {
     if (pending) pending.abortListener = null;
   }
 
+  backendError(messageError = {}, pending = {}) {
+    const mutationOutcome = normalizeBackendMutationOutcome(messageError.mutationOutcome);
+    const error = new Error(messageError.message || "Workspace backend request failed.");
+    error.code = normalizeString(messageError.code, "");
+    error.backendStack = messageError.stack;
+    error.requestId = normalizeString(pending.requestId, "");
+    error.backendRequestCompleted = messageError.backendRequestCompleted === true;
+    error.backendQuiesced = messageError.backendQuiesced === true;
+    error.workspaceBackendRequest = true;
+    error.mutationOutcome = mutationOutcome;
+    error.partialMutationPossible = mutationOutcome?.partialMutationPossible === true;
+    return error;
+  }
+
   abortError(pending, cancellationReceipt = {}) {
     const error = new Error(`Workspace backend request cancelled: ${pending.method}`);
     error.name = "AbortError";
@@ -411,6 +454,8 @@ class NdjsonTransport extends EventEmitter {
       outcomeDigest: normalizeString(cancellationReceipt.outcomeDigest, ""),
       rawProcessDetailsIncluded: false,
     };
+    error.mutationOutcome = normalizeBackendMutationOutcome(cancellationReceipt.mutationOutcome);
+    error.partialMutationPossible = error.mutationOutcome?.partialMutationPossible === true;
     return error;
   }
 

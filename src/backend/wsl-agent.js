@@ -164,6 +164,10 @@ let outputClosed = false;
 let shutdownTimer = null;
 let forceShutdownTimer = null;
 const activeChildProcesses = new Set();
+// POSIX descendants may outlive and be re-parented after the direct child has
+// emitted `close`. Keep the process-group identity until the owning request has
+// positively verified that the whole group is absent.
+const activeProcessGroups = new Map();
 const terminatingChildProcesses = new WeakSet();
 const cancellableRequestContext = new AsyncLocalStorage();
 const cancellableRequestScopes = new Map();
@@ -224,6 +228,8 @@ function rememberCompletedCancellableRequest(scope) {
   completedCancellableRequests.set(scope.requestId, {
     method: scope.method,
     completedAt: new Date().toISOString(),
+    quiescenceVerified: scope.quiescenceVerified === true,
+    mutationOutcome: scope.mutationOutcome || null,
   });
   while (completedCancellableRequests.size > COMPLETED_CANCELLABLE_REQUEST_LIMIT) {
     completedCancellableRequests.delete(completedCancellableRequests.keys().next().value);
@@ -245,6 +251,7 @@ function createCancellableRequestScope(requestId, method, policy) {
     policy,
     phase: policy === "two_phase_mutation" ? "precommit" : "execution",
     children: new Set(),
+    processGroups: new Map(),
     terminationPromises: new Map(),
     cancellationRequested: false,
     cancellationReasonCode: "",
@@ -296,6 +303,42 @@ function completeCurrentRequestCommit(result, details = {}) {
   return { ...result, requestOutcome: receipt };
 }
 
+function failedMutationOutcome(scope, error) {
+  if (!scope || scope.phase !== "commit") return null;
+  const failureCode = String(error?.code || "workspace_backend_mutation_commit_failed")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 160) || "workspace_backend_mutation_commit_failed";
+  const receipt = {
+    schema: "workspace_backend_mutation_outcome@1",
+    requestId: scope.requestId,
+    method: scope.method,
+    commitKind: scope.commitKind,
+    committed: false,
+    indeterminate: true,
+    partialMutationPossible: true,
+    retainedForInspection: true,
+    failureCode,
+    rawPathIncluded: false,
+  };
+  receipt.outcomeDigest = sha256Digest(canonicalJson(receipt));
+  scope.mutationOutcome = receipt;
+  scope.phase = "commit_failed_indeterminate";
+  return receipt;
+}
+
+function mutationCommitFailureError(scope, error) {
+  const mutationOutcome = failedMutationOutcome(scope, error);
+  if (!mutationOutcome) return error;
+  const failure = new Error(
+    "Workspace backend mutation failed after entering its commit phase; partial mutation may have occurred.",
+  );
+  failure.code = "workspace_backend_mutation_commit_failed_indeterminate";
+  failure.causeCode = mutationOutcome.failureCode;
+  failure.mutationOutcome = mutationOutcome;
+  return failure;
+}
+
 function completeCancellableRequestScope(scope) {
   if (!scope || scope.completed) return;
   scope.completed = true;
@@ -327,6 +370,9 @@ function requestShutdown(code = 0) {
   for (const child of activeChildProcesses) {
     terminateChild(child);
   }
+  for (const group of activeProcessGroups.values()) {
+    terminateRetainedProcessGroup(null, group, "SIGTERM", { allowDuringCommit: true }).catch(() => {});
+  }
   if (!forceShutdownTimer) {
     forceShutdownTimer = setTimeout(() => {
       process.exit(process.exitCode ?? code);
@@ -337,7 +383,11 @@ function requestShutdown(code = 0) {
 }
 
 function terminateChild(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child) return;
+  const retainedGroup = process.platform !== "win32" && child.pid
+    ? activeProcessGroups.get(child.pid)
+    : null;
+  if ((child.exitCode !== null || child.signalCode !== null) && !retainedGroup) return;
   if (terminatingChildProcesses.has(child)) return;
   terminatingChildProcesses.add(child);
   terminateWorkspaceProcessTree(child, { signal: "SIGTERM", timeoutMs: 1200 })
@@ -360,9 +410,16 @@ function trackChildProcess(child) {
   const requestScope = cancellableRequestContext.getStore();
   activeChildProcesses.add(child);
   if (requestScope) requestScope.children.add(child);
+  if (process.platform !== "win32" && child?.pid) {
+    const group = { pid: child.pid, child, requestScope };
+    activeProcessGroups.set(group.pid, group);
+    requestScope?.processGroups.set(group.pid, group);
+  }
   child.once("close", () => {
     activeChildProcesses.delete(child);
     requestScope?.children.delete(child);
+    // Do not delete the POSIX group here. A descendant can keep that group
+    // alive after the leader has exited.
   });
   if (stdinClosed) terminateChild(child);
   if (requestScope?.cancellationRequested && requestScope.phase !== "commit") {
@@ -371,24 +428,57 @@ function trackChildProcess(child) {
   return child;
 }
 
-function terminateScopeChild(scope, child, signal = "SIGTERM") {
-  if (!scope || !child) return Promise.resolve({
+function releaseRetainedProcessGroup(scope, group) {
+  if (!group?.pid) return;
+  if (activeProcessGroups.get(group.pid) === group) activeProcessGroups.delete(group.pid);
+  if (scope?.processGroups.get(group.pid) === group) scope.processGroups.delete(group.pid);
+}
+
+function terminateRetainedProcessGroup(scope, group, signal = "SIGTERM", options = {}) {
+  if (!group?.pid || !group.child) return Promise.resolve({
     quiesced: false,
-    blockerCode: "workspace_backend_cancel_scope_missing",
+    blockerCode: "workspace_backend_process_group_identity_missing",
   });
-  if (scope.phase === "commit") {
+  if (scope?.phase === "commit" && options.allowDuringCommit !== true) {
     return Promise.resolve({
       quiesced: false,
       blockerCode: "workspace_backend_mutation_commit_in_progress",
     });
   }
+  const key = `process_group:${group.pid}`;
+  if (scope?.terminationPromises.has(key)) return scope.terminationPromises.get(key);
+  const pending = terminateWorkspaceProcessTree(group.child, { signal, timeoutMs: 2_000 })
+    .then((receipt) => {
+      if (receipt?.quiesced === true) releaseRetainedProcessGroup(scope, group);
+      return receipt;
+    })
+    .catch((error) => ({
+      quiesced: false,
+      blockerCode: error?.code || "workspace_backend_process_tree_termination_failed",
+    }));
+  scope?.terminationPromises.set(key, pending);
+  return pending;
+}
+
+function terminateScopeChild(scope, child, signal = "SIGTERM", options = {}) {
+  if (!scope || !child) return Promise.resolve({
+    quiesced: false,
+    blockerCode: "workspace_backend_cancel_scope_missing",
+  });
+  if (scope.phase === "commit" && options.allowDuringCommit !== true) {
+    return Promise.resolve({
+      quiesced: false,
+      blockerCode: "workspace_backend_mutation_commit_in_progress",
+    });
+  }
+  const retainedGroup = process.platform !== "win32" && child?.pid
+    ? scope.processGroups.get(child.pid)
+    : null;
+  if (retainedGroup) return terminateRetainedProcessGroup(scope, retainedGroup, signal);
   if (scope.terminationPromises.has(child)) return scope.terminationPromises.get(child);
   const pending = terminateWorkspaceProcessTree(child, { signal, timeoutMs: 2_000 })
     .then(async (receipt) => {
-      if (receipt.quiesced || child.exitCode !== null || child.signalCode !== null) return {
-        ...receipt,
-        quiesced: true,
-      };
+      if (receipt.quiesced) return receipt;
       return terminateWorkspaceProcessTree(child, { signal: "SIGKILL", timeoutMs: 2_000 });
     })
     .catch((error) => ({
@@ -397,6 +487,23 @@ function terminateScopeChild(scope, child, signal = "SIGTERM") {
     }));
   scope.terminationPromises.set(child, pending);
   return pending;
+}
+
+async function finalizeRequestProcessCustody(scope) {
+  if (!scope) return true;
+  const pending = [];
+  for (const group of scope.processGroups.values()) {
+    pending.push(terminateRetainedProcessGroup(scope, group, "SIGTERM", { allowDuringCommit: true }));
+  }
+  if (process.platform === "win32") {
+    for (const child of scope.children) {
+      pending.push(terminateScopeChild(scope, child, "SIGTERM", { allowDuringCommit: true }));
+    }
+  }
+  const receipts = await Promise.all([...scope.terminationPromises.values(), ...pending]);
+  return scope.children.size === 0 &&
+    scope.processGroups.size === 0 &&
+    receipts.every((receipt) => receipt?.quiesced === true);
 }
 
 process.stdout.on("error", (error) => {
@@ -5401,12 +5508,22 @@ async function cancelScopedRequest(params = {}) {
     error.code = "workspace_backend_cancel_request_id_missing";
     throw error;
   }
-  if (completedCancellableRequests.has(targetRequestId)) {
+  const completed = completedCancellableRequests.get(targetRequestId);
+  if (completed) {
+    if (completed.quiescenceVerified !== true) {
+      const error = new Error("Workspace backend request completion did not prove process quiescence.");
+      error.code = "workspace_backend_cancel_quiescence_unproven";
+      error.backendQuiesced = false;
+      error.mutationOutcome = completed.mutationOutcome || null;
+      throw error;
+    }
     return {
       targetRequestId,
       acknowledged: true,
       quiesced: true,
       acknowledgementKind: "request_already_completed",
+      outcomeDigest: completed.mutationOutcome?.outcomeDigest || "",
+      mutationOutcome: completed.mutationOutcome || null,
       rawProcessDetailsIncluded: false,
     };
   }
@@ -5420,11 +5537,14 @@ async function cancelScopedRequest(params = {}) {
   scope.cancellationReasonCode = String(params.reasonCode || "workspace_backend_request_aborted").trim();
   const terminationPromises = scope.phase === "commit"
     ? []
-    : [...scope.children].map((child) => terminateScopeChild(scope, child, "SIGTERM"));
+    : process.platform === "win32"
+      ? [...scope.children].map((child) => terminateScopeChild(scope, child, "SIGTERM"))
+      : [...scope.processGroups.values()].map((group) =>
+          terminateRetainedProcessGroup(scope, group, "SIGTERM"));
   await scope.done;
   const terminationReceipts = await Promise.all(terminationPromises);
   const terminationVerified = terminationReceipts.every((receipt) => receipt?.quiesced === true);
-  scope.quiescenceVerified = scope.children.size === 0 && terminationVerified;
+  scope.quiescenceVerified = scope.quiescenceVerified === true && terminationVerified;
   if (!scope.quiescenceVerified) {
     const error = new Error("Workspace backend request completion did not prove process quiescence.");
     error.code = "workspace_backend_cancel_quiescence_unproven";
@@ -5436,9 +5556,26 @@ async function cancelScopedRequest(params = {}) {
     quiesced: true,
     acknowledgementKind: scope.mutationOutcome?.committed === true
       ? "mutation_commit_outcome_retained"
+      : scope.mutationOutcome?.partialMutationPossible === true
+        ? "mutation_commit_failed_indeterminate"
       : "request_execution_quiesced",
     outcomeDigest: scope.mutationOutcome?.outcomeDigest || "",
+    mutationOutcome: scope.mutationOutcome || null,
     rawProcessDetailsIncluded: false,
+  };
+}
+
+function serializedRequestError(error, scope = null) {
+  const mutationOutcome = error?.mutationOutcome || scope?.mutationOutcome || null;
+  return {
+    message: mutationOutcome?.partialMutationPossible === true
+      ? "Workspace backend mutation failed after entering its commit phase; partial mutation may have occurred."
+      : error?.message || "Workspace backend request failed.",
+    code: error?.code || "",
+    stack: mutationOutcome ? "" : error?.stack,
+    backendRequestCompleted: true,
+    backendQuiesced: scope ? scope.quiescenceVerified === true : error?.backendQuiesced === true,
+    mutationOutcome,
   };
 }
 
@@ -5461,7 +5598,7 @@ async function handleLine(line) {
       const result = await cancelScopedRequest(request.params || {});
       send({ id, result });
     } catch (error) {
-      send({ id, error: { message: error.message, code: error.code || "", stack: error.stack } });
+      send({ id, error: serializedRequestError(error) });
     } finally {
       activeRequests -= 1;
       if (stdinClosed && activeRequests === 0) requestShutdown();
@@ -5498,20 +5635,30 @@ async function handleLine(line) {
         )
       : await handleRequest(request.method, request.params || {});
   } catch (error) {
-    requestError = error;
+    requestError = mutationCommitFailureError(requestScope, error);
   } finally {
     if (requestScope) {
-      const receipts = await Promise.all([...requestScope.terminationPromises.values()]);
-      requestScope.quiescenceVerified = requestScope.children.size === 0 &&
-        receipts.every((receipt) => receipt?.quiesced === true);
+      requestScope.quiescenceVerified = await finalizeRequestProcessCustody(requestScope);
+      if (!requestScope.quiescenceVerified && !requestError) {
+        requestError = new Error("Workspace backend request completion did not prove process quiescence.");
+        requestError.code = "workspace_backend_request_quiescence_unproven";
+        requestError.mutationOutcome = requestScope.mutationOutcome || null;
+      }
     }
     if (requestScope?.cancellationRequested && requestScope.mutationOutcome?.committed === true && !requestError) {
       send({ id, result });
     }
+    if (
+      requestScope?.cancellationRequested &&
+      requestError &&
+      requestScope.mutationOutcome
+    ) {
+      send({ id, error: serializedRequestError(requestError, requestScope) });
+    }
     completeCancellableRequestScope(requestScope);
     if (!requestScope?.cancellationRequested) {
       if (requestError) {
-        send({ id, error: { message: requestError.message, code: requestError.code || "", stack: requestError.stack } });
+        send({ id, error: serializedRequestError(requestError, requestScope) });
       } else {
         send({ id, result });
       }
