@@ -13,6 +13,7 @@ const WORKSPACE_WORKER_LIFECYCLE_REGISTRY_SCHEMA = "direct_workspace_worker_life
 const WORKSPACE_WORKER_SESSION_SCHEMA = "direct_workspace_worker_session@1";
 const WORKSPACE_WORKER_LIFECYCLE_EVENT_SCHEMA = "direct_workspace_worker_lifecycle_event@1";
 const WORKSPACE_WORKER_RECONCILIATION_RECEIPT_SCHEMA = "direct_workspace_worker_reconciliation_receipt@1";
+const WORKSPACE_WORKER_SETTLEMENT_RECEIPT_SCHEMA = "direct_workspace_worker_settlement_receipt@1";
 const WORKSPACE_WORKER_REGISTRY_FILE = "direct-workspace-worker-lifecycle.sqlite";
 const WORKSPACE_WORKER_LAUNCH_IDENTITY_SCHEMA = "direct_workspace_worker_launch_identity@1";
 const WORKSPACE_WORKER_DELEGATION_AUTHORITY_BINDING_SCHEMA = "direct_workspace_worker_delegation_authority_binding@1";
@@ -534,6 +535,73 @@ class WorkspaceWorkerLifecycleRegistry {
       where session_id = ? order by sequence
     `).all(safeId(sessionId, "session_id"))
       .map((row) => parseJson(row.event_json, "direct_workspace_worker_event_json_invalid"));
+  }
+
+  settlementReceipt(sessionId) {
+    this.ensureOpen();
+    const safeSessionId = safeId(sessionId, "session_id");
+    const sessionRow = this.db.prepare(`select * from workspace_worker_sessions
+      where session_id = ?`).get(safeSessionId);
+    if (!sessionRow) fail("direct_workspace_worker_session_missing");
+    const session = parseJson(sessionRow.session_json, "direct_workspace_worker_session_json_invalid");
+    const binding = normalizeBinding(session.binding || {});
+    const expectedCustody = {
+      state: "bound",
+      workerKey: binding.workerKey,
+      branchName: binding.branchName,
+      bindingDigest: binding.bindingDigest,
+      retainedForInspection: true,
+      rawWorkspacePathIncluded: false,
+    };
+    expectedCustody.custodyDigest = digestFor("direct-workspace-worker-custody@1", expectedCustody);
+    if (session.schema !== WORKSPACE_WORKER_SESSION_SCHEMA || session.sessionId !== safeSessionId ||
+        session.workspaceMode !== "isolated_worktree" || session.rawWorkspacePathIncluded !== false ||
+        stableStringify(session.binding) !== stableStringify(binding) ||
+        stableStringify(session.workspaceCustody) !== stableStringify(expectedCustody) ||
+        session.state !== "completed" || session.leaseState !== "released" ||
+        session.processState !== "quiescent" || !session.binding?.bindingDigest ||
+        !/^sha256:[a-f0-9]{64}$/.test(normalizeString(session.resultDigest, ""))) {
+      fail("direct_workspace_worker_settlement_receipt_unavailable");
+    }
+    if (session.sessionDigest !== sessionDigest(session) || sessionRow.session_digest !== session.sessionDigest ||
+        Number(sessionRow.revision) !== session.revision || sessionRow.state !== session.state ||
+        sessionRow.child_agent_id !== session.childAgentId || sessionRow.lease_id !== session.leaseId) {
+      fail("direct_workspace_worker_settlement_session_integrity_failed");
+    }
+    const eventRow = this.db.prepare(`select * from workspace_worker_lifecycle_events
+      where session_id = ? order by sequence desc limit 1`).get(safeSessionId);
+    if (!eventRow) fail("direct_workspace_worker_settlement_event_missing");
+    const event = parseJson(eventRow.event_json, "direct_workspace_worker_event_json_invalid");
+    const after = parseJson(eventRow.after_session_json, "direct_workspace_worker_session_json_invalid");
+    const eventForDigest = { ...event };
+    delete eventForDigest.eventDigest;
+    if (stableStringify(after) !== stableStringify(session) || event.eventDigest !==
+        digestFor("direct-workspace-worker-lifecycle-event@1", eventForDigest) ||
+        eventRow.event_digest !== event.eventDigest || eventRow.event_id !== event.eventId ||
+        event.sessionId !== session.sessionId || event.toState !== "completed" ||
+        event.afterRevision !== session.revision || eventRow.to_state !== event.toState ||
+        eventRow.event_kind !== "session_completed") {
+      fail("direct_workspace_worker_settlement_event_integrity_failed");
+    }
+    const receipt = {
+      schema: WORKSPACE_WORKER_SETTLEMENT_RECEIPT_SCHEMA,
+      sessionId: session.sessionId,
+      childAgentId: session.childAgentId,
+      projectId: session.projectId,
+      workThreadId: session.workThreadId,
+      state: session.state,
+      leaseState: session.leaseState,
+      processState: session.processState,
+      revision: session.revision,
+      bindingDigest: session.binding.bindingDigest,
+      resultDigest: session.resultDigest,
+      sessionDigest: session.sessionDigest,
+      terminalEventId: event.eventId,
+      terminalEventDigest: event.eventDigest,
+      rawWorkspacePathIncluded: false,
+    };
+    receipt.receiptDigest = digestFor("direct-workspace-worker-settlement-receipt@1", receipt);
+    return Object.freeze(receipt);
   }
 
   recoverySnapshot() {
@@ -1255,6 +1323,7 @@ module.exports = {
   TERMINAL_EXECUTION_STATES,
   WORKSPACE_WORKER_LIFECYCLE_EVENT_SCHEMA,
   WORKSPACE_WORKER_RECONCILIATION_RECEIPT_SCHEMA,
+  WORKSPACE_WORKER_SETTLEMENT_RECEIPT_SCHEMA,
   WORKSPACE_WORKER_LIFECYCLE_REGISTRY_SCHEMA,
   WORKSPACE_WORKER_REGISTRY_FILE,
   WORKSPACE_WORKER_SESSION_SCHEMA,

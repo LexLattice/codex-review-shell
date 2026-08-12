@@ -959,21 +959,28 @@ class DirectArtifactAuditStore {
     assertAuthorized(policy, actor, "read");
     const eventTypes = Array.isArray(input.eventTypes) ? [...new Set(input.eventTypes)].sort() : [];
     if (!eventTypes.length || eventTypes.some((value) => !EVENT_TYPES.includes(value))) fail("artifact_audit_subscription_event_invalid");
-    const subscription = {
-      subscriptionId: key(input.subscriptionId, "subscriptionId"), projectId,
-      workThreadId: input.workThreadId ? key(input.workThreadId, "workThreadId") : "",
-      artifactId: input.artifactId ? key(input.artifactId, "artifactId") : "", artifactClassId,
-      policyDigest: policy.policyDigest, actor, eventTypes, createdAt: nowIso(this.#now),
-    };
-    subscription.subscriptionDigest = subscriptionDigest(subscription);
-    const subscriptionAuthTag = this.#authTag("direct_artifact_audit_subscription_auth@1", subscription);
+    const subscriptionId = key(input.subscriptionId, "subscriptionId");
+    const workThreadId = input.workThreadId ? key(input.workThreadId, "workThreadId") : "";
+    const artifactId = input.artifactId ? key(input.artifactId, "artifactId") : "";
     return this.#transaction(() => {
-      const row = this.#db.prepare("select * from direct_artifact_audit_subscriptions where subscription_id = ?")
-        .get(subscription.subscriptionId);
-      if (row) {
-        if (row.subscription_digest !== subscription.subscriptionDigest) fail("artifact_audit_subscription_conflict");
-        return this.#subscriptionFromRow(row);
+      const priorRow = this.#db.prepare("select * from direct_artifact_audit_subscriptions where subscription_id = ?")
+        .get(subscriptionId);
+      if (priorRow) {
+        const prior = this.#subscriptionFromRow(priorRow);
+        if (prior.projectId !== projectId || prior.workThreadId !== workThreadId ||
+            prior.artifactId !== artifactId || prior.artifactClassId !== artifactClassId ||
+            prior.policyDigest !== policy.policyDigest || canonicalJson(prior.actor) !== canonicalJson(actor) ||
+            canonicalJson(prior.eventTypes) !== canonicalJson(eventTypes)) {
+          fail("artifact_audit_subscription_conflict");
+        }
+        return prior;
       }
+      const subscription = {
+        subscriptionId, projectId, workThreadId, artifactId, artifactClassId,
+        policyDigest: policy.policyDigest, actor, eventTypes, createdAt: nowIso(this.#now),
+      };
+      subscription.subscriptionDigest = subscriptionDigest(subscription);
+      const subscriptionAuthTag = this.#authTag("direct_artifact_audit_subscription_auth@1", subscription);
       this.#db.prepare(`insert into direct_artifact_audit_subscriptions(
         subscription_id, project_id, work_thread_id, artifact_id, artifact_class_id,
         policy_digest, subscriber_actor_id, subscriber_role_id, event_types_json,
