@@ -1763,9 +1763,11 @@ async function repositoryRealizationContext(
   };
 }
 
-function looksBinary(buffer) {
+function looksBinary(buffer, { scanEntireBuffer = false } = {}) {
   if (!buffer.length) return false;
-  const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
+  const sample = scanEntireBuffer
+    ? buffer
+    : buffer.subarray(0, Math.min(buffer.length, 8192));
   let suspicious = 0;
   for (const byte of sample) {
     if (byte === 0) return true;
@@ -3151,7 +3153,7 @@ async function readWorkspaceRepositoryFile(params = {}) {
     throw error;
   }
   const read = await readWorkspaceWorkerCanonicalEntry(entry, maxBytes);
-  if (looksBinary(read.buffer)) {
+  if (looksBinary(read.buffer, { scanEntireBuffer: true })) {
     const error = new Error("Binary repository files are not admitted to workspace workers.");
     error.code = "workspace_worker_repository_binary_denied";
     throw error;
@@ -3203,10 +3205,18 @@ async function searchWorkspaceRepositoryText(params = {}) {
     } catch {
       continue;
     }
-    if (looksBinary(read.buffer)) continue;
+    if (looksBinary(read.buffer, { scanEntireBuffer: true })) continue;
+    let decoded;
+    try {
+      decoded = decodeWorkspaceWorkerUtf8(read.buffer, {
+        truncated: read.truncated,
+      });
+    } catch {
+      continue;
+    }
     filesScanned += 1;
     bytesScanned += read.buffer.length;
-    const lines = read.buffer.toString("utf8").split(/\r?\n/);
+    const lines = decoded.text.split(/\r?\n/);
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
       const haystack = caseSensitive ? lines[lineIndex] : lines[lineIndex].toLocaleLowerCase();
       const column = haystack.indexOf(needle);

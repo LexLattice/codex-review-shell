@@ -66,8 +66,16 @@ try {
   fs.writeFileSync(path.join(tempRoot, "src", "unicode.txt"), "A€B\n", "utf8");
   fs.writeFileSync(path.join(tempRoot, "ignored", "hidden.txt"), "ignored literal\n", "utf8");
   fs.writeFileSync(path.join(tempRoot, "binary.dat"), Buffer.from([0, 1, 2, 3]));
+  fs.writeFileSync(path.join(tempRoot, "late-binary.dat"), Buffer.concat([
+    Buffer.alloc(9_000, 0x61),
+    Buffer.from([0, 0x62]),
+  ]));
+  fs.writeFileSync(path.join(tempRoot, "invalid-utf8.txt"), Buffer.concat([
+    Buffer.from("invalid-search-target\n", "utf8"),
+    Buffer.from([0xc3, 0x28]),
+  ]));
   fs.symlinkSync(path.join(tempRoot, "src", "alpha.js"), path.join(tempRoot, "linked-alpha.js"));
-  run("git", ["add", ".gitignore", "package.json", "src/alpha.js", "src/unicode.txt", "binary.dat", "linked-alpha.js"], tempRoot);
+  run("git", ["add", ".gitignore", "package.json", "src/alpha.js", "src/unicode.txt", "binary.dat", "late-binary.dat", "invalid-utf8.txt", "linked-alpha.js"], tempRoot);
   run("git", ["add", "-f", ".env"], tempRoot);
   run("git", ["-c", "user.name=Direct Test", "-c", "user.email=direct@invalid.example", "commit", "-qm", "fixture"], tempRoot);
   run("git", ["checkout", "-qb", "codex/worker/worker-policy-fixture"], tempRoot);
@@ -207,7 +215,7 @@ try {
     patterns: ["src/**/*.js", "*.txt"],
     limit: 20,
   }, 30_000);
-  assert.deepEqual(matched.entries.map((entry) => entry.path), ["notes.txt", "src/alpha.js"]);
+  assert.deepEqual(matched.entries.map((entry) => entry.path), ["invalid-utf8.txt", "notes.txt", "src/alpha.js"]);
 
   const searched = await session.request("searchWorkspaceRepositoryText", {
     bindingDigest,
@@ -219,6 +227,14 @@ try {
   assert.equal(searched.matches.length, 1, "search query must be interpreted literally, not as a regex");
   assert.equal(searched.matches[0].path, "src/alpha.js");
   assert.equal(searched.matches[0].line, 1);
+  const invalidUtf8Search = await session.request("searchWorkspaceRepositoryText", {
+    bindingDigest,
+    query: "invalid-search-target",
+    prefix: "",
+    caseSensitive: true,
+    maxResults: 10,
+  }, 30_000);
+  assert.equal(invalidUtf8Search.matches.length, 0, "search must not expose a partly decoded invalid UTF-8 file");
 
   const read = await session.request("readWorkspaceRepositoryFile", {
     bindingDigest,
@@ -248,6 +264,14 @@ try {
   await assert.rejects(
     () => session.request("readWorkspaceRepositoryFile", { bindingDigest, relPath: "binary.dat" }, 30_000),
     (error) => error?.code === "workspace_worker_repository_binary_denied",
+  );
+  await assert.rejects(
+    () => session.request("readWorkspaceRepositoryFile", { bindingDigest, relPath: "late-binary.dat" }, 30_000),
+    (error) => error?.code === "workspace_worker_repository_binary_denied",
+  );
+  await assert.rejects(
+    () => session.request("readWorkspaceRepositoryFile", { bindingDigest, relPath: "invalid-utf8.txt" }, 30_000),
+    (error) => error?.code === "workspace_worker_repository_utf8_invalid",
   );
   await assert.rejects(
     () => session.request("listWorkspaceRepositoryFiles", { bindingDigest, prefix: ".git", limit: 10 }, 30_000),
