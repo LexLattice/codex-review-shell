@@ -63,10 +63,11 @@ try {
     "module.exports = message;",
     "",
   ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(tempRoot, "src", "unicode.txt"), "A€B\n", "utf8");
   fs.writeFileSync(path.join(tempRoot, "ignored", "hidden.txt"), "ignored literal\n", "utf8");
   fs.writeFileSync(path.join(tempRoot, "binary.dat"), Buffer.from([0, 1, 2, 3]));
   fs.symlinkSync(path.join(tempRoot, "src", "alpha.js"), path.join(tempRoot, "linked-alpha.js"));
-  run("git", ["add", ".gitignore", "package.json", "src/alpha.js", "binary.dat", "linked-alpha.js"], tempRoot);
+  run("git", ["add", ".gitignore", "package.json", "src/alpha.js", "src/unicode.txt", "binary.dat", "linked-alpha.js"], tempRoot);
   run("git", ["add", "-f", ".env"], tempRoot);
   run("git", ["-c", "user.name=Direct Test", "-c", "user.email=direct@invalid.example", "commit", "-qm", "fixture"], tempRoot);
   run("git", ["checkout", "-qb", "codex/worker/worker-policy-fixture"], tempRoot);
@@ -226,6 +227,16 @@ try {
   }, 30_000);
   assert.equal(read.truncated, true);
   assert.match(read.text, /value\.\*literal/);
+  const unicodeRead = await session.request("readWorkspaceRepositoryFile", {
+    bindingDigest,
+    relPath: "src/unicode.txt",
+    maxBytes: 2,
+  }, 30_000);
+  assert.equal(unicodeRead.truncated, true);
+  assert.equal(unicodeRead.text, "A", "bounded reads must stop before an incomplete UTF-8 sequence");
+  assert.equal(unicodeRead.text.includes("\ufffd"), false);
+  assert.equal(unicodeRead.textByteCount, 1);
+  assert.equal(unicodeRead.utf8BoundaryAdjustedBytes, 1);
   await assert.rejects(
     () => session.request("readWorkspaceRepositoryFile", { bindingDigest, relPath: ".env" }, 30_000),
     (error) => error?.code === "workspace_worker_repository_read_path_denied",

@@ -17,6 +17,7 @@ const path = require("node:path");
 const readline = require("node:readline");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
+const { TextDecoder } = require("node:util");
 const {
   DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA,
   WORKSPACE_WORKER_TOOLS,
@@ -1773,6 +1774,24 @@ function looksBinary(buffer) {
   return suspicious / sample.length > 0.12;
 }
 
+function decodeWorkspaceWorkerUtf8(buffer, { truncated = false } = {}) {
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const text = decoder.decode(buffer, { stream: truncated });
+    return {
+      text,
+      textByteCount: Buffer.byteLength(text, "utf8"),
+      utf8BoundaryAdjustedBytes: truncated
+        ? Math.max(0, buffer.length - Buffer.byteLength(text, "utf8"))
+        : 0,
+    };
+  } catch {
+    const error = new Error("Repository file is not valid UTF-8 text.");
+    error.code = "workspace_worker_repository_utf8_invalid";
+    throw error;
+  }
+}
+
 function mimeTypeForFileName(fileName) {
   const ext = path.extname(String(fileName || "")).toLowerCase();
   const table = {
@@ -3137,12 +3156,17 @@ async function readWorkspaceRepositoryFile(params = {}) {
     error.code = "workspace_worker_repository_binary_denied";
     throw error;
   }
+  const decoded = decodeWorkspaceWorkerUtf8(read.buffer, {
+    truncated: read.truncated,
+  });
   return {
     schema: "direct_workspace_worker_repository_file_read@1",
     workspaceBindingDigest,
     relPath: relativePath,
     size: read.size,
-    text: read.buffer.toString("utf8"),
+    text: decoded.text,
+    textByteCount: decoded.textByteCount,
+    utf8BoundaryAdjustedBytes: decoded.utf8BoundaryAdjustedBytes,
     truncated: read.truncated,
     manifestDigest: manifest.manifestDigest,
     rawWorkspacePathIncluded: false,
