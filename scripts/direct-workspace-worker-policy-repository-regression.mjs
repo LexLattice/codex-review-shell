@@ -329,6 +329,24 @@ try {
   });
   assert.equal(localeStableSearch.matches.length, 1,
     "case-insensitive repository search must not depend on the host locale");
+  const contextualFoldSearch = await searchBoundedWorkspaceRepositoryText({
+    entries: [{ path: "contextual-fold.txt", size: Buffer.byteLength("ΟΣ\n") }],
+    query: "ος",
+    caseSensitive: false,
+    maxResults: 10,
+    fileLimit: 10,
+    fileByteLimit: 64,
+    totalByteLimit: 64,
+    readEntry: async () => ({
+      buffer: Buffer.from("ΟΣ\n", "utf8"),
+      size: Buffer.byteLength("ΟΣ\n"),
+      truncated: false,
+    }),
+    looksBinary: binaryClassifier,
+    decodeUtf8: strictUtf8,
+  });
+  assert.equal(contextualFoldSearch.matches.length, 1,
+    "case-insensitive repository search must fold complete strings for contextual casing");
 
   const failedNativePath = path.join(tempRoot, "must-not-leak.txt");
   const boundedFailureSearch = await searchBoundedWorkspaceRepositoryText({

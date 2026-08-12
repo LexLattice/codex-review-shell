@@ -34,16 +34,19 @@ function searchOmittedFileCount(counts) {
 }
 
 function stableCaseFoldWithOffsets(value) {
-  let folded = "";
+  const source = String(value || "");
+  const folded = source.toLowerCase();
   const originalOffsets = [];
   let originalOffset = 0;
-  for (const symbol of String(value || "")) {
-    const foldedSymbol = symbol.toLowerCase();
-    folded += foldedSymbol;
-    for (let index = 0; index < foldedSymbol.length; index += 1) {
+  for (const symbol of source) {
+    const foldedLength = symbol.toLowerCase().length;
+    for (let index = 0; index < foldedLength; index += 1) {
       originalOffsets.push(originalOffset);
     }
     originalOffset += symbol.length;
+  }
+  if (originalOffsets.length !== folded.length) {
+    throw new Error("workspace_repository_case_fold_mapping_failed");
   }
   return { folded, originalOffsets };
 }
