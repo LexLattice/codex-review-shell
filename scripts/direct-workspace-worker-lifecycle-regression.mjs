@@ -3174,6 +3174,11 @@ try {
   );
   assert.doesNotMatch(mainSource, /type: "backend-status",[\s\S]{0,180}error: error\.message/);
   assert.match(mainSource, /installOrderedWorkspaceWorkerWindowClose\(mainWindow,/);
+  assert.doesNotMatch(
+    mainSource,
+    /\bcloseDirectNativeAgentPool\s*\(/,
+    "native pool shutdown remains exclusively owned by the ordered workspace-worker coordinator",
+  );
   assert.match(backendSource, /requireProcessContainment: true/);
   assert.match(backendSource, /workspace_windows_job_object_containment_unavailable/);
   assert.match(

@@ -11377,7 +11377,6 @@ async function createWindow() {
   }
 
   mainWindow.on("closed", () => {
-    closeDirectNativeAgentPool("Main window closed.");
     stopGeometrySyncLoop();
     codexAppServer?.dispose();
     codexAppServer = null;
