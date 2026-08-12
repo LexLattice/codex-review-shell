@@ -3111,7 +3111,11 @@ async function matchWorkspaceRepositoryFiles(params = {}) {
 async function readWorkspaceWorkerCanonicalEntry(entry, maxBytes) {
   const resolved = await resolveFileWithinRoot(entry.path);
   const requestedStat = await fs.lstat(resolved.requestedFullPath);
-  if (requestedStat.isSymbolicLink() || !requestedStat.isFile() || path.resolve(resolved.requestedFullPath) !== path.resolve(resolved.fullPath)) {
+  if (
+    requestedStat.isSymbolicLink() ||
+    !requestedStat.isFile() ||
+    !sameNativePath(resolved.requestedFullPath, resolved.fullPath)
+  ) {
     const error = new Error("Repository file changed to an inadmissible realization.");
     error.code = "workspace_worker_repository_file_realization_changed";
     throw error;
@@ -3188,12 +3192,16 @@ async function searchWorkspaceRepositoryText(params = {}) {
   const needle = caseSensitive ? query : query.toLocaleLowerCase();
   const maxResults = Math.max(1, Math.min(Number(params.maxResults || 60) || 60, DIRECT_WORKSPACE_WORKER_SEARCH_RESULT_LIMIT));
   const manifest = await workspaceWorkerCanonicalManifest();
-  const candidates = manifest.entries.filter((entry) =>
-    workspaceWorkerPrefixMatch(entry.path, prefix) && entry.size <= DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES);
+  const prefixedEntries = manifest.entries.filter((entry) =>
+    workspaceWorkerPrefixMatch(entry.path, prefix));
+  const candidates = prefixedEntries.filter((entry) =>
+    entry.size <= DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES);
   const matches = [];
   let filesScanned = 0;
   let bytesScanned = 0;
-  let truncated = candidates.length > DIRECT_WORKSPACE_WORKER_SEARCH_FILE_LIMIT;
+  let truncated =
+    prefixedEntries.length !== candidates.length ||
+    candidates.length > DIRECT_WORKSPACE_WORKER_SEARCH_FILE_LIMIT;
   for (const entry of candidates.slice(0, DIRECT_WORKSPACE_WORKER_SEARCH_FILE_LIMIT)) {
     if (bytesScanned + entry.size > DIRECT_WORKSPACE_WORKER_SEARCH_TOTAL_BYTES) {
       truncated = true;

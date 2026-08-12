@@ -74,8 +74,12 @@ try {
     Buffer.from("invalid-search-target\n", "utf8"),
     Buffer.from([0xc3, 0x28]),
   ]));
+  fs.writeFileSync(path.join(tempRoot, "oversized.log"), Buffer.concat([
+    Buffer.alloc((1024 * 1024) + 1, 0x61),
+    Buffer.from("oversized-search-target\n", "utf8"),
+  ]));
   fs.symlinkSync(path.join(tempRoot, "src", "alpha.js"), path.join(tempRoot, "linked-alpha.js"));
-  run("git", ["add", ".gitignore", "package.json", "src/alpha.js", "src/unicode.txt", "binary.dat", "late-binary.dat", "invalid-utf8.txt", "linked-alpha.js"], tempRoot);
+  run("git", ["add", ".gitignore", "package.json", "src/alpha.js", "src/unicode.txt", "binary.dat", "late-binary.dat", "invalid-utf8.txt", "oversized.log", "linked-alpha.js"], tempRoot);
   run("git", ["add", "-f", ".env"], tempRoot);
   run("git", ["-c", "user.name=Direct Test", "-c", "user.email=direct@invalid.example", "commit", "-qm", "fixture"], tempRoot);
   run("git", ["checkout", "-qb", "codex/worker/worker-policy-fixture"], tempRoot);
@@ -235,6 +239,15 @@ try {
     maxResults: 10,
   }, 30_000);
   assert.equal(invalidUtf8Search.matches.length, 0, "search must not expose a partly decoded invalid UTF-8 file");
+  const oversizedSearch = await session.request("searchWorkspaceRepositoryText", {
+    bindingDigest,
+    query: "oversized-search-target",
+    prefix: "",
+    caseSensitive: true,
+    maxResults: 10,
+  }, 30_000);
+  assert.equal(oversizedSearch.matches.length, 0);
+  assert.equal(oversizedSearch.truncated, true, "search must disclose size-filtered omissions");
 
   const read = await session.request("readWorkspaceRepositoryFile", {
     bindingDigest,
