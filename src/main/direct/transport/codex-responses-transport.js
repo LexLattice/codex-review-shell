@@ -521,6 +521,20 @@ function emitNormalizedEvents(callback, events, details = {}) {
   } catch {}
 }
 
+function commitNormalizedEvents(callback, events, details = {}) {
+  if (typeof callback !== "function") return;
+  if (!Array.isArray(events) || !events.length) return;
+  const result = callback(events, {
+    at: nowIso(),
+    ...details,
+  });
+  if (result && typeof result.then === "function") {
+    const error = new Error("Durable normalized-event commits must complete synchronously.");
+    error.code = "direct_normalized_event_commit_async_unsupported";
+    throw error;
+  }
+}
+
 async function readStreamingSseResponse(response, options = {}, requestBody = {}) {
   const rawEvents = [];
   const normalizedEvents = [];
@@ -531,9 +545,11 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     streamCompletedAt: "",
     rawEventCount: 0,
     normalizedEventCount: 0,
+    committedNormalizedEventCount: 0,
   };
   const onLifecycle = options.onLifecycle;
   const onNormalizedEvents = options.onNormalizedEvents;
+  const onNormalizedEventsCommitted = options.onNormalizedEventsCommitted;
   let rawText = "";
   let buffer = "";
   let error = null;
@@ -554,6 +570,7 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
       unknownRawTypes.push(...normalizedResult.unknown.map((event) => event.rawType));
     }
     if (normalizedResult.normalized.length) {
+      const normalizedOffset = normalizedEvents.length;
       if (!timing.firstNormalizedEventAt) {
         timing.firstNormalizedEventAt = nowIso();
         notifyLifecycle(onLifecycle, "first_normalized_event", {
@@ -563,8 +580,14 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
       }
       normalizedEvents.push(...normalizedResult.normalized);
       timing.normalizedEventCount = normalizedEvents.length;
+      commitNormalizedEvents(onNormalizedEventsCommitted, normalizedResult.normalized, {
+        rawIndex,
+        normalizedOffset,
+      });
+      timing.committedNormalizedEventCount = normalizedEvents.length;
       emitNormalizedEvents(onNormalizedEvents, normalizedResult.normalized, {
         rawIndex,
+        normalizedOffset,
       });
     }
   };
@@ -671,6 +694,10 @@ function errorCodeFromCaught(error, streamStarted = false) {
   if (isAbortError(error)) return "aborted";
   if (error?.code === "direct_auth_expired") return "direct_auth_expired";
   if (error?.code === "direct_auth_refresh_failed" || error?.code === "direct_auth_refresh_unavailable") return "auth_error";
+  if (
+    typeof error?.code === "string" &&
+    (error.code.startsWith("direct_turn_capture_") || error.code === "direct_normalized_event_commit_async_unsupported")
+  ) return error.code;
   return streamStarted ? "stream_failed" : "fetch_failed";
 }
 
@@ -817,6 +844,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
         timing.streamCompletedAt = streamed.timing.streamCompletedAt;
         timing.rawEventCount = streamed.timing.rawEventCount;
         timing.normalizedEventCount = streamed.timing.normalizedEventCount;
+        timing.committedNormalizedEventCount = streamed.timing.committedNormalizedEventCount;
         if (streamed.error) {
           const caught = streamed.error;
           const aborted = options.signal?.aborted === true || isAbortError(caught);
@@ -882,6 +910,19 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
     });
     normalizedEvents = normalizedResult.normalized;
     unknownRawTypes = normalizedResult.unknown.map((event) => event.rawType);
+  }
+  const committedNormalizedEventCount = Math.max(0, Number(timing.committedNormalizedEventCount || 0));
+  if (
+    typeof options.onNormalizedEventsCommitted === "function" &&
+    normalizedEvents.length > committedNormalizedEventCount
+  ) {
+    const suffix = normalizedEvents.slice(committedNormalizedEventCount);
+    commitNormalizedEvents(options.onNormalizedEventsCommitted, suffix, {
+      rawIndex: Number(suffix[0]?.source?.rawIndex ?? suffix[0]?.sequence ?? 0),
+      normalizedOffset: committedNormalizedEventCount,
+      terminalReconciliation: true,
+    });
+    timing.committedNormalizedEventCount = normalizedEvents.length;
   }
   if (!timing.streamCompletedAt) timing.streamCompletedAt = nowIso();
   const terminal = terminalStateFromNormalizedEvents(normalizedEvents);

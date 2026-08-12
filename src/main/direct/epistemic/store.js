@@ -35,6 +35,7 @@ const DIRECT_EPISTEMIC_STORE_MIGRATABLE_SCHEMAS = new Set([
   "direct_epistemic_store@2",
 ]);
 const DIRECT_EPISTEMIC_STORE_FILE = "direct-epistemic-context-v2.sqlite";
+const DIRECT_EPISTEMIC_THREAD_CURSOR_SCHEMA = "direct_epistemic_thread_cursor@1";
 
 function json(value) {
   return JSON.stringify(value ?? null);
@@ -61,6 +62,29 @@ function fail(code) {
   const error = new Error(code);
   error.code = code;
   throw error;
+}
+
+function buildThreadProjectionCursor(input = {}) {
+  const core = {
+    schema: DIRECT_EPISTEMIC_THREAD_CURSOR_SCHEMA,
+    sessionId: text(input.sessionId),
+    subjectId: text(input.subjectId),
+    sourceDigest: text(input.sourceDigest),
+    eventCount: Math.max(0, Number(input.eventCount || 0)),
+    toolResultCount: Math.max(0, Number(input.toolResultCount || 0)),
+    turnCount: Math.max(0, Number(input.turnCount || 0)),
+    lastSourceEnvelopeDigest: text(input.lastSourceEnvelopeDigest),
+    lastEventType: text(input.lastEventType),
+    oRevisionId: text(input.oRevisionId),
+    eRevisionId: text(input.eRevisionId),
+    projectionStatus: text(input.projectionStatus, "current"),
+    epistemicPromotion: false,
+  };
+  return {
+    ...core,
+    cursorDigest: digestFor(core),
+    updatedAt: text(input.updatedAt, new Date().toISOString()),
+  };
 }
 
 function assertCanonicalEntity(input, rebuilt, idField, digestField, code) {
@@ -265,6 +289,16 @@ class DirectEpistemicStore {
         error_code text not null,
         job_json text not null,
         updated_at text not null
+      );
+      create table if not exists direct_epistemic_thread_cursors (
+        session_id text primary key,
+        subject_id text not null,
+        source_digest text not null,
+        event_count integer not null,
+        cursor_digest text not null,
+        cursor_json text not null,
+        updated_at text not null,
+        foreign key(subject_id) references direct_epistemic_subjects(subject_id)
       );
     `);
     const existingSchema = this.db.prepare("select value from direct_epistemic_meta where key = ?").get("schema");
@@ -539,6 +573,24 @@ class DirectEpistemicStore {
         eRevision?.oRevisionId !== oRevision?.oRevisionId
       ) fail("direct_epistemic_head_integrity_failed");
     }
+    for (const row of this.db.prepare(`select session_id, subject_id, source_digest,
+      event_count, cursor_digest, cursor_json, updated_at
+      from direct_epistemic_thread_cursors`).all()) {
+      const value = parse(row.cursor_json, "thread_cursor");
+      const rebuilt = buildThreadProjectionCursor(value);
+      if (
+        rebuilt.sessionId !== row.session_id ||
+        rebuilt.subjectId !== row.subject_id ||
+        rebuilt.sourceDigest !== row.source_digest ||
+        rebuilt.eventCount !== row.event_count ||
+        rebuilt.cursorDigest !== row.cursor_digest ||
+        rebuilt.updatedAt !== row.updated_at ||
+        canonicalJson(value) !== canonicalJson(rebuilt) ||
+        !subjects.has(rebuilt.subjectId) ||
+        !oRevisions.has(rebuilt.oRevisionId) ||
+        !eRevisions.has(rebuilt.eRevisionId)
+      ) fail("direct_epistemic_thread_cursor_integrity_failed");
+    }
   }
 
   recoverInterruptedTranscriptionJobs() {
@@ -757,6 +809,52 @@ class DirectEpistemicStore {
       eRevision: this.readERevision(row.e_revision_id),
       updatedAt: row.updated_at,
     };
+  }
+
+  putThreadProjectionCursor(cursor, options = {}) {
+    assertSchema(cursor, DIRECT_EPISTEMIC_THREAD_CURSOR_SCHEMA, "direct_epistemic_thread_cursor_invalid");
+    const canonical = buildThreadProjectionCursor(cursor);
+    if (canonicalJson(cursor) !== canonicalJson(canonical)) {
+      fail("direct_epistemic_thread_cursor_canonical_invalid");
+    }
+    const subject = this.readSubject(canonical.subjectId);
+    const oRevision = this.readORevision(canonical.oRevisionId);
+    const eRevision = this.readERevision(canonical.eRevisionId);
+    if (
+      subject?.kind !== "thread" ||
+      subject.externalId !== canonical.sessionId ||
+      oRevision?.subjectId !== canonical.subjectId ||
+      eRevision?.subjectId !== canonical.subjectId ||
+      eRevision?.oRevisionId !== canonical.oRevisionId
+    ) fail("direct_epistemic_thread_cursor_lineage_invalid");
+    const write = () => this.db.prepare(`insert into direct_epistemic_thread_cursors(
+      session_id, subject_id, source_digest, event_count, cursor_digest,
+      cursor_json, updated_at
+    ) values (?, ?, ?, ?, ?, ?, ?)
+    on conflict(session_id) do update set
+      subject_id = excluded.subject_id,
+      source_digest = excluded.source_digest,
+      event_count = excluded.event_count,
+      cursor_digest = excluded.cursor_digest,
+      cursor_json = excluded.cursor_json,
+      updated_at = excluded.updated_at`).run(
+      canonical.sessionId,
+      canonical.subjectId,
+      canonical.sourceDigest,
+      canonical.eventCount,
+      canonical.cursorDigest,
+      json(canonical),
+      canonical.updatedAt,
+    );
+    if (options.inTransaction) write();
+    else this.withImmediateTransaction(write);
+    return canonical;
+  }
+
+  readThreadProjectionCursor(sessionId) {
+    const row = this.db.prepare(`select cursor_json from direct_epistemic_thread_cursors
+      where session_id = ?`).get(text(sessionId));
+    return row ? parse(row.cursor_json, "thread_cursor") : null;
   }
 
   appendRecords(records = [], options = {}) {
@@ -1420,6 +1518,9 @@ class DirectEpistemicStore {
       for (const port of Array.isArray(input.ports) ? input.ports : []) ports.push(this.putPort(port));
       if (input.transcriptionJob) this.putTranscriptionJob(input.transcriptionJob);
       if (input.setHead !== false) this.setHead(subject.subjectId, oRevision.oRevisionId, eRevision.eRevisionId);
+      if (input.threadProjectionCursor) {
+        this.putThreadProjectionCursor(input.threadProjectionCursor, { inTransaction: true });
+      }
       return { subject, oRevision, eRevision, ports, recordResult };
     });
   }
@@ -1498,6 +1599,9 @@ class DirectEpistemicStore {
       ports: this.listPorts(subjectId),
       latestImport: this.latestContextImport(subjectId),
       latestTranscription: this.latestTranscriptionJob(subjectId),
+      threadProjectionCursor: head.subject.kind === "thread"
+        ? this.readThreadProjectionCursor(head.subject.externalId)
+        : null,
       updatedAt: head.updatedAt,
     };
   }
@@ -1506,6 +1610,8 @@ class DirectEpistemicStore {
 module.exports = {
   DIRECT_EPISTEMIC_STORE_FILE,
   DIRECT_EPISTEMIC_STORE_SCHEMA,
+  DIRECT_EPISTEMIC_THREAD_CURSOR_SCHEMA,
   DirectEpistemicStore,
+  buildThreadProjectionCursor,
   matchesSelector,
 };

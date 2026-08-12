@@ -1,6 +1,13 @@
 "use strict";
 
 const { digestFor, text } = require("./kernel");
+const {
+  DirectTurnCaptureWriter,
+  finalCaptureDigest,
+  safeCapturedToolResult,
+  terminalEvidence,
+  terminalTurnState,
+} = require("./turn-capture-writer");
 
 function nativeChildSessionId(input = {}) {
   return `direct_child_session_${digestFor({
@@ -10,257 +17,174 @@ function nativeChildSessionId(input = {}) {
   }).slice(0, 24)}`;
 }
 
-function nativeChildTurnId(input = {}, result = {}) {
+function nativeChildTurnId(input = {}) {
   return `direct_child_turn_${digestFor({
     childAgentId: text(input.agent?.agentThreadId || input.childAgentId),
     attemptId: text(input.attemptId || input.callId),
     promptDigest: text(input.promptDigest),
-    responseId: text(result.responseId),
+    contextDigest: text(input.contextDigest),
   }).slice(0, 24)}`;
 }
 
-function sourceEvent(event = {}) {
-  const { persistedIndex, persistedAt, sourceEnvelopeDigest, ...source } = event || {};
-  return source;
+function sourceClassFor(input = {}, contract = null) {
+  return text(input.sourceClass, contract
+    ? "native_workspace_child_provider_turn"
+    : "native_child_provider_turn");
 }
 
-function terminalEvidence(result = {}) {
-  const sourceError = result.terminal?.error || result.error;
+function nativeCaptureInput(input = {}, contract = null) {
+  const sessionId = nativeChildSessionId(input);
+  const turnId = nativeChildTurnId(input);
   return {
-    responseStatus: Number(result.http?.status || 0),
-    responseContentType: text(result.http?.contentType),
-    error: sourceError && typeof sourceError === "object"
-      ? {
-          code: text(sourceError.code),
-          messageDigest: sourceError.message ? digestFor(sourceError.message) : "",
-          rawMessagePersisted: false,
-        }
-      : null,
+    ...input,
+    sessionId,
+    turnId,
+    sourceClass: sourceClassFor(input, contract),
   };
 }
 
-function terminalMetadata(result = {}, expectedCaptureDigest = "", recovered = false) {
-  const state = terminalTurnState(result);
-  return {
-    ...terminalEvidence(result),
-    ...(state === "completed" ? { failedAt: "", abortedAt: "" } : {}),
-    ...(state === "failed" ? { completedAt: "", abortedAt: "" } : {}),
-    ...(state === "aborted" ? { completedAt: "", failedAt: "" } : {}),
-    captureDigest: text(expectedCaptureDigest),
-    captureRecovered: recovered === true,
-  };
-}
-
-function captureDigest(input = {}, result = {}) {
-  return digestFor({
-    childAgentId: text(input.agent?.agentThreadId || input.childAgentId),
-    attemptId: text(input.attemptId || input.callId),
-    promptDigest: text(input.promptDigest),
-    contextDigest: text(input.contextDigest),
-    responseId: text(result.responseId),
-    terminalState: terminalTurnState(result),
-    terminalEvidence: terminalEvidence(result),
-    events: (Array.isArray(result.normalizedEvents) ? result.normalizedEvents : []).map(sourceEvent),
-    workspaceWorkerContractDigest: text(result.workspaceWorkerContract?.contractDigest),
-    workspaceWorkerToolResults: (Array.isArray(result.workspaceWorkerToolResults)
-      ? result.workspaceWorkerToolResults
-      : []).map((toolResult) => ({
-        schema: text(toolResult?.schema),
-        stepOrdinal: Number(toolResult?.stepOrdinal || 0),
-        tool: text(toolResult?.tool),
-        callId: text(toolResult?.callId),
-        status: text(toolResult?.status),
-        resultDigest: text(toolResult?.resultDigest),
-        workspaceBindingDigest: text(toolResult?.workspaceBindingDigest),
-      })),
-  });
-}
-
-function terminalTurnState(result = {}) {
-  const state = text(result.terminal?.state);
-  if ([
-    "completed",
-    "failed",
-    "aborted",
-    "response_incomplete",
-    "content_filter_terminal",
-    "max_output_terminal",
-    "empty_output_terminal",
-    "tool_waiting",
-  ].includes(state)) return state;
-  if ((Array.isArray(result.normalizedEvents) ? result.normalizedEvents : []).some((event) => event?.type === "response_completed")) {
-    return "completed";
-  }
-  return result.error || result.terminal?.error ? "failed" : "response_incomplete";
-}
-
-function capturedWorkspaceToolResult(result = {}) {
-  const providerOutputText = typeof result?.providerOutputText === "string"
-    ? result.providerOutputText
-    : "";
-  const { providerOutputText: _providerOutputText, ...typed } = result || {};
-  return {
-    ...typed,
-    providerOutputDigest: providerOutputText ? digestFor(providerOutputText) : "",
-    providerOutputCharacterCount: providerOutputText.length,
-    rawOutputPersisted: false,
-    rawWorkspacePathIncluded: false,
-  };
-}
-
-function persistNativeChildProviderTurn(sessionStore, input = {}, result = {}) {
-  if (!sessionStore) throw new Error("Native child capture requires a Direct session store.");
+function ensureNativeChildSession(sessionStore, input = {}, contract = null) {
   const projectId = text(input.projectId, "project_direct_agents");
   const childAgentId = text(input.agent?.agentThreadId || input.childAgentId);
-  if (!childAgentId) throw new Error("Native child capture requires a child agent identity.");
+  if (!childAgentId) {
+    const error = new Error("Native child capture requires a child agent identity.");
+    error.code = "direct_epistemic_native_child_identity_required";
+    throw error;
+  }
   const sessionId = nativeChildSessionId(input);
-  const expectedCaptureDigest = captureDigest(input, result);
-  const workspaceWorkerContract = result.workspaceWorkerContract || null;
-  const workspaceWorkerToolResults = Array.isArray(result.workspaceWorkerToolResults)
-    ? result.workspaceWorkerToolResults.map(capturedWorkspaceToolResult)
-    : [];
   let session = sessionStore.readSession(sessionId);
   if (!session) {
     session = sessionStore.createSession({
       sessionId,
       projectId,
-      title: text(input.agent?.displayLabel, `Native child ${childAgentId.slice(0, 12)}`),
-      model: text(input.requestBody?.model || input.agent?.model),
-      reasoningEffort: text(input.requestBody?.reasoning?.effort || input.agent?.reasoningEffort),
+      title: text(input.agent?.displayLabel || input.displayLabel, `Native child ${childAgentId.slice(0, 12)}`),
+      model: text(input.requestBody?.model || input.agent?.model || input.model),
+      reasoningEffort: text(input.requestBody?.reasoning?.effort || input.agent?.reasoningEffort || input.reasoningEffort),
       agentId: childAgentId,
-      agentKind: workspaceWorkerContract ? "native_workspace_sub_agent" : "native_sub_agent",
+      agentKind: contract ? "native_workspace_sub_agent" : "native_sub_agent",
       agentThreadId: childAgentId,
       parentThreadId: text(input.primaryThreadId),
       primaryThreadId: text(input.primaryThreadId),
-      agentLabel: text(input.agent?.displayLabel),
-      agentRole: text(input.agent?.role, "sub_agent_worker"),
+      agentLabel: text(input.agent?.displayLabel || input.displayLabel),
+      agentRole: text(input.agent?.role || input.role, "sub_agent_worker"),
       workThreadId: text(input.workThreadId),
-      workThreadBindingDigest: text(workspaceWorkerContract?.binding?.bindingDigest),
-      sourceClass: workspaceWorkerContract
-        ? "native_workspace_child_provider_turn"
-        : "native_child_provider_turn",
+      workThreadBindingDigest: text(contract?.binding?.bindingDigest),
+      sourceClass: sourceClassFor(input, contract),
       nativeDirectSession: true,
     });
   }
-  const turnId = nativeChildTurnId(input, result);
-  const existingTurn = sessionStore.readTurn(sessionId, turnId);
-  if (existingTurn) {
-    if (text(existingTurn.requestShape?.captureDigest) !== expectedCaptureDigest) {
-      const error = new Error("direct_epistemic_native_child_duplicate_conflict");
-      error.code = "direct_epistemic_native_child_duplicate_conflict";
-      throw error;
-    }
-    const expectedEvents = (Array.isArray(result.normalizedEvents) ? result.normalizedEvents : []).map(sourceEvent);
-    const persistedEvents = sessionStore.readNormalizedEvents(sessionId, turnId).map(sourceEvent);
-    const prefixMatches = persistedEvents.length <= expectedEvents.length && persistedEvents.every((event, index) =>
-      digestFor(event) === digestFor(expectedEvents[index]));
-    if (!prefixMatches) {
-      const error = new Error("direct_epistemic_native_child_partial_capture_conflict");
-      error.code = "direct_epistemic_native_child_partial_capture_conflict";
-      throw error;
-    }
-    if (persistedEvents.length < expectedEvents.length) {
-      sessionStore.appendNormalizedEvents(sessionId, turnId, expectedEvents.slice(persistedEvents.length));
-    }
-    const state = terminalTurnState(result);
-    const existingToolResultDigests = (Array.isArray(existingTurn.toolResults) ? existingTurn.toolResults : [])
-      .map((entry) => text(entry?.resultDigest));
-    const expectedToolResultDigests = workspaceWorkerToolResults.map((entry) => text(entry?.resultDigest));
-    const toolResultsMatch = digestFor(existingToolResultDigests) === digestFor(expectedToolResultDigests);
-    const repaired = existingTurn.state !== state || persistedEvents.length < expectedEvents.length || !toolResultsMatch;
-    if (!toolResultsMatch) {
-      sessionStore.writeTurn({
-        ...existingTurn,
-        toolResults: workspaceWorkerToolResults,
+  return session;
+}
+
+function ensureNativeChildTurn(sessionStore, input = {}, contract = null) {
+  const session = ensureNativeChildSession(sessionStore, input, contract);
+  const turnId = nativeChildTurnId(input);
+  let turn = sessionStore.readTurn(session.sessionId, turnId);
+  if (!turn) {
+    turn = sessionStore.createTurn(session.sessionId, {
+      turnId,
+      state: "streaming",
+      model: text(input.requestBody?.model || input.agent?.model || input.model),
+      reasoningEffort: text(input.requestBody?.reasoning?.effort || input.agent?.reasoningEffort || input.reasoningEffort),
+      agentId: text(input.agent?.agentThreadId || input.childAgentId),
+      agentKind: contract ? "native_workspace_sub_agent" : "native_sub_agent",
+      agentThreadId: text(input.agent?.agentThreadId || input.childAgentId),
+      parentThreadId: text(input.primaryThreadId),
+      agentLabel: text(input.agent?.displayLabel || input.displayLabel),
+      agentRole: text(input.agent?.role || input.role, "sub_agent_worker"),
+      sourceClass: sourceClassFor(input, contract),
+      nativeDirectSession: true,
+      requestShape: {
+        model: text(input.requestBody?.model || input.model),
+        reasoningEffort: text(input.requestBody?.reasoning?.effort || input.reasoningEffort),
+        promptDigest: text(input.promptDigest),
+        contextDigest: text(input.contextDigest),
+        contextMessageCount: Number(input.contextMessageCount || 0),
+        attemptId: text(input.attemptId || input.callId),
+        workspaceWorkerContractId: text(contract?.contractId),
+        workspaceWorkerContractDigest: text(contract?.contractDigest),
+        workspaceBindingId: text(contract?.binding?.bindingId),
+        workspaceBindingDigest: text(contract?.binding?.bindingDigest),
+        workspaceMode: text(contract?.workspaceMode),
+        toolProfile: text(contract?.authority?.toolProfile),
+        declaredTools: Array.isArray(contract?.authority?.declaredTools)
+          ? [...contract.authority.declaredTools]
+          : [],
+        contextAdmissionDigest: text(contract?.contextAdmission?.admissionDigest),
+        workspaceWorkerToolResultCount: Number(input.workspaceWorkerToolResultCount || 0),
+        rawPromptIncluded: false,
+        rawContextIncluded: false,
+        rawWorkspacePathIncluded: false,
+      },
+    });
+  }
+  return turn;
+}
+
+function openNativeChildProviderTurnCapture(sessionStore, input = {}) {
+  if (!sessionStore) {
+    const error = new Error("Native child capture requires a Direct session store.");
+    error.code = "direct_epistemic_native_child_session_store_required";
+    throw error;
+  }
+  const contract = input.workspaceWorkerContract || input.contract || null;
+  ensureNativeChildTurn(sessionStore, input, contract);
+  return new DirectTurnCaptureWriter(sessionStore, nativeCaptureInput(input, contract));
+}
+
+function captureDigest(input = {}, result = {}) {
+  const contract = result.workspaceWorkerContract || input.workspaceWorkerContract || null;
+  return finalCaptureDigest(nativeCaptureInput(input, contract), result);
+}
+
+function persistNativeChildProviderTurn(sessionStore, input = {}, result = {}) {
+  const contract = result.workspaceWorkerContract || input.workspaceWorkerContract || null;
+  const writer = openNativeChildProviderTurnCapture(sessionStore, {
+    ...input,
+    workspaceWorkerContract: contract,
+    workspaceWorkerToolResultCount: Array.isArray(result.workspaceWorkerToolResults)
+      ? result.workspaceWorkerToolResults.length
+      : 0,
+  });
+  const receipt = writer.finalize(result, {
+    duplicateConflictCode: "direct_epistemic_native_child_duplicate_conflict",
+    prefixConflictCode: "direct_epistemic_native_child_partial_capture_conflict",
+  });
+  if (contract) {
+    const capturedTurn = sessionStore.readTurn(receipt.sessionId, receipt.turnId);
+    const workspaceWorkerToolResultCount = Array.isArray(capturedTurn?.toolResults)
+      ? capturedTurn.toolResults.length
+      : 0;
+    if (capturedTurn?.requestShape?.workspaceWorkerToolResultCount !== workspaceWorkerToolResultCount) {
+      sessionStore.updateTurnState(receipt.sessionId, receipt.turnId, capturedTurn.state, {
+        requestShape: {
+          ...capturedTurn.requestShape,
+          workspaceWorkerToolResultCount,
+        },
       });
     }
-    if (repaired) sessionStore.updateTurnState(
-      sessionId,
-      turnId,
-      state,
-      terminalMetadata(result, expectedCaptureDigest, true),
-    );
-    return {
-      sessionId,
-      turnId,
-      state,
-      duplicate: true,
-      repaired,
-      captureDigest: expectedCaptureDigest,
-      rawPromptPersisted: false,
-    };
   }
-  const turn = sessionStore.createTurn(sessionId, {
-    turnId,
-    state: "streaming",
-    model: text(input.requestBody?.model || input.agent?.model),
-    reasoningEffort: text(input.requestBody?.reasoning?.effort || input.agent?.reasoningEffort),
-    agentId: childAgentId,
-    agentKind: workspaceWorkerContract ? "native_workspace_sub_agent" : "native_sub_agent",
-    agentThreadId: childAgentId,
-    parentThreadId: text(input.primaryThreadId),
-    agentLabel: text(input.agent?.displayLabel),
-    agentRole: text(input.agent?.role, "sub_agent_worker"),
-    sourceClass: workspaceWorkerContract
-      ? "native_workspace_child_provider_turn"
-      : "native_child_provider_turn",
-    nativeDirectSession: true,
-    toolResults: workspaceWorkerToolResults,
-    requestShape: {
-      model: text(input.requestBody?.model),
-      reasoningEffort: text(input.requestBody?.reasoning?.effort),
-      promptDigest: text(input.promptDigest),
-      contextDigest: text(input.contextDigest),
-      contextMessageCount: Number(input.contextMessageCount || 0),
-      attemptId: text(input.attemptId || input.callId),
-      captureDigest: expectedCaptureDigest,
-      workspaceWorkerContractId: text(workspaceWorkerContract?.contractId),
-      workspaceWorkerContractDigest: text(workspaceWorkerContract?.contractDigest),
-      workspaceBindingId: text(workspaceWorkerContract?.binding?.bindingId),
-      workspaceBindingDigest: text(workspaceWorkerContract?.binding?.bindingDigest),
-      workspaceMode: text(workspaceWorkerContract?.workspaceMode),
-      toolProfile: text(workspaceWorkerContract?.authority?.toolProfile),
-      declaredTools: Array.isArray(workspaceWorkerContract?.authority?.declaredTools)
-        ? [...workspaceWorkerContract.authority.declaredTools]
-        : [],
-      contextAdmissionDigest: text(workspaceWorkerContract?.contextAdmission?.admissionDigest),
-      workspaceWorkerToolResultCount: workspaceWorkerToolResults.length,
-      rawPromptIncluded: false,
-      rawContextIncluded: false,
-      rawWorkspacePathIncluded: false,
-    },
-  });
-  const events = Array.isArray(result.normalizedEvents) ? result.normalizedEvents : [];
-  if (events.length) sessionStore.appendNormalizedEvents(sessionId, turn.turnId, events);
-  const state = terminalTurnState(result);
-  sessionStore.updateTurnState(
-    sessionId,
-    turn.turnId,
-    state,
-    terminalMetadata(result, expectedCaptureDigest, false),
-  );
   sessionStore.notifyEpistemicObservers?.({
     kind: "native_child_turn_persisted",
-    sessionId,
-    turnId: turn.turnId,
-    eventCount: events.length,
+    sessionId: receipt.sessionId,
+    turnId: receipt.turnId,
+    eventCount: receipt.eventCount,
+    captureComplete: receipt.captureComplete,
   });
   return {
-    sessionId,
-    turnId,
-    state,
-    eventCount: events.length,
-    duplicate: false,
-    captureDigest: expectedCaptureDigest,
+    ...receipt,
     rawPromptPersisted: false,
     rawContextPersisted: false,
   };
 }
 
 module.exports = {
+  DirectTurnCaptureWriter,
+  captureDigest,
+  capturedWorkspaceToolResult: safeCapturedToolResult,
   nativeChildSessionId,
   nativeChildTurnId,
-  captureDigest,
+  openNativeChildProviderTurnCapture,
   persistNativeChildProviderTurn,
   terminalEvidence,
   terminalTurnState,

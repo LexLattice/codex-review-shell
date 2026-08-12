@@ -12,6 +12,8 @@ const DIRECT_TURN_SCHEMA = "direct_codex_turn@1";
 const DIRECT_DIAGNOSTIC_SCHEMA = "direct_codex_diagnostic@1";
 const DIRECT_TOOL_OBLIGATION_SCHEMA = "direct_codex_tool_obligation@1";
 const DIRECT_IMPORT_INDEX_SCHEMA = "direct_codex_import_index@1";
+const DIRECT_TURN_CAPTURE_SCHEMA = "direct_turn_capture@1";
+const DIRECT_TURN_CAPTURE_GAP_SCHEMA = "direct_turn_capture_gap@1";
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/;
 const DIRECT_TURN_STATES = new Set([
   "created",
@@ -91,6 +93,34 @@ function normalizedEventEnvelopeDigest(envelope = {}) {
   return crypto.createHash("sha256")
     .update(JSON.stringify({ at: normalizeString(envelope.at, ""), event: envelope.event }))
     .digest("hex");
+}
+
+function captureGapReceipt(input = {}, nowMs = Date.now()) {
+  const core = {
+    schema: DIRECT_TURN_CAPTURE_GAP_SCHEMA,
+    sessionId: normalizeString(input.sessionId, ""),
+    turnId: normalizeString(input.turnId, ""),
+    code: normalizeString(input.code, "direct_turn_capture_gap"),
+    expectedEventCount: Math.max(0, Number(input.expectedEventCount || 0)),
+    observedEventCount: Math.max(0, Number(input.observedEventCount || 0)),
+    sourceOffset: Math.max(0, Number(input.sourceOffset || 0)),
+    expectedPrefixDigest: normalizeString(input.expectedPrefixDigest, ""),
+    observedPrefixDigest: normalizeString(input.observedPrefixDigest, ""),
+    rawEventIncluded: false,
+    rawTextIncluded: false,
+    rawArgumentsIncluded: false,
+    rawWorkspacePathIncluded: false,
+    grantsAuthority: false,
+  };
+  const receiptDigest = crypto.createHash("sha256")
+    .update(JSON.stringify(core))
+    .digest("hex");
+  return {
+    ...core,
+    gapReceiptId: `direct_capture_gap_${receiptDigest.slice(0, 24)}`,
+    receiptDigest,
+    createdAt: nowIso(nowMs),
+  };
 }
 
 function normalizeId(value, fallbackPrefix) {
@@ -995,6 +1025,7 @@ class DirectSessionStore {
       normalizedEventCount: 0,
       unresolvedObligations: Array.isArray(input.unresolvedObligations) ? input.unresolvedObligations : [],
       toolResults: Array.isArray(input.toolResults) ? input.toolResults : [],
+      capture: isPlainObject(input.capture) ? input.capture : null,
       continuationRequests: Array.isArray(input.continuationRequests) ? input.continuationRequests : [],
       usageAttribution: isPlainObject(input.usageAttribution) ? input.usageAttribution : null,
       error: isPlainObject(input.error) ? input.error : null,
@@ -1102,6 +1133,107 @@ class DirectSessionStore {
       this.writeSession(nextSession);
     }
     return nextTurn;
+  }
+
+  updateTurnCapture(sessionId, turnId, capture, options = {}) {
+    if (!isPlainObject(capture) || capture.schema !== DIRECT_TURN_CAPTURE_SCHEMA) {
+      const error = new Error("Direct turn capture state is invalid.");
+      error.code = "direct_turn_capture_state_invalid";
+      throw error;
+    }
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+    const updated = this.updateTurnState(sessionId, turnId, turn.state, { capture }, options);
+    this.notifyEpistemicObservers({
+      kind: "turn_capture_updated",
+      sessionId,
+      turnId,
+      captureStatus: normalizeString(capture.status, "unknown"),
+      eventCount: Number(capture.eventCount || 0),
+      toolResultCount: Number(capture.toolResultCount || 0),
+      complete: capture.complete === true,
+    });
+    return updated;
+  }
+
+  appendTurnCaptureGap(sessionId, turnId, input = {}, options = {}) {
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+    const receipt = captureGapReceipt({ ...input, sessionId, turnId }, options.nowMs);
+    const capture = isPlainObject(turn.capture) && turn.capture.schema === DIRECT_TURN_CAPTURE_SCHEMA
+      ? turn.capture
+      : {
+          schema: DIRECT_TURN_CAPTURE_SCHEMA,
+          attemptId: normalizeString(turn.requestShape?.attemptId, ""),
+          status: "capturing",
+          eventCount: Number(turn.normalizedEventCount || 0),
+          eventPrefixDigest: "",
+          toolResultCount: Array.isArray(turn.toolResults) ? turn.toolResults.length : 0,
+          toolResultDigest: "",
+          terminalState: "",
+          finalCaptureDigest: "",
+          complete: false,
+          gapReceipts: [],
+          openedAt: normalizeString(turn.createdAt, nowIso(options.nowMs)),
+          updatedAt: normalizeString(turn.updatedAt, nowIso(options.nowMs)),
+          finalizedAt: "",
+          rawPromptIncluded: false,
+          rawContextIncluded: false,
+          rawProviderFrameIncluded: false,
+          rawWorkspacePathIncluded: false,
+          grantsAuthority: false,
+        };
+    const existing = (Array.isArray(capture.gapReceipts) ? capture.gapReceipts : [])
+      .find((entry) => entry?.gapReceiptId === receipt.gapReceiptId);
+    if (existing) return { turn, receipt: existing };
+    const nextCapture = {
+      ...capture,
+      status: input.preserveComplete === true && capture.complete === true ? "complete" : "gap",
+      complete: input.preserveComplete === true && capture.complete === true,
+      gapReceipts: [...(Array.isArray(capture.gapReceipts) ? capture.gapReceipts : []), receipt],
+      updatedAt: receipt.createdAt,
+    };
+    const updated = this.updateTurnCapture(sessionId, turnId, nextCapture, options);
+    return { turn: updated, receipt };
+  }
+
+  appendCapturedToolResult(sessionId, turnId, result = {}, options = {}) {
+    if (!isPlainObject(result)) {
+      const error = new Error("Captured tool result must be typed.");
+      error.code = "direct_turn_capture_tool_result_invalid";
+      throw error;
+    }
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+    const resultDigest = normalizeString(result.resultDigest, "");
+    if (!resultDigest) {
+      const error = new Error("Captured tool result requires an exact result digest.");
+      error.code = "direct_turn_capture_tool_result_digest_required";
+      throw error;
+    }
+    const key = normalizeString(result.obligationId || result.callId, resultDigest);
+    const existingResults = Array.isArray(turn.toolResults) ? turn.toolResults : [];
+    const existing = existingResults.find((entry) =>
+      normalizeString(entry?.obligationId || entry?.callId, entry?.resultDigest) === key);
+    if (existing) {
+      if (normalizeString(existing.resultDigest, "") !== resultDigest) {
+        const error = new Error("Captured tool result conflicts with the persisted result.");
+        error.code = "direct_turn_capture_tool_result_conflict";
+        throw error;
+      }
+      return { turn, result: existing, duplicate: true };
+    }
+    const updated = this.updateTurnState(sessionId, turnId, turn.state, {
+      toolResults: [...existingResults, result],
+    }, options);
+    this.notifyEpistemicObservers({
+      kind: "turn_capture_tool_result_appended",
+      sessionId,
+      turnId,
+      resultDigest,
+      toolResultCount: updated.toolResults.length,
+    });
+    return { turn: updated, result, duplicate: false };
   }
 
   addToolObligations(sessionId, turnId, normalizedEvents = [], options = {}) {
@@ -1267,6 +1399,28 @@ class DirectSessionStore {
       for (const turnId of turnIds) {
         const turn = this.readTurn(session.sessionId, turnId);
         if (!turn || !DIRECT_RECOVERABLE_ACTIVE_TURN_STATES.has(turn.state)) continue;
+        let capture = turn.capture;
+        if (isPlainObject(capture) && capture.schema === DIRECT_TURN_CAPTURE_SCHEMA && capture.status === "capturing") {
+          const receipt = captureGapReceipt({
+            sessionId: session.sessionId,
+            turnId,
+            code: "direct_turn_capture_interrupted",
+            expectedEventCount: Number(capture.eventCount || turn.normalizedEventCount || 0),
+            observedEventCount: Number(turn.normalizedEventCount || 0),
+            expectedPrefixDigest: normalizeString(capture.eventPrefixDigest, ""),
+            observedPrefixDigest: normalizeString(capture.eventPrefixDigest, ""),
+            sourceOffset: Number(turn.normalizedEventCount || 0),
+          }, options.nowMs);
+          capture = {
+            ...capture,
+            status: "gap",
+            complete: false,
+            terminalState: "failed",
+            gapReceipts: [...(Array.isArray(capture.gapReceipts) ? capture.gapReceipts : []), receipt],
+            updatedAt: recoveredAt,
+            finalizedAt: recoveredAt,
+          };
+        }
         const nextTurn = {
           ...turn,
           state: "failed",
@@ -1278,6 +1432,7 @@ class DirectSessionStore {
             previousState: turn.state,
             recoveredAt,
           },
+          capture,
         };
         this.writeTurn(nextTurn);
         recoveredByTurnId.set(nextTurn.turnId, nextTurn);
@@ -1440,10 +1595,13 @@ module.exports = {
   DIRECT_SESSION_INDEX_SCHEMA,
   DIRECT_SESSION_SCHEMA,
   DIRECT_TOOL_OBLIGATION_SCHEMA,
+  DIRECT_TURN_CAPTURE_GAP_SCHEMA,
+  DIRECT_TURN_CAPTURE_SCHEMA,
   DIRECT_TURN_SCHEMA,
   DIRECT_TURN_STATES,
   DirectSessionStore,
   buildToolObligationsFromEvents,
+  captureGapReceipt,
   normalizeTurnState,
   toolTranscriptItemFromObligation,
   writeJsonAtomic,
