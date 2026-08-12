@@ -39,7 +39,7 @@ const {
   profile: directEpistemicRepositoryProfile,
   validateResidentRepositoryObservation,
 } = require("./main/direct/epistemic/repository-runtime");
-const { persistNativeChildProviderTurn } = require("./main/direct/epistemic/native-child-capture");
+const { createNativeChildLiveTurnCapture } = require("./main/direct/epistemic/live-turn-capture-adapter");
 const {
   projectAdmittedWorkspaceWorkerResult,
   runDirectWorkspaceWorker,
@@ -3826,45 +3826,40 @@ function assistantTextFromDirectProviderResult(result = {}) {
     .join("");
 }
 
-async function runDirectNativeChildProviderTurn(input = {}) {
-  const result = await runImplementationToolInitialProbe({
-    authStore: directRuntimeAuthStore(),
-    refreshCredentials: () => refreshDirectRuntimeCredentials(),
-    profileDoc: ensureDirectCodexProfileDoc(),
-    requestBody: input.requestBody,
-    signal: input.signal,
+function registerDirectChildCaptureController(input = {}, captureAdapter) {
+  if (!captureAdapter || typeof input.registerEpistemicCaptureController !== "function") return;
+  input.registerEpistemicCaptureController({
+    sessionId: captureAdapter.writer.input.sessionId,
+    turnId: captureAdapter.writer.input.turnId,
+    cancel: () => captureAdapter.cancel(),
   });
-  let epistemicCapture;
-  if (input.signal?.aborted === true) {
-    epistemicCapture = {
-      status: "unavailable",
-      errorCode: "direct_native_agent_pool_closed",
-      receiptDigest: "",
-      sessionId: "",
-      turnId: "",
-    };
-  } else {
-    try {
-      const receipt = persistNativeChildProviderTurn(ensureDirectSessionStore(), input, result);
-      epistemicCapture = {
-        status: "captured",
-        errorCode: "",
-        receiptDigest: normalizeString(receipt.captureDigest, ""),
-        sessionId: normalizeString(receipt.sessionId, ""),
-        turnId: normalizeString(receipt.turnId, ""),
-      };
-    } catch (error) {
-      const errorCode = normalizeString(error?.code, "direct_epistemic_native_child_capture_failed");
-      console.warn("[direct-epistemic] native child capture failed", errorCode);
-      epistemicCapture = {
-        status: "failed",
-        errorCode,
-        receiptDigest: "",
-        sessionId: "",
-        turnId: "",
-      };
-    }
+}
+
+async function runDirectNativeChildProviderTurn(input = {}) {
+  const captureAdapter = createNativeChildLiveTurnCapture({
+    sessionStore: ensureDirectSessionStore(),
+    epistemicService: ensureDirectEpistemicService(),
+    captureInput: input,
+    onProgress: input.onEpistemicProgress,
+  });
+  registerDirectChildCaptureController(input, captureAdapter);
+  let result;
+  try {
+    result = await runImplementationToolInitialProbe({
+      authStore: directRuntimeAuthStore(),
+      refreshCredentials: () => refreshDirectRuntimeCredentials(),
+      profileDoc: ensureDirectCodexProfileDoc(),
+      requestBody: input.requestBody,
+      signal: input.signal,
+      onNormalizedEventsCommitted: captureAdapter.strictCommitCallback(),
+    });
+    captureAdapter.reconcileEventPrefix(result.normalizedEvents, { sourceOffset: 0 });
+    captureAdapter.finalize(result);
+  } catch (error) {
+    captureAdapter.markFailed(error);
+    throw error;
   }
+  const epistemicCapture = captureAdapter.epistemicCapture();
   const terminal = result.terminal || {};
   const usageEvent = [...(Array.isArray(result.normalizedEvents) ? result.normalizedEvents : [])]
     .reverse()
@@ -4116,59 +4111,49 @@ async function runDirectWorkspaceWorkerTurn(input = {}) {
   const workspaceResult = await runDirectWorkspaceWorker({
     ...input,
     workspaceProvisioner: (request) => provisionDirectWorkspaceWorker(request),
-    providerRequestRunner: ({ requestBody, signal }) => runImplementationToolInitialProbe({
+    captureAdapterFactory: ({ contract }) => {
+      const captureAdapter = createNativeChildLiveTurnCapture({
+        sessionStore: ensureDirectSessionStore(),
+        epistemicService: ensureDirectEpistemicService(),
+        captureInput: {
+          ...input,
+          agent: {
+            agentThreadId: input.childAgentId,
+            displayLabel: input.displayLabel,
+            role: input.role,
+            model: input.model,
+            reasoningEffort: input.reasoningEffort,
+          },
+          attemptId: `workspace_worker_${contract.contractId}`,
+          promptDigest: crypto.createHash("sha256").update(normalizeString(input.prompt, "")).digest("hex"),
+          contextDigest: normalizeString(contract.contextAdmission?.admittedContextDigest, ""),
+          contextMessageCount: Number(contract.contextAdmission?.admittedMessageCount || 0),
+          requestBody: {
+            model: input.model,
+            reasoning: { effort: input.reasoningEffort },
+          },
+          workspaceWorkerContract: contract,
+        },
+        onProgress: input.onEpistemicProgress,
+      });
+      return captureAdapter;
+    },
+    providerRequestRunner: ({ requestBody, signal, onNormalizedEventsCommitted }) => runImplementationToolInitialProbe({
       authStore: directRuntimeAuthStore(),
       refreshCredentials: () => refreshDirectRuntimeCredentials(),
       profileDoc: ensureDirectCodexProfileDoc(),
       requestBody,
       signal,
+      onNormalizedEventsCommitted,
     }),
   });
-  let epistemicCapture = {
+  const epistemicCapture = workspaceResult.epistemicCapture || {
     status: "unavailable",
     errorCode: workspaceResult.blockerCode || "direct_workspace_worker_capture_unavailable",
     receiptDigest: "",
     sessionId: "",
     turnId: "",
   };
-  if (workspaceResult.captureResult && input.signal?.aborted !== true) {
-    try {
-      const contract = workspaceResult.captureResult.workspaceWorkerContract || {};
-      const receipt = persistNativeChildProviderTurn(ensureDirectSessionStore(), {
-        ...input,
-        agent: {
-          agentThreadId: input.childAgentId,
-          displayLabel: input.displayLabel,
-          role: input.role,
-          model: input.model,
-          reasoningEffort: input.reasoningEffort,
-        },
-        attemptId: `workspace_worker_${input.childAgentId}`,
-        promptDigest: crypto.createHash("sha256").update(normalizeString(input.prompt, "")).digest("hex"),
-        contextDigest: normalizeString(contract.contextAdmission?.admittedContextDigest, ""),
-        contextMessageCount: Number(contract.contextAdmission?.admittedMessageCount || 0),
-        requestBody: {
-          model: input.model,
-          reasoning: { effort: input.reasoningEffort },
-        },
-      }, workspaceResult.captureResult);
-      epistemicCapture = {
-        status: "captured",
-        errorCode: "",
-        receiptDigest: normalizeString(receipt.captureDigest, ""),
-        sessionId: normalizeString(receipt.sessionId, ""),
-        turnId: normalizeString(receipt.turnId, ""),
-      };
-    } catch (error) {
-      epistemicCapture = {
-        status: "failed",
-        errorCode: normalizeString(error?.code, "direct_epistemic_native_workspace_child_capture_failed"),
-        receiptDigest: "",
-        sessionId: "",
-        turnId: "",
-      };
-    }
-  }
   const captureComplete = epistemicCapture.status === "captured" && Boolean(epistemicCapture.receiptDigest);
   return projectAdmittedWorkspaceWorkerResult(workspaceResult, {
     tokenUsage: tokenUsageFromWorkspaceWorkerCapture(workspaceResult.captureResult),

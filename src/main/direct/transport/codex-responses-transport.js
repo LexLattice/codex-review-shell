@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("node:crypto");
 const {
   normalizeDirectCodexEvents,
   parseSseFixtureText,
@@ -471,14 +472,31 @@ async function responseText(response) {
   return "";
 }
 
+function sseNewlineLengthAt(value, index) {
+  if (value[index] === "\n") return 1;
+  if (value[index] !== "\r") return 0;
+  return value[index + 1] === "\n" ? 2 : 1;
+}
+
+function nextSseFrameBoundary(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const firstLength = sseNewlineLengthAt(value, index);
+    if (!firstLength) continue;
+    const secondLength = sseNewlineLengthAt(value, index + firstLength);
+    if (secondLength) return { index, length: firstLength + secondLength };
+    index += firstLength - 1;
+  }
+  return null;
+}
+
 function splitCompleteSseFrames(buffer) {
   const frames = [];
   let remaining = String(buffer || "");
   for (;;) {
-    const match = /\r?\n\r?\n/.exec(remaining);
-    if (!match) break;
-    const frame = remaining.slice(0, match.index);
-    remaining = remaining.slice(match.index + match[0].length);
+    const boundary = nextSseFrameBoundary(remaining);
+    if (!boundary) break;
+    const frame = remaining.slice(0, boundary.index);
+    remaining = remaining.slice(boundary.index + boundary.length);
     if (frame.trim()) frames.push(frame);
   }
   return { frames, remaining };
@@ -494,15 +512,30 @@ function normalizeLiveRawEvent(rawEvent, rawIndex, requestBody) {
     failOnUnknown: false,
     model: requestBody.model,
   });
-  return {
-    normalized: normalizedResult.normalized.map((event) => ({
+  const normalized = normalizedResult.normalized.map((event) => ({
       ...event,
       sequence: rawIndex,
       source: {
         ...(event.source || {}),
         rawIndex,
       },
-    })),
+    }));
+  const sourcePayloadDigest = crypto.createHash("sha256")
+    .update(JSON.stringify(rawEvent ?? null))
+    .digest("hex");
+  normalized.push(...normalizedResult.unknown.map((event) => ({
+    type: "unclassified_provider_event",
+    sequence: rawIndex,
+    rawType: normalizeString(event.rawType, "unknown").slice(0, 160),
+    rawTypeDigest: crypto.createHash("sha256")
+      .update(normalizeString(event.rawType, "unknown"))
+      .digest("hex"),
+    sourcePayloadDigest,
+    rawPayloadIncluded: false,
+    source: { rawIndex },
+  })));
+  return {
+    normalized,
     unknown: normalizedResult.unknown.map((event) => ({
       ...event,
       rawIndex,
@@ -521,6 +554,22 @@ function emitNormalizedEvents(callback, events, details = {}) {
   } catch {}
 }
 
+async function commitNormalizedEvents(callback, events, details = {}) {
+  if (typeof callback !== "function") return;
+  if (!Array.isArray(events) || !events.length) return;
+  try {
+    await callback(events, {
+      at: nowIso(),
+      ...details,
+    });
+  } catch (error) {
+    if (error && typeof error === "object" && !normalizeString(error.code, "")) {
+      error.code = "direct_normalized_event_commit_failed";
+    }
+    throw error;
+  }
+}
+
 async function readStreamingSseResponse(response, options = {}, requestBody = {}) {
   const rawEvents = [];
   const normalizedEvents = [];
@@ -531,13 +580,16 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     streamCompletedAt: "",
     rawEventCount: 0,
     normalizedEventCount: 0,
+    committedNormalizedEventCount: 0,
   };
   const onLifecycle = options.onLifecycle;
   const onNormalizedEvents = options.onNormalizedEvents;
+  const onNormalizedEventsCommitted = options.onNormalizedEventsCommitted;
   let rawText = "";
   let buffer = "";
   let error = null;
-  const consumeFrame = (frame) => {
+  let commitError = null;
+  const consumeFrame = async (frame) => {
     const rawEvent = parseSingleSseFrame(frame);
     if (!rawEvent) return;
     const rawIndex = rawEvents.length;
@@ -554,6 +606,7 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
       unknownRawTypes.push(...normalizedResult.unknown.map((event) => event.rawType));
     }
     if (normalizedResult.normalized.length) {
+      const normalizedOffset = normalizedEvents.length;
       if (!timing.firstNormalizedEventAt) {
         timing.firstNormalizedEventAt = nowIso();
         notifyLifecycle(onLifecycle, "first_normalized_event", {
@@ -563,17 +616,28 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
       }
       normalizedEvents.push(...normalizedResult.normalized);
       timing.normalizedEventCount = normalizedEvents.length;
+      try {
+        await commitNormalizedEvents(onNormalizedEventsCommitted, normalizedResult.normalized, {
+          rawIndex,
+          normalizedOffset,
+        });
+      } catch (caught) {
+        commitError = caught;
+        throw caught;
+      }
+      timing.committedNormalizedEventCount = normalizedEvents.length;
       emitNormalizedEvents(onNormalizedEvents, normalizedResult.normalized, {
         rawIndex,
+        normalizedOffset,
       });
     }
   };
-  const consumeText = (text) => {
+  const consumeText = async (text) => {
     rawText += text;
     buffer += text;
     const split = splitCompleteSseFrames(buffer);
     buffer = split.remaining;
-    for (const frame of split.frames) consumeFrame(frame);
+    for (const frame of split.frames) await consumeFrame(frame);
   };
   try {
     if (response?.body && typeof response.body.getReader === "function") {
@@ -582,18 +646,18 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        consumeText(decoder.decode(value, { stream: true }));
+        await consumeText(decoder.decode(value, { stream: true }));
       }
-      consumeText(decoder.decode());
+      await consumeText(decoder.decode());
     } else if (response?.body && typeof response.body[Symbol.asyncIterator] === "function") {
       const decoder = new TextDecoder();
-      for await (const chunk of response.body) consumeText(decodeTextChunk(decoder, chunk));
-      consumeText(decoder.decode());
+      for await (const chunk of response.body) await consumeText(decodeTextChunk(decoder, chunk));
+      await consumeText(decoder.decode());
     } else if (response && typeof response.text === "function") {
-      consumeText(await response.text());
+      await consumeText(await response.text());
     }
     if (buffer.trim()) {
-      consumeFrame(buffer);
+      await consumeFrame(buffer);
       buffer = "";
     }
   } catch (caught) {
@@ -607,6 +671,7 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     unknownRawTypes,
     timing,
     error,
+    commitError,
   };
 }
 
@@ -671,6 +736,10 @@ function errorCodeFromCaught(error, streamStarted = false) {
   if (isAbortError(error)) return "aborted";
   if (error?.code === "direct_auth_expired") return "direct_auth_expired";
   if (error?.code === "direct_auth_refresh_failed" || error?.code === "direct_auth_refresh_unavailable") return "auth_error";
+  if (
+    typeof error?.code === "string" &&
+    (error.code.startsWith("direct_turn_capture_") || error.code.startsWith("direct_normalized_event_commit_"))
+  ) return error.code;
   return streamStarted ? "stream_failed" : "fetch_failed";
 }
 
@@ -758,6 +827,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
   let error = null;
   let responseOk = false;
   let streamStarted = false;
+  let durableCommitFailed = false;
   let credentialRefresh = { attempted: false, ok: false, reason: "", preStreamOnly: true };
   let resolvedCredentials = null;
   const attempts = [];
@@ -817,6 +887,8 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
         timing.streamCompletedAt = streamed.timing.streamCompletedAt;
         timing.rawEventCount = streamed.timing.rawEventCount;
         timing.normalizedEventCount = streamed.timing.normalizedEventCount;
+        timing.committedNormalizedEventCount = streamed.timing.committedNormalizedEventCount;
+        durableCommitFailed = Boolean(streamed.commitError);
         if (streamed.error) {
           const caught = streamed.error;
           const aborted = options.signal?.aborted === true || isAbortError(caught);
@@ -876,13 +948,26 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
   }
 
   if (!normalizedEvents.length && rawEvents.length) {
-    const normalizedResult = normalizeDirectCodexEvents(rawEvents, {
-      failOnUnknown: false,
-      model: requestBody.model,
-    });
-    normalizedEvents = normalizedResult.normalized;
-    unknownRawTypes = normalizedResult.unknown.map((event) => event.rawType);
+    const replayed = rawEvents.map((rawEvent, rawIndex) =>
+      normalizeLiveRawEvent(rawEvent, rawIndex, requestBody));
+    normalizedEvents = replayed.flatMap((result) => result.normalized);
+    unknownRawTypes = replayed.flatMap((result) => result.unknown.map((event) => event.rawType));
   }
+  const committedNormalizedEventCount = Math.max(0, Number(timing.committedNormalizedEventCount || 0));
+  if (
+    typeof options.onNormalizedEventsCommitted === "function" &&
+    !durableCommitFailed &&
+    normalizedEvents.length > committedNormalizedEventCount
+  ) {
+    const suffix = normalizedEvents.slice(committedNormalizedEventCount);
+    await commitNormalizedEvents(options.onNormalizedEventsCommitted, suffix, {
+      rawIndex: Number(suffix[0]?.source?.rawIndex ?? suffix[0]?.sequence ?? 0),
+      normalizedOffset: committedNormalizedEventCount,
+      terminalReconciliation: true,
+    });
+    timing.committedNormalizedEventCount = normalizedEvents.length;
+  }
+  timing.durableCommitFailed = durableCommitFailed;
   if (!timing.streamCompletedAt) timing.streamCompletedAt = nowIso();
   const terminal = terminalStateFromNormalizedEvents(normalizedEvents);
   const toolObligations = buildToolObligationsFromEvents("probe_unpersisted", "turn_unpersisted", normalizedEvents);

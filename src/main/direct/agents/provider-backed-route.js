@@ -53,7 +53,7 @@ function publicCaptureDigest(value) {
 function normalizeEpistemicCapture(input = {}) {
   const source = isPlainObject(input) ? input : {};
   const sourceStatus = normalizeString(source.status, "unavailable");
-  const status = new Set(["pending", "captured", "failed", "unavailable"]).has(sourceStatus)
+  const status = new Set(["pending", "capturing", "captured", "failed", "unavailable"]).has(sourceStatus)
     ? sourceStatus
     : "unavailable";
   const unsafeStatus = status !== sourceStatus;
@@ -661,6 +661,8 @@ class DirectProviderBackedSubAgentRoute {
         promptChars: request.promptChars,
         attemptId: normalizeString(input.callId, `call_provider_backed_${agent.agentThreadId}`),
         signal: input.signal,
+        onEpistemicProgress: input.onEpistemicProgress,
+        registerEpistemicCaptureController: input.registerEpistemicCaptureController,
       }));
       const terminalStatus = providerOutcome.terminalState;
       const terminalExact = EXACT_TERMINAL_STATES.includes(terminalStatus);

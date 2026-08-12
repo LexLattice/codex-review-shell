@@ -101,6 +101,27 @@ function occurrenceSourceForEvent(event = {}) {
   };
 }
 
+function typedEventClass(event = {}) {
+  const type = text(event?.type, "unknown_event");
+  if (type === "session_started") return { recordType: "ProviderResponseStarted", facet: "execution" };
+  if (type === "message_delta") return { recordType: "AgentUtteranceFragment", facet: "linguistic_residue" };
+  if (type === "reasoning_delta") return { recordType: "AgentReasoningFragment", facet: "linguistic_residue" };
+  if (["tool_call_started", "tool_call_delta", "tool_call_completed"].includes(type)) {
+    return { recordType: "ToolInvocation", facet: "tool_activity" };
+  }
+  if (type === "usage_delta") return { recordType: "UsageObservation", facet: "usage" };
+  if ([
+    "response_completed",
+    "response_incomplete",
+    "response_failed",
+    "transport_error",
+    "auth_error",
+    "quota_error",
+    "aborted",
+  ].includes(type)) return { recordType: "TurnOutcome", facet: "execution_outcome" };
+  return { recordType: "UnclassifiedNormalizedEvent", facet: "projection_omission" };
+}
+
 function recordForEvent(input, event, recordInput) {
   const attribution = actorAttribution(input.session, input.turn);
   return buildEpistemicRecord({
@@ -128,11 +149,11 @@ function deterministicThreadRecords(input = {}) {
   const events = Array.isArray(input.events) ? input.events : [];
   const records = [];
   for (const event of events) {
-    if (!event?.type) continue;
+    const eventType = text(event?.type, "unknown_event");
     const sourceRef = sourceRefForEvent(sessionId, turnId, event);
     const eventOrdinal = Number(event.persistedIndex ?? event.sequence ?? 0);
-    const semanticBase = `thread:${sessionId}:turn:${turnId}:event:${eventOrdinal}:${event.type}`;
-    if (event.type === "session_started") {
+    const semanticBase = `thread:${sessionId}:turn:${turnId}:event:${eventOrdinal}:${eventType}`;
+    if (eventType === "session_started") {
       records.push(recordForEvent(input, event, {
         recordType: "ProviderResponseStarted",
         semanticKey: semanticBase,
@@ -145,41 +166,46 @@ function deterministicThreadRecords(input = {}) {
       }));
       continue;
     }
-    if (event.type === "message_delta" || event.type === "reasoning_delta") {
+    if (eventType === "message_delta" || eventType === "reasoning_delta") {
       const content = rawText(event.text);
       records.push(recordForEvent(input, event, {
-        recordType: event.type === "message_delta" ? "AgentUtteranceFragment" : "AgentReasoningFragment",
+        recordType: eventType === "message_delta" ? "AgentUtteranceFragment" : "AgentReasoningFragment",
         semanticKey: semanticBase,
         facet: "linguistic_residue",
         payload: {
           itemIdentity: text(event.itemId),
           textDigest: digestFor(content),
           characterCount: content.length,
-          visibility: text(event.visibility, event.type === "message_delta" ? "assistant_output" : "opaque"),
+          visibility: text(event.visibility, eventType === "message_delta" ? "assistant_output" : "opaque"),
           rawTextPersisted: false,
         },
         sourceRefs: [sourceRef],
       }));
       continue;
     }
-    if (["tool_call_started", "tool_call_completed"].includes(event.type)) {
+    if (["tool_call_started", "tool_call_delta", "tool_call_completed"].includes(eventType)) {
       records.push(recordForEvent(input, event, {
         recordType: "ToolInvocation",
-        semanticKey: `thread:${sessionId}:turn:${turnId}:tool:${text(event.callId || event.itemId, String(eventOrdinal))}:${event.type}`,
+        semanticKey: `thread:${sessionId}:turn:${turnId}:tool:${text(event.callId || event.itemId, String(eventOrdinal))}:${eventType}`,
         facet: "tool_activity",
         payload: {
-          phase: event.type === "tool_call_started" ? "started" : "arguments_completed",
+          phase: eventType === "tool_call_started"
+            ? "started"
+            : eventType === "tool_call_delta" ? "arguments_delta" : "arguments_completed",
           name: text(event.name, "tool_call"),
           namespace: text(event.namespace),
           toolType: text(event.toolType, "unknown"),
-          argumentsDigest: event.argumentsJson ? digestFor(event.argumentsJson) : "",
+          argumentsDigest: event.argumentsJson
+            ? digestFor(event.argumentsJson)
+            : event.argumentsDelta ? digestFor(event.argumentsDelta) : "",
+          argumentCharacterCount: rawText(event.argumentsJson || event.argumentsDelta).length,
           rawArgumentsPersisted: false,
         },
         sourceRefs: [sourceRef],
       }));
       continue;
     }
-    if (event.type === "usage_delta") {
+    if (eventType === "usage_delta") {
       records.push(recordForEvent(input, event, {
         recordType: "UsageObservation",
         semanticKey: semanticBase,
@@ -195,13 +221,13 @@ function deterministicThreadRecords(input = {}) {
       }));
       continue;
     }
-    if (["response_completed", "response_incomplete", "response_failed", "transport_error", "auth_error", "quota_error", "aborted"].includes(event.type)) {
+    if (["response_completed", "response_incomplete", "response_failed", "transport_error", "auth_error", "quota_error", "aborted"].includes(eventType)) {
       records.push(recordForEvent(input, event, {
         recordType: "TurnOutcome",
         semanticKey: semanticBase,
         facet: "execution_outcome",
         payload: {
-          outcome: event.type,
+          outcome: eventType,
           stopReason: text(event.stopReason || event.reason),
           errorCode: text(event.code),
           retryable: event.retryable === true,
@@ -209,7 +235,28 @@ function deterministicThreadRecords(input = {}) {
         },
         sourceRefs: [sourceRef],
       }));
+      continue;
     }
+    const {
+      persistedIndex: _persistedIndex,
+      persistedAt: _persistedAt,
+      sourceEnvelopeDigest: _sourceEnvelopeDigest,
+      ...sourcePayload
+    } = event || {};
+    records.push(recordForEvent(input, event, {
+      recordType: "UnclassifiedNormalizedEvent",
+      semanticKey: semanticBase,
+      facet: "projection_omission",
+      predicate: "NormalizedEventClassificationUnavailable",
+      payload: {
+        eventType,
+        omissionCode: "normalized_event_type_unclassified",
+        sourcePayloadDigest: digestFor(sourcePayload),
+        sourcePayloadCopiedToE: false,
+        rawEventRemainsInO: true,
+      },
+      sourceRefs: [sourceRef],
+    }));
   }
 
   for (const [index, result] of (Array.isArray(input.turn?.toolResults) ? input.turn.toolResults : []).entries()) {
@@ -471,4 +518,5 @@ module.exports = {
   linguisticResidue,
   recordsFromLunaOutput,
   sourceRefForEvent,
+  typedEventClass,
 };

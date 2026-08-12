@@ -8,7 +8,10 @@ const {
   digestFor,
   text,
 } = require("./kernel");
-const { DirectEpistemicStore } = require("./store");
+const {
+  DirectEpistemicStore,
+  buildThreadProjectionCursor,
+} = require("./store");
 const {
   buildContextDeliveryAdmission,
   safeContextDeliveryAdmission,
@@ -27,6 +30,7 @@ const {
   linguisticResidue,
   recordsFromLunaOutput,
 } = require("./thread-transcriber");
+const { buildLiveActivityProjection } = require("./live-activity-projection");
 
 const DIRECT_EPISTEMIC_PROJECTION_SCHEMA = "direct_epistemic_projection@1";
 
@@ -78,6 +82,7 @@ function safeSubjectSummary(summary) {
     ports: summary.ports,
     latestImport: safeImportSummary(summary.latestImport),
     latestTranscription: summary.latestTranscription,
+    threadProjectionCursor: summary.threadProjectionCursor || null,
     updatedAt: summary.updatedAt,
   };
 }
@@ -124,6 +129,7 @@ function threadPorts(subject) {
         "linguistic_residue",
         "agent_interpretation",
         "agent_statement",
+        "projection_omission",
       ],
       standings: ["mechanically_observed", "attributed", "validated"],
       traversal: ["execution", "tool_activity", "execution_outcome", "agent_interpretation", "usage"],
@@ -152,6 +158,9 @@ class DirectEpistemicService {
       if (!sessionId) return;
       this.scheduleSessionSync(sessionId);
     }) || null;
+    this.restartCatchUp = options.recoverPersistedThreads === false
+      ? { attempted: 0, advanced: 0, failed: 0 }
+      : this.recoverPersistedThreadProjections();
   }
 
   close() {
@@ -271,12 +280,63 @@ class DirectEpistemicService {
     return turns;
   }
 
+  threadSourceCursor(turnArtifacts = []) {
+    const turnIdentities = turnArtifacts.map(({ turn, events }) => ({
+      turnId: turn.turnId,
+      state: turn.state,
+      eventDigest: digestFor(events),
+      eventCount: events.length,
+      toolResultDigest: digestFor(Array.isArray(turn.toolResults) ? turn.toolResults : []),
+      toolResultCount: Array.isArray(turn.toolResults) ? turn.toolResults.length : 0,
+      captureDigest: text(turn.capture?.finalCaptureDigest || turn.captureDigest),
+      captureStatus: text(turn.capture?.status),
+      updatedAt: turn.updatedAt,
+    }));
+    const flattenedEvents = turnArtifacts.flatMap(({ events }) => events);
+    const lastEvent = flattenedEvents[flattenedEvents.length - 1] || null;
+    return {
+      turnIdentities,
+      sourceDigest: digestFor({ turnIdentities }),
+      eventCount: flattenedEvents.length,
+      toolResultCount: turnArtifacts.reduce(
+        (count, { turn }) => count + (Array.isArray(turn.toolResults) ? turn.toolResults.length : 0),
+        0,
+      ),
+      turnCount: turnArtifacts.length,
+      lastSourceEnvelopeDigest: text(lastEvent?.sourceEnvelopeDigest),
+      lastEventType: text(lastEvent?.type),
+    };
+  }
+
+  recoverPersistedThreadProjections() {
+    const result = { attempted: 0, advanced: 0, failed: 0 };
+    if (!this.sessionStore?.listSessionIdsFromDisk) return result;
+    for (const sessionId of this.sessionStore.listSessionIdsFromDisk()) {
+      result.attempted += 1;
+      try {
+        const before = this.store.readThreadProjectionCursor(sessionId);
+        const projection = this.syncThread(sessionId);
+        const after = projection?.threadProjectionCursor || this.store.readThreadProjectionCursor(sessionId);
+        if (after?.cursorDigest && after.cursorDigest !== before?.cursorDigest) result.advanced += 1;
+        this.sessionSyncFailures.delete(sessionId);
+      } catch (error) {
+        result.failed += 1;
+        this.sessionSyncFailures.set(sessionId, {
+          code: text(error?.code, "direct_epistemic_thread_restart_catch_up_failed"),
+          at: new Date(this.now()).toISOString(),
+        });
+      }
+    }
+    return result;
+  }
+
   syncThread(sessionId) {
     this.assertOpen();
     if (!this.sessionStore) throw new Error("direct_epistemic_session_store_unavailable");
     const session = this.sessionStore.readSession(text(sessionId));
     if (!session) throw new Error(`direct_epistemic_session_unknown:${text(sessionId)}`);
     const turnArtifacts = this.threadTurnArtifacts(session);
+    const sourceCursor = this.threadSourceCursor(turnArtifacts);
     const subject = buildSubject({
       kind: "thread",
       externalId: session.sessionId,
@@ -284,13 +344,20 @@ class DirectEpistemicService {
       label: text(session.title, "Direct thread"),
       profileId: "direct-normalized-events@1",
     });
-    const turnIdentities = turnArtifacts.map(({ turn, events }) => ({
-      turnId: turn.turnId,
-      state: turn.state,
-      eventDigest: digestFor(events),
-      toolResultDigest: digestFor(Array.isArray(turn.toolResults) ? turn.toolResults : []),
-      updatedAt: turn.updatedAt,
-    }));
+    const turnIdentities = sourceCursor.turnIdentities;
+    const persistedCursor = this.store.readThreadProjectionCursor(session.sessionId);
+    if (persistedCursor?.sourceDigest === sourceCursor.sourceDigest) {
+      const persistedSubject = this.store.findSubject("thread", session.sessionId);
+      const summary = persistedSubject
+        ? safeSubjectSummary(this.store.subjectSummary(persistedSubject.subjectId))
+        : null;
+      if (
+        summary &&
+        persistedCursor.oRevisionId === summary.oRevision?.oRevisionId &&
+        this.store.revisionLineage(summary.eRevision?.eRevisionId || "")
+          .some((revision) => revision.eRevisionId === persistedCursor.eRevisionId)
+      ) return summary;
+    }
     const oRevision = buildORevision({
       subject,
       substrateKind: "direct_normalized_event_history",
@@ -313,6 +380,9 @@ class DirectEpistemicService {
       coverage: {
         posture: "structured_events_and_tool_results",
         turnCount: turnArtifacts.length,
+        sourceCursorDigest: sourceCursor.sourceDigest,
+        eventCount: sourceCursor.eventCount,
+        toolResultCount: sourceCursor.toolResultCount,
         linguisticResidueSemanticallyTranscribed: false,
       },
     });
@@ -331,12 +401,26 @@ class DirectEpistemicService {
       turn,
       events,
     }));
+    const threadProjectionCursor = buildThreadProjectionCursor({
+      sessionId: session.sessionId,
+      subjectId: subject.subjectId,
+      sourceDigest: sourceCursor.sourceDigest,
+      eventCount: sourceCursor.eventCount,
+      toolResultCount: sourceCursor.toolResultCount,
+      turnCount: sourceCursor.turnCount,
+      lastSourceEnvelopeDigest: sourceCursor.lastSourceEnvelopeDigest,
+      lastEventType: sourceCursor.lastEventType,
+      oRevisionId: oRevision.oRevisionId,
+      eRevisionId: eRevision.eRevisionId,
+      projectionStatus: "current",
+    });
     this.store.admitProjection({
       subject,
       oRevision,
       eRevision,
       records,
       ports: threadPorts(subject),
+      threadProjectionCursor,
       expectedHead: existingHead ? {
         oRevisionId: existingHead.oRevision.oRevisionId,
         eRevisionId: existingHead.eRevision.eRevisionId,
@@ -766,6 +850,29 @@ class DirectEpistemicService {
     return safeContextDeliveryAdmission(latest.admission, latest.latestEvent);
   }
 
+  liveActivityProjection(input = {}) {
+    this.assertOpen();
+    const sessionId = text(input.sessionId);
+    const session = this.sessionStore?.readSession(sessionId);
+    if (!session) throw serviceError(
+      "direct_live_activity_projection_session_missing",
+      "The persisted Direct task is unavailable.",
+    );
+    if (text(input.projectId) && text(session.projectId) !== text(input.projectId)) {
+      throw serviceError(
+        "direct_live_activity_projection_project_mismatch",
+        "The persisted Direct task belongs to another project.",
+      );
+    }
+    return buildLiveActivityProjection({
+      sessionStore: this.sessionStore,
+      epistemicStore: this.store,
+      sessionId,
+      turnId: text(input.turnId),
+      currentSourceDigest: this.threadSourceCursor(this.threadTurnArtifacts(session)).sourceDigest,
+    });
+  }
+
   snapshot(project = {}, options = {}) {
     this.assertOpen();
     const projectId = text(project.id);
@@ -795,6 +902,7 @@ class DirectEpistemicService {
         recordCount: summary.recordCount,
         recordCounts: summary.recordCounts,
         updatedAt: summary.updatedAt,
+        threadProjectionCursor: summary.threadProjectionCursor || null,
         syncStatus: text(summary.syncStatus, "current"),
         syncFailure: summary.syncFailure || null,
       })),
@@ -838,6 +946,7 @@ class DirectEpistemicService {
         privateWorkspacePathIncluded: false,
         worldManagerCanonicalStanding: false,
       },
+      restartCatchUp: { ...this.restartCatchUp },
       updatedAt: new Date(this.now()).toISOString(),
     };
   }

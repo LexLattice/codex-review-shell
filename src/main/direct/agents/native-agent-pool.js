@@ -7,6 +7,9 @@ const {
   normalizeEpistemicCapture,
 } = require("./provider-backed-route");
 const {
+  assertSafeLiveActivityProjection,
+} = require("../epistemic/live-activity-projection");
+const {
   WORKSPACE_MODE_ISOLATED_WORKTREE,
   WORKSPACE_MODE_REASONING_ONLY,
   normalizeToolProfile,
@@ -318,6 +321,61 @@ function typedWorkspaceResultSummary(record = {}, patch = {}) {
   return normalizeEpistemicCapture(patch.epistemicCapture).complete
     ? "direct_workspace_worker_completed_captured"
     : "direct_workspace_worker_completed";
+}
+
+function safeEpistemicProgress(input = {}) {
+  if (!isPlainObject(input)) return null;
+  const allowedFields = new Set([
+    "status",
+    "receiptDigest",
+    "sessionId",
+    "turnId",
+    "liveActivityProjection",
+  ]);
+  if (Object.keys(input).some((key) => !allowedFields.has(key))) {
+    const error = new Error("Direct child capture progress contains an unsupported field.");
+    error.code = "direct_agent_capture_progress_field_unsupported";
+    throw error;
+  }
+  const projection = input.liveActivityProjection
+    ? assertSafeLiveActivityProjection(JSON.parse(JSON.stringify(input.liveActivityProjection)))
+    : null;
+  const sessionId = normalizeString(input.sessionId, "");
+  const turnId = normalizeString(input.turnId, "");
+  const status = normalizeString(input.status, "capturing");
+  const receiptDigest = normalizeString(input.receiptDigest, "");
+  if (!new Set(["capturing", "failed", "captured"]).has(status)) {
+    const error = new Error("Direct child capture progress status is invalid.");
+    error.code = "direct_agent_capture_progress_status_invalid";
+    throw error;
+  }
+  if (
+    !/^[A-Za-z0-9_-]+$/.test(sessionId) ||
+    !/^[A-Za-z0-9_-]+$/.test(turnId) ||
+    (receiptDigest && !/^(?:sha256:)?[a-f0-9]{64}$/.test(receiptDigest))
+  ) {
+    const error = new Error("Direct child capture progress references are invalid.");
+    error.code = "direct_agent_capture_progress_reference_invalid";
+    throw error;
+  }
+  if (status === "captured" && !receiptDigest) {
+    const error = new Error("Completed Direct child capture progress requires a receipt digest.");
+    error.code = "direct_agent_capture_progress_receipt_required";
+    throw error;
+  }
+  if (projection && (projection.sessionId !== sessionId || projection.turnId !== turnId)) {
+    const error = new Error("Direct child capture progress identity is inconsistent.");
+    error.code = "direct_agent_capture_progress_identity_mismatch";
+    throw error;
+  }
+  return {
+    schema: "direct_native_agent_epistemic_progress@1",
+    status,
+    receiptDigest,
+    sessionId,
+    turnId,
+    liveActivityProjection: projection,
+  };
 }
 
 class DirectNativeAgentPool extends EventEmitter {
@@ -686,6 +744,7 @@ class DirectNativeAgentPool extends EventEmitter {
       },
       epistemicCaptureComplete: false,
       epistemicCaptureOmission: null,
+      epistemicCaptureProgress: null,
       evidenceConfidence: "unknown",
       rawTaskPersisted: false,
       rawContextPersisted: false,
@@ -699,6 +758,7 @@ class DirectNativeAgentPool extends EventEmitter {
       _settled: false,
       _leaseActive: false,
       _abortController: null,
+      _captureController: null,
       _externalSignal: input.signal || null,
       _externalAbortListener: null,
       _runnerStarted: false,
@@ -974,6 +1034,9 @@ class DirectNativeAgentPool extends EventEmitter {
         signal: record._abortController.signal,
         now: this.now,
         workspaceOperationLeaseValidator: () => this.validateWorkspaceOperationLease(record),
+        onEpistemicProgress: (update) => this.updateEpistemicProgress(record, update),
+        registerEpistemicCaptureController: (controller) =>
+          this.registerEpistemicCaptureController(record, controller),
       };
       return record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
         ? await this.workspaceWorkerRunner({
@@ -1094,10 +1157,9 @@ class DirectNativeAgentPool extends EventEmitter {
         state: aborted ? "cancelled" : "failed",
         blockerCode: record._cancelRequested ? record._cancelReasonCode : blockerCode,
         resultSummary: record._cancelRequested ? record._cancelReasonCode : blockerCode,
-        epistemicCapture: {
-          status: "unavailable",
-          errorCode: blockerCode,
-        },
+        epistemicCapture: record.epistemicCapture?.sessionId
+          ? record.epistemicCapture
+          : { status: "unavailable", errorCode: blockerCode },
         evidenceConfidence: "partial",
       });
     });
@@ -1435,7 +1497,13 @@ class DirectNativeAgentPool extends EventEmitter {
       ? "typed_status_code"
       : "provider_summary";
     if (workspaceExecution) record.workspaceExecution = workspaceExecution;
-    const capture = normalizeEpistemicCapture(patch.epistemicCapture || record.epistemicCapture);
+    const proposedCapture = normalizeEpistemicCapture(patch.epistemicCapture || {});
+    const currentCapture = normalizeEpistemicCapture(record.epistemicCapture || {});
+    const capture = proposedCapture.sessionId && proposedCapture.turnId
+      ? proposedCapture
+      : currentCapture.sessionId && currentCapture.turnId
+        ? currentCapture
+        : proposedCapture;
     record.epistemicCapture = {
       status: capture.status,
       errorCode: capture.errorCode,
@@ -1464,11 +1532,98 @@ class DirectNativeAgentPool extends EventEmitter {
       record._externalSignal.removeEventListener("abort", record._externalAbortListener);
     }
     record._externalAbortListener = null;
+    record._captureController = null;
     const publicRecord = this.publicRecord(record);
     for (const waiter of record._waiters) waiter(publicRecord);
     record._waiters.clear();
     this.emit("changed", publicRecord);
     if (!this.closed) this.drain();
+    return true;
+  }
+
+  updateEpistemicProgress(record, input = {}) {
+    if (!record) return false;
+    let progress;
+    try {
+      progress = safeEpistemicProgress(input);
+    } catch {
+      return false;
+    }
+    if (!progress?.sessionId || !progress?.turnId) return false;
+    if (progress.liveActivityProjection && progress.liveActivityProjection.projectId !== record.projectId) return false;
+    if (
+      record.epistemicCapture?.sessionId &&
+      (record.epistemicCapture.sessionId !== progress.sessionId ||
+        record.epistemicCapture.turnId !== progress.turnId)
+    ) return false;
+    const currentStatus = normalizeString(record.epistemicCapture?.status, "pending");
+    const transitions = {
+      pending: new Set(["capturing", "failed", "captured"]),
+      capturing: new Set(["capturing", "failed", "captured"]),
+      failed: new Set(["failed"]),
+      captured: new Set(["captured"]),
+    };
+    if (!transitions[currentStatus]?.has(progress.status)) return false;
+    if (
+      currentStatus === "captured" &&
+      normalizeString(record.epistemicCapture?.receiptDigest, "") !== progress.receiptDigest
+    ) return false;
+    const previousProjection = record.epistemicCaptureProgress?.liveActivityProjection;
+    const nextProjection = progress.liveActivityProjection;
+    if (previousProjection && nextProjection && (
+      Number(nextProjection.eventCursor?.persistedEventCount || 0) <
+        Number(previousProjection.eventCursor?.persistedEventCount || 0) ||
+      Number(nextProjection.capture?.toolResultCount || 0) <
+        Number(previousProjection.capture?.toolResultCount || 0)
+    )) return false;
+    const capture = normalizeEpistemicCapture({
+      status: progress.status,
+      receiptDigest: progress.receiptDigest,
+      sessionId: progress.sessionId,
+      turnId: progress.turnId,
+    });
+    record.epistemicCaptureProgress = progress;
+    record.epistemicCapture = {
+      status: capture.status,
+      errorCode: capture.errorCode,
+      receiptDigest: capture.receiptDigest,
+      sessionId: capture.sessionId,
+      turnId: capture.turnId,
+    };
+    record.epistemicCaptureComplete = capture.complete;
+    record.epistemicCaptureOmission = capture.omission;
+    record.evidenceConfidence = record.epistemicCaptureComplete ? "exact" : "partial";
+    return true;
+  }
+
+  registerEpistemicCaptureController(record, controller = {}) {
+    if (!record || !isPlainObject(controller)) return false;
+    const allowed = new Set(["sessionId", "turnId", "cancel"]);
+    if (
+      Object.keys(controller).some((key) => !allowed.has(key)) ||
+      typeof controller.cancel !== "function"
+    ) return false;
+    const sessionId = normalizeString(controller.sessionId, "");
+    const turnId = normalizeString(controller.turnId, "");
+    if (!/^[A-Za-z0-9_-]+$/.test(sessionId) || !/^[A-Za-z0-9_-]+$/.test(turnId)) return false;
+    if (
+      record.epistemicCapture?.sessionId &&
+      (record.epistemicCapture.sessionId !== sessionId || record.epistemicCapture.turnId !== turnId)
+    ) return false;
+    if (record._cancelRequested) {
+      try {
+        controller.cancel(record._cancelReasonCode || "direct_agent_cancelled");
+      } catch {}
+      return true;
+    }
+    if (record._settled) {
+      if (record.state !== "cancelled") return false;
+      try {
+        controller.cancel(record.blockerCode || "direct_agent_cancelled");
+      } catch {}
+      return true;
+    }
+    record._captureController = { sessionId, turnId, cancel: controller.cancel };
     return true;
   }
 
@@ -1479,6 +1634,9 @@ class DirectNativeAgentPool extends EventEmitter {
     record._cancelRequested = true;
     record._cancelReasonCode = reasonCode;
     record._cancelRequestedAt = nowIso(this.now);
+    try {
+      record._captureController?.cancel?.(reasonCode);
+    } catch {}
     const lifecycleError = this.transitionLifecycle(record, "requestCancellation", {
       operationId: `pool-request-cancel:${record.childAgentId}`,
       reasonCode,
@@ -1490,10 +1648,9 @@ class DirectNativeAgentPool extends EventEmitter {
         state: "cancelled",
         blockerCode: reasonCode,
         resultSummary: reasonCode,
-        epistemicCapture: {
-          status: "unavailable",
-          errorCode: reasonCode,
-        },
+        epistemicCapture: record.epistemicCapture?.sessionId
+          ? record.epistemicCapture
+          : { status: "unavailable", errorCode: reasonCode },
         evidenceConfidence: "partial",
       });
     }
@@ -1704,6 +1861,9 @@ class DirectNativeAgentPool extends EventEmitter {
       epistemicCaptureOmission: record.epistemicCaptureOmission
         ? { ...record.epistemicCaptureOmission }
         : null,
+      epistemicCaptureProgress: record.epistemicCaptureProgress
+        ? JSON.parse(JSON.stringify(record.epistemicCaptureProgress))
+        : null,
       evidenceConfidence: record.evidenceConfidence,
       cancellation: {
         requested: record._cancelRequested === true,
@@ -1854,4 +2014,5 @@ module.exports = {
   DirectNativeAgentPool,
   normalizeForkTurns,
   selectContextMessages,
+  safeEpistemicProgress,
 };
