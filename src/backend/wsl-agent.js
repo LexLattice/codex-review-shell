@@ -18,7 +18,9 @@ const readline = require("node:readline");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const {
+  DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA,
   WORKSPACE_WORKER_TOOLS,
+  genericWorkspaceRepositoryProfile,
   pinnedWorkspaceRepositoryProfiles,
 } = require("../main/direct/agents/workspace-worker-policy-profile");
 
@@ -99,6 +101,7 @@ const SENSITIVE_READ_FILE_PATTERNS = [
 ];
 let reviewShellIgnorePromise = null;
 let gitWorktreeMutationQueue = Promise.resolve();
+let authoritativeWorkspaceWorkerBinding = null;
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -2571,6 +2574,150 @@ function workspaceWorkerBindingDigest(value) {
   return digest;
 }
 
+function workspaceWorkerBindingBase(value = {}) {
+  return {
+    schema: "direct_workspace_worker_binding@1",
+    projectId: String(value.projectId || "").trim(),
+    workerKey: safeWorkspaceWorkerKey(value.workerKey),
+    workspaceKind: String(value.workspaceKind || "").trim(),
+    branch: safeWorkspaceWorkerBranch(value.branch),
+    baseCommit: String(value.baseCommit || "").trim(),
+    rootEvidenceDigest: workspaceWorkerBindingDigest(value.rootEvidenceDigest),
+    retainedAfterCompletion: value.retainedAfterCompletion !== false,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+async function workspaceWorkerGitIdentity() {
+  const git = await exactGitWorkspace();
+  const [branchResult, headResult] = await Promise.all([
+    captureProcess("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+      cwd: git.topLevel,
+      timeoutMs: 10_000,
+    }),
+    captureProcess("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
+      cwd: git.topLevel,
+      timeoutMs: 10_000,
+    }),
+  ]);
+  const branch = String(branchResult.stdout || "").trim();
+  const headCommit = String(headResult.stdout || "").trim();
+  if (branchResult.exitCode !== 0 || !branch || headResult.exitCode !== 0 || !/^[a-f0-9]{40,64}$/i.test(headCommit)) {
+    const error = new Error("Workspace worker Git identity is unavailable or detached.");
+    error.code = "workspace_worker_binding_git_identity_unavailable";
+    throw error;
+  }
+  return {
+    branch,
+    headCommit,
+    rootEvidenceDigest: sha256Digest(await fs.realpath(root)),
+  };
+}
+
+async function verifyWorkspaceWorkerBindingRealization(binding, options = {}) {
+  const identity = await workspaceWorkerGitIdentity();
+  const expectedSessionProjectId = `${binding.projectId}__${binding.workerKey}`.slice(0, 180);
+  if (projectId !== expectedSessionProjectId) {
+    const error = new Error("Workspace worker binding project does not match the resident session.");
+    error.code = "workspace_worker_binding_project_mismatch";
+    throw error;
+  }
+  if (binding.workspaceKind !== workspaceKind) {
+    const error = new Error("Workspace worker binding kind does not match the resident session.");
+    error.code = "workspace_worker_binding_kind_mismatch";
+    throw error;
+  }
+  if (binding.rootEvidenceDigest !== identity.rootEvidenceDigest) {
+    const error = new Error("Workspace worker binding root does not match the resident session.");
+    error.code = "workspace_worker_binding_root_mismatch";
+    throw error;
+  }
+  if (binding.branch !== identity.branch) {
+    const error = new Error("Workspace worker binding branch changed or belongs to another session.");
+    error.code = "workspace_worker_binding_branch_mismatch";
+    throw error;
+  }
+  if (options.requireBaseHead === true && binding.baseCommit !== identity.headCommit) {
+    const error = new Error("Workspace worker binding base is not the session's initial HEAD.");
+    error.code = "workspace_worker_binding_base_mismatch";
+    throw error;
+  }
+  const ancestor = await captureProcess("git", ["merge-base", "--is-ancestor", binding.baseCommit, identity.headCommit], {
+    cwd: root,
+    timeoutMs: 10_000,
+  });
+  if (ancestor.exitCode !== 0) {
+    const error = new Error("Workspace worker binding base is no longer an ancestor of the resident session HEAD.");
+    error.code = "workspace_worker_binding_base_drift";
+    throw error;
+  }
+  return identity;
+}
+
+async function initializeWorkspaceWorkerBinding(params = {}) {
+  const binding = workspaceWorkerBindingBase(params.binding);
+  if (!binding.projectId || !/^[a-f0-9]{40,64}$/i.test(binding.baseCommit)) {
+    const error = new Error("Workspace worker binding evidence is incomplete.");
+    error.code = "workspace_worker_binding_incomplete";
+    throw error;
+  }
+  const bindingDigest = workspaceWorkerBindingDigest(params.binding?.bindingDigest);
+  const expectedDigest = sha256Digest(canonicalJson(binding));
+  const expectedBindingId = `workspace_worker_binding_${expectedDigest.slice(7, 31)}`;
+  if (bindingDigest !== expectedDigest || params.binding?.bindingId !== expectedBindingId) {
+    const error = new Error("Workspace worker binding digest does not match its immutable evidence.");
+    error.code = "workspace_worker_binding_digest_mismatch";
+    throw error;
+  }
+  const candidate = { ...binding, bindingId: expectedBindingId, bindingDigest };
+  if (authoritativeWorkspaceWorkerBinding) {
+    if (canonicalJson(authoritativeWorkspaceWorkerBinding) !== canonicalJson(candidate)) {
+      const error = new Error("Workspace worker session binding is immutable.");
+      error.code = "workspace_worker_binding_already_initialized";
+      throw error;
+    }
+    await verifyWorkspaceWorkerBindingRealization(candidate);
+  } else {
+    await verifyWorkspaceWorkerBindingRealization(candidate, { requireBaseHead: true });
+    authoritativeWorkspaceWorkerBinding = Object.freeze(candidate);
+  }
+  return {
+    schema: "direct_workspace_worker_binding_initialization@1",
+    bindingId: candidate.bindingId,
+    bindingDigest: candidate.bindingDigest,
+    backendSessionId: sessionId,
+    projectId: candidate.projectId,
+    workerKey: candidate.workerKey,
+    workspaceKind: candidate.workspaceKind,
+    branch: candidate.branch,
+    baseCommit: candidate.baseCommit,
+    rootEvidenceDigest: candidate.rootEvidenceDigest,
+    immutable: true,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+async function verifyWorkspaceWorkerBinding(value) {
+  const digest = workspaceWorkerBindingDigest(value);
+  if (!authoritativeWorkspaceWorkerBinding) {
+    const error = new Error("Workspace worker repository session has no authoritative binding.");
+    error.code = "workspace_worker_binding_uninitialized";
+    throw error;
+  }
+  if (digest !== authoritativeWorkspaceWorkerBinding.bindingDigest) {
+    const error = new Error("Workspace worker repository request belongs to another binding or session.");
+    error.code = "workspace_worker_binding_mismatch";
+    throw error;
+  }
+  await verifyWorkspaceWorkerBindingRealization(authoritativeWorkspaceWorkerBinding);
+  return digest;
+}
+
+async function applyWorkspaceWorkerPatch(params = {}) {
+  await verifyWorkspaceWorkerBinding(params.bindingDigest);
+  return applyPatchPlan(params);
+}
+
 function workspaceWorkerSafeManifestPath(value) {
   const raw = String(value || "");
   if (!raw || /[\0-\x1f\x7f]/.test(raw)) return "";
@@ -2701,7 +2848,7 @@ async function workspaceWorkerRepositoryPolicy() {
   const pinned = await workspaceWorkerPinnedProfileEvidence();
   if (pinned) {
     return {
-      schema: "direct_workspace_worker_repository_policy@1",
+      schema: DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA,
       profileId: pinned.profile.profileId,
       profileRevision: pinned.profile.revision,
       profileDigest: pinned.profile.profileDigest,
@@ -2719,28 +2866,7 @@ async function workspaceWorkerRepositoryPolicy() {
       rawWorkspacePathIncluded: false,
     };
   }
-  const generic = {
-    schema: "direct_workspace_worker_repository_policy@1",
-    profileId: "unprofiled_git_repository",
-    profileRevision: 0,
-    validationPosture: "unprofiled",
-    allowedTools: [...WORKSPACE_WORKER_TOOLS],
-    selectedConstraints: [
-      "Treat only files and tools in the bound Git repository as authoritative.",
-      "Keep edits scoped and do not mutate remotes or private Git metadata.",
-    ],
-    sourceRefs: [],
-    omissionLedger: [{
-      source: "repository_policy",
-      reason: "No pinned repository policy matched; raw repository instructions were not inherited.",
-      count: 1,
-    }],
-    testProfile: null,
-    rawPolicyTextIncluded: false,
-    rawWorkspacePathIncluded: false,
-  };
-  generic.profileDigest = sha256Digest(canonicalJson(generic));
-  return generic;
+  return { ...genericWorkspaceRepositoryProfile() };
 }
 
 function workspaceWorkerSubstrateCapabilities(testAvailable) {
@@ -2850,7 +2976,7 @@ async function directTestProfile() {
 }
 
 async function inspectWorkspaceRepository(params = {}) {
-  const workspaceBindingDigest = workspaceWorkerBindingDigest(params.bindingDigest);
+  const workspaceBindingDigest = await verifyWorkspaceWorkerBinding(params.bindingDigest);
   const [manifest, repositoryPolicy] = await Promise.all([
     workspaceWorkerCanonicalManifest(),
     workspaceWorkerRepositoryPolicy(),
@@ -2889,7 +3015,7 @@ function workspaceWorkerSafePrefix(value) {
 }
 
 async function listWorkspaceRepositoryFiles(params = {}) {
-  const workspaceBindingDigest = workspaceWorkerBindingDigest(params.bindingDigest);
+  const workspaceBindingDigest = await verifyWorkspaceWorkerBinding(params.bindingDigest);
   const prefix = workspaceWorkerSafePrefix(params.prefix);
   const limit = Math.max(1, Math.min(Number(params.limit || 100) || 100, DIRECT_WORKSPACE_WORKER_LIST_LIMIT));
   const manifest = await workspaceWorkerCanonicalManifest();
@@ -2907,7 +3033,7 @@ async function listWorkspaceRepositoryFiles(params = {}) {
 }
 
 async function matchWorkspaceRepositoryFiles(params = {}) {
-  const workspaceBindingDigest = workspaceWorkerBindingDigest(params.bindingDigest);
+  const workspaceBindingDigest = await verifyWorkspaceWorkerBinding(params.bindingDigest);
   const patterns = (Array.isArray(params.patterns) ? params.patterns : []).map((entry) => String(entry || "").trim());
   if (!patterns.length || patterns.length > 8 || patterns.some((entry) => !entry || entry.length > 256 || /[\0\r\n]/.test(entry))) {
     const error = new Error("Repository match patterns exceed the bounded grammar.");
@@ -2967,7 +3093,7 @@ async function readWorkspaceWorkerCanonicalEntry(entry, maxBytes) {
 }
 
 async function readWorkspaceRepositoryFile(params = {}) {
-  const workspaceBindingDigest = workspaceWorkerBindingDigest(params.bindingDigest);
+  const workspaceBindingDigest = await verifyWorkspaceWorkerBinding(params.bindingDigest);
   const relativePath = workspaceWorkerSafeManifestPath(params.relPath);
   if (!relativePath) {
     const error = new Error("Repository read path is invalid or sensitive.");
@@ -3001,7 +3127,7 @@ async function readWorkspaceRepositoryFile(params = {}) {
 }
 
 async function searchWorkspaceRepositoryText(params = {}) {
-  const workspaceBindingDigest = workspaceWorkerBindingDigest(params.bindingDigest);
+  const workspaceBindingDigest = await verifyWorkspaceWorkerBinding(params.bindingDigest);
   const query = String(params.query || "");
   if (!query || query.length > 256 || /[\0\r\n]/.test(query)) {
     const error = new Error("Repository search requires one bounded single-line literal query.");
@@ -3063,7 +3189,7 @@ async function searchWorkspaceRepositoryText(params = {}) {
   };
 }
 
-function safeTestTargets(values = []) {
+function safeTestTargets(values = [], options = {}) {
   const source = Array.isArray(values) ? values : [];
   if (source.length > DIRECT_WORKSPACE_WORKER_TARGET_LIMIT) {
     const error = new Error("Workspace worker test target count exceeded the compiled limit.");
@@ -3071,24 +3197,34 @@ function safeTestTargets(values = []) {
     throw error;
   }
   return source.map((value) => {
-    const target = String(value || "").trim();
+    const rawTarget = typeof value === "string" ? value : "";
+    const target = rawTarget.trim();
+    const filePart = target.split("::", 1)[0];
+    const nodeIds = target.split("::");
+    const arcPytestTarget = options.profileId === "arcagi3_pinned_make_actions";
     if (
       !target ||
       target.length > DIRECT_WORKSPACE_WORKER_TARGET_CHARS ||
       target.startsWith("-") ||
-      /[\0\r\n|&;`$<>]/.test(target)
+      /[\0\r\n|&;`$<>]/.test(target) ||
+      (arcPytestTarget && (
+        rawTarget !== target ||
+        /[\s'"\\]/.test(target) ||
+        !filePart.endsWith(".py") ||
+        nodeIds.some((part) => !part)
+      ))
     ) {
       const error = new Error("Workspace worker test target is invalid.");
       error.code = "workspace_worker_test_target_invalid";
       throw error;
     }
-    const filePart = target.split("::", 1)[0];
     resolveWithinRoot(filePart);
     return target.replace(/\\/g, "/");
   });
 }
 
 async function runDirectTest(params = {}) {
+  await verifyWorkspaceWorkerBinding(params.bindingDigest);
   const profile = await directTestProfile();
   if (!profile.available) {
     const error = new Error("No bounded test profile is available in this workspace.");
@@ -3100,7 +3236,7 @@ async function runDirectTest(params = {}) {
     error.code = "workspace_worker_test_profile_drift";
     throw error;
   }
-  const targets = safeTestTargets(params.targets);
+  const targets = safeTestTargets(params.targets, { profileId: profile.profileId });
   const actionName = String(params.action || (targets.length && profile.targetedAction ? profile.targetedAction : profile.defaultAction) || "test").trim();
   const action = (Array.isArray(profile.actions) ? profile.actions : []).find((candidate) => candidate?.name === actionName);
   if (!action || !(Array.isArray(profile.actionsAllowed) ? profile.actionsAllowed : []).includes(actionName)) {
@@ -4903,6 +5039,7 @@ async function handleRequest(method, params = {}) {
         listTree: true,
         readFilePreview: true,
         applyPatch: true,
+        applyWorkspaceWorkerPatch: true,
         readFileTransfer: true,
         repositorySemanticSnapshot: true,
         directEpistemicRepositoryObservation: true,
@@ -4911,6 +5048,7 @@ async function handleRequest(method, params = {}) {
         runDirectCommand: true,
         provisionGitWorktree: true,
         removeGitWorktree: true,
+        initializeWorkspaceWorkerBinding: true,
         directTestProfile: true,
         runDirectTest: true,
         inspectWorkspaceRepository: true,
@@ -4934,6 +5072,7 @@ async function handleRequest(method, params = {}) {
   if (method === "listTree") return listTree(params);
   if (method === "readFile") return readFilePreview(params);
   if (method === "applyPatch") return applyPatchPlan(params);
+  if (method === "applyWorkspaceWorkerPatch") return applyWorkspaceWorkerPatch(params);
   if (method === "readFileTransfer") return readFileTransfer(params);
   if (method === "repositorySemanticSnapshot") {
     return repositorySemanticSnapshot(params);
@@ -4959,6 +5098,7 @@ async function handleRequest(method, params = {}) {
   if (method === "removeGitWorktree") {
     return serializeGitWorktreeMutation(() => removeGitWorktree(params));
   }
+  if (method === "initializeWorkspaceWorkerBinding") return initializeWorkspaceWorkerBinding(params);
   if (method === "directTestProfile") return directTestProfile(params);
   if (method === "runDirectTest") return runDirectTest(params);
   if (method === "inspectWorkspaceRepository") return inspectWorkspaceRepository(params);

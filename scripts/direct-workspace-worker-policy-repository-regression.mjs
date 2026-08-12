@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +15,9 @@ const {
   workspaceWorkerToolSchemas,
 } = require("../src/main/direct/agents/workspace-worker-contract");
 const {
+  compileWorkspaceWorkerPolicy,
+} = require("../src/main/direct/agents/workspace-worker-policy-profile");
+const {
   executeWorkspaceTool,
 } = require("../src/main/direct/agents/workspace-worker-runtime");
 
@@ -25,6 +29,16 @@ function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, encoding: "utf8" });
   assert.equal(result.status, 0, `${command} ${args.join(" ")} failed:\n${result.stderr}`);
   return result.stdout.trim();
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (!value || typeof value !== "object") return JSON.stringify(value);
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+}
+
+function digest(value) {
+  return `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`;
 }
 
 try {
@@ -48,24 +62,46 @@ try {
   run("git", ["add", ".gitignore", "package.json", "src/alpha.js", "binary.dat", "linked-alpha.js"], tempRoot);
   run("git", ["add", "-f", ".env"], tempRoot);
   run("git", ["-c", "user.name=Direct Test", "-c", "user.email=direct@invalid.example", "commit", "-qm", "fixture"], tempRoot);
+  run("git", ["checkout", "-qb", "codex/worker/worker-policy-fixture"], tempRoot);
   fs.writeFileSync(path.join(tempRoot, "notes.txt"), "untracked literal evidence\n", "utf8");
 
   manager = new WorkspaceBackendManager({
     agentPath: path.join(shellRoot, "src/backend/wsl-agent.js"),
     fallbackRoot: shellRoot,
   });
+  const parentProjectId = "project_worker_policy_repository_fixture";
   const project = {
-    id: "project_worker_policy_repository_fixture",
+    id: `${parentProjectId}__worker-policy-fixture`,
     name: "worker policy repository fixture",
     repoPath: tempRoot,
     workspace: { kind: "local", localPath: tempRoot },
   };
-  const session = await manager.ensureForProject(project, { workspaceHygiene: false });
-  const bindingDigest = `sha256:${"1".repeat(64)}`;
+  const bindingBase = {
+    schema: "direct_workspace_worker_binding@1",
+    projectId: parentProjectId,
+    workerKey: "worker-policy-fixture",
+    workspaceKind: "local",
+    branch: "codex/worker/worker-policy-fixture",
+    baseCommit: run("git", ["rev-parse", "HEAD"], tempRoot),
+    rootEvidenceDigest: digest(fs.realpathSync(tempRoot)),
+    retainedAfterCompletion: true,
+    rawWorkspacePathIncluded: false,
+  };
+  const bindingDigest = digest(canonicalJson(bindingBase));
+  const binding = {
+    ...bindingBase,
+    bindingId: `workspace_worker_binding_${bindingDigest.slice(7, 31)}`,
+    bindingDigest,
+  };
+  const session = await manager.ensureForProject(project, {
+    workspaceHygiene: false,
+    workspaceWorkerBinding: binding,
+  });
   const inspect = await session.request("inspectWorkspaceRepository", { bindingDigest }, 30_000);
   assert.equal(inspect.gitCanonical, true);
   assert.equal(inspect.workspaceBindingDigest, bindingDigest);
   assert.equal(inspect.repositoryPolicy.profileId, "unprofiled_git_repository");
+  assert.equal(inspect.repositoryPolicy.validationPosture, "builtin_generic");
   assert.equal(inspect.rawWorkspacePathIncluded, false);
 
   const listed = await session.request("listWorkspaceRepositoryFiles", {
@@ -126,26 +162,25 @@ try {
     () => session.request("inspectWorkspaceRepository", { bindingDigest: "not-a-binding" }, 30_000),
     (error) => error?.code === "workspace_worker_repository_binding_missing",
   );
+  await assert.rejects(
+    () => session.request("inspectWorkspaceRepository", { bindingDigest: `sha256:${"9".repeat(64)}` }, 30_000),
+    (error) => error?.code === "workspace_worker_binding_mismatch",
+  );
 
   const detectedTestProfile = await session.request("directTestProfile", {}, 30_000);
   assert.equal(detectedTestProfile.profileId, "node_package_test");
   assert.deepEqual(detectedTestProfile.actionsAllowed, ["test"]);
   assert.equal(detectedTestProfile.repositoryPolicy.profileId, "unprofiled_git_repository");
+  assert.equal(detectedTestProfile.repositoryPolicy.validationPosture, "builtin_generic");
   const contractInput = {
-    projectId: project.id,
+    projectId: parentProjectId,
     childAgentId: "worker-policy-fixture",
     workspaceMode: "isolated_worktree",
     toolProfile: "implementation_worker",
-    binding: {
-      bindingId: "binding_fixture",
-      bindingDigest,
-      projectId: project.id,
-      workerKey: "worker-policy-fixture",
-      workspaceKind: "local",
-      branch: "codex/worker/worker-policy-fixture",
-      baseCommit: run("git", ["rev-parse", "HEAD"], tempRoot),
-      rootEvidenceDigest: `sha256:${"2".repeat(64)}`,
-      retainedAfterCompletion: true,
+    binding,
+    parentAuthority: {
+      boundaryId: "parent_worker_policy_fixture",
+      allowedTools: detectedTestProfile.repositoryPolicy.allowedTools,
     },
     testProfile: detectedTestProfile,
   };
@@ -160,7 +195,10 @@ try {
     "run_test",
   ]);
   assert.equal(fullContract.authority.requestedToolProfileAdvisory, true);
-  assert.equal(fullContract.policyCompilation.parentAuthorityExplicit, false);
+  assert.equal(fullContract.policyCompilation.parentAuthorityExplicit, true);
+  assert.equal(fullContract.policyCompilation.substrateCapabilityExplicit, true);
+  assert.equal(fullContract.policyCompilation.wideningPerformed, false);
+  assert.deepEqual(fullContract.policyCompilation.wideningSources, []);
   assert.equal(fullContract.authority.bottomUpMessagingAllowed, false);
   assert.equal(fullContract.repositoryPolicy.rawPolicyTextIncluded, false);
   await assert.rejects(
@@ -203,37 +241,95 @@ try {
   );
   assert.equal(sensitiveBackendCalled, false, "sensitive paths must be denied before resident dispatch");
 
+  const missingParent = compileWorkspaceWorkerPolicy({
+    requestedProfileId: "implementation_worker",
+    repositoryPolicy: detectedTestProfile.repositoryPolicy,
+    substrateCapabilities: detectedTestProfile.substrateCapabilities,
+    testProfile: detectedTestProfile,
+  });
+  assert.deepEqual(missingParent.declaredTools, []);
+  assert.equal(missingParent.compilation.parentAuthorityExplicit, false);
+  assert.equal(missingParent.compilation.boundaryOmissions[0].boundary, "parent_authority");
+  const missingParentContract = compileWorkspaceWorkerContract({
+    ...contractInput,
+    parentAuthority: undefined,
+  }).contract;
+  assert.deepEqual(missingParentContract.authority.declaredTools, []);
+  assert.equal(missingParentContract.policyCompilation.boundaryOmissions[0].boundary, "parent_authority");
+  assert.deepEqual(workspaceWorkerToolSchemas(missingParentContract), []);
+  const missingSubstrate = compileWorkspaceWorkerPolicy({
+    requestedProfileId: "implementation_worker",
+    repositoryPolicy: detectedTestProfile.repositoryPolicy,
+    parentAuthority: contractInput.parentAuthority,
+    testProfile: detectedTestProfile,
+  });
+  assert.deepEqual(missingSubstrate.declaredTools, []);
+  assert.equal(missingSubstrate.compilation.substrateCapabilityExplicit, false);
+
   const narrowedContract = compileWorkspaceWorkerContract({
     ...contractInput,
-    parentAuthority: { allowedTools: ["inspect_repository", "list_files", "read_file", "apply_patch"] },
+    parentAuthority: { allowedTools: ["inspect_repository", "list_files", "read_file"] },
     substrateCapabilities: { availableTools: ["inspect_repository", "read_file", "apply_patch", "run_test"] },
     repositoryPolicy: {
       ...detectedTestProfile.repositoryPolicy,
-      allowedTools: ["inspect_repository", "list_files", "match_files", "search_text", "read_file"],
+      allowedTools: ["apply_patch"],
     },
   }).contract;
   assert.deepEqual(narrowedContract.authority.declaredTools, ["inspect_repository", "read_file"]);
   assert.deepEqual(workspaceWorkerToolSchemas(narrowedContract).map((tool) => tool.name), ["inspect_repository", "read_file"]);
-  assert.equal(narrowedContract.policyCompilation.omittedTools.some((entry) => entry.toolName === "apply_patch" && entry.deniedBy.includes("repository_policy")), true);
+  assert.equal(narrowedContract.policyCompilation.omittedTools.some((entry) => entry.toolName === "apply_patch" && entry.deniedBy.includes("parent_authority")), true);
   assert.equal(narrowedContract.policyCompilation.omittedTools.some((entry) => entry.toolName === "run_test" && entry.deniedBy.includes("parent_authority")), true);
 
-  const forgedPinnedContract = compileWorkspaceWorkerContract({
-    ...contractInput,
+  const forgedRepositoryPolicy = {
+    profileId: "arcagi3-odeu-local",
+    profileDigest: `sha256:${"9".repeat(64)}`,
+    validationPosture: "exact",
+    allowedTools: detectedTestProfile.repositoryPolicy.allowedTools,
+    sourceRefs: [],
+  };
+  const forgedPinnedPolicy = compileWorkspaceWorkerPolicy({
+    requestedProfileId: "implementation_worker",
+    parentAuthority: contractInput.parentAuthority,
+    substrateCapabilities: detectedTestProfile.substrateCapabilities,
+    repositoryPolicy: forgedRepositoryPolicy,
     testProfile: {
       ...detectedTestProfile,
       profileId: "arcagi3_pinned_make_actions",
-      repositoryPolicy: {
-        profileId: "arcagi3-odeu-local",
-        profileDigest: `sha256:${"9".repeat(64)}`,
-        validationPosture: "exact",
-        allowedTools: detectedTestProfile.repositoryPolicy.allowedTools,
-        sourceRefs: [],
-      },
+      repositoryPolicy: forgedRepositoryPolicy,
     },
-  }).contract;
-  assert.equal(forgedPinnedContract.repositoryPolicy.validationPosture, "profile_evidence_mismatch");
-  assert.equal(forgedPinnedContract.authority.declaredTools.includes("run_test"), false);
-  assert.equal(forgedPinnedContract.testProfile, null);
+  });
+  assert.equal(forgedPinnedPolicy.repositoryPolicy.validationPosture, "profile_evidence_mismatch");
+  assert.deepEqual(forgedPinnedPolicy.repositoryPolicy.allowedTools, []);
+  assert.deepEqual(forgedPinnedPolicy.declaredTools, []);
+
+  const largeSearch = await executeWorkspaceTool({
+    obligation: {
+      name: "search_text",
+      callId: "call_large_search",
+      argumentsText: JSON.stringify({ query: "needle", max_results: 120 }),
+    },
+    contract: fullContract,
+    provisioned: {
+      workspaceRequest: async () => ({
+        workspaceBindingDigest: bindingDigest,
+        matches: Array.from({ length: 120 }, (_, index) => ({
+          path: `tests/${String(index).padStart(3, "0")}-${"a".repeat(220)}.js`,
+          line: index + 1,
+          column: 1,
+          text: "needle ".repeat(70),
+        })),
+        filesScanned: 120,
+        bytesScanned: 60_000,
+        truncated: false,
+        manifestDigest: inspect.manifestDigest,
+      }),
+    },
+    stepOrdinal: 2,
+  });
+  const parsedLargeSearch = JSON.parse(largeSearch.providerOutputText);
+  assert.equal(parsedLargeSearch.evidenceTruncated, true);
+  assert.equal(parsedLargeSearch.truncated, true);
+  assert.ok(parsedLargeSearch.returned < 120);
 
   console.log(JSON.stringify({
     ok: true,

@@ -17,6 +17,7 @@ const {
   workspaceWorkerToolSchemas,
 } = require("./workspace-worker-contract");
 const {
+  boundedProviderEvidenceJson,
   executeWorkspaceRepositoryTool,
   safeRepositoryRelativePath,
 } = require("./workspace-worker-repository-tools");
@@ -101,7 +102,7 @@ function redactNativeRoot(value, nativeRoot) {
   return text;
 }
 
-function safeTestTargets(value = []) {
+function safeTestTargets(value = [], profileId = "") {
   const source = Array.isArray(value) ? value : [];
   if (source.length > 16) {
     const error = new Error("Workspace worker test target count exceeded the compiled limit.");
@@ -109,10 +110,22 @@ function safeTestTargets(value = []) {
     throw error;
   }
   return source.map((entry) => {
-    const target = normalizeString(entry, "");
+    const rawTarget = typeof entry === "string" ? entry : "";
+    const target = normalizeString(rawTarget, "");
     const filePart = target.split("::", 1)[0];
     safeRepositoryRelativePath(filePart);
-    if (target.startsWith("-") || /[|&;`$<>]/.test(target)) {
+    const arcPytestTarget = profileId === "arcagi3_pinned_make_actions";
+    const nodeIds = target.split("::");
+    if (
+      target.startsWith("-") ||
+      /[|&;`$<>]/.test(target) ||
+      (arcPytestTarget && (
+        rawTarget !== rawTarget.trim() ||
+        /[\s'"\\]/.test(target) ||
+        !filePart.endsWith(".py") ||
+        nodeIds.some((part) => !part)
+      ))
+    ) {
       const error = new Error("Workspace worker test target is outside the compiled argument grammar.");
       error.code = "direct_workspace_worker_test_target_invalid";
       throw error;
@@ -133,13 +146,20 @@ function providerPrompt(task, contextMessages = [], evidence = []) {
   }
   sections.push("[DELEGATED TASK]", task, "[END DELEGATED TASK]");
   if (evidence.length) {
-    const joined = evidence.join("\n\n");
+    const admittedEvidence = [];
+    let admittedChars = 0;
+    for (let index = evidence.length - 1; index >= 0; index -= 1) {
+      const row = evidence[index];
+      const separatorChars = admittedEvidence.length ? 2 : 0;
+      if (row.length + admittedChars + separatorChars > MAX_PROVIDER_EVIDENCE_CHARS) break;
+      admittedEvidence.unshift(row);
+      admittedChars += row.length + separatorChars;
+    }
+    const joined = admittedEvidence.join("\n\n");
     sections.push(
       "",
       "[ADMITTED LOCAL TOOL RESULT EVIDENCE]",
-      joined.length > MAX_PROVIDER_EVIDENCE_CHARS
-        ? joined.slice(joined.length - MAX_PROVIDER_EVIDENCE_CHARS)
-        : joined,
+      joined,
       "[END ADMITTED LOCAL TOOL RESULT EVIDENCE]",
       "Continue the same delegated task. Request at most one next declared tool, or answer final.",
     );
@@ -149,6 +169,19 @@ function providerPrompt(task, contextMessages = [], evidence = []) {
 
 function toolResult(input = {}) {
   const callId = normalizeString(input.callId, "");
+  const providerOutputText = typeof input.providerOutputText === "string" ? input.providerOutputText : "";
+  if (providerOutputText.length > MAX_TOOL_OUTPUT_CHARS) {
+    const error = new Error("Workspace worker tool evidence exceeded its structural output budget.");
+    error.code = "direct_workspace_worker_tool_result_too_large";
+    throw error;
+  }
+  try {
+    JSON.parse(providerOutputText);
+  } catch {
+    const error = new Error("Workspace worker tool evidence is not one structurally complete JSON envelope.");
+    error.code = "direct_workspace_worker_tool_result_json_invalid";
+    throw error;
+  }
   const base = {
     schema: DIRECT_WORKSPACE_WORKER_TOOL_RESULT_SCHEMA,
     stepOrdinal: Number(input.stepOrdinal || 0),
@@ -164,7 +197,7 @@ function toolResult(input = {}) {
     sideEffectExecuted: input.sideEffectExecuted === true,
     workspaceBindingId: normalizeString(input.workspaceBindingId, ""),
     workspaceBindingDigest: normalizeString(input.workspaceBindingDigest, ""),
-    providerOutputText: boundedText(input.providerOutputText, MAX_TOOL_OUTPUT_CHARS),
+    providerOutputText,
     rawWorkspacePathIncluded: false,
     rawProviderPayloadIncluded: false,
   };
@@ -210,8 +243,13 @@ async function executeWorkspaceTool(input = {}) {
       error.code = "direct_workspace_worker_patch_missing";
       throw error;
     }
-    const plan = await provisioned.workspaceRequest("applyPatch", { mode: "dryRun", patch }, 30_000);
-    const applied = await provisioned.workspaceRequest("applyPatch", {
+    const plan = await provisioned.workspaceRequest("applyWorkspaceWorkerPatch", {
+      bindingDigest: contract.binding.bindingDigest,
+      mode: "dryRun",
+      patch,
+    }, 30_000);
+    const applied = await provisioned.workspaceRequest("applyWorkspaceWorkerPatch", {
+      bindingDigest: contract.binding.bindingDigest,
       mode: "apply",
       patch,
       patchPlanId: plan?.patchPlanId,
@@ -238,7 +276,7 @@ async function executeWorkspaceTool(input = {}) {
       summary: files.length
         ? files.map((file) => `${file.operation} ${file.path}`).join("; ")
         : "Patch applied with no reported file rows.",
-      providerOutputText: JSON.stringify(providerOutput),
+      providerOutputText: boundedProviderEvidenceJson(providerOutput),
       sideEffectExecuted: true,
     });
   }
@@ -248,7 +286,7 @@ async function executeWorkspaceTool(input = {}) {
       error.code = "direct_workspace_worker_test_not_admitted";
       throw error;
     }
-    const targets = safeTestTargets(args.targets);
+    const targets = safeTestTargets(args.targets, contract.testProfile.profileId);
     const action = normalizeString(
       args.action,
       targets.length && contract.testProfile.targetedAction
@@ -262,6 +300,7 @@ async function executeWorkspaceTool(input = {}) {
     }
     const timeoutMs = Math.max(1000, Math.min(120_000, Number(args.timeout_ms || args.timeoutMs || 120_000) || 120_000));
     const raw = await provisioned.workspaceRequest("runDirectTest", {
+      bindingDigest: contract.binding.bindingDigest,
       profileDigest: contract.testProfile.profileDigest,
       action,
       targets,
@@ -289,7 +328,10 @@ async function executeWorkspaceTool(input = {}) {
       ...common,
       status: providerOutput.exitCode === 0 && !providerOutput.timedOut ? "completed" : "failed",
       summary: `${contract.testProfile.profileId} · exit ${providerOutput.exitCode ?? "unknown"}${providerOutput.timedOut ? " · timed out" : ""}`,
-      providerOutputText: JSON.stringify(providerOutput),
+      providerOutputText: boundedProviderEvidenceJson(providerOutput, {
+        redactionErrorCode: "direct_workspace_worker_test_result_redaction_failed",
+        redactionMessage: "Workspace worker test evidence contained auth-like material and was withheld.",
+      }),
       sideEffectExecuted: true,
     });
   }

@@ -209,14 +209,18 @@ try {
     }, 45_000);
     const nativeRoot = provisioned.worktreePath;
     const project = childProject(parentProject, nativeRoot, input.childAgentId);
-    const session = await manager.ensureForProject(project, { workspaceHygiene: false });
-    const testProfile = await session.request("directTestProfile", {}, 10_000);
     const binding = { ...provisioned };
     delete binding.worktreePath;
+    const session = await manager.ensureForProject(project, {
+      workspaceHygiene: false,
+      workspaceWorkerBinding: binding,
+    });
+    const testProfile = await session.request("directTestProfile", {}, 10_000);
     const realization = {
       binding,
       testProfile,
       nativeRoot,
+      backendSessionId: session.workspaceWorkerBinding.backendSessionId,
       workspaceRequest: (method, params = {}, timeoutMs) => session.request(method, params, timeoutMs),
     };
     privateRealizations.set(input.childAgentId, realization);
@@ -311,7 +315,7 @@ try {
         workspaceProvisioner: provision,
         providerRequestRunner: (request) => providerRequest(input.childAgentId, request),
       });
-      assert.ok(result.captureResult, "workspace worker must return a typed terminal capture payload");
+      assert.ok(result.captureResult, JSON.stringify(result, null, 2));
       contracts.set(input.childAgentId, result.captureResult.workspaceWorkerContract);
       workerTokenUsage.set(input.childAgentId, result.tokenUsage);
       const receipt = persistNativeChildProviderTurn(sessionStore, {
@@ -396,8 +400,8 @@ try {
   ]);
   const recordA = waitA.updates[0];
   const recordB = waitB.updates[0];
-  assert.equal(recordA.state, "completed");
-  assert.equal(recordB.state, "completed");
+  assert.equal(recordA.state, "completed", JSON.stringify(recordA, null, 2));
+  assert.equal(recordB.state, "completed", JSON.stringify(recordB, null, 2));
   assert.equal(recordA.workspaceMode, "isolated_worktree");
   assert.equal(recordA.toolProfile, "implementation_worker");
   assert.equal(recordA.workspaceExecution.toolResultCount, 6);
@@ -419,6 +423,41 @@ try {
   const realizationA = privateRealizations.get(launchA.childAgentId);
   const realizationB = privateRealizations.get(launchB.childAgentId);
   assert.notEqual(realizationA.nativeRoot, realizationB.nativeRoot);
+  assert.notEqual(realizationA.backendSessionId, realizationB.backendSessionId);
+  await assert.rejects(
+    () => realizationA.workspaceRequest("inspectWorkspaceRepository", {
+      bindingDigest: realizationB.binding.bindingDigest,
+    }, 30_000),
+    (error) => error?.code === "workspace_worker_binding_mismatch",
+    "a well-formed digest from another resident worker session must be rejected",
+  );
+  await assert.rejects(
+    () => realizationA.workspaceRequest("runDirectTest", {
+      bindingDigest: realizationA.binding.bindingDigest,
+      profileDigest: realizationA.testProfile.profileDigest,
+      action: "test_focus",
+      targets: ["tests/test_worker_fixture.py tests/test_worker_fixture.py::test_worker_value"],
+      timeoutMs: 30_000,
+    }, 40_000),
+    (error) => error?.code === "workspace_worker_test_target_invalid",
+    "one Arc target element must not flatten into multiple pytest nodeids",
+  );
+  for (const invalidTarget of [
+    'tests/test_worker_fixture.py"',
+    "tests\\test_worker_fixture.py",
+  ]) {
+    await assert.rejects(
+      () => realizationA.workspaceRequest("runDirectTest", {
+        bindingDigest: realizationA.binding.bindingDigest,
+        profileDigest: realizationA.testProfile.profileDigest,
+        action: "test_focus",
+        targets: [invalidTarget],
+        timeoutMs: 30_000,
+      }, 40_000),
+      (error) => error?.code === "workspace_worker_test_target_invalid",
+      `Arc target grammar must reject ${JSON.stringify(invalidTarget)}`,
+    );
+  }
   assert.equal(
     path.relative(tempRoot, realizationA.nativeRoot).startsWith(".."),
     false,
@@ -457,6 +496,33 @@ try {
   assert.deepEqual(contractA.testProfile.actionsAllowed, ["test_focus", "check", "test"]);
   assert.equal(contractA.repositoryPolicy.profileId, "arcagi3-odeu-local");
   assert.equal(contractA.repositoryPolicy.validationPosture, "exact");
+  assert.equal(contractA.policyCompilation.parentAuthorityExplicit, true);
+  assert.equal(contractA.policyCompilation.substrateCapabilityExplicit, true);
+  assert.equal(contractA.policyCompilation.authorityProvenance.parentAuthority, "admitted_spawn_tool_profile");
+  assert.equal(contractA.policyCompilation.wideningPerformed, false);
+  let invalidRuntimeTargetDispatched = false;
+  await assert.rejects(
+    () => executeWorkspaceTool({
+      obligation: {
+        name: "run_test",
+        callId: "call_invalid_flattened_target",
+        argumentsText: JSON.stringify({
+          action: "test_focus",
+          targets: ["tests/test_worker_fixture.py tests/test_worker_fixture.py::test_worker_value"],
+        }),
+      },
+      contract: contractA,
+      provisioned: {
+        workspaceRequest: async () => {
+          invalidRuntimeTargetDispatched = true;
+          return {};
+        },
+      },
+      stepOrdinal: 1,
+    }),
+    (error) => error?.code === "direct_workspace_worker_test_target_invalid",
+  );
+  assert.equal(invalidRuntimeTargetDispatched, false);
   assert.equal(contractA.authority.requestedToolProfileAdvisory, true);
   assert.equal(contractA.authority.testProcessIsolationGuaranteed, false);
   assert.equal(contractA.authority.testNetworkIsolationGuaranteed, false);
@@ -470,6 +536,10 @@ try {
     toolProfile: "read_only_worker",
     binding: realizationA.binding,
     testProfile: realizationA.testProfile,
+    parentAuthority: {
+      boundaryId: "arcagi3_read_only_fixture_parent",
+      allowedTools: ["inspect_repository", "list_files", "match_files", "search_text", "read_file"],
+    },
     contextMessages: parentContextMessages,
     contextHandoffMode: "full",
   }).contract;

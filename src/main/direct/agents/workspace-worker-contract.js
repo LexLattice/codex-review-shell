@@ -87,6 +87,15 @@ function publicWorkspaceBinding(binding = {}) {
     error.code = "direct_workspace_worker_binding_incomplete";
     throw error;
   }
+  if (
+    !/^sha256:[a-f0-9]{64}$/i.test(result.bindingDigest) ||
+    !/^sha256:[a-f0-9]{64}$/i.test(result.rootEvidenceDigest) ||
+    !/^[a-f0-9]{40,64}$/i.test(result.baseCommit)
+  ) {
+    const error = new Error("Workspace worker binding digests or base commit are malformed.");
+    error.code = "direct_workspace_worker_binding_evidence_invalid";
+    throw error;
+  }
   if (!result.branch.startsWith("codex/worker/")) {
     const error = new Error("Workspace worker binding branch is outside the compiled local namespace.");
     error.code = "direct_workspace_worker_branch_outside_namespace";
@@ -323,7 +332,7 @@ function assertWorkspaceWorkerContractSafe(contract = {}) {
   if (contract.workspaceMode !== WORKSPACE_MODE_ISOLATED_WORKTREE) {
     throw new Error("direct_workspace_worker_contract_mode_unsafe");
   }
-  if (!Array.isArray(contract.authority?.declaredTools) || !contract.authority.declaredTools.length) {
+  if (!Array.isArray(contract.authority?.declaredTools)) {
     throw new Error("direct_workspace_worker_contract_tools_missing");
   }
   const allowed = new Set(WORKSPACE_WORKER_TOOLS);

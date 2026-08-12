@@ -21,11 +21,15 @@ const WORKSPACE_WORKER_TOOLS = Object.freeze([
 const REQUESTED_ROLE_PROFILES = Object.freeze({
   read_only_worker: Object.freeze({
     requestedTools: REPOSITORY_READ_TOOLS,
+    declaredTools: REPOSITORY_READ_TOOLS,
     workspaceMutationRequested: false,
+    workspaceMutationAllowed: false,
   }),
   implementation_worker: Object.freeze({
     requestedTools: WORKSPACE_WORKER_TOOLS,
+    declaredTools: WORKSPACE_WORKER_TOOLS,
     workspaceMutationRequested: true,
+    workspaceMutationAllowed: true,
   }),
 });
 
@@ -106,6 +110,32 @@ function pinnedWorkspaceRepositoryProfiles() {
   return Object.freeze([Object.freeze(profile)]);
 }
 
+function genericWorkspaceRepositoryProfile() {
+  const profile = {
+    schema: DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA,
+    profileId: "unprofiled_git_repository",
+    profileRevision: 1,
+    validationPosture: "builtin_generic",
+    allowedTools: [...WORKSPACE_WORKER_TOOLS],
+    selectedConstraints: [
+      "Treat only files and tools in the bound Git repository as authoritative.",
+      "Keep edits scoped and do not mutate remotes or private Git metadata.",
+    ],
+    sourceRefs: [],
+    omissionLedger: [{
+      source: "repository_policy",
+      reason: "No pinned repository policy matched; raw repository instructions were not inherited.",
+      count: 1,
+    }],
+    testProfile: null,
+    authorityProvenance: "builtin_generic_repository_policy",
+    rawPolicyTextIncluded: false,
+    rawWorkspacePathIncluded: false,
+  };
+  profile.profileDigest = digestFor("direct-workspace-worker-generic-repository-profile@1", profile);
+  return Object.freeze(profile);
+}
+
 function publicRepositoryPolicy(value = {}) {
   const source = isPlainObject(value) ? value : {};
   const sourceRefs = (Array.isArray(source.sourceRefs) ? source.sourceRefs : [])
@@ -122,41 +152,55 @@ function publicRepositoryPolicy(value = {}) {
   const claimedProfileDigest = normalizeString(source.profileDigest, "");
   const pinned = pinnedWorkspaceRepositoryProfiles().find((profile) =>
     profile.profileId === claimedProfileId && profile.profileDigest === claimedProfileDigest);
-  const pinnedEvidenceExact = Boolean(pinned) && source.validationPosture === "exact" && pinned.policySources.every((expected) =>
+  const claimedPinned = pinnedWorkspaceRepositoryProfiles().some((profile) =>
+    profile.profileId === claimedProfileId) || source.validationPosture === "exact";
+  const pinnedEvidenceExact = Boolean(pinned) &&
+    source.schema === DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA &&
+    source.validationPosture === "exact" && pinned.policySources.every((expected) =>
     sourceRefs.some((ref) =>
       ref.id === expected.id &&
       ref.path === expected.path &&
       ref.contentDigest === expected.contentDigest &&
       ref.validationPosture === "exact"));
+  const generic = genericWorkspaceRepositoryProfile();
+  const genericEvidenceExact = !claimedPinned &&
+    source.schema === DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA &&
+    source.profileId === generic.profileId &&
+    source.profileDigest === generic.profileDigest &&
+    source.validationPosture === generic.validationPosture;
+  const admittedProfile = pinnedEvidenceExact ? pinned : genericEvidenceExact ? generic : null;
+  const validationPosture = pinnedEvidenceExact
+    ? "exact"
+    : genericEvidenceExact
+      ? generic.validationPosture
+      : claimedPinned
+        ? "profile_evidence_mismatch"
+        : "repository_policy_unavailable";
   const result = {
     schema: DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA,
-    profileId: pinnedEvidenceExact ? pinned.profileId : claimedProfileId,
-    profileRevision: pinnedEvidenceExact
-      ? pinned.revision
-      : Math.max(0, Number(source.profileRevision || source.revision || 0) || 0),
-    profileDigest: pinnedEvidenceExact ? pinned.profileDigest : claimedProfileDigest,
-    validationPosture: pinnedEvidenceExact
-      ? "exact"
-      : normalizeString(source.validationPosture, "unprofiled") === "exact"
-        ? "profile_evidence_mismatch"
-        : normalizeString(source.validationPosture, "unprofiled"),
-    allowedTools: pinnedEvidenceExact
-      ? [...pinned.allowedTools]
-      : sortedToolSet(source.allowedTools, WORKSPACE_WORKER_TOOLS),
-    selectedConstraints: pinnedEvidenceExact
-      ? [...pinned.selectedConstraints]
-      : [
-          "Treat only files and tools in the bound Git repository as authoritative.",
-          "Keep edits scoped and do not mutate remotes or private Git metadata.",
-        ],
+    profileId: admittedProfile?.profileId || claimedProfileId,
+    profileRevision: admittedProfile?.revision || admittedProfile?.profileRevision || 0,
+    profileDigest: admittedProfile?.profileDigest || claimedProfileDigest,
+    validationPosture,
+    allowedTools: admittedProfile ? [...admittedProfile.allowedTools] : [],
+    selectedConstraints: admittedProfile ? [...admittedProfile.selectedConstraints] : [],
     sourceRefs: pinnedEvidenceExact ? sourceRefs : [],
     omissionLedger: pinnedEvidenceExact
       ? pinned.omittedPolicyFacets.map((reason) => ({ source: pinned.profileId, reason, count: 1 }))
-      : [{
+      : genericEvidenceExact
+        ? generic.omissionLedger.map((entry) => ({ ...entry }))
+        : [{
           source: "repository_policy",
-          reason: "No pinned repository-policy evidence was admitted; raw repository instructions were omitted.",
+          reason: claimedPinned
+            ? "Claimed pinned repository-policy evidence did not match the local pinned profile and granted no authority."
+            : "No system-owned repository-policy profile was admitted; repository tool authority was denied.",
           count: 1,
         }],
+    authorityProvenance: pinnedEvidenceExact
+      ? "pinned_repository_policy_exact"
+      : genericEvidenceExact
+        ? generic.authorityProvenance
+        : "repository_policy_safe_deny",
     rawPolicyTextIncluded: false,
     rawWorkspacePathIncluded: false,
   };
@@ -176,10 +220,11 @@ function authorityTools(value, fallback, kind) {
   if (!isPlainObject(value)) {
     return {
       explicit: false,
-      boundaryId: `${kind}_compatibility_boundary`,
-      boundaryDigest: digestFor(`direct-workspace-worker-${kind}-compatibility-boundary@1`, fallback),
-      allowedTools: [...fallback],
+      boundaryId: `${kind}_missing_safe_deny`,
+      boundaryDigest: digestFor(`direct-workspace-worker-${kind}-missing-safe-deny@1`, []),
+      allowedTools: [],
       forbiddenTools: [],
+      authorityProvenance: "missing_safe_deny",
     };
   }
   const allowedTools = sortedToolSet(value.allowedTools || value.declaredTools || value.availableTools, []);
@@ -194,6 +239,7 @@ function authorityTools(value, fallback, kind) {
     ),
     allowedTools: effective,
     forbiddenTools,
+    authorityProvenance: normalizeString(value.authorityProvenance, "explicit_boundary"),
   };
 }
 
@@ -216,6 +262,12 @@ function compileWorkspaceWorkerPolicy(input = {}) {
   const testAvailable = input.testProfile?.available === true &&
     (!pinnedTestRequiresExactPolicy || repositoryPolicy.validationPosture === "exact");
   const effectiveTools = declaredTools.filter((toolName) => toolName !== "run_test" || testAvailable);
+  const wideningSources = effectiveTools.flatMap((toolName) => [
+    ...(!requested.requestedTools.includes(toolName) ? [`requested_role:${toolName}`] : []),
+    ...(!parent.allowedTools.includes(toolName) ? [`parent_authority:${toolName}`] : []),
+    ...(!repositoryPolicy.allowedTools.includes(toolName) ? [`repository_policy:${toolName}`] : []),
+    ...(!substrate.allowedTools.includes(toolName) ? [`substrate_capability:${toolName}`] : []),
+  ]);
   const omittedTools = requested.requestedTools
     .filter((toolName) => !effectiveTools.includes(toolName))
     .map((toolName) => ({
@@ -230,11 +282,11 @@ function compileWorkspaceWorkerPolicy(input = {}) {
   const boundaryOmissions = [
     ...(!parent.explicit ? [{
       boundary: "parent_authority",
-      reason: "Launcher did not carry an explicit parent boundary; compatibility boundary is limited to the requested role candidate.",
+      reason: "Launcher did not carry an explicit parent boundary; the missing boundary granted no tools.",
     }] : []),
     ...(!substrate.explicit ? [{
       boundary: "substrate_capability",
-      reason: "Provisioner did not carry an explicit substrate capability profile; compatibility boundary remains locally bounded.",
+      reason: "Provisioner did not carry an explicit substrate capability profile; the missing boundary granted no tools.",
     }] : []),
   ];
   const compilation = {
@@ -257,7 +309,15 @@ function compileWorkspaceWorkerPolicy(input = {}) {
     omissionCount: repositoryPolicy.omissionLedger.reduce((sum, entry) => sum + entry.count, 0) + omittedTools.length + boundaryOmissions.length,
     parentAuthorityExplicit: parent.explicit,
     substrateCapabilityExplicit: substrate.explicit,
-    wideningPerformed: false,
+    repositoryAuthorityProvenance: repositoryPolicy.authorityProvenance,
+    authorityProvenance: {
+      requestedRole: "advisory_candidate",
+      parentAuthority: parent.authorityProvenance,
+      repositoryPolicy: repositoryPolicy.authorityProvenance,
+      substrateCapability: substrate.authorityProvenance,
+    },
+    wideningSources,
+    wideningPerformed: wideningSources.length > 0,
     rawPolicyTextIncluded: false,
     rawWorkspacePathIncluded: false,
   };
@@ -273,6 +333,7 @@ module.exports = {
   WORKSPACE_WORKER_TOOLS,
   compileWorkspaceWorkerPolicy,
   digestFor,
+  genericWorkspaceRepositoryProfile,
   pinnedWorkspaceRepositoryProfiles,
   publicRepositoryPolicy,
 };

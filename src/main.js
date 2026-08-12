@@ -3852,6 +3852,7 @@ async function provisionDirectWorkspaceWorker(input = {}) {
     manager = ensureWorkspaceBackendManager();
     const workerSession = await manager.ensureForProject(workerProject, {
       workspaceHygiene: false,
+      workspaceWorkerBinding: binding,
     });
     const testProfile = await workerSession.request("directTestProfile", {}, 10_000);
     return {

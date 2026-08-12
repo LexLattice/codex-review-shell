@@ -335,6 +335,7 @@ class WorkspaceSession extends EventEmitter {
     this.lastError = null;
     this.readySeen = false;
     this.hygiene = null;
+    this.workspaceWorkerBinding = null;
     this.recentDiagnostics = [];
   }
 
@@ -350,6 +351,7 @@ class WorkspaceSession extends EventEmitter {
       lastError: this.lastError,
       readySeen: this.readySeen,
       hygiene: this.hygiene,
+      workspaceWorkerBinding: this.workspaceWorkerBinding,
     };
   }
 
@@ -383,8 +385,19 @@ class WorkspaceSession extends EventEmitter {
   }
 
   async attach(options = {}) {
-    if (this.status === "attached" && this.transport && !this.transport.closed) return this;
-    if (this.attachPromise) return this.attachPromise;
+    if (this.status === "attached" && this.transport && !this.transport.closed) {
+      if (options.workspaceWorkerBinding) {
+        await this.initializeWorkspaceWorkerBinding(options.workspaceWorkerBinding);
+      }
+      return this;
+    }
+    if (this.attachPromise) {
+      const attached = await this.attachPromise;
+      if (options.workspaceWorkerBinding) {
+        await this.initializeWorkspaceWorkerBinding(options.workspaceWorkerBinding);
+      }
+      return attached;
+    }
 
     this.attachPromise = this.attachInner(options)
       .then(() => {
@@ -402,6 +415,7 @@ class WorkspaceSession extends EventEmitter {
     this.status = "starting";
     this.lastError = null;
     this.readySeen = false;
+    this.workspaceWorkerBinding = null;
     this.recentDiagnostics = [];
     this.descriptor = launchDescriptor(this.project, this.options);
     this.emitStatus("backend-starting");
@@ -453,6 +467,9 @@ class WorkspaceSession extends EventEmitter {
     this.status = "attaching";
     try {
       this.hello = await this.transport.request("hello", {}, ATTACH_TIMEOUT_MS);
+      if (options.workspaceWorkerBinding) {
+        await this.initializeWorkspaceWorkerBinding(options.workspaceWorkerBinding);
+      }
       if (options.workspaceHygiene !== false) {
         try {
           this.hygiene = await this.transport.request("ensureCodexSandboxArtifactIgnored", {}, DEFAULT_REQUEST_TIMEOUT_MS);
@@ -479,7 +496,9 @@ class WorkspaceSession extends EventEmitter {
       this.lastError = message;
       this.emitStatus("backend-failed", { error: message });
       this.dispose();
-      throw new Error(message);
+      const attachError = new Error(message);
+      attachError.code = normalizeString(error?.code, "");
+      throw attachError;
     }
   }
 
@@ -487,6 +506,54 @@ class WorkspaceSession extends EventEmitter {
     await this.attach();
     if (!this.transport) throw new Error("Workspace backend transport is unavailable.");
     return this.transport.request(method, params, timeoutMs);
+  }
+
+  async initializeWorkspaceWorkerBinding(binding) {
+    if (!this.transport || this.transport.closed) {
+      throw new Error("Workspace backend transport is unavailable for worker binding initialization.");
+    }
+    const requestedDigest = normalizeString(binding?.bindingDigest, "");
+    if (!requestedDigest) {
+      const error = new Error("Workspace worker binding initialization requires one binding digest.");
+      error.code = "workspace_worker_binding_missing";
+      throw error;
+    }
+    if (this.workspaceWorkerBinding?.bindingDigest === requestedDigest) {
+      return this.workspaceWorkerBinding;
+    }
+    if (this.workspaceWorkerBinding) {
+      const error = new Error("Workspace backend session already has a different immutable worker binding.");
+      error.code = "workspace_worker_binding_already_initialized";
+      throw error;
+    }
+    const initialized = await this.transport.request(
+      "initializeWorkspaceWorkerBinding",
+      { binding },
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    );
+    if (
+      normalizeString(initialized?.bindingDigest, "") !== requestedDigest ||
+      initialized?.immutable !== true
+    ) {
+      const error = new Error("Workspace backend did not acknowledge the requested immutable worker binding.");
+      error.code = "workspace_worker_binding_initialization_unacknowledged";
+      throw error;
+    }
+    this.workspaceWorkerBinding = {
+      schema: normalizeString(initialized.schema, "direct_workspace_worker_binding_initialization@1"),
+      bindingId: normalizeString(initialized.bindingId, ""),
+      bindingDigest: requestedDigest,
+      backendSessionId: normalizeString(initialized.backendSessionId, ""),
+      projectId: normalizeString(initialized.projectId, ""),
+      workerKey: normalizeString(initialized.workerKey, ""),
+      workspaceKind: normalizeString(initialized.workspaceKind, ""),
+      branch: normalizeString(initialized.branch, ""),
+      baseCommit: normalizeString(initialized.baseCommit, ""),
+      rootEvidenceDigest: normalizeString(initialized.rootEvidenceDigest, ""),
+      immutable: true,
+      rawWorkspacePathIncluded: false,
+    };
+    return this.workspaceWorkerBinding;
   }
 
   dispose() {

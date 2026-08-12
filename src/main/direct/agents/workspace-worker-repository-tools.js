@@ -147,13 +147,57 @@ function safeEntries(entries = []) {
   }));
 }
 
-function assertProviderEvidenceSafe(value) {
-  const text = boundedText(JSON.stringify(value));
+function boundedProviderEvidenceJson(value, options = {}) {
+  const limit = Math.max(1024, Number(options.limit || MAX_REPOSITORY_TOOL_OUTPUT_CHARS) || MAX_REPOSITORY_TOOL_OUTPUT_CHARS);
+  const candidate = JSON.parse(JSON.stringify(value));
+  let text = JSON.stringify(candidate);
+  if (text.length > limit) {
+    candidate.evidenceTruncated = true;
+    candidate.truncationReason = "provider_output_char_limit";
+    if (Object.prototype.hasOwnProperty.call(candidate, "truncated")) candidate.truncated = true;
+    let omittedRows = 0;
+    for (const key of ["matches", "entries", "topLevelEntries", "files"]) {
+      if (!Array.isArray(candidate[key])) continue;
+      while (candidate[key].length && JSON.stringify(candidate).length > limit) {
+        candidate[key].pop();
+        omittedRows += 1;
+      }
+      if (key === "matches" || key === "entries") candidate.returned = candidate[key].length;
+    }
+    if (omittedRows) candidate.evidenceOmittedRows = omittedRows;
+    text = JSON.stringify(candidate);
+    for (const key of ["text", "stdout", "stderr"]) {
+      if (text.length <= limit || typeof candidate[key] !== "string") continue;
+      const originalText = candidate[key];
+      let low = 0;
+      let high = originalText.length;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        candidate[key] = `${originalText.slice(0, middle)}${middle < originalText.length ? "…" : ""}`;
+        candidate[`${key}Truncated`] = middle < originalText.length;
+        if (JSON.stringify(candidate).length <= limit) low = middle;
+        else high = middle - 1;
+      }
+      candidate[key] = `${originalText.slice(0, low)}${low < originalText.length ? "…" : ""}`;
+      candidate[`${key}Truncated`] = low < originalText.length;
+      if (Object.prototype.hasOwnProperty.call(candidate, "truncated")) candidate.truncated = true;
+      text = JSON.stringify(candidate);
+    }
+    if (text.length > limit) {
+      text = JSON.stringify({
+        kind: normalizeString(candidate.kind, "workspace_tool_result"),
+        evidenceTruncated: true,
+        truncated: true,
+        truncationReason: "provider_output_char_limit",
+        rawWorkspacePathIncluded: false,
+      });
+    }
+  }
   const scan = scanToolResultTextForSecrets(text);
   if (scan.status === "blocked") {
     throw codedError(
-      "direct_workspace_worker_repository_result_redaction_failed",
-      "Repository tool evidence contained auth-like material and was withheld.",
+      normalizeString(options.redactionErrorCode, "direct_workspace_worker_repository_result_redaction_failed"),
+      normalizeString(options.redactionMessage, "Workspace tool evidence contained auth-like material and was withheld."),
     );
   }
   return text;
@@ -184,7 +228,7 @@ async function executeWorkspaceRepositoryTool(input = {}) {
     };
     return {
       summary: `${providerOutput.fileCount} canonical files · ${providerOutput.repositoryPolicy.profileId}`,
-      providerOutputText: assertProviderEvidenceSafe(providerOutput),
+      providerOutputText: boundedProviderEvidenceJson(providerOutput),
     };
   }
   if (toolName === "list_files") {
@@ -205,7 +249,7 @@ async function executeWorkspaceRepositoryTool(input = {}) {
     };
     return {
       summary: `${entries.length} file${entries.length === 1 ? "" : "s"}${providerOutput.truncated ? " · truncated" : ""}`,
-      providerOutputText: assertProviderEvidenceSafe(providerOutput),
+      providerOutputText: boundedProviderEvidenceJson(providerOutput),
     };
   }
   if (toolName === "match_files") {
@@ -230,7 +274,7 @@ async function executeWorkspaceRepositoryTool(input = {}) {
     };
     return {
       summary: `${entries.length} matching file${entries.length === 1 ? "" : "s"}${providerOutput.truncated ? " · truncated" : ""}`,
-      providerOutputText: assertProviderEvidenceSafe(providerOutput),
+      providerOutputText: boundedProviderEvidenceJson(providerOutput),
     };
   }
   if (toolName === "search_text") {
@@ -269,7 +313,7 @@ async function executeWorkspaceRepositoryTool(input = {}) {
     };
     return {
       summary: `${matches.length} literal match${matches.length === 1 ? "" : "es"}${providerOutput.truncated ? " · truncated" : ""}`,
-      providerOutputText: assertProviderEvidenceSafe(providerOutput),
+      providerOutputText: boundedProviderEvidenceJson(providerOutput),
     };
   }
   if (toolName === "read_file") {
@@ -293,7 +337,7 @@ async function executeWorkspaceRepositoryTool(input = {}) {
     };
     return {
       summary: `${providerOutput.path} · ${providerOutput.size} bytes${providerOutput.truncated ? " · truncated" : ""}`,
-      providerOutputText: assertProviderEvidenceSafe(providerOutput),
+      providerOutputText: boundedProviderEvidenceJson(providerOutput),
     };
   }
   return null;
@@ -304,6 +348,7 @@ module.exports = {
   MAX_REPOSITORY_MATCH_PATTERNS,
   MAX_REPOSITORY_READ_BYTES,
   MAX_REPOSITORY_SEARCH_RESULTS,
+  boundedProviderEvidenceJson,
   executeWorkspaceRepositoryTool,
   repositoryToolSchemas,
   safeRepositoryRelativePath,
