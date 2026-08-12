@@ -222,12 +222,14 @@ async function executeWorkspaceTool(input = {}) {
     workspaceBindingId: contract.binding.bindingId,
     workspaceBindingDigest: contract.binding.bindingDigest,
   };
+  const requestOptions = input.signal ? { signal: input.signal } : {};
   if (["inspect_repository", "list_files", "match_files", "search_text", "read_file"].includes(toolName)) {
     const repositoryResult = await executeWorkspaceRepositoryTool({
       toolName,
       args,
       contract,
       provisioned,
+      signal: input.signal,
     });
     return toolResult({
       ...common,
@@ -247,13 +249,13 @@ async function executeWorkspaceTool(input = {}) {
       bindingDigest: contract.binding.bindingDigest,
       mode: "dryRun",
       patch,
-    }, 30_000);
+    }, 30_000, requestOptions);
     const applied = await provisioned.workspaceRequest("applyWorkspaceWorkerPatch", {
       bindingDigest: contract.binding.bindingDigest,
       mode: "apply",
       patch,
       patchPlanId: plan?.patchPlanId,
-    }, 30_000);
+    }, 30_000, requestOptions);
     const files = (Array.isArray(applied?.files) ? applied.files : []).map((file) => ({
       path: normalizeString(file.displayPath, ""),
       operation: normalizeString(file.operation, "update"),
@@ -305,7 +307,7 @@ async function executeWorkspaceTool(input = {}) {
       action,
       targets,
       timeoutMs,
-    }, timeoutMs + 10_000);
+    }, timeoutMs + 10_000, requestOptions);
     const stdout = redactNativeRoot(boundedText(raw?.stdout, MAX_TOOL_OUTPUT_CHARS / 2), provisioned.nativeRoot);
     const stderr = redactNativeRoot(boundedText(raw?.stderr, MAX_TOOL_OUTPUT_CHARS / 2), provisioned.nativeRoot);
     const scan = scanToolResultTextForSecrets(`${stdout}\n${stderr}`);
@@ -407,6 +409,17 @@ function resultFor(input = {}) {
     recursiveSpawnStarted: false,
     remoteMutationStarted: false,
     bottomUpMessagingStarted: false,
+    cancellationAcknowledged: input.cancellationAcknowledged === true,
+    backendQuiesced: input.backendQuiesced === true,
+    cancellationReceipt: isPlainObject(input.cancellationReceipt)
+      ? {
+          targetRequestId: normalizeString(input.cancellationReceipt.targetRequestId, ""),
+          acknowledged: input.cancellationReceipt.acknowledged === true,
+          quiesced: input.cancellationReceipt.quiesced === true,
+          acknowledgementKind: normalizeString(input.cancellationReceipt.acknowledgementKind, ""),
+          rawProcessDetailsIncluded: false,
+        }
+      : null,
     rawWorkspacePathIncluded: false,
     rawPromptIncluded: false,
     rawContextIncluded: false,
@@ -432,7 +445,18 @@ async function runDirectWorkspaceWorker(input = {}) {
   }
   const task = normalizeString(input.prompt || input.task || input.message, "");
   if (!task) return resultFor({ status: "blocked", blockerCode: "missing_spawn_prompt" });
-  if (input.signal?.aborted) return resultFor({ status: "cancelled", blockerCode: "direct_workspace_worker_aborted" });
+  if (input.signal?.aborted) return resultFor({
+    status: "cancelled",
+    blockerCode: "direct_workspace_worker_aborted",
+    cancellationAcknowledged: true,
+    backendQuiesced: true,
+    cancellationReceipt: {
+      targetRequestId: "",
+      acknowledged: true,
+      quiesced: true,
+      acknowledgementKind: "cancelled_before_provisioning",
+    },
+  });
   let provisioned;
   let contract;
   let admittedContextMessages = [];
@@ -452,6 +476,9 @@ async function runDirectWorkspaceWorker(input = {}) {
     return resultFor({
       status: input.signal?.aborted ? "cancelled" : "failed",
       blockerCode: normalizeString(error?.code, "direct_workspace_worker_provision_failed"),
+      cancellationAcknowledged: input.signal?.aborted && error?.cancellationAcknowledged === true,
+      backendQuiesced: input.signal?.aborted && error?.backendQuiesced === true,
+      cancellationReceipt: error?.cancellationReceipt,
     });
   }
   try {
@@ -478,6 +505,14 @@ async function runDirectWorkspaceWorker(input = {}) {
               workspaceWorkerContract: contract,
             },
             providerRequestStarted: allEvents.length > 0,
+            cancellationAcknowledged: true,
+            backendQuiesced: true,
+            cancellationReceipt: {
+              targetRequestId: "",
+              acknowledged: true,
+              quiesced: true,
+              acknowledgementKind: "cancelled_between_requests",
+            },
           });
         }
         const requestBody = buildImplementationToolInitialRequest({
@@ -537,6 +572,14 @@ async function runDirectWorkspaceWorker(input = {}) {
               workspaceWorkerContract: contract,
             },
             providerRequestStarted: true,
+            cancellationAcknowledged: terminal.state === "aborted",
+            backendQuiesced: terminal.state === "aborted",
+            cancellationReceipt: terminal.state === "aborted" ? {
+              targetRequestId: "",
+              acknowledged: true,
+              quiesced: true,
+              acknowledgementKind: "provider_request_completed_after_cancel",
+            } : null,
           });
         }
         if (stepOrdinal > contract.maxToolSteps) {
@@ -573,6 +616,7 @@ async function runDirectWorkspaceWorker(input = {}) {
           contract,
           provisioned,
           stepOrdinal,
+          signal: input.signal,
         });
         results.push(executed);
         evidence.push(executed.providerOutputText);
@@ -599,6 +643,9 @@ async function runDirectWorkspaceWorker(input = {}) {
           workspaceWorkerContract: contract,
         },
         providerRequestStarted: allEvents.length > 0,
+        cancellationAcknowledged: input.signal?.aborted && error?.cancellationAcknowledged === true,
+        backendQuiesced: input.signal?.aborted && error?.backendQuiesced === true,
+        cancellationReceipt: error?.cancellationReceipt,
       });
     }
     return resultFor({

@@ -3834,7 +3834,7 @@ async function provisionDirectWorkspaceWorker(input = {}) {
     workerKey,
     branch,
     baseRef: "HEAD",
-  }, 45_000);
+  }, 45_000, { signal: input.signal });
   let manager = null;
   let workerProject = null;
   try {
@@ -3858,13 +3858,19 @@ async function provisionDirectWorkspaceWorker(input = {}) {
       workspaceHygiene: false,
       workspaceWorkerBinding: binding,
     });
-    const testProfile = await workerSession.request("directTestProfile", {}, 10_000);
+    const testProfile = await workerSession.request(
+      "directTestProfile",
+      {},
+      10_000,
+      { signal: input.signal },
+    );
     return {
       binding,
       testProfile,
       nativeRoot,
       workerProject,
-      workspaceRequest: (method, params = {}, timeoutMs) => workerSession.request(method, params, timeoutMs),
+      workspaceRequest: (method, params = {}, timeoutMs, requestOptions = {}) =>
+        workerSession.request(method, params, timeoutMs, requestOptions),
       release: () => manager.disposeForProject(workerProject),
     };
   } catch (error) {
@@ -7345,9 +7351,9 @@ async function attachProjectWorkspace(project, options = {}) {
   return manager.statusForProject(project);
 }
 
-async function requestWorkspace(project, method, params = {}, timeoutMs) {
+async function requestWorkspace(project, method, params = {}, timeoutMs, requestOptions = {}) {
   const manager = ensureWorkspaceBackendManager();
-  return manager.requestForProject(project, method, params, timeoutMs);
+  return manager.requestForProject(project, method, params, timeoutMs, requestOptions);
 }
 
 function scheduleLayoutPing(reason = "window-change") {

@@ -327,17 +327,23 @@ class NdjsonTransport extends EventEmitter {
         }
         this.clearPending(pending.targetRequestId);
         const error = this.abortError(target, message.result);
-        target.reject(error);
+        if (!target.clientSettled) {
+          target.clientSettled = true;
+          target.reject(error);
+        }
         return;
       }
       if (pending.abortRequested) {
         if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
-        pending.reject(this.abortError(pending, {
-          acknowledged: true,
-          quiesced: true,
-          acknowledgementKind: "request_completed_after_cancel",
-          targetRequestId: message.id,
-        }));
+        if (!pending.clientSettled) {
+          pending.clientSettled = true;
+          pending.reject(this.abortError(pending, {
+            acknowledged: true,
+            quiesced: true,
+            acknowledgementKind: "request_completed_after_cancel",
+            targetRequestId: message.id,
+          }));
+        }
         return;
       }
       if (message.error) {
@@ -359,10 +365,15 @@ class NdjsonTransport extends EventEmitter {
     if (!pending) return null;
     this.pending.delete(id);
     clearTimeout(pending.timer);
-    if (pending.signal?.removeEventListener && pending.abortListener) {
+    this.detachPendingSignal(pending);
+    return pending;
+  }
+
+  detachPendingSignal(pending) {
+    if (pending?.signal?.removeEventListener && pending.abortListener) {
       pending.signal.removeEventListener("abort", pending.abortListener);
     }
-    return pending;
+    if (pending) pending.abortListener = null;
   }
 
   abortError(pending, cancellationReceipt = {}) {
@@ -433,21 +444,29 @@ class NdjsonTransport extends EventEmitter {
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        const pending = this.clearPending(id);
+        const pending = this.pending.get(id);
         if (!pending) return;
-        if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+        pending.timer = null;
+        pending.abortRequested = true;
+        pending.timeoutTriggered = true;
+        this.detachPendingSignal(pending);
+        this.sendCancellationRequest(pending, {
+          cancellationMethod: options.cancellationMethod,
+          reasonCode: pending.signal?.reason || "workspace_backend_request_timeout",
+        });
         const error = new Error(
-          pending.abortRequested
+          pending.abortRequestedBeforeTimeout
             ? `Workspace backend cancellation was not acknowledged: ${method}`
             : `Workspace backend request timed out: ${method}`,
         );
-        error.code = pending.abortRequested
+        error.code = pending.abortRequestedBeforeTimeout
           ? "workspace_backend_cancel_unacknowledged"
           : "workspace_backend_request_timeout";
         error.requestId = id;
         error.backendQuiesced = false;
         error.cancellationAcknowledged = false;
         error.cancellationControlError = pending.cancellationControlError || "";
+        pending.clientSettled = true;
         reject(error);
       }, timeoutMs);
       const pending = {
@@ -460,6 +479,9 @@ class NdjsonTransport extends EventEmitter {
         signal,
         abortListener: null,
         abortRequested: false,
+        abortRequestedBeforeTimeout: false,
+        timeoutTriggered: false,
+        clientSettled: false,
         cancelRequestId: "",
         cancellationControlError: "",
       };
@@ -467,6 +489,7 @@ class NdjsonTransport extends EventEmitter {
         pending.abortListener = () => {
           if (!this.pending.has(id) || pending.abortRequested) return;
           pending.abortRequested = true;
+          pending.abortRequestedBeforeTimeout = true;
           this.sendCancellationRequest(pending, {
             cancellationMethod: options.cancellationMethod,
             reasonCode: signal.reason,
@@ -481,7 +504,10 @@ class NdjsonTransport extends EventEmitter {
         if (failedPending?.cancelRequestId) this.clearPending(failedPending.cancelRequestId);
         error.backendQuiesced = false;
         error.cancellationAcknowledged = false;
-        reject(error);
+        if (!failedPending?.clientSettled) {
+          failedPending.clientSettled = true;
+          reject(error);
+        }
       });
     });
   }
@@ -518,7 +544,10 @@ class NdjsonTransport extends EventEmitter {
         closeError.backendQuiesced = closeError.backendQuiesced === true;
         closeError.cancellationAcknowledged = closeError.cancellationAcknowledged === true;
       }
-      pending.reject(closeError);
+      if (!pending.clientSettled) {
+        pending.clientSettled = true;
+        pending.reject(closeError);
+      }
     }
     this.emit("closed", error);
   }

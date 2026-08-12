@@ -404,7 +404,16 @@ class DirectNativeAgentPool extends EventEmitter {
     record.startedAt = nowIso(this.now);
     const runnerPromise = Promise.resolve().then(async () => {
       if (record._settled) return { cancelledBeforeStart: true };
-      if (record._cancelRequested) return { cancelledBeforeStart: true };
+      if (record._cancelRequested) return {
+        cancelledBeforeStart: true,
+        cancellationAcknowledged: true,
+        backendQuiesced: true,
+        cancellationReceipt: {
+          acknowledged: true,
+          quiesced: true,
+          acknowledgementKind: "cancelled_before_runner_start",
+        },
+      };
       record._runnerStarted = true;
       const commonInput = {
         childAgentId: record.childAgentId,
@@ -434,6 +443,10 @@ class DirectNativeAgentPool extends EventEmitter {
     runnerPromise.then((result) => {
       if (record._settled) return;
       if (record._cancelRequested) {
+        if (!this.workspaceCancellationQuiesced(record, result)) {
+          this.markCancellationUnacknowledged(record, result);
+          return;
+        }
         record._cancelAcknowledgedAt = nowIso(this.now);
         this.settleRecord(record, {
           state: "cancelled",
@@ -459,15 +472,8 @@ class DirectNativeAgentPool extends EventEmitter {
       });
     }).catch((error) => {
       if (record._settled) return;
-      if (record._cancelRequested && error?.backendQuiesced === false) {
-        record.state = "cancellation_unacknowledged";
-        record.blockerCode = normalizeString(
-          error?.code,
-          "direct_workspace_worker_cancellation_unacknowledged",
-        );
-        record.resultSummary = record.blockerCode;
-        record._lifecycleErrorCode = record.blockerCode;
-        this.emit("changed", this.publicRecord(record));
+      if (record._cancelRequested && !this.workspaceCancellationQuiesced(record, error)) {
+        this.markCancellationUnacknowledged(record, error);
         return;
       }
       const aborted = record._abortController?.signal.aborted || error?.name === "AbortError";
@@ -486,6 +492,22 @@ class DirectNativeAgentPool extends EventEmitter {
         evidenceConfidence: "partial",
       });
     });
+  }
+
+  workspaceCancellationQuiesced(record, evidence = {}) {
+    if (record?.workspaceMode !== WORKSPACE_MODE_ISOLATED_WORKTREE) return true;
+    return evidence?.cancellationAcknowledged === true && evidence?.backendQuiesced === true;
+  }
+
+  markCancellationUnacknowledged(record, evidence = {}) {
+    record.state = "cancellation_unacknowledged";
+    record.blockerCode = normalizeString(
+      evidence?.code || evidence?.blockerCode,
+      "direct_workspace_worker_cancellation_unacknowledged",
+    );
+    record.resultSummary = record.blockerCode;
+    record._lifecycleErrorCode = record.blockerCode;
+    this.emit("changed", this.publicRecord(record));
   }
 
   safeLifecycleProjection(session) {
@@ -519,42 +541,48 @@ class DirectNativeAgentPool extends EventEmitter {
 
   commitLifecycleSettlement(record, patch = {}) {
     if (!record?._lifecycleSessionId || !this.workspaceWorkerLifecycleRegistry) return "";
-    const session = this.workspaceWorkerLifecycleRegistry.session(record._lifecycleSessionId);
-    if (!session) return "direct_workspace_worker_lifecycle_session_missing";
-    if (TERMINAL_STATES.has(session.state)) {
-      const expectedState = patch.state === "completed"
-        ? "completed"
-        : patch.state === "cancelled" ? "cancelled" : "failed";
-      if (session.state !== expectedState) {
-        return "direct_workspace_worker_lifecycle_settlement_conflict";
-      }
-      record._lifecycleProjection = this.safeLifecycleProjection(session);
-      return "";
-    }
-    if (patch.state === "cancelled") {
-      if (session.state === "registered" || session.state === "active") {
-        const requestError = this.transitionLifecycle(record, "requestCancellation", {
-          operationId: `pool-request-cancel:${record.childAgentId}`,
-          reasonCode: record._cancelReasonCode || patch.blockerCode,
-        });
-        if (requestError) return requestError;
-      }
-      const current = this.workspaceWorkerLifecycleRegistry.session(record._lifecycleSessionId);
-      if (current.state === "cancelled") {
-        record._lifecycleProjection = this.safeLifecycleProjection(current);
+    try {
+      const session = this.workspaceWorkerLifecycleRegistry.session(record._lifecycleSessionId);
+      if (!session) return "direct_workspace_worker_lifecycle_session_missing";
+      if (TERMINAL_STATES.has(session.state)) {
+        const expectedState = patch.state === "completed"
+          ? "completed"
+          : patch.state === "cancelled" ? "cancelled" : "failed";
+        if (session.state !== expectedState) {
+          return "direct_workspace_worker_lifecycle_settlement_conflict";
+        }
+        record._lifecycleProjection = this.safeLifecycleProjection(session);
         return "";
       }
-      return this.transitionLifecycle(record, "acknowledgeCancellation", {
-        operationId: `pool-ack-cancel:${record.childAgentId}`,
-        reasonCode: record._cancelReasonCode || patch.blockerCode,
+      if (patch.state === "cancelled") {
+        if (session.state === "registered" || session.state === "active") {
+          const requestError = this.transitionLifecycle(record, "requestCancellation", {
+            operationId: `pool-request-cancel:${record.childAgentId}`,
+            reasonCode: record._cancelReasonCode || patch.blockerCode,
+          });
+          if (requestError) return requestError;
+        }
+        const current = this.workspaceWorkerLifecycleRegistry.session(record._lifecycleSessionId);
+        if (current.state === "cancelled") {
+          record._lifecycleProjection = this.safeLifecycleProjection(current);
+          return "";
+        }
+        return this.transitionLifecycle(record, "acknowledgeCancellation", {
+          operationId: `pool-ack-cancel:${record.childAgentId}`,
+          reasonCode: record._cancelReasonCode || patch.blockerCode,
+        });
+      }
+      return this.transitionLifecycle(record, "settleSession", {
+        operationId: `pool-settle:${record.childAgentId}:${patch.state}`,
+        state: patch.state === "completed" ? "completed" : "failed",
+        blockerCode: patch.blockerCode,
+        resultDigest: patch.resultDigest,
       });
+    } catch (error) {
+      const code = normalizeString(error?.code, "direct_workspace_worker_lifecycle_settlement_failed");
+      record._lifecycleErrorCode = code;
+      return code;
     }
-    return this.transitionLifecycle(record, "settleSession", {
-      operationId: `pool-settle:${record.childAgentId}:${patch.state}`,
-      state: patch.state === "completed" ? "completed" : "failed",
-      blockerCode: patch.blockerCode,
-      resultDigest: patch.resultDigest,
-    });
   }
 
   settleRecord(record, patch = {}) {

@@ -4,12 +4,12 @@ Status: Wave 1C substrate, not yet wired into the Electron root or WSL process-g
 
 ## Delivered boundary
 
-- Workspace-worker sessions and leases have a durable SQLite/WAL registry with append-only transition events, monotonic revisions, idempotent operation IDs, and restart-safe cancellation state.
-- A running child enters `cancelling` and retains pool capacity until its runner/provider promise resolves or rejects. A queued child may settle immediately because no runner started.
+- Workspace-worker sessions and leases have a durable SQLite/WAL registry with append-only transition events, monotonic revisions, canonical-input-bound operation IDs, and restart-safe cancellation state.
+- A running isolated-worktree child enters `cancelling` and retains pool capacity until its runner returns positive cancellation acknowledgement and backend-quiescence evidence. A queued child may settle immediately because no runner started.
 - Pool settlement is idempotent. A durable-registry failure produces `settlement_blocked` and retains the lease for explicit retry.
-- Workspace-backend requests accept an `AbortSignal`, emit a request-scoped `cancelRequest` control envelope, and wait for a backend `{ acknowledged: true, quiesced: true }` response or original request completion before reporting cancellation.
+- Workspace-backend requests accept an `AbortSignal`, emit a request-scoped `cancelRequest` control envelope, and wait for a backend `{ acknowledged: true, quiesced: true }` response or original request completion before reporting cancellation. Timed-out operations remain in drain accounting until that same evidence arrives or the transport closes.
 - Shutdown helpers enforce: stop intake, request cancellation, await child/provider acknowledgement, drain backend requests, dispose backends, close registry.
-- Cleanup is inspect-only. A plan can become eligible only after exact binding, released lease, process quiescence, clean Git status, expected head, and zero unique/untracked work are all evidenced. Force removal is never authorized by this slice.
+- Cleanup is inspect-only. A plan can become eligible only after exact binding, released lease, process quiescence, an explicit clean Git-status vector, expected head, and explicitly observed zero unique/untracked work are all evidenced. A cleaned transition requires a digest-recomputed typed receipt bound to the exact session revision, binding, plan, and non-force outcome. Force removal is never authorized by this slice.
 
 ## Explicit integration seams
 

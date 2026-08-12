@@ -17,6 +17,7 @@ const {
 } = require("../src/main/direct/agents/workspace-worker-lifecycle-registry");
 const {
   assertWorkspaceWorkerCleanupPlanSafe,
+  buildWorkspaceWorkerCleanupReceipt,
   buildWorkspaceWorkerCleanupPlan,
 } = require("../src/main/direct/agents/workspace-worker-cleanup");
 const {
@@ -55,6 +56,17 @@ try {
   });
   assert.equal(opened.state, "registered");
   assert.equal(opened.leaseState, "reserved");
+  assert.throws(
+    () => registry.openSession({
+      sessionId: "session_operation_conflict",
+      leaseId: "lease_operation_conflict",
+      childAgentId: "child_operation_conflict",
+      projectId: "project_operation_conflict",
+      operationId: "open_fixture",
+    }),
+    /direct_workspace_worker_operation_id_conflict/,
+    "an operation ID cannot replay another session's registration",
+  );
 
   const binding = normalizeBinding({
     workerKey: "worker_fixture",
@@ -128,6 +140,23 @@ try {
   assert.equal(cleanupPlan.canRemove, true);
   assert.equal(cleanupPlan.dryRun, true);
   assert.equal(cleanupPlan.forceRemovalAllowed, false);
+  const missingStatusPlan = buildWorkspaceWorkerCleanupPlan({
+    session: cancelled,
+    observation: { ...observation, statusEntries: undefined },
+  });
+  assert.equal(missingStatusPlan.canRemove, false);
+  assert(missingStatusPlan.blockerCodes.includes("cleanup_git_status_entries_invalid"));
+  const missingUntrackedPlan = buildWorkspaceWorkerCleanupPlan({
+    session: cancelled,
+    observation: { ...observation, untrackedFileCount: undefined },
+  });
+  assert.equal(missingUntrackedPlan.canRemove, false);
+  assert(missingUntrackedPlan.blockerCodes.includes("cleanup_untracked_work_present"));
+  const malformedUntrackedPlan = buildWorkspaceWorkerCleanupPlan({
+    session: cancelled,
+    observation: { ...observation, untrackedFileCount: "0" },
+  });
+  assert.equal(malformedUntrackedPlan.canRemove, false);
   const foreignPlan = buildWorkspaceWorkerCleanupPlan({
     session: { ...cancelled, sessionId: "session_other" },
     observation,
@@ -140,10 +169,28 @@ try {
     }),
     /direct_workspace_worker_cleanup_plan_binding_mismatch/,
   );
-  const eligible = registry.markCleanupEligible(opened.sessionId, {
-    operationId: "cleanup_eligible_fixture",
-    plan: cleanupPlan,
-  });
+  const mutateSession = registry.mutateSession.bind(registry);
+  let injectedCleanupRace = false;
+  registry.mutateSession = (sessionId, mutation) => {
+    if (mutation.eventKind === "cleanup_eligible" && !injectedCleanupRace) {
+      injectedCleanupRace = true;
+      mutateSession(sessionId, {
+        ...mutation,
+        operationId: "cleanup_eligible_competing_fixture",
+      });
+    }
+    return mutateSession(sessionId, mutation);
+  };
+  assert.throws(
+    () => registry.markCleanupEligible(opened.sessionId, {
+      operationId: "cleanup_eligible_fixture",
+      plan: cleanupPlan,
+    }),
+    /direct_workspace_worker_session_revision_conflict/,
+    "cleanup eligibility must reject a plan raced by another registry writer",
+  );
+  registry.mutateSession = mutateSession;
+  const eligible = registry.session(opened.sessionId);
   assert.equal(eligible.state, "cleanup_eligible");
 
   const dirtyPlan = buildWorkspaceWorkerCleanupPlan({
@@ -159,14 +206,44 @@ try {
     }),
     /direct_workspace_worker_cleanup_plan_not_safe/,
   );
-  const cleaned = registry.markCleaned(opened.sessionId, {
-    operationId: "cleaned_fixture",
+  assert.throws(
+    () => registry.markCleaned(opened.sessionId, {
+      operationId: "legacy_cleaned_fixture",
+      planDigest: cleanupPlan.planDigest,
+      receiptDigest: `sha256:${"e".repeat(64)}`,
+      removed: true,
+      forced: false,
+    }),
+    /direct_workspace_worker_cleanup_receipt_unsafe/,
+    "an unbound receipt digest cannot mark a workspace cleaned",
+  );
+  const cleanupReceipt = buildWorkspaceWorkerCleanupReceipt({
+    sessionId: eligible.sessionId,
+    sessionRevision: eligible.revision,
+    bindingDigest: eligible.binding.bindingDigest,
     planDigest: cleanupPlan.planDigest,
-    receiptDigest: `sha256:${"e".repeat(64)}`,
     removed: true,
     forced: false,
+    removalMode: "non_force",
+    outcome: "removed",
+  });
+  assert.throws(
+    () => registry.markCleaned(opened.sessionId, {
+      operationId: "foreign_receipt_cleaned_fixture",
+      receipt: buildWorkspaceWorkerCleanupReceipt({
+        ...cleanupReceipt,
+        bindingDigest: "sha256:foreign",
+        receiptId: "foreign_cleanup_receipt",
+      }),
+    }),
+    /direct_workspace_worker_cleanup_plan_digest_mismatch/,
+  );
+  const cleaned = registry.markCleaned(opened.sessionId, {
+    operationId: "cleaned_fixture",
+    receipt: cleanupReceipt,
   });
   assert.equal(cleaned.state, "cleaned");
+  assert.equal(cleaned.cleanupReceipt.receiptDigest, cleanupReceipt.receiptDigest);
   const durableEventCount = registry.events(opened.sessionId).length;
   registry.close();
 
@@ -225,7 +302,13 @@ try {
     timeoutMs: 0,
   });
   assert.equal(stillPending.status, "timeout", "cancel request is not terminal before runner acknowledgement");
-  runnerGates[0].resolve({ status: "cancelled", blockerCode: "fixture_interrupt" });
+  runnerGates[0].resolve({
+    status: "cancelled",
+    blockerCode: "fixture_interrupt",
+    cancellationAcknowledged: true,
+    backendQuiesced: true,
+    cancellationReceipt: { acknowledged: true, quiesced: true },
+  });
   const firstDone = await pool.wait({
     projectId: "project_pool_lifecycle",
     primaryThreadId: "primary_pool_lifecycle",
@@ -345,6 +428,35 @@ try {
   });
   assert.equal(transport.pendingRequestCount(), 0);
 
+  const timeoutWriteStart = writes.length;
+  const timeoutPromise = transport.request(
+    "runDirectWorkspaceWorkerTest",
+    { target: "ordinary_timeout" },
+    30,
+  );
+  await assert.rejects(timeoutPromise, (error) => {
+    assert.equal(error.code, "workspace_backend_request_timeout");
+    assert.equal(error.backendQuiesced, false);
+    return true;
+  });
+  await tick();
+  assert.equal(writes.length, timeoutWriteStart + 2, "a timed-out request must issue backend cancellation");
+  assert.equal(writes[timeoutWriteStart + 1].method, "cancelRequest");
+  assert.equal(transport.pendingRequestCount(), 1, "an unquiesced timeout remains in drain accounting");
+  assert.equal((await transport.waitForDrain({ timeoutMs: 0 })).status, "timeout");
+  fakeChild.stdout.write(`${JSON.stringify({
+    id: writes[timeoutWriteStart + 1].id,
+    result: {
+      targetRequestId: writes[timeoutWriteStart].id,
+      acknowledged: true,
+      quiesced: true,
+      acknowledgementKind: "fixture_timeout_process_exit",
+    },
+  })}\n`);
+  await tick();
+  assert.equal(transport.pendingRequestCount(), 0);
+  assert.equal((await transport.waitForDrain({ timeoutMs: 0 })).status, "drained");
+
   const unacknowledgedController = new AbortController();
   const unacknowledgedPromise = transport.request(
     "runDirectWorkspaceWorkerTest",
@@ -360,6 +472,8 @@ try {
     assert.equal(error.cancellationAcknowledged, false);
     return true;
   });
+  assert.equal(transport.pendingRequestCount(), 1);
+  assert.equal((await transport.waitForDrain({ timeoutMs: 0 })).status, "timeout");
   transport.dispose();
 
   const unacknowledgedPool = new DirectNativeAgentPool({
@@ -400,6 +514,65 @@ try {
   const unacknowledgedDrain = await unacknowledgedPool.drainAndClose({ timeoutMs: 10 });
   assert.equal(unacknowledgedDrain.status, "timeout", "unacknowledged cancellation must block shutdown drain");
 
+  const missingAcknowledgementGate = deferred();
+  const missingAcknowledgementPool = new DirectNativeAgentPool({
+    maxActiveChildren: 1,
+    workspaceWorkerRunner: async () => missingAcknowledgementGate.promise,
+  });
+  const missingAcknowledgementLaunch = missingAcknowledgementPool.launch({
+    projectId: "project_missing_acknowledgement",
+    primaryThreadId: "primary_missing_acknowledgement",
+    taskName: "missing_acknowledgement_worker",
+    message: "do not release capacity without a positive receipt",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "read_only_worker",
+    project: { id: "project_missing_acknowledgement" },
+  });
+  await tick();
+  missingAcknowledgementPool.interrupt({ target: missingAcknowledgementLaunch.childAgentId });
+  missingAcknowledgementGate.resolve({ status: "cancelled", blockerCode: "runner_returned_without_receipt" });
+  await tick();
+  const missingAcknowledgementRecord = missingAcknowledgementPool.inspect({
+    target: missingAcknowledgementLaunch.childAgentId,
+  });
+  assert.equal(missingAcknowledgementRecord.state, "cancellation_unacknowledged");
+  assert.equal(missingAcknowledgementRecord.cancellation.leaseActive, true);
+  assert.equal(missingAcknowledgementPool.descriptor().activeChildren, 1);
+
+  const settlementRegistry = new WorkspaceWorkerLifecycleRegistry({ db: new DatabaseSync(":memory:") });
+  const settlementGate = deferred();
+  const settlementPool = new DirectNativeAgentPool({
+    maxActiveChildren: 1,
+    workspaceWorkerLifecycleRegistry: settlementRegistry,
+    workspaceWorkerRunner: async () => settlementGate.promise,
+  });
+  const settlementLaunch = settlementPool.launch({
+    projectId: "project_settlement_failure",
+    primaryThreadId: "primary_settlement_failure",
+    taskName: "settlement_failure_worker",
+    message: "retain the lease across a registry read failure",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "read_only_worker",
+    project: { id: "project_settlement_failure" },
+  });
+  await tick();
+  const readSettlementSession = settlementRegistry.session.bind(settlementRegistry);
+  settlementRegistry.session = () => {
+    const error = new Error("fixture registry read failed");
+    error.code = "fixture_registry_read_failed";
+    throw error;
+  };
+  settlementGate.resolve({ status: "completed", resultDigest: "sha256:settlement_fixture" });
+  await tick();
+  const blockedSettlement = settlementPool.inspect({ target: settlementLaunch.childAgentId });
+  assert.equal(blockedSettlement.state, "settlement_blocked");
+  assert.equal(blockedSettlement.lifecycleErrorCode, "fixture_registry_read_failed");
+  assert.equal(blockedSettlement.cancellation.leaseActive, true);
+  settlementRegistry.session = readSettlementSession;
+  assert.equal(settlementPool.retrySettlement({ target: settlementLaunch.childAgentId }), true);
+  assert.equal(settlementPool.inspect({ target: settlementLaunch.childAgentId }).state, "completed");
+  settlementRegistry.close();
+
   const shutdownPlan = buildWorkspaceWorkerShutdownPlan({ reasonCode: "fixture_shutdown" });
   assert.deepEqual(shutdownPlan.steps.map((step) => step.action), [
     "stop_worker_intake",
@@ -438,8 +611,13 @@ try {
     ok: true,
     durableEvents: durableEventCount,
     exactCancellationLeaseHeld: true,
+    positiveCancellationReceiptRequired: true,
     backendCancellationAcknowledged: true,
+    unquiescedTimeoutBlocksDrain: true,
     cleanupDryRunSafe: cleanupPlan.canRemove,
+    cleanupReceiptDigestBound: true,
+    operationIdentityBound: true,
+    settlementFailureRetryable: true,
     shutdownOrder: order,
   }, null, 2));
 } finally {

@@ -4,7 +4,10 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
-const { assertWorkspaceWorkerCleanupPlanSafe } = require("./workspace-worker-cleanup");
+const {
+  assertWorkspaceWorkerCleanupPlanSafe,
+  assertWorkspaceWorkerCleanupReceiptSafe,
+} = require("./workspace-worker-cleanup");
 
 const WORKSPACE_WORKER_LIFECYCLE_REGISTRY_SCHEMA = "direct_workspace_worker_lifecycle_registry@1";
 const WORKSPACE_WORKER_SESSION_SCHEMA = "direct_workspace_worker_session@1";
@@ -108,7 +111,7 @@ function sessionDigest(session) {
   return digestFor("direct-workspace-worker-session@1", copy);
 }
 
-function buildEvent({ operationId, eventKind, before, after, occurredAt }) {
+function buildEvent({ operationId, operationDigest, eventKind, before, after, occurredAt }) {
   const event = {
     schema: WORKSPACE_WORKER_LIFECYCLE_EVENT_SCHEMA,
     eventId: `workspace_worker_event_${digestFor("direct-workspace-worker-event-id@1", {
@@ -116,6 +119,7 @@ function buildEvent({ operationId, eventKind, before, after, occurredAt }) {
       sessionId: after.sessionId,
     }).slice(7, 31)}`,
     operationId,
+    operationDigest,
     eventKind,
     sessionId: after.sessionId,
     leaseId: after.leaseId,
@@ -174,6 +178,7 @@ class WorkspaceWorkerLifecycleRegistry {
         sequence integer primary key autoincrement,
         event_id text not null unique,
         operation_id text not null unique,
+        operation_digest text not null,
         session_id text not null,
         event_kind text not null,
         from_state text not null,
@@ -187,6 +192,11 @@ class WorkspaceWorkerLifecycleRegistry {
       create index if not exists workspace_worker_events_session_idx
         on workspace_worker_lifecycle_events(session_id, sequence);
     `);
+    const eventColumns = new Set(this.db.prepare("pragma table_info(workspace_worker_lifecycle_events)")
+      .all().map((column) => column.name));
+    if (!eventColumns.has("operation_digest")) {
+      this.db.exec("alter table workspace_worker_lifecycle_events add column operation_digest text not null default ''");
+    }
     const existing = this.db.prepare(
       "select value from workspace_worker_registry_meta where key = 'schema'",
     ).get();
@@ -287,13 +297,25 @@ class WorkspaceWorkerLifecycleRegistry {
       "lease_id",
     );
     const operationId = safeId(input.operationId || `open:${sessionId}`, "operation_id");
+    const operationDigest = digestFor("direct-workspace-worker-lifecycle-operation@1", {
+      eventKind: "session_registered",
+      sessionId,
+      leaseId,
+      childAgentId,
+      projectId: safeId(input.projectId || "project_direct_agents", "project_id"),
+      workThreadId: normalizeString(input.workThreadId, ""),
+      primaryThreadId: normalizeString(input.primaryThreadId, ""),
+      toolProfile: normalizeString(input.toolProfile, "read_only_worker"),
+    });
     const occurredAt = nowIso(this.now);
     return this.withImmediateTransaction(() => {
-      const priorOperation = this.db.prepare(
-        "select after_session_json from workspace_worker_lifecycle_events where operation_id = ?",
-      ).get(operationId);
+      const priorOperation = this.readPriorOperation(operationId, {
+        operationDigest,
+        sessionId,
+        eventKind: "session_registered",
+      });
       if (priorOperation) {
-        return parseJson(priorOperation.after_session_json, "direct_workspace_worker_session_json_invalid");
+        return priorOperation;
       }
       const existing = this.readSessionRow(sessionId);
       const existingChild = this.db.prepare(
@@ -328,7 +350,14 @@ class WorkspaceWorkerLifecycleRegistry {
         rawWorkspacePathIncluded: false,
       };
       session.sessionDigest = sessionDigest(session);
-      const event = buildEvent({ operationId, eventKind: "session_registered", before: null, after: session, occurredAt });
+      const event = buildEvent({
+        operationId,
+        operationDigest,
+        eventKind: "session_registered",
+        before: null,
+        after: session,
+        occurredAt,
+      });
       this.db.prepare(`
         insert into workspace_worker_sessions(
           session_id, child_agent_id, lease_id, state, revision,
@@ -352,12 +381,13 @@ class WorkspaceWorkerLifecycleRegistry {
   insertEvent(event, afterSession) {
     this.db.prepare(`
       insert into workspace_worker_lifecycle_events(
-        event_id, operation_id, session_id, event_kind, from_state, to_state,
+        event_id, operation_id, operation_digest, session_id, event_kind, from_state, to_state,
         event_digest, event_json, after_session_json, occurred_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       event.eventId,
       event.operationId,
+      event.operationDigest,
       event.sessionId,
       event.eventKind,
       event.fromState,
@@ -369,16 +399,41 @@ class WorkspaceWorkerLifecycleRegistry {
     );
   }
 
+  readPriorOperation(operationId, expected = {}) {
+    const row = this.db.prepare(`select session_id, event_kind, operation_digest,
+      event_json, after_session_json from workspace_worker_lifecycle_events
+      where operation_id = ?`).get(operationId);
+    if (!row) return null;
+    const event = parseJson(row.event_json, "direct_workspace_worker_event_json_invalid");
+    const legacyDigest = !normalizeString(row.operation_digest || event.operationDigest, "");
+    if (
+      row.session_id !== expected.sessionId ||
+      row.event_kind !== expected.eventKind ||
+      (!legacyDigest && normalizeString(row.operation_digest || event.operationDigest, "") !== expected.operationDigest)
+    ) fail("direct_workspace_worker_operation_id_conflict");
+    return parseJson(row.after_session_json, "direct_workspace_worker_session_json_invalid");
+  }
+
   mutateSession(sessionId, input = {}) {
     const safeSessionId = safeId(sessionId, "session_id");
     const operationId = safeId(input.operationId, "operation_id");
     const eventKind = safeId(input.eventKind, "event_kind");
+    const nextStateIntent = normalizeString(input.nextState, "");
+    const operationDigest = digestFor("direct-workspace-worker-lifecycle-operation@1", {
+      eventKind,
+      sessionId: safeSessionId,
+      nextState: nextStateIntent,
+      expectedRevision: input.expectedRevision === undefined ? null : Number(input.expectedRevision),
+      operationInput: isPlainObject(input.operationInput) ? input.operationInput : {},
+    });
     return this.withImmediateTransaction(() => {
-      const priorOperation = this.db.prepare(
-        "select after_session_json from workspace_worker_lifecycle_events where operation_id = ?",
-      ).get(operationId);
+      const priorOperation = this.readPriorOperation(operationId, {
+        operationDigest,
+        sessionId: safeSessionId,
+        eventKind,
+      });
       if (priorOperation) {
-        return parseJson(priorOperation.after_session_json, "direct_workspace_worker_session_json_invalid");
+        return priorOperation;
       }
       const row = this.readSessionRow(safeSessionId);
       if (!row) fail("direct_workspace_worker_session_missing");
@@ -407,7 +462,7 @@ class WorkspaceWorkerLifecycleRegistry {
         rawWorkspacePathIncluded: false,
       };
       after.sessionDigest = sessionDigest(after);
-      const event = buildEvent({ operationId, eventKind, before, after, occurredAt });
+      const event = buildEvent({ operationId, operationDigest, eventKind, before, after, occurredAt });
       const result = this.db.prepare(`
         update workspace_worker_sessions
         set state = ?, revision = ?, session_digest = ?, session_json = ?, updated_at = ?
@@ -433,6 +488,7 @@ class WorkspaceWorkerLifecycleRegistry {
       operationId: input.operationId || `bind:${sessionId}:${binding.bindingDigest}`,
       eventKind: "workspace_bound",
       expectedRevision: input.expectedRevision,
+      operationInput: { binding },
       patch: (before) => {
         if (before.binding && before.binding.bindingDigest !== binding.bindingDigest) {
           fail("direct_workspace_worker_binding_rebind_forbidden");
@@ -448,6 +504,7 @@ class WorkspaceWorkerLifecycleRegistry {
       eventKind: "lease_activated",
       nextState: "active",
       expectedRevision: input.expectedRevision,
+      operationInput: {},
       patch: { leaseState: "active", processState: "running" },
     });
   }
@@ -461,6 +518,7 @@ class WorkspaceWorkerLifecycleRegistry {
         operationId: input.operationId || `cancel-before-start:${sessionId}`,
         eventKind: "cancelled_before_start",
         nextState: "cancelled",
+        operationInput: { reasonCode },
         patch: {
           leaseState: "released",
           processState: "quiescent",
@@ -478,6 +536,7 @@ class WorkspaceWorkerLifecycleRegistry {
       operationId: input.operationId || `request-cancel:${sessionId}`,
       eventKind: "cancellation_requested",
       nextState: "cancelling",
+      operationInput: { reasonCode },
       patch: (before) => ({
         leaseState: "active",
         processState: "cancelling",
@@ -494,17 +553,22 @@ class WorkspaceWorkerLifecycleRegistry {
   }
 
   acknowledgeCancellation(sessionId, input = {}) {
+    const reasonCode = normalizeString(
+      input.reasonCode,
+      this.session(sessionId)?.cancellation?.reasonCode || "direct_agent_cancelled",
+    );
     return this.mutateSession(sessionId, {
       operationId: input.operationId || `ack-cancel:${sessionId}`,
       eventKind: "cancellation_acknowledged",
       nextState: "cancelled",
+      operationInput: { reasonCode },
       patch: (before) => ({
         leaseState: "released",
         processState: "quiescent",
         cancellation: {
           ...before.cancellation,
           requested: true,
-          reasonCode: normalizeString(input.reasonCode, before.cancellation?.reasonCode || "direct_agent_cancelled"),
+          reasonCode,
           acknowledged: true,
           acknowledgedAt: nowIso(this.now),
         },
@@ -521,6 +585,11 @@ class WorkspaceWorkerLifecycleRegistry {
       operationId: input.operationId || `settle:${sessionId}:${state}`,
       eventKind: `session_${state}`,
       nextState: state,
+      operationInput: {
+        state,
+        blockerCode: normalizeString(input.blockerCode, ""),
+        resultDigest: normalizeString(input.resultDigest, ""),
+      },
       patch: {
         leaseState: "released",
         processState: "quiescent",
@@ -553,24 +622,47 @@ class WorkspaceWorkerLifecycleRegistry {
       operationId: input.operationId || `cleanup-eligible:${sessionId}:${plan.planDigest}`,
       eventKind: "cleanup_eligible",
       nextState: "cleanup_eligible",
+      expectedRevision: plan.sessionRevision,
+      operationInput: {
+        planDigest: plan.planDigest,
+        bindingDigest: plan.bindingDigest,
+        sessionRevision: plan.sessionRevision,
+      },
       patch: { cleanupPlanDigest: plan.planDigest },
     });
   }
 
   markCleaned(sessionId, input = {}) {
-    if (input.removed !== true || input.forced === true || !normalizeString(input.receiptDigest, "")) {
+    const receipt = input.receipt;
+    try {
+      assertWorkspaceWorkerCleanupReceiptSafe(receipt);
+    } catch {
       fail("direct_workspace_worker_cleanup_receipt_unsafe");
     }
     const before = this.session(sessionId);
-    if (!before || before.cleanupPlanDigest !== input.planDigest) {
+    if (
+      !before ||
+      before.cleanupPlanDigest !== receipt.planDigest ||
+      receipt.sessionId !== before.sessionId ||
+      receipt.sessionRevision !== before.revision ||
+      receipt.bindingDigest !== before.binding?.bindingDigest
+    ) {
       fail("direct_workspace_worker_cleanup_plan_digest_mismatch");
     }
     return this.mutateSession(sessionId, {
-      operationId: input.operationId || `cleaned:${sessionId}:${input.planDigest}`,
+      operationId: input.operationId || `cleaned:${sessionId}:${receipt.planDigest}`,
       eventKind: "workspace_cleaned",
       nextState: "cleaned",
+      expectedRevision: receipt.sessionRevision,
+      operationInput: {
+        receiptDigest: receipt.receiptDigest,
+        planDigest: receipt.planDigest,
+        bindingDigest: receipt.bindingDigest,
+        sessionRevision: receipt.sessionRevision,
+      },
       patch: {
-        cleanupReceiptDigest: normalizeString(input.receiptDigest, ""),
+        cleanupReceipt: receipt,
+        cleanupReceiptDigest: receipt.receiptDigest,
         cleanedAt: nowIso(this.now),
       },
     });

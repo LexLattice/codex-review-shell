@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 
 const WORKSPACE_WORKER_CLEANUP_PLAN_SCHEMA = "direct_workspace_worker_cleanup_plan@1";
+const WORKSPACE_WORKER_CLEANUP_RECEIPT_SCHEMA = "direct_workspace_worker_cleanup_receipt@1";
 const CLEANUP_SOURCE_STATES = new Set(["completed", "failed", "cancelled", "cleanup_eligible"]);
 
 function isPlainObject(value) {
@@ -54,7 +55,9 @@ function buildWorkspaceWorkerCleanupPlan(input = {}) {
     blockers.push("cleanup_process_observation_not_quiescent");
   }
   if (observation.gitStatusReadSucceeded !== true) blockers.push("cleanup_git_status_unavailable");
-  const statusEntries = Array.isArray(observation.statusEntries) ? observation.statusEntries : [];
+  const statusEntriesValid = Array.isArray(observation.statusEntries);
+  const statusEntries = statusEntriesValid ? observation.statusEntries : [];
+  if (!statusEntriesValid) blockers.push("cleanup_git_status_entries_invalid");
   if (statusEntries.length > 0) blockers.push("cleanup_worktree_dirty");
   if (observation.headReadSucceeded !== true) blockers.push("cleanup_head_unavailable");
   if (!normalizeString(observation.headCommit, "")) blockers.push("cleanup_head_missing");
@@ -62,7 +65,10 @@ function buildWorkspaceWorkerCleanupPlan(input = {}) {
   if (observation.uniqueWorkReadSucceeded !== true) blockers.push("cleanup_unique_work_unavailable");
   const uniqueCommitCount = nonNegativeInteger(observation.uniqueCommitCount, -1);
   if (uniqueCommitCount !== 0) blockers.push("cleanup_unique_commits_present");
-  if (observation.untrackedFileCount !== undefined && nonNegativeInteger(observation.untrackedFileCount, -1) !== 0) {
+  const untrackedFileCountValid = Number.isInteger(observation.untrackedFileCount) &&
+    observation.untrackedFileCount >= 0;
+  const untrackedFileCount = untrackedFileCountValid ? observation.untrackedFileCount : -1;
+  if (!untrackedFileCountValid || untrackedFileCount !== 0) {
     blockers.push("cleanup_untracked_work_present");
   }
   if (observation.conflictState === true) blockers.push("cleanup_conflict_state_present");
@@ -94,7 +100,8 @@ function buildWorkspaceWorkerCleanupPlan(input = {}) {
       observation.workerKey === binding.workerKey &&
       observation.branchName === binding.branchName &&
       observation.worktreePathDigest === binding.worktreePathDigest,
-    gitStatusVerifiedClean: observation.gitStatusReadSucceeded === true && statusEntries.length === 0,
+    gitStatusVerifiedClean: observation.gitStatusReadSucceeded === true &&
+      statusEntriesValid && statusEntries.length === 0 && untrackedFileCount === 0,
     headVerified: observation.headReadSucceeded === true && Boolean(observation.headCommit) &&
       (!binding.headCommit || observation.headCommit === binding.headCommit),
     uniqueWorkVerifiedAbsent: observation.uniqueWorkReadSucceeded === true && uniqueCommitCount === 0,
@@ -102,6 +109,56 @@ function buildWorkspaceWorkerCleanupPlan(input = {}) {
   };
   plan.planDigest = digestFor("direct-workspace-worker-cleanup-plan@1", plan);
   return plan;
+}
+
+function buildWorkspaceWorkerCleanupReceipt(input = {}) {
+  const core = {
+    schema: WORKSPACE_WORKER_CLEANUP_RECEIPT_SCHEMA,
+    sessionId: normalizeString(input.sessionId, ""),
+    sessionRevision: nonNegativeInteger(input.sessionRevision, 0),
+    bindingDigest: normalizeString(input.bindingDigest, ""),
+    planDigest: normalizeString(input.planDigest, ""),
+    outcome: normalizeString(input.outcome, "removed"),
+    removed: input.removed === true,
+    forced: input.forced === true,
+    removalMode: normalizeString(input.removalMode, "non_force"),
+    branchDeleted: input.branchDeleted === true,
+    rawWorkspacePathIncluded: false,
+  };
+  const receiptId = normalizeString(input.receiptId, `workspace_worker_cleanup_receipt_${digestFor(
+    "direct-workspace-worker-cleanup-receipt-id@1",
+    core,
+  ).slice(7, 31)}`);
+  const receipt = { ...core, receiptId };
+  receipt.receiptDigest = digestFor("direct-workspace-worker-cleanup-receipt@1", receipt);
+  return receipt;
+}
+
+function assertWorkspaceWorkerCleanupReceiptSafe(receipt = {}) {
+  if (!isPlainObject(receipt) || receipt.schema !== WORKSPACE_WORKER_CLEANUP_RECEIPT_SCHEMA) {
+    const error = new Error("direct_workspace_worker_cleanup_receipt_schema_invalid");
+    error.code = "direct_workspace_worker_cleanup_receipt_schema_invalid";
+    throw error;
+  }
+  const rebuilt = buildWorkspaceWorkerCleanupReceipt(receipt);
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(rebuilt.receiptId) ||
+    !rebuilt.sessionId ||
+    rebuilt.sessionRevision < 1 ||
+    !rebuilt.bindingDigest ||
+    !rebuilt.planDigest ||
+    rebuilt.outcome !== "removed" ||
+    rebuilt.removed !== true ||
+    rebuilt.forced !== false ||
+    rebuilt.removalMode !== "non_force" ||
+    rebuilt.rawWorkspacePathIncluded !== false ||
+    stableStringify(receipt) !== stableStringify(rebuilt)
+  ) {
+    const error = new Error("direct_workspace_worker_cleanup_receipt_unsafe");
+    error.code = "direct_workspace_worker_cleanup_receipt_unsafe";
+    throw error;
+  }
+  return receipt;
 }
 
 function assertWorkspaceWorkerCleanupPlanSafe(plan = {}) {
@@ -140,6 +197,9 @@ function assertWorkspaceWorkerCleanupPlanSafe(plan = {}) {
 module.exports = {
   CLEANUP_SOURCE_STATES,
   WORKSPACE_WORKER_CLEANUP_PLAN_SCHEMA,
+  WORKSPACE_WORKER_CLEANUP_RECEIPT_SCHEMA,
   assertWorkspaceWorkerCleanupPlanSafe,
+  assertWorkspaceWorkerCleanupReceiptSafe,
   buildWorkspaceWorkerCleanupPlan,
+  buildWorkspaceWorkerCleanupReceipt,
 };

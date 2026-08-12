@@ -216,9 +216,10 @@ function boundedProviderEvidenceJson(value, options = {}) {
 
 async function executeWorkspaceRepositoryTool(input = {}) {
   const { toolName, args = {}, contract, provisioned } = input;
+  const requestOptions = input.signal ? { signal: input.signal } : {};
   const bindingDigest = contract.binding.bindingDigest;
   if (toolName === "inspect_repository") {
-    const raw = await provisioned.workspaceRequest("inspectWorkspaceRepository", { bindingDigest }, 30_000);
+    const raw = await provisioned.workspaceRequest("inspectWorkspaceRepository", { bindingDigest }, 30_000, requestOptions);
     assertBinding(raw, contract);
     const providerOutput = {
       kind: "inspect_repository_result",
@@ -245,7 +246,7 @@ async function executeWorkspaceRepositoryTool(input = {}) {
   if (toolName === "list_files") {
     const prefix = safeRepositoryRelativePath(args.path || args.prefix || "", { allowEmpty: true });
     const limit = boundedInteger(args.limit, 100, 1, MAX_REPOSITORY_LIST_ENTRIES);
-    const raw = await provisioned.workspaceRequest("listWorkspaceRepositoryFiles", { bindingDigest, prefix, limit }, 30_000);
+    const raw = await provisioned.workspaceRequest("listWorkspaceRepositoryFiles", { bindingDigest, prefix, limit }, 30_000, requestOptions);
     assertBinding(raw, contract);
     const entries = safeEntries(raw?.entries);
     const providerOutput = {
@@ -270,7 +271,7 @@ async function executeWorkspaceRepositoryTool(input = {}) {
     }
     for (const pattern of patterns) safeRepositoryRelativePath(pattern.replace(/[?*]+/g, "x"));
     const limit = boundedInteger(args.limit, 100, 1, MAX_REPOSITORY_LIST_ENTRIES);
-    const raw = await provisioned.workspaceRequest("matchWorkspaceRepositoryFiles", { bindingDigest, patterns, limit }, 30_000);
+    const raw = await provisioned.workspaceRequest("matchWorkspaceRepositoryFiles", { bindingDigest, patterns, limit }, 30_000, requestOptions);
     assertBinding(raw, contract);
     const entries = safeEntries(raw?.entries);
     const providerOutput = {
@@ -301,7 +302,7 @@ async function executeWorkspaceRepositoryTool(input = {}) {
       prefix,
       caseSensitive: args.case_sensitive === true || args.caseSensitive === true,
       maxResults,
-    }, 45_000);
+    }, 45_000, requestOptions);
     assertBinding(raw, contract);
     const incomplete = raw?.incomplete === true || raw?.truncated === true;
     const omissionCounts = safeSearchOmissionCounts(raw?.omissionCounts);
@@ -341,7 +342,7 @@ async function executeWorkspaceRepositoryTool(input = {}) {
       bindingDigest,
       relPath,
       maxBytes,
-    }, 30_000);
+    }, 30_000, requestOptions);
     assertBinding(raw, contract);
     const providerOutput = {
       kind: "read_file_result",

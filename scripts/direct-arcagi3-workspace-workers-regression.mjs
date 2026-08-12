@@ -204,6 +204,7 @@ try {
   const providerBodies = [];
   const providerSteps = new Map();
   const workerTokenUsage = new Map();
+  const workspaceRequestSignalForwarding = [];
   let firstProviderEntrants = 0;
   let releaseFirstProviderEntrants;
   const firstProviderBarrier = new Promise((resolve) => { releaseFirstProviderEntrants = resolve; });
@@ -215,7 +216,7 @@ try {
       workerKey,
       branch,
       baseRef: seedHead,
-    }, 45_000);
+    }, 45_000, { signal: input.signal });
     const nativeRoot = provisioned.worktreePath;
     const project = childProject(parentProject, nativeRoot, input.childAgentId);
     const binding = { ...provisioned };
@@ -224,13 +225,19 @@ try {
       workspaceHygiene: false,
       workspaceWorkerBinding: binding,
     });
-    const testProfile = await session.request("directTestProfile", {}, 10_000);
+    const testProfile = await session.request("directTestProfile", {}, 10_000, { signal: input.signal });
     const realization = {
       binding,
       testProfile,
       nativeRoot,
       backendSessionId: session.workspaceWorkerBinding.backendSessionId,
-      workspaceRequest: (method, params = {}, timeoutMs) => session.request(method, params, timeoutMs),
+      workspaceRequest: (method, params = {}, timeoutMs, requestOptions = {}) => {
+        workspaceRequestSignalForwarding.push({
+          method,
+          forwarded: requestOptions.signal === input.signal,
+        });
+        return session.request(method, params, timeoutMs, requestOptions);
+      },
     };
     privateRealizations.set(input.childAgentId, realization);
     return realization;
@@ -687,6 +694,12 @@ try {
     assert.equal(names.includes("send_message"), false);
     assert.equal(entry.body.parallel_tool_calls, false);
   }
+  assert(workspaceRequestSignalForwarding.length > 0);
+  assert.equal(
+    workspaceRequestSignalForwarding.every((entry) => entry.forwarded),
+    true,
+    "every workspace tool request must carry the worker cancellation signal",
+  );
   const publicJson = JSON.stringify([recordA, recordB, pool.statusSurface({
     projectId: parentProject.id,
     workThreadId: "work_thread_arcagi3_workspace_workers",
