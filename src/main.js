@@ -3509,6 +3509,7 @@ function resetCompletedWorkspaceWorkerShutdown() {
   if (workspaceWorkerShutdownReceipt?.status !== "completed") return;
   workspaceWorkerShutdownReceipt = null;
   workspaceWorkerShutdownInFlight = null;
+  degradedWorkspaceShutdownStarted = false;
 }
 
 async function coordinateWorkspaceWorkerShutdown(reason = "Direct runtime closed.") {
@@ -3521,6 +3522,16 @@ async function coordinateWorkspaceWorkerShutdown(reason = "Direct runtime closed
   workspaceWorkerShutdownInFlight = runWorkspaceWorkerShutdown({
     reasonCode: "direct_runtime_closed",
     stopWorkerIntake: () => pool?.stopAccepting?.({ reason, reasonCode: "direct_runtime_closed" }),
+    verifyRestartReconciliation: () => pool?.recoverySnapshot?.() || registry?.recoverySnapshot?.() || {
+      status: "clean",
+      candidateCount: 0,
+      candidates: [],
+    },
+    retryChildSettlement: () => pool?.retryPendingSettlements?.({ attempts: 3 }) || {
+      status: "settled",
+      blockerCode: "",
+      remainingChildAgentIds: [],
+    },
     requestChildCancellation: () => pool?.requestCancellationForAll?.({ reason, reasonCode: "direct_runtime_closed" }),
     awaitChildAcknowledgement: () => pool?.drainAndClose?.({
       reason,
@@ -3959,6 +3970,16 @@ async function provisionDirectWorkspaceWorker(input = {}) {
   }
   const workerKey = directWorkspaceWorkerKey(input.childAgentId);
   const branch = directWorkspaceWorkerBranch(workerKey);
+  if (!directNativeAgentPool?.beginWorkspaceProvisioning) {
+    const error = new Error("Workspace-worker pool provisioning custody seam is unavailable.");
+    error.code = "direct_workspace_worker_pool_provisioning_unavailable";
+    throw error;
+  }
+  directNativeAgentPool.beginWorkspaceProvisioning(input.childAgentId, {
+    operationId: `pool-provision:${input.childAgentId}`,
+    workerKey,
+    branchName: branch,
+  });
   const provisioned = await requestWorkspace(parentProject, "provisionGitWorktree", {
     workerKey,
     branch,
@@ -3985,6 +4006,43 @@ async function provisionDirectWorkspaceWorker(input = {}) {
       workspaceKind: parentWorkspaceKind,
       branch,
     });
+    if (provisioned?.requestOutcome?.committed !== true) {
+      const error = new Error("Workspace-worker provisioning lacks an indivisible Git outcome receipt.");
+      error.code = "direct_workspace_worker_provisioning_outcome_missing";
+      throw error;
+    }
+    if (!directNativeAgentPool?.bindWorkspaceForChild) {
+      const error = new Error("Workspace-worker pool lifecycle binding seam is unavailable.");
+      error.code = "direct_workspace_worker_pool_binding_unavailable";
+      throw error;
+    }
+    directNativeAgentPool.bindWorkspaceForChild(input.childAgentId, {
+      operationId: `pool-bind:${input.childAgentId}`,
+      binding: normalizeWorkspaceWorkerLifecycleBinding({
+        workerKey,
+        branchName: binding.branch,
+        baseCommit: binding.baseCommit,
+        headCommit: binding.baseCommit,
+        worktreePathDigest: binding.rootEvidenceDigest,
+        sourceRepositoryDigest: binding.sourceRepositoryDigest,
+      }),
+    });
+    if (input.signal?.aborted) {
+      const error = new Error("Workspace-worker provisioning was cancelled after Git committed the retained binding.");
+      error.name = "AbortError";
+      error.code = "direct_workspace_worker_provisioning_cancelled_binding_retained";
+      error.cancellationAcknowledged = true;
+      error.backendQuiesced = true;
+      error.cancellationReceipt = {
+        targetRequestId: normalizeString(provisioned.requestOutcome.requestId, ""),
+        acknowledged: true,
+        quiesced: true,
+        acknowledgementKind: "provisioning_commit_binding_retained",
+        outcomeDigest: normalizeString(provisioned.requestOutcome.outcomeDigest, ""),
+        rawProcessDetailsIncluded: false,
+      };
+      throw error;
+    }
     workerProject = projectForWorkspaceWorker(parentProject, nativeRoot, workerKey);
     manager = ensureWorkspaceBackendManager();
     const workerSession = await manager.ensureForProject(workerProject, {
@@ -4013,22 +4071,6 @@ async function provisionDirectWorkspaceWorker(input = {}) {
       error.code = "direct_workspace_worker_lifecycle_session_missing";
       throw error;
     }
-    if (!directNativeAgentPool?.bindWorkspaceForChild) {
-      const error = new Error("Workspace-worker pool lifecycle binding seam is unavailable.");
-      error.code = "direct_workspace_worker_pool_binding_unavailable";
-      throw error;
-    }
-    directNativeAgentPool.bindWorkspaceForChild(input.childAgentId, {
-      operationId: `pool-bind:${input.childAgentId}`,
-      binding: normalizeWorkspaceWorkerLifecycleBinding({
-        workerKey,
-        branchName: binding.branch,
-        baseCommit: binding.baseCommit,
-        headCommit: binding.baseCommit,
-        worktreePathDigest: binding.rootEvidenceDigest,
-        sourceRepositoryDigest: binding.sourceRepositoryDigest,
-      }),
-    });
     return {
       binding,
       testProfile,

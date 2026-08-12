@@ -13,10 +13,12 @@ const { DatabaseSync } = require("node:sqlite");
 const { DirectNativeAgentPool } = require("../src/main/direct/agents/native-agent-pool");
 const {
   WorkspaceWorkerLifecycleRegistry,
+  buildWorkspaceWorkerReconciliationReceipt,
   normalizeBinding,
 } = require("../src/main/direct/agents/workspace-worker-lifecycle-registry");
 const {
   assertWorkspaceWorkerCleanupPlanSafe,
+  buildWorkspaceWorkerCleanupObservation,
   buildWorkspaceWorkerCleanupReceipt,
   buildWorkspaceWorkerCleanupPlan,
 } = require("../src/main/direct/agents/workspace-worker-cleanup");
@@ -25,6 +27,7 @@ const {
   runWorkspaceWorkerShutdown,
 } = require("../src/main/direct/agents/workspace-worker-shutdown");
 const { NdjsonTransport, WorkspaceBackendManager } = require("../src/main/workspace-backend");
+const { terminateWorkspaceProcessTree } = require("../src/backend/workspace-process-tree");
 
 function deferred() {
   let resolve;
@@ -76,6 +79,25 @@ try {
     worktreePathDigest: `sha256:${"b".repeat(64)}`,
     sourceRepositoryDigest: `sha256:${"c".repeat(64)}`,
   });
+  registry.beginProvisioning(opened.sessionId, {
+    workerKey: binding.workerKey,
+    branchName: binding.branchName,
+    operationId: "provision_fixture",
+  });
+  assert.throws(
+    () => registry.bindWorkspace(opened.sessionId, {
+      binding: normalizeBinding({
+        workerKey: "wrong_custody_worker",
+        branchName: binding.branchName,
+        baseCommit: binding.baseCommit,
+        headCommit: binding.headCommit,
+        worktreePathDigest: binding.worktreePathDigest,
+        sourceRepositoryDigest: binding.sourceRepositoryDigest,
+      }),
+      operationId: "wrong_custody_binding_fixture",
+    }),
+    /direct_workspace_worker_binding_provisioning_custody_mismatch/,
+  );
   const bound = registry.bindWorkspace(opened.sessionId, {
     binding,
     operationId: "bind_fixture",
@@ -113,11 +135,10 @@ try {
     reasonCode: "fixture_cancelled",
   });
   assert.equal(duplicateAck.sessionDigest, cancelled.sessionDigest, "settlement operation is idempotent");
-  assert.equal(registry.events(opened.sessionId).length, 5);
+  assert.equal(registry.events(opened.sessionId).length, 6);
 
-  const observation = {
+  const observation = buildWorkspaceWorkerCleanupObservation({
     observationComplete: true,
-    observationDigest: `sha256:${"d".repeat(64)}`,
     workerKey: binding.workerKey,
     branchName: binding.branchName,
     bindingDigest: binding.bindingDigest,
@@ -134,12 +155,30 @@ try {
     uniqueCommitCount: 0,
     conflictState: false,
     gitOperationInProgress: false,
-  };
+  });
   const cleanupPlan = buildWorkspaceWorkerCleanupPlan({ session: cancelled, observation });
   assertWorkspaceWorkerCleanupPlanSafe(cleanupPlan);
   assert.equal(cleanupPlan.canRemove, true);
   assert.equal(cleanupPlan.dryRun, true);
   assert.equal(cleanupPlan.forceRemovalAllowed, false);
+  const forgedObservationPlan = buildWorkspaceWorkerCleanupPlan({
+    session: cancelled,
+    observation: { ...observation, observationDigest: "not-a-digest" },
+  });
+  assert.equal(forgedObservationPlan.canRemove, false);
+  assert(forgedObservationPlan.blockerCodes.includes("cleanup_observation_invalid"));
+  const omittedNegativeEvidencePlan = buildWorkspaceWorkerCleanupPlan({
+    session: cancelled,
+    observation: {
+      ...observation,
+      conflictState: undefined,
+      gitOperationInProgress: undefined,
+      observationDigest: undefined,
+    },
+  });
+  assert.equal(omittedNegativeEvidencePlan.canRemove, false);
+  assert(omittedNegativeEvidencePlan.blockerCodes.includes("cleanup_conflict_state_unavailable"));
+  assert(omittedNegativeEvidencePlan.blockerCodes.includes("cleanup_git_operation_state_unavailable"));
   const missingStatusPlan = buildWorkspaceWorkerCleanupPlan({
     session: cancelled,
     observation: { ...observation, statusEntries: undefined },
@@ -247,6 +286,68 @@ try {
   const durableEventCount = registry.events(opened.sessionId).length;
   registry.close();
 
+  const recoveryDbPath = path.join(temporaryRoot, "worker-recovery.sqlite");
+  let recoveryRegistry = new WorkspaceWorkerLifecycleRegistry({ dbPath: recoveryDbPath });
+  const interrupted = recoveryRegistry.openSession({
+    sessionId: "session_restart_interrupted",
+    leaseId: "lease_restart_interrupted",
+    childAgentId: "child_restart_interrupted",
+    projectId: "project_restart_interrupted",
+    operationId: "open_restart_interrupted",
+  });
+  recoveryRegistry.activateLease(interrupted.sessionId, { operationId: "activate_restart_interrupted" });
+  recoveryRegistry.close();
+  recoveryRegistry = new WorkspaceWorkerLifecycleRegistry({ dbPath: recoveryDbPath });
+  const recoveryPool = new DirectNativeAgentPool({
+    workspaceWorkerLifecycleRegistry: recoveryRegistry,
+    workspaceWorkerRunner: async () => ({ status: "completed" }),
+  });
+  assert.equal(recoveryPool.recoverySnapshot().status, "reconciliation_required");
+  assert.equal(recoveryPool.descriptor().durableRecoveryCandidateCount, 1);
+  assert.throws(
+    () => buildWorkspaceWorkerReconciliationReceipt({
+      sessionId: interrupted.sessionId,
+      expectedRevision: recoveryRegistry.session(interrupted.sessionId).revision,
+      providerAcknowledged: true,
+      backendQuiesced: true,
+      verifierId: "workspace_backend_restart_verifier",
+    }),
+    /direct_workspace_worker_reconciliation_evidence_invalid/,
+  );
+  const blockedRecoveryLaunch = recoveryPool.launch({
+    childAgentId: "new_child_while_recovery_pending",
+    projectId: "project_restart_interrupted",
+    taskName: "new_child_while_recovery_pending",
+    message: "must not launch",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "read_only_worker",
+    project: { id: "project_restart_interrupted" },
+  });
+  assert.equal(blockedRecoveryLaunch.blockerCode, "direct_workspace_worker_restart_reconciliation_required");
+  assert.equal((await recoveryPool.drainAndClose({ timeoutMs: 0 })).status, "reconciliation_required");
+  assert.equal(recoveryRegistry.session(interrupted.sessionId).leaseState, "active");
+  const reconciliationReceipt = buildWorkspaceWorkerReconciliationReceipt({
+    sessionId: interrupted.sessionId,
+    expectedRevision: recoveryRegistry.session(interrupted.sessionId).revision,
+    outcome: "failed",
+    reasonCode: "restart_process_absent_and_verified_quiescent",
+    providerAcknowledged: true,
+    backendQuiesced: true,
+    providerAcknowledgementDigest: `sha256:${"e".repeat(64)}`,
+    backendQuiescenceDigest: `sha256:${"f".repeat(64)}`,
+    verifierId: "workspace_backend_restart_verifier",
+    processIdentityRecovered: false,
+    bindingRetainedForInspection: true,
+  });
+  recoveryPool.reconcileRecoveredSession({ receipt: reconciliationReceipt });
+  assert.equal(recoveryPool.recoverySnapshot().status, "clean");
+  assert.equal(recoveryRegistry.session(interrupted.sessionId).leaseState, "released");
+  assert.throws(
+    () => recoveryPool.reconcileRecoveredSession({ receipt: reconciliationReceipt }),
+    /direct_workspace_worker_recovery_candidate_missing/,
+  );
+  recoveryRegistry.close();
+
   const poolRegistry = new WorkspaceWorkerLifecycleRegistry({ db: new DatabaseSync(":memory:") });
   const runnerCalls = [];
   const runnerGates = [];
@@ -290,6 +391,10 @@ try {
     headCommit: "1".repeat(40),
     worktreePathDigest: `sha256:${"2".repeat(64)}`,
     sourceRepositoryDigest: `sha256:${"3".repeat(64)}`,
+  });
+  pool.beginWorkspaceProvisioning(first.childAgentId, {
+    workerKey: firstLifecycleBinding.workerKey,
+    branchName: firstLifecycleBinding.branchName,
   });
   pool.bindWorkspaceForChild(first.childAgentId, { binding: firstLifecycleBinding });
   assert.equal(
@@ -344,6 +449,18 @@ try {
   assert.equal(secondDone.updates[0].state, "completed");
   assert.equal(pool.settleRecord(pool.resolveTarget(second.childAgentId), { state: "failed" }), false);
   assert.equal(poolRegistry.sessionForChild(second.childAgentId).state, "completed");
+  const reusedIdentity = pool.launch({
+    childAgentId: second.childAgentId,
+    projectId: "project_pool_lifecycle",
+    primaryThreadId: "primary_pool_lifecycle",
+    workThreadId: "work_pool_lifecycle",
+    taskName: "reused_terminal_identity",
+    message: "must not execute",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "read_only_worker",
+    project: { id: "project_pool_lifecycle" },
+  });
+  assert.equal(reusedIdentity.blockerCode, "direct_agent_child_identity_reused");
 
   const closeAck = deferred();
   const closePool = new DirectNativeAgentPool({
@@ -391,6 +508,46 @@ try {
       return true;
     }
   }
+
+  const windowsTreeChild = new EventEmitter();
+  windowsTreeChild.pid = 4242;
+  windowsTreeChild.exitCode = null;
+  windowsTreeChild.signalCode = null;
+  const windowsTaskkillArgs = [];
+  const verifiedWindowsTreeKill = terminateWorkspaceProcessTree(windowsTreeChild, {
+    platform: "win32",
+    timeoutMs: 100,
+    spawnImpl: (command, args) => {
+      windowsTaskkillArgs.push({ command, args });
+      const taskkill = new EventEmitter();
+      setImmediate(() => {
+        taskkill.emit("exit", 0);
+        windowsTreeChild.exitCode = 1;
+        windowsTreeChild.emit("exit", 1, null);
+      });
+      return taskkill;
+    },
+  });
+  assert.equal((await verifiedWindowsTreeKill).quiesced, true);
+  assert.deepEqual(windowsTaskkillArgs[0], {
+    command: "taskkill",
+    args: ["/PID", "4242", "/T", "/F"],
+  });
+  const unverifiableWindowsTreeChild = new EventEmitter();
+  unverifiableWindowsTreeChild.pid = 4343;
+  unverifiableWindowsTreeChild.exitCode = null;
+  unverifiableWindowsTreeChild.signalCode = null;
+  const unverifiableWindowsTreeKill = await terminateWorkspaceProcessTree(unverifiableWindowsTreeChild, {
+    platform: "win32",
+    timeoutMs: 20,
+    spawnImpl: () => {
+      const taskkill = new EventEmitter();
+      setImmediate(() => taskkill.emit("exit", 1));
+      return taskkill;
+    },
+  });
+  assert.equal(unverifiableWindowsTreeKill.quiesced, false);
+  assert.equal(unverifiableWindowsTreeKill.method, "taskkill_tree_force");
 
   const fakeChild = new FakeChild();
   const transport = new NdjsonTransport(fakeChild);
@@ -440,6 +597,50 @@ try {
     assert.equal(error.cancellationAcknowledged, true);
     return true;
   });
+  assert.equal(transport.pendingRequestCount(), 0);
+
+  const mutationController = new AbortController();
+  const mutationPromise = transport.request(
+    "provisionGitWorktree",
+    { workerKey: "retained-worker", branch: "codex/worker/retained-worker", baseRef: "HEAD" },
+    2_000,
+    { signal: mutationController.signal },
+  );
+  await tick();
+  const mutationRequest = writes.at(-1);
+  mutationController.abort("fixture_cancel_after_commit");
+  await tick();
+  const mutationCancel = writes.at(-1);
+  assert.equal(mutationCancel.method, "cancelRequest");
+  fakeChild.stdout.write(`${JSON.stringify({
+    id: mutationRequest.id,
+    result: {
+      schema: "direct_workspace_worker_binding@1",
+      projectId: "project_retained_binding",
+      workerKey: "retained-worker",
+      workspaceKind: "local",
+      branch: "codex/worker/retained-worker",
+      baseCommit: "a".repeat(40),
+      rootEvidenceDigest: `sha256:${"b".repeat(64)}`,
+      sourceRepositoryDigest: `sha256:${"c".repeat(64)}`,
+      retainedAfterCompletion: true,
+      rawWorkspacePathIncluded: false,
+      bindingId: "workspace_worker_binding_fixture",
+      bindingDigest: `sha256:${"d".repeat(64)}`,
+      requestOutcome: {
+        schema: "workspace_backend_mutation_outcome@1",
+        committed: true,
+        retainedForInspection: true,
+        outcomeDigest: `sha256:${"e".repeat(64)}`,
+      },
+    },
+  })}\n`);
+  const retainedMutation = await mutationPromise;
+  assert.equal(retainedMutation.requestOutcome.committed, true);
+  assert.equal(retainedMutation.workerKey, "retained-worker");
+  assert.equal(retainedMutation.branch, "codex/worker/retained-worker");
+  assert.equal(retainedMutation.retainedAfterCompletion, true);
+  assert.match(retainedMutation.bindingDigest, /^sha256:[a-f0-9]{64}$/);
   assert.equal(transport.pendingRequestCount(), 0);
 
   const timeoutWriteStart = writes.length;
@@ -587,9 +788,48 @@ try {
   assert.equal(settlementPool.inspect({ target: settlementLaunch.childAgentId }).state, "completed");
   settlementRegistry.close();
 
+  const automaticSettlementRegistry = new WorkspaceWorkerLifecycleRegistry({ db: new DatabaseSync(":memory:") });
+  const automaticSettlementGate = deferred();
+  const automaticSettlementPool = new DirectNativeAgentPool({
+    maxActiveChildren: 1,
+    settlementRetryAttempts: 3,
+    workspaceWorkerLifecycleRegistry: automaticSettlementRegistry,
+    workspaceWorkerRunner: async () => automaticSettlementGate.promise,
+  });
+  const automaticSettlementLaunch = automaticSettlementPool.launch({
+    childAgentId: "child_automatic_settlement_retry",
+    projectId: "project_automatic_settlement_retry",
+    taskName: "automatic_settlement_retry",
+    message: "retry before cancellation",
+    workspaceMode: "isolated_worktree",
+    toolProfile: "read_only_worker",
+    project: { id: "project_automatic_settlement_retry" },
+  });
+  await tick();
+  let transientSettlementFailures = 1;
+  const automaticSession = automaticSettlementRegistry.session.bind(automaticSettlementRegistry);
+  automaticSettlementRegistry.session = (...args) => {
+    if (transientSettlementFailures > 0) {
+      transientSettlementFailures -= 1;
+      const error = new Error("fixture transient registry read failure");
+      error.code = "fixture_transient_registry_failure";
+      throw error;
+    }
+    return automaticSession(...args);
+  };
+  automaticSettlementGate.resolve({ status: "completed", resultDigest: "sha256:auto" });
+  await tick();
+  assert.equal(automaticSettlementPool.inspect({ target: automaticSettlementLaunch.childAgentId }).state, "settlement_blocked");
+  const automaticSettlementDrain = await automaticSettlementPool.drainAndClose({ timeoutMs: 1_000 });
+  assert.equal(automaticSettlementDrain.status, "drained");
+  assert.equal(automaticSettlementPool.inspect({ target: automaticSettlementLaunch.childAgentId }).state, "completed");
+  automaticSettlementRegistry.close();
+
   const shutdownPlan = buildWorkspaceWorkerShutdownPlan({ reasonCode: "fixture_shutdown" });
   assert.deepEqual(shutdownPlan.steps.map((step) => step.action), [
     "stop_worker_intake",
+    "verify_restart_reconciliation",
+    "retry_child_settlement",
     "request_child_cancellation",
     "await_child_and_provider_acknowledgement",
     "drain_workspace_backend_requests",
@@ -600,6 +840,8 @@ try {
   const shutdown = await runWorkspaceWorkerShutdown({
     reasonCode: "fixture_shutdown",
     stopWorkerIntake: async () => order.push("stop"),
+    verifyRestartReconciliation: async () => { order.push("recovery"); return { status: "clean" }; },
+    retryChildSettlement: async () => { order.push("settlement"); return { status: "settled" }; },
     requestChildCancellation: async () => order.push("cancel"),
     awaitChildAcknowledgement: async () => { order.push("child_ack"); return { status: "drained" }; },
     drainWorkspaceBackends: async () => { order.push("backend_drain"); return { status: "drained" }; },
@@ -607,11 +849,13 @@ try {
     closeLifecycleRegistry: async () => order.push("registry_close"),
   });
   assert.equal(shutdown.status, "completed");
-  assert.deepEqual(order, ["stop", "cancel", "child_ack", "backend_drain", "backend_dispose", "registry_close"]);
+  assert.deepEqual(order, ["stop", "recovery", "settlement", "cancel", "child_ack", "backend_drain", "backend_dispose", "registry_close"]);
 
   let unsafeDisposalStarted = false;
   const blockedShutdown = await runWorkspaceWorkerShutdown({
     stopWorkerIntake: async () => {},
+    verifyRestartReconciliation: async () => ({ status: "clean" }),
+    retryChildSettlement: async () => ({ status: "settled" }),
     requestChildCancellation: async () => {},
     awaitChildAcknowledgement: async () => ({ status: "timeout" }),
     drainWorkspaceBackends: async () => ({ status: "drained" }),
@@ -644,6 +888,18 @@ try {
     workspace: { kind: "local", localPath: liveBackendRoot },
   };
   const liveSession = await liveManager.ensureForProject(liveProject, { workspaceHygiene: false });
+  const livePublicSnapshot = liveSession.publicSnapshot();
+  assert.equal(livePublicSnapshot.rawWorkspacePathIncluded, false);
+  assert.equal(livePublicSnapshot.hello.root, undefined);
+  assert.equal(livePublicSnapshot.hello.cwd, undefined);
+  assert.equal(JSON.stringify(livePublicSnapshot).includes(liveBackendRoot), false);
+  const livePublicEvent = liveSession.publicAgentEvent({
+    event: "ready",
+    root: liveBackendRoot,
+    cwd: liveBackendRoot,
+    command: `node ${liveBackendRoot}/worker.js`,
+  });
+  assert.equal(JSON.stringify(livePublicEvent).includes(liveBackendRoot), false);
   const liveProfile = await liveSession.request("directTestProfile", {}, 5_000);
   const liveRegistry = new WorkspaceWorkerLifecycleRegistry({ db: new DatabaseSync(":memory:") });
   const livePool = new DirectNativeAgentPool({
@@ -693,6 +949,8 @@ try {
   const liveShutdown = await runWorkspaceWorkerShutdown({
     reasonCode: "fixture_live_shutdown",
     stopWorkerIntake: () => { liveShutdownOrder.push("stop"); return livePool.stopAccepting(); },
+    verifyRestartReconciliation: () => { liveShutdownOrder.push("recovery"); return livePool.recoverySnapshot(); },
+    retryChildSettlement: () => { liveShutdownOrder.push("settlement"); return livePool.retryPendingSettlements(); },
     requestChildCancellation: () => { liveShutdownOrder.push("cancel"); return livePool.requestCancellationForAll(); },
     awaitChildAcknowledgement: async () => {
       liveShutdownOrder.push("child_ack");
@@ -708,6 +966,8 @@ try {
   assert.equal(liveShutdown.status, "completed");
   assert.deepEqual(liveShutdownOrder, [
     "stop",
+    "recovery",
+    "settlement",
     "cancel",
     "child_ack",
     "backend_drain",
@@ -718,7 +978,22 @@ try {
   assert.equal(fs.existsSync(lateMarkerPath), false, "the cancelled process group cannot escape and finish later");
 
   const mainSource = fs.readFileSync(path.resolve("src/main.js"), "utf8");
+  const backendSource = fs.readFileSync(path.resolve("src/backend/wsl-agent.js"), "utf8");
+  for (const method of [
+    "hello", "listTree", "readFile", "applyPatch", "readFileTransfer",
+    "repositorySemanticSnapshot", "directEpistemicRepositoryObservation",
+    "repositoryRealizationContext", "listMatchingFiles", "resolvePath", "runCommand",
+    "runDirectCommand", "provisionGitWorktree", "removeGitWorktree", "directTestProfile",
+    "runDirectTest", "ensureCodexSandboxArtifactIgnored", "watchStatus", "listCodexThreads",
+    "readCodexThreadTranscript", "analyzeCodexThread", "stageAttachment",
+    "removeAttachmentDraft", "importFile",
+  ]) {
+    assert.match(backendSource, new RegExp(`\\b${method}: \\"(?:cancellable|two_phase)`));
+  }
   assert.match(mainSource, /workspaceWorkerLifecycleRegistry: ensureWorkspaceWorkerLifecycleRegistry\(\)/);
+  assert.match(mainSource, /beginWorkspaceProvisioning\(input\.childAgentId/);
+  assert.match(mainSource, /provisioning_cancelled_binding_retained/);
+  assert.match(mainSource, /return session\.publicSnapshot\(\)/);
   assert.match(mainSource, /installOrderedWorkspaceWorkerWindowClose\(mainWindow,/);
   assert.doesNotMatch(
     mainSource.slice(mainSource.indexOf("async function provisionDirectWorkspaceWorker"), mainSource.indexOf("function tokenUsageFromWorkspaceWorkerCapture")),

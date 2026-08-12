@@ -112,6 +112,14 @@ class DirectNativeAgentPool extends EventEmitter {
       ? options.workspaceWorkerRunner
       : null;
     this.workspaceWorkerLifecycleRegistry = options.workspaceWorkerLifecycleRegistry || null;
+    const recovery = this.workspaceWorkerLifecycleRegistry?.recoverySnapshot?.() || {
+      status: "clean",
+      candidates: [],
+    };
+    this.recoveredSessionIds = new Set(
+      (Array.isArray(recovery.candidates) ? recovery.candidates : []).map((row) => row.sessionId),
+    );
+    this.settlementRetryAttempts = boundedInteger(options.settlementRetryAttempts, 3, 1, 10);
     this.now = typeof options.now === "function" ? options.now : Date.now;
     this.routes = new Map();
     this.jobs = new Map();
@@ -125,6 +133,7 @@ class DirectNativeAgentPool extends EventEmitter {
   }
 
   descriptor() {
+    const recovery = this.recoverySnapshot();
     const descriptor = {
       schema: DIRECT_NATIVE_AGENT_POOL_SCHEMA,
       maxActiveChildren: this.maxActiveChildren,
@@ -133,6 +142,8 @@ class DirectNativeAgentPool extends EventEmitter {
       cancellingChildren: [...this.jobs.values()].filter((record) => record.state === "cancelling").length,
       cancellationUnacknowledgedChildren: [...this.jobs.values()].filter((record) => record.state === "cancellation_unacknowledged").length,
       settlementBlockedChildren: [...this.jobs.values()].filter((record) => record.state === "settlement_blocked").length,
+      durableRecoveryStatus: recovery.status,
+      durableRecoveryCandidateCount: recovery.candidateCount,
       queuedChildren: this.queue.length,
       totalChildren: this.jobs.size,
       providerTransportAvailable: Boolean(this.providerTurnRunner),
@@ -142,7 +153,7 @@ class DirectNativeAgentPool extends EventEmitter {
       closed: this.closed,
       acceptingNewChildren: !this.closed,
       cancellationRequestedAll: this.cancellationRequestedAll,
-      drainComplete: this.closed && this.activeCount === 0,
+      drainComplete: this.closed && this.activeCount === 0 && recovery.status === "clean",
       capacityScope: "direct_runtime_process_shared_across_agent_tree",
       capacityIncludesPrimaryAgent: false,
       contextHandoffIndependentOfModel: true,
@@ -152,6 +163,36 @@ class DirectNativeAgentPool extends EventEmitter {
     };
     descriptor.poolDigest = digestFor("direct-native-agent-pool@1", descriptor);
     return descriptor;
+  }
+
+  recoverySnapshot() {
+    const durable = this.workspaceWorkerLifecycleRegistry?.recoverySnapshot?.() || {
+      schema: "direct_workspace_worker_recovery_snapshot@1",
+      candidates: [],
+    };
+    const candidates = (Array.isArray(durable.candidates) ? durable.candidates : [])
+      .filter((row) => this.recoveredSessionIds.has(row.sessionId));
+    return {
+      schema: "direct_workspace_worker_pool_recovery@1",
+      status: candidates.length ? "reconciliation_required" : "clean",
+      candidateCount: candidates.length,
+      candidates,
+      automaticReplayAllowed: false,
+      rawWorkspacePathIncluded: false,
+    };
+  }
+
+  reconcileRecoveredSession(input = {}) {
+    const sessionId = normalizeString(input.sessionId || input.receipt?.sessionId, "");
+    if (!this.recoveredSessionIds.has(sessionId)) {
+      const error = new Error("direct_workspace_worker_recovery_candidate_missing");
+      error.code = "direct_workspace_worker_recovery_candidate_missing";
+      throw error;
+    }
+    const session = this.workspaceWorkerLifecycleRegistry.reconcileInterruptedSession(sessionId, input);
+    this.recoveredSessionIds.delete(sessionId);
+    this.emit("changed", { type: "durable-recovery-reconciled", recovery: this.recoverySnapshot() });
+    return this.safeLifecycleProjection(session);
   }
 
   routeFor(record) {
@@ -214,6 +255,9 @@ class DirectNativeAgentPool extends EventEmitter {
         return this.launchResult(null, "blocked", normalizeString(error?.code, "direct_workspace_parent_authority_invalid"));
       }
     }
+    if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && this.recoverySnapshot().status !== "clean") {
+      return this.launchResult(null, "blocked", "direct_workspace_worker_restart_reconciliation_required");
+    }
     const task = normalizeString(input.message || input.prompt || input.task, "");
     if (!task) return this.launchResult(null, "blocked", "missing_spawn_prompt");
     const projectId = normalizeString(input.projectId, "project_direct_agents");
@@ -240,6 +284,9 @@ class DirectNativeAgentPool extends EventEmitter {
       input.childAgentId,
       `direct_child_${++this.sequence}_${crypto.randomUUID().replace(/-/g, "").slice(0, 10)}`,
     );
+    if (this.jobs.has(childAgentId) || this.workspaceWorkerLifecycleRegistry?.sessionForChild?.(childAgentId)) {
+      return this.launchResult(null, "blocked", "direct_agent_child_identity_reused");
+    }
     const record = {
       schema: DIRECT_NATIVE_AGENT_STATUS_SCHEMA,
       childAgentId,
@@ -306,6 +353,7 @@ class DirectNativeAgentPool extends EventEmitter {
       _cancelRequestedAt: "",
       _cancelAcknowledgedAt: "",
       _pendingSettlement: null,
+      _settlementAttempts: 0,
       _lifecycleSessionId: "",
       _lifecycleProjection: null,
       _lifecycleErrorCode: "",
@@ -559,6 +607,27 @@ class DirectNativeAgentPool extends EventEmitter {
     return record._lifecycleProjection;
   }
 
+  beginWorkspaceProvisioning(childAgentId, input = {}) {
+    const record = this.jobs.get(normalizeString(childAgentId, ""));
+    if (!record || !record._lifecycleSessionId) {
+      const error = new Error("direct_workspace_worker_lifecycle_session_missing");
+      error.code = "direct_workspace_worker_lifecycle_session_missing";
+      throw error;
+    }
+    const lifecycleError = this.transitionLifecycle(record, "beginProvisioning", {
+      operationId: normalizeString(input.operationId, `pool-provision:${record.childAgentId}`),
+      workerKey: input.workerKey,
+      branchName: input.branchName,
+    });
+    if (lifecycleError) {
+      const error = new Error(lifecycleError);
+      error.code = lifecycleError;
+      throw error;
+    }
+    this.emit("changed", this.publicRecord(record));
+    return record._lifecycleProjection;
+  }
+
   commitLifecycleSettlement(record, patch = {}) {
     if (!record?._lifecycleSessionId || !this.workspaceWorkerLifecycleRegistry) return "";
     try {
@@ -629,6 +698,7 @@ class DirectNativeAgentPool extends EventEmitter {
     }
     const lifecycleError = this.commitLifecycleSettlement(record, patch);
     if (lifecycleError) {
+      record._settlementAttempts += 1;
       record.state = "settlement_blocked";
       record.blockerCode = lifecycleError;
       record.resultSummary = lifecycleError;
@@ -735,8 +805,10 @@ class DirectNativeAgentPool extends EventEmitter {
       options.reasonCode,
       this.closeReasonCode || "direct_agent_pool_closed",
     );
+    this.retryPendingSettlements({ attempts: this.settlementRetryAttempts });
     this.cancellationRequestedAll = true;
-    const pending = [...this.jobs.values()].filter((record) => !record._settled);
+    const pending = [...this.jobs.values()].filter((record) =>
+      !record._settled && !record._pendingSettlement);
     this.queue = [];
     for (const record of pending) this.cancelRecord(record, blockerCode);
     this.routes.clear();
@@ -744,7 +816,18 @@ class DirectNativeAgentPool extends EventEmitter {
   }
 
   async drainAndClose(options = {}) {
+    const recovery = this.recoverySnapshot();
+    if (recovery.status !== "clean") {
+      this.stopAccepting(options);
+      return {
+        status: "reconciliation_required",
+        blockerCode: "direct_workspace_worker_restart_reconciliation_required",
+        recovery,
+        pool: this.descriptor(),
+      };
+    }
     this.close(options);
+    this.retryPendingSettlements({ attempts: this.settlementRetryAttempts });
     const timeoutMs = boundedInteger(options.timeoutMs, 30_000, 0, 300_000);
     if (this.activeCount === 0) {
       return { status: "drained", blockerCode: "", pool: this.descriptor() };
@@ -754,10 +837,12 @@ class DirectNativeAgentPool extends EventEmitter {
     }
     return new Promise((resolve) => {
       let finished = false;
+      let retryTimer = null;
       const finish = (status) => {
         if (finished) return;
         finished = true;
         clearTimeout(timer);
+        clearInterval(retryTimer);
         this.removeListener("changed", onChanged);
         resolve({
           status,
@@ -766,10 +851,13 @@ class DirectNativeAgentPool extends EventEmitter {
         });
       };
       const onChanged = () => {
+        this.retryPendingSettlements({ attempts: this.settlementRetryAttempts });
         if (this.activeCount === 0) finish("drained");
       };
       this.on("changed", onChanged);
       const timer = setTimeout(() => finish("timeout"), timeoutMs);
+      retryTimer = setInterval(onChanged, Math.min(50, Math.max(10, timeoutMs)));
+      retryTimer.unref?.();
       onChanged();
     });
   }
@@ -800,6 +888,40 @@ class DirectNativeAgentPool extends EventEmitter {
     const patch = record._pendingSettlement;
     record._pendingSettlement = null;
     return this.settleRecord(record, patch);
+  }
+
+  retryPendingSettlements(input = {}) {
+    if (this._retryingSettlements) {
+      return {
+        status: "reconciliation_required",
+        blockerCode: "direct_workspace_worker_settlement_retry_in_progress",
+        remainingChildAgentIds: [...this.jobs.values()]
+          .filter((record) => !record._settled && record._pendingSettlement)
+          .map((record) => record.childAgentId),
+        attempts: 0,
+      };
+    }
+    const attempts = boundedInteger(input.attempts, this.settlementRetryAttempts, 1, 10);
+    this._retryingSettlements = true;
+    try {
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const pending = [...this.jobs.values()].filter((record) =>
+          !record._settled && record._pendingSettlement &&
+          record._settlementAttempts < this.settlementRetryAttempts);
+        if (!pending.length) break;
+        for (const record of pending) this.retrySettlement({ childAgentId: record.childAgentId });
+      }
+    } finally {
+      this._retryingSettlements = false;
+    }
+    const remaining = [...this.jobs.values()].filter((record) =>
+      !record._settled && record._pendingSettlement);
+    return {
+      status: remaining.length ? "reconciliation_required" : "settled",
+      blockerCode: remaining.length ? "direct_workspace_worker_settlement_reconciliation_required" : "",
+      remainingChildAgentIds: remaining.map((record) => record.childAgentId),
+      attempts,
+    };
   }
 
   drain() {

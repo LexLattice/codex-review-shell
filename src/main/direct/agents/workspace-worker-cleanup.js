@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 
 const WORKSPACE_WORKER_CLEANUP_PLAN_SCHEMA = "direct_workspace_worker_cleanup_plan@1";
 const WORKSPACE_WORKER_CLEANUP_RECEIPT_SCHEMA = "direct_workspace_worker_cleanup_receipt@1";
+const WORKSPACE_WORKER_CLEANUP_OBSERVATION_SCHEMA = "direct_workspace_worker_cleanup_observation@1";
 const CLEANUP_SOURCE_STATES = new Set(["completed", "failed", "cancelled", "cleanup_eligible"]);
 
 function isPlainObject(value) {
@@ -30,11 +31,71 @@ function nonNegativeInteger(value, fallback = 0) {
   return Number.isInteger(number) && number >= 0 ? number : fallback;
 }
 
+function buildWorkspaceWorkerCleanupObservation(input = {}) {
+  const observation = {
+    schema: WORKSPACE_WORKER_CLEANUP_OBSERVATION_SCHEMA,
+    observationComplete: input.observationComplete === true,
+    workerKey: normalizeString(input.workerKey, ""),
+    branchName: normalizeString(input.branchName, ""),
+    bindingDigest: normalizeString(input.bindingDigest, ""),
+    worktreePathDigest: normalizeString(input.worktreePathDigest, ""),
+    worktreeRegistered: input.worktreeRegistered === true,
+    processQuiescent: input.processQuiescent === true,
+    activeProcessCount: nonNegativeInteger(input.activeProcessCount, -1),
+    gitStatusReadSucceeded: input.gitStatusReadSucceeded === true,
+    statusEntries: Array.isArray(input.statusEntries) ? input.statusEntries.map((entry) => String(entry)) : [],
+    untrackedFileCount: nonNegativeInteger(input.untrackedFileCount, -1),
+    headReadSucceeded: input.headReadSucceeded === true,
+    headCommit: normalizeString(input.headCommit, ""),
+    uniqueWorkReadSucceeded: input.uniqueWorkReadSucceeded === true,
+    uniqueCommitCount: nonNegativeInteger(input.uniqueCommitCount, -1),
+    conflictState: input.conflictState === false ? false : input.conflictState === true ? true : null,
+    gitOperationInProgress: input.gitOperationInProgress === false
+      ? false
+      : input.gitOperationInProgress === true ? true : null,
+    rawWorkspacePathIncluded: false,
+  };
+  observation.observationDigest = digestFor("direct-workspace-worker-cleanup-observation@1", observation);
+  return observation;
+}
+
+function assertWorkspaceWorkerCleanupObservationSafe(observation = {}) {
+  const rebuilt = buildWorkspaceWorkerCleanupObservation(observation);
+  const valid = isPlainObject(observation) &&
+    observation.schema === WORKSPACE_WORKER_CLEANUP_OBSERVATION_SCHEMA &&
+    observation.observationComplete === true &&
+    observation.worktreeRegistered === true &&
+    observation.processQuiescent === true &&
+    Number.isInteger(observation.activeProcessCount) && observation.activeProcessCount >= 0 &&
+    observation.gitStatusReadSucceeded === true &&
+    Array.isArray(observation.statusEntries) &&
+    observation.statusEntries.every((entry) => typeof entry === "string") &&
+    Number.isInteger(observation.untrackedFileCount) && observation.untrackedFileCount >= 0 &&
+    observation.headReadSucceeded === true &&
+    observation.uniqueWorkReadSucceeded === true &&
+    Number.isInteger(observation.uniqueCommitCount) && observation.uniqueCommitCount >= 0 &&
+    observation.conflictState === false &&
+    observation.gitOperationInProgress === false &&
+    /^sha256:[a-f0-9]{64}$/.test(normalizeString(observation.observationDigest, "")) &&
+    stableStringify(observation) === stableStringify(rebuilt);
+  if (!valid) {
+    const error = new Error("direct_workspace_worker_cleanup_observation_invalid");
+    error.code = "direct_workspace_worker_cleanup_observation_invalid";
+    throw error;
+  }
+  return observation;
+}
+
 function buildWorkspaceWorkerCleanupPlan(input = {}) {
   const session = isPlainObject(input.session) ? input.session : {};
   const observation = isPlainObject(input.observation) ? input.observation : {};
   const binding = isPlainObject(session.binding) ? session.binding : {};
   const blockers = [];
+  try {
+    assertWorkspaceWorkerCleanupObservationSafe(observation);
+  } catch {
+    blockers.push("cleanup_observation_invalid");
+  }
 
   if (!normalizeString(session.sessionId, "")) blockers.push("cleanup_session_missing");
   if (!CLEANUP_SOURCE_STATES.has(session.state)) blockers.push("cleanup_session_not_terminal");
@@ -71,8 +132,16 @@ function buildWorkspaceWorkerCleanupPlan(input = {}) {
   if (!untrackedFileCountValid || untrackedFileCount !== 0) {
     blockers.push("cleanup_untracked_work_present");
   }
-  if (observation.conflictState === true) blockers.push("cleanup_conflict_state_present");
-  if (observation.gitOperationInProgress === true) blockers.push("cleanup_git_operation_in_progress");
+  if (observation.conflictState !== false) blockers.push(
+    observation.conflictState === true
+      ? "cleanup_conflict_state_present"
+      : "cleanup_conflict_state_unavailable",
+  );
+  if (observation.gitOperationInProgress !== false) blockers.push(
+    observation.gitOperationInProgress === true
+      ? "cleanup_git_operation_in_progress"
+      : "cleanup_git_operation_state_unavailable",
+  );
 
   const uniqueBlockers = [...new Set(blockers)];
   const plan = {
@@ -197,9 +266,12 @@ function assertWorkspaceWorkerCleanupPlanSafe(plan = {}) {
 module.exports = {
   CLEANUP_SOURCE_STATES,
   WORKSPACE_WORKER_CLEANUP_PLAN_SCHEMA,
+  WORKSPACE_WORKER_CLEANUP_OBSERVATION_SCHEMA,
   WORKSPACE_WORKER_CLEANUP_RECEIPT_SCHEMA,
   assertWorkspaceWorkerCleanupPlanSafe,
+  assertWorkspaceWorkerCleanupObservationSafe,
   assertWorkspaceWorkerCleanupReceiptSafe,
   buildWorkspaceWorkerCleanupPlan,
+  buildWorkspaceWorkerCleanupObservation,
   buildWorkspaceWorkerCleanupReceipt,
 };

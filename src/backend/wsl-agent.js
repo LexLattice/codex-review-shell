@@ -32,6 +32,7 @@ const {
   pinnedWorkspaceMarkerIsExact,
   searchBoundedWorkspaceRepositoryText,
 } = require("../shared/workspace-repository-boundary");
+const { terminateWorkspaceProcessTree } = require("./workspace-process-tree");
 
 const PROTOCOL_VERSION = 1;
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
@@ -167,7 +168,32 @@ const terminatingChildProcesses = new WeakSet();
 const cancellableRequestContext = new AsyncLocalStorage();
 const cancellableRequestScopes = new Map();
 const completedCancellableRequests = new Map();
-const CANCELLABLE_REQUEST_METHODS = new Set(["provisionGitWorktree", "runDirectTest"]);
+const REQUEST_CANCELLATION_POLICIES = Object.freeze({
+  hello: "cancellable_read",
+  listTree: "cancellable_read",
+  readFile: "cancellable_read",
+  applyPatch: "two_phase_mutation",
+  readFileTransfer: "cancellable_read",
+  repositorySemanticSnapshot: "cancellable_read",
+  directEpistemicRepositoryObservation: "cancellable_read",
+  repositoryRealizationContext: "cancellable_read",
+  listMatchingFiles: "cancellable_read",
+  resolvePath: "cancellable_read",
+  runCommand: "cancellable_process",
+  runDirectCommand: "cancellable_process",
+  provisionGitWorktree: "two_phase_mutation",
+  removeGitWorktree: "two_phase_mutation",
+  directTestProfile: "cancellable_read",
+  runDirectTest: "cancellable_process",
+  ensureCodexSandboxArtifactIgnored: "two_phase_mutation",
+  watchStatus: "cancellable_read",
+  listCodexThreads: "cancellable_read",
+  readCodexThreadTranscript: "cancellable_read",
+  analyzeCodexThread: "cancellable_read",
+  stageAttachment: "two_phase_mutation",
+  removeAttachmentDraft: "two_phase_mutation",
+  importFile: "two_phase_mutation",
+});
 const COMPLETED_CANCELLABLE_REQUEST_LIMIT = 256;
 
 function requestCancellationError(scope) {
@@ -175,14 +201,16 @@ function requestCancellationError(scope) {
   error.name = "AbortError";
   error.code = "workspace_backend_request_cancelled";
   error.requestId = scope?.requestId || "";
-  error.backendQuiesced = true;
-  error.cancellationAcknowledged = true;
+  error.backendQuiesced = scope?.quiescenceVerified === true;
+  error.cancellationAcknowledged = scope?.quiescenceVerified === true;
   return error;
 }
 
 function throwIfCurrentRequestCancelled() {
   const scope = cancellableRequestContext.getStore();
-  if (scope?.cancellationRequested) throw requestCancellationError(scope);
+  if (scope?.cancellationRequested && scope.phase !== "commit") {
+    throw requestCancellationError(scope);
+  }
 }
 
 function rememberCompletedCancellableRequest(scope) {
@@ -195,19 +223,70 @@ function rememberCompletedCancellableRequest(scope) {
   }
 }
 
-function createCancellableRequestScope(requestId, method) {
+function requestCancellationPolicy(method, params = {}) {
+  const declared = REQUEST_CANCELLATION_POLICIES[method] || "unsupported";
+  if (method === "applyPatch" && params.mode !== "apply") return "cancellable_read";
+  return declared;
+}
+
+function createCancellableRequestScope(requestId, method, policy) {
   let resolveDone;
   const done = new Promise((resolve) => { resolveDone = resolve; });
   return {
     requestId,
     method,
+    policy,
+    phase: policy === "two_phase_mutation" ? "precommit" : "execution",
     children: new Set(),
+    terminationPromises: new Map(),
     cancellationRequested: false,
     cancellationReasonCode: "",
+    quiescenceVerified: false,
+    mutationOutcome: null,
     completed: false,
     done,
     resolveDone,
   };
+}
+
+function beginCurrentRequestCommit(commitKind) {
+  const scope = cancellableRequestContext.getStore();
+  if (!scope || scope.policy !== "two_phase_mutation") {
+    const error = new Error("Workspace mutation is missing an exact two-phase cancellation scope.");
+    error.code = "workspace_backend_mutation_scope_missing";
+    throw error;
+  }
+  throwIfCurrentRequestCancelled();
+  if (scope.phase !== "precommit") {
+    const error = new Error("Workspace mutation commit point was entered more than once.");
+    error.code = "workspace_backend_mutation_commit_reentered";
+    throw error;
+  }
+  scope.phase = "commit";
+  scope.commitKind = String(commitKind || scope.method);
+}
+
+function completeCurrentRequestCommit(result, details = {}) {
+  const scope = cancellableRequestContext.getStore();
+  if (!scope || scope.phase !== "commit") {
+    const error = new Error("Workspace mutation completed without an exact commit point.");
+    error.code = "workspace_backend_mutation_commit_missing";
+    throw error;
+  }
+  const receipt = {
+    schema: "workspace_backend_mutation_outcome@1",
+    requestId: scope.requestId,
+    method: scope.method,
+    commitKind: scope.commitKind,
+    committed: true,
+    retainedForInspection: details.retainedForInspection === true,
+    resultDigest: sha256Digest(canonicalJson(result)),
+    rawPathIncluded: false,
+  };
+  receipt.outcomeDigest = sha256Digest(canonicalJson(receipt));
+  scope.mutationOutcome = receipt;
+  scope.phase = "committed";
+  return { ...result, requestOutcome: receipt };
 }
 
 function completeCancellableRequestScope(scope) {
@@ -254,14 +333,17 @@ function terminateChild(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   if (terminatingChildProcesses.has(child)) return;
   terminatingChildProcesses.add(child);
-  try {
-    child.kill("SIGTERM");
-  } catch {}
+  terminateWorkspaceProcessTree(child, { signal: "SIGTERM", timeoutMs: 1200 })
+    .then((receipt) => {
+      if (!receipt.quiesced && child.exitCode === null && child.signalCode === null) {
+        return terminateWorkspaceProcessTree(child, { signal: "SIGKILL", timeoutMs: 1200 });
+      }
+      return receipt;
+    })
+    .catch(() => {});
   const timer = setTimeout(() => {
     if (child.exitCode !== null || child.signalCode !== null) return;
-    try {
-      child.kill("SIGKILL");
-    } catch {}
+    terminateWorkspaceProcessTree(child, { signal: "SIGKILL", timeoutMs: 1200 }).catch(() => {});
   }, 1200);
   timer.unref?.();
   child.once("close", () => clearTimeout(timer));
@@ -276,8 +358,38 @@ function trackChildProcess(child) {
     requestScope?.children.delete(child);
   });
   if (stdinClosed) terminateChild(child);
-  if (requestScope?.cancellationRequested) killProcessTree(child, "SIGTERM");
+  if (requestScope?.cancellationRequested && requestScope.phase !== "commit") {
+    terminateScopeChild(requestScope, child, "SIGTERM");
+  }
   return child;
+}
+
+function terminateScopeChild(scope, child, signal = "SIGTERM") {
+  if (!scope || !child) return Promise.resolve({
+    quiesced: false,
+    blockerCode: "workspace_backend_cancel_scope_missing",
+  });
+  if (scope.phase === "commit") {
+    return Promise.resolve({
+      quiesced: false,
+      blockerCode: "workspace_backend_mutation_commit_in_progress",
+    });
+  }
+  if (scope.terminationPromises.has(child)) return scope.terminationPromises.get(child);
+  const pending = terminateWorkspaceProcessTree(child, { signal, timeoutMs: 2_000 })
+    .then(async (receipt) => {
+      if (receipt.quiesced || child.exitCode !== null || child.signalCode !== null) return {
+        ...receipt,
+        quiesced: true,
+      };
+      return terminateWorkspaceProcessTree(child, { signal: "SIGKILL", timeoutMs: 2_000 });
+    })
+    .catch((error) => ({
+      quiesced: false,
+      blockerCode: error?.code || "workspace_backend_process_tree_termination_failed",
+    }));
+  scope.terminationPromises.set(child, pending);
+  return pending;
 }
 
 process.stdout.on("error", (error) => {
@@ -784,6 +896,7 @@ async function applyPatchPlan(params = {}, options = {}) {
   }
 
   if (mode === "apply") {
+    beginCurrentRequestCommit("apply_patch_files");
     for (const file of filePlans) {
       await fs.mkdir(path.dirname(file._fullPath), { recursive: true });
       const tempPath = `${file._fullPath}.codex-patch-${process.pid}-${Date.now()}.tmp`;
@@ -794,7 +907,7 @@ async function applyPatchPlan(params = {}, options = {}) {
   }
 
   const publicPlans = filePlans.map(({ _fullPath, _afterText, ...file }) => file);
-  return {
+  const result = {
     schema: "workspace_apply_patch_result@1",
     mode,
     status: mode === "apply" ? "applied" : "dry_run_passed",
@@ -812,6 +925,9 @@ async function applyPatchPlan(params = {}, options = {}) {
     },
     rawPathsExposed: false,
   };
+  return mode === "apply"
+    ? completeCurrentRequestCommit(result, { retainedForInspection: true })
+    : result;
 }
 
 function assertNoEncodedTraversal(relPath = "") {
@@ -863,24 +979,26 @@ async function stageAttachment(params = {}) {
   const relPath = path.posix.join(ATTACHMENT_STAGING_ROOT, draftId, fileName);
   const { fullPath, displayRel } = resolveWithinRoot(relPath);
   const draftDir = path.dirname(fullPath);
+  beginCurrentRequestCommit("stage_attachment");
   await ensureAttachmentIgnore();
   await fs.mkdir(draftDir, { recursive: true });
   await fs.writeFile(fullPath, content, { flag: "wx" });
   const manifest = params.manifest && typeof params.manifest === "object" ? params.manifest : {};
   await fs.writeFile(path.join(draftDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
-  return {
+  return completeCurrentRequestCommit({
     relPath: displayRel,
     stagedRelPath: displayRel,
     sizeBytes: content.length,
-  };
+  }, { retainedForInspection: true });
 }
 
 async function removeAttachmentDraft(params = {}) {
   const draftId = safeAttachmentSegment(params.draftId, "draft id");
   const relPath = path.posix.join(ATTACHMENT_STAGING_ROOT, draftId);
   const { fullPath } = resolveWithinRoot(relPath);
+  beginCurrentRequestCommit("remove_attachment_draft");
   await fs.rm(fullPath, { recursive: true, force: true });
-  return { ok: true, draftId };
+  return completeCurrentRequestCommit({ ok: true, draftId });
 }
 
 function safeImportFileName(value) {
@@ -918,6 +1036,7 @@ async function importFile(params = {}) {
   if (!content.length) throw new Error("Import file content is empty.");
   if (content.length > MAX_IMPORT_FILE_BYTES) throw new Error("Import file exceeds size limit.");
   const { fullPath: dirPath, displayRel: dirDisplayRel } = resolveWithinRoot(relDir);
+  beginCurrentRequestCommit("import_file");
   await ensureAttachmentIgnore();
   await fs.mkdir(dirPath, { recursive: true });
   const { handle, fullPath } = await uniqueFilePath(dirPath, fileName);
@@ -927,10 +1046,10 @@ async function importFile(params = {}) {
     await handle.close();
   }
   const relPath = path.join(dirDisplayRel, path.basename(fullPath));
-  return {
+  return completeCurrentRequestCommit({
     relPath: displayRelPath(relPath),
     sizeBytes: content.length,
-  };
+  }, { retainedForInspection: true });
 }
 
 function direntType(dirent) {
@@ -2121,6 +2240,7 @@ async function captureDigestProcess(command, args, options = {}) {
       env: options.env || minimalCommandEnv(),
       shell: false,
       windowsHide: true,
+      detached: process.platform !== "win32",
     }));
     const stdoutHash = crypto.createHash("sha256");
     const stdoutChunks = [];
@@ -2183,6 +2303,7 @@ async function runCommand(params = {}) {
       env: { ...process.env, ...(params.env && typeof params.env === "object" ? params.env : {}) },
       shell: false,
       windowsHide: true,
+      detached: process.platform !== "win32",
     }));
 
     const stdoutChunks = [];
@@ -2237,20 +2358,12 @@ function minimalCommandEnv(extraEnv = {}) {
 }
 
 function killProcessTree(child, signal) {
-  if (!child || !child.pid) return;
-  try {
-    if (process.platform !== "win32") {
-      process.kill(-child.pid, signal);
-      return;
-    }
-  } catch {
-    // Fall back to killing the parent process if process-group cleanup failed.
-  }
-  try {
-    child.kill(signal);
-  } catch {
-    // Ignore cleanup races.
-  }
+  const scope = cancellableRequestContext.getStore();
+  if (scope) return terminateScopeChild(scope, child, signal);
+  return terminateWorkspaceProcessTree(child, { signal, timeoutMs: 2_000 }).catch(() => ({
+    quiesced: false,
+    blockerCode: "workspace_backend_process_tree_termination_failed",
+  }));
 }
 
 function parseGitStatusPorcelain(text) {
@@ -2609,6 +2722,7 @@ async function provisionGitWorktree(params = {}) {
     throw error;
   }
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+  beginCurrentRequestCommit("git_worktree_add");
   const add = await captureProcess("git", ["worktree", "add", "-b", branch, worktreePath, baseCommit], {
     cwd: git.topLevel,
     timeoutMs: 30_000,
@@ -2633,12 +2747,12 @@ async function provisionGitWorktree(params = {}) {
     rawWorkspacePathIncluded: false,
   };
   const bindingDigest = sha256Digest(canonicalJson(bindingBase));
-  return {
+  return completeCurrentRequestCommit({
     ...bindingBase,
     bindingId: `workspace_worker_binding_${bindingDigest.slice(7, 31)}`,
     bindingDigest,
     worktreePath,
-  };
+  }, { retainedForInspection: true });
 }
 
 async function removeGitWorktree(params = {}) {
@@ -2646,7 +2760,8 @@ async function removeGitWorktree(params = {}) {
   const branch = safeWorkspaceWorkerBranch(params.branch);
   const git = await exactGitWorkspace();
   const worktreePath = workspaceWorkerRootFor(git.topLevel, workerKey);
-  const remove = await captureProcess("git", ["worktree", "remove", "--force", worktreePath], {
+  beginCurrentRequestCommit("git_worktree_remove_non_force");
+  const remove = await captureProcess("git", ["worktree", "remove", worktreePath], {
     cwd: git.topLevel,
     timeoutMs: 30_000,
   });
@@ -2657,20 +2772,20 @@ async function removeGitWorktree(params = {}) {
   }
   let branchRemoved = false;
   if (params.deleteBranch === true) {
-    const deleted = await captureProcess("git", ["branch", "-D", branch], {
+    const deleted = await captureProcess("git", ["branch", "-d", branch], {
       cwd: git.topLevel,
       timeoutMs: 10_000,
     });
     branchRemoved = deleted.exitCode === 0;
   }
-  return {
+  return completeCurrentRequestCommit({
     schema: "direct_workspace_worker_cleanup@1",
     workerKey,
     branch,
     worktreeRemoved: !(await pathExists(worktreePath)),
     branchRemoved,
     rawWorkspacePathIncluded: false,
-  };
+  });
 }
 
 function serializeGitWorktreeMutation(operation) {
@@ -3484,15 +3599,16 @@ async function ensureCodexSandboxArtifactIgnored() {
 
   const separator = existing && !existing.endsWith("\n") ? "\n" : "";
   const addition = `${separator}${existing ? "\n" : ""}${CODEX_SANDBOX_ARTIFACT_EXCLUDE_COMMENT}\n${pattern}\n`;
+  beginCurrentRequestCommit("git_exclude_append");
   await fs.mkdir(path.dirname(excludePath), { recursive: true });
   await fs.appendFile(excludePath, addition, "utf8");
-  return {
+  return completeCurrentRequestCommit({
     available: true,
     changed: true,
     pattern,
     excludePath,
     reason: "added-local-git-exclude",
-  };
+  });
 }
 
 async function watchStatus() {
@@ -5294,14 +5410,14 @@ async function cancelScopedRequest(params = {}) {
   }
   scope.cancellationRequested = true;
   scope.cancellationReasonCode = String(params.reasonCode || "workspace_backend_request_aborted").trim();
-  for (const child of scope.children) killProcessTree(child, "SIGTERM");
-  const forceTimer = setTimeout(() => {
-    for (const child of scope.children) killProcessTree(child, "SIGKILL");
-  }, 1200);
-  forceTimer.unref?.();
+  const terminationPromises = scope.phase === "commit"
+    ? []
+    : [...scope.children].map((child) => terminateScopeChild(scope, child, "SIGTERM"));
   await scope.done;
-  clearTimeout(forceTimer);
-  if (scope.children.size > 0) {
+  const terminationReceipts = await Promise.all(terminationPromises);
+  const terminationVerified = terminationReceipts.every((receipt) => receipt?.quiesced === true);
+  scope.quiescenceVerified = scope.children.size === 0 && terminationVerified;
+  if (!scope.quiescenceVerified) {
     const error = new Error("Workspace backend request completion did not prove process quiescence.");
     error.code = "workspace_backend_cancel_quiescence_unproven";
     throw error;
@@ -5310,7 +5426,10 @@ async function cancelScopedRequest(params = {}) {
     targetRequestId,
     acknowledged: true,
     quiesced: true,
-    acknowledgementKind: "request_execution_quiesced",
+    acknowledgementKind: scope.mutationOutcome?.committed === true
+      ? "mutation_commit_outcome_retained"
+      : "request_execution_quiesced",
+    outcomeDigest: scope.mutationOutcome?.outcomeDigest || "",
     rawProcessDetailsIncluded: false,
   };
 }
@@ -5342,7 +5461,8 @@ async function handleLine(line) {
     return;
   }
   const requestId = String(id ?? "").trim();
-  const cancellable = CANCELLABLE_REQUEST_METHODS.has(request.method);
+  const cancellationPolicy = requestCancellationPolicy(request.method, request.params || {});
+  const cancellable = cancellationPolicy !== "unsupported";
   let requestScope = null;
   if (cancellable) {
     if (!requestId || cancellableRequestScopes.has(requestId)) {
@@ -5357,7 +5477,7 @@ async function handleLine(line) {
       if (stdinClosed && activeRequests === 0) requestShutdown();
       return;
     }
-    requestScope = createCancellableRequestScope(requestId, request.method);
+    requestScope = createCancellableRequestScope(requestId, request.method, cancellationPolicy);
     cancellableRequestScopes.set(requestId, requestScope);
   }
   let result;
@@ -5372,6 +5492,14 @@ async function handleLine(line) {
   } catch (error) {
     requestError = error;
   } finally {
+    if (requestScope) {
+      const receipts = await Promise.all([...requestScope.terminationPromises.values()]);
+      requestScope.quiescenceVerified = requestScope.children.size === 0 &&
+        receipts.every((receipt) => receipt?.quiesced === true);
+    }
+    if (requestScope?.cancellationRequested && requestScope.mutationOutcome?.committed === true && !requestError) {
+      send({ id, result });
+    }
     completeCancellableRequestScope(requestScope);
     if (!requestScope?.cancellationRequested) {
       if (requestError) {

@@ -335,6 +335,13 @@ class NdjsonTransport extends EventEmitter {
       }
       if (pending.abortRequested) {
         if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+        if (message.result?.requestOutcome?.committed === true) {
+          if (!pending.clientSettled) {
+            pending.clientSettled = true;
+            pending.resolve(message.result);
+          }
+          return;
+        }
         if (!pending.clientSettled) {
           pending.clientSettled = true;
           pending.reject(this.abortError(pending, {
@@ -621,32 +628,58 @@ class WorkspaceSession extends EventEmitter {
   }
 
   publicSnapshot() {
-    const nativePaths = this.nativePathCandidates();
+    const hello = this.hello ? {
+      protocolVersion: this.hello.protocolVersion,
+      sessionId: normalizeString(this.hello.sessionId, ""),
+      projectId: normalizeString(this.hello.projectId, this.project.id),
+      workspaceKind: normalizeString(this.hello.workspaceKind, ""),
+      platform: normalizeString(this.hello.platform, "unknown"),
+      node: normalizeString(this.hello.node, ""),
+      capabilities: isPlainObject(this.hello.capabilities) ? { ...this.hello.capabilities } : {},
+      rawWorkspacePathIncluded: false,
+    } : null;
     return {
       schema: "workspace_backend_public_session@1",
-      projectId: this.project.id,
-      projectName: this.project.name,
+      sessionKeyDigest: `sha256:${crypto.createHash("sha256").update(this.key).digest("hex")}`,
+      projectId: normalizeString(this.project.id, ""),
+      projectName: normalizeString(this.project.name, ""),
       status: this.status,
       transport: this.descriptor?.transport || "not-started",
-      workspaceKind: normalizeString(
-        this.descriptor?.workspace?.kind || this.hello?.workspaceKind,
-        "local",
-      ),
-      backend: this.hello ? safeBackendPublicValue({
-        protocolVersion: this.hello.protocolVersion,
-        sessionId: this.hello.sessionId,
-        projectId: this.hello.projectId,
-        workspaceKind: this.hello.workspaceKind,
-        platform: this.hello.platform,
-        pid: this.hello.pid,
-        node: this.hello.node,
-        capabilities: this.hello.capabilities,
-      }, nativePaths) : null,
-      lastError: redactBackendNativePaths(this.lastError, nativePaths),
+      workspace: {
+        kind: normalizeString(this.descriptor?.workspace?.kind || this.project.workspace?.kind, "local"),
+        label: `${normalizeString(
+          this.descriptor?.workspace?.kind || this.project.workspace?.kind,
+          "local",
+        ).toUpperCase()} workspace`,
+        rawWorkspacePathIncluded: false,
+      },
+      hello,
+      lastErrorCode: normalizeString(this.lastError?.code, this.lastError ? "workspace_backend_unavailable" : ""),
       readySeen: this.readySeen,
-      hygiene: safeBackendPublicValue(this.hygiene, nativePaths),
-      workspaceWorkerBinding: safeBackendPublicValue(this.workspaceWorkerBinding, nativePaths),
+      hygiene: isPlainObject(this.hygiene) ? {
+        available: this.hygiene.available === true,
+        changed: this.hygiene.changed === true,
+        skipped: this.hygiene.skipped === true,
+        reason: normalizeString(this.hygiene.reason, ""),
+      } : null,
+      workspaceWorkerBinding: safeBackendPublicValue(
+        this.workspaceWorkerBinding,
+        this.nativePathCandidates(),
+      ),
       rawWorkspacePathIncluded: false,
+    };
+  }
+
+  publicAgentEvent(event = {}) {
+    return {
+      event: normalizeString(event.event || event.type, "backend-event"),
+      platform: normalizeString(event.platform, ""),
+      protocolVersion: Number(event.protocolVersion || 0),
+      projectId: normalizeString(event.projectId, this.project.id),
+      workspaceKind: normalizeString(event.workspaceKind, this.project.workspace?.kind || ""),
+      errorCode: normalizeString(event.error?.code || event.code, event.error ? "workspace_backend_event_error" : ""),
+      rawWorkspacePathIncluded: false,
+      rawProtocolFrameIncluded: false,
     };
   }
 
@@ -679,10 +712,11 @@ class WorkspaceSession extends EventEmitter {
 
   emitStatus(type, extra = {}) {
     const payload = {
-      ...safeBackendPublicValue(extra, this.nativePathCandidates()),
       type,
       session: this.publicSnapshot(),
       at: new Date().toISOString(),
+      errorCode: normalizeString(extra.error?.code || extra.errorCode, extra.error ? "workspace_backend_unavailable" : ""),
+      rawWorkspacePathIncluded: false,
     };
     this.emit("status", payload);
   }
@@ -742,7 +776,8 @@ class WorkspaceSession extends EventEmitter {
     this.transport.on("event", (event) => {
       this.emit("agent-event", {
         session: this.publicSnapshot(),
-        event: safeBackendPublicValue(event, this.nativePathCandidates()),
+        event: this.publicAgentEvent(event),
+        rawWorkspacePathIncluded: false,
       });
       if (event.event === "ready") {
         this.readySeen = true;

@@ -12,6 +12,7 @@ const {
 const WORKSPACE_WORKER_LIFECYCLE_REGISTRY_SCHEMA = "direct_workspace_worker_lifecycle_registry@1";
 const WORKSPACE_WORKER_SESSION_SCHEMA = "direct_workspace_worker_session@1";
 const WORKSPACE_WORKER_LIFECYCLE_EVENT_SCHEMA = "direct_workspace_worker_lifecycle_event@1";
+const WORKSPACE_WORKER_RECONCILIATION_RECEIPT_SCHEMA = "direct_workspace_worker_reconciliation_receipt@1";
 const WORKSPACE_WORKER_REGISTRY_FILE = "direct-workspace-worker-lifecycle.sqlite";
 
 const SESSION_STATES = new Set([
@@ -109,6 +110,38 @@ function sessionDigest(session) {
   const copy = { ...session };
   delete copy.sessionDigest;
   return digestFor("direct-workspace-worker-session@1", copy);
+}
+
+function buildWorkspaceWorkerReconciliationReceipt(input = {}) {
+  const receipt = {
+    schema: WORKSPACE_WORKER_RECONCILIATION_RECEIPT_SCHEMA,
+    sessionId: safeId(input.sessionId, "session_id"),
+    expectedRevision: Number(input.expectedRevision),
+    outcome: normalizeString(input.outcome, "failed"),
+    reasonCode: normalizeString(input.reasonCode, "direct_workspace_worker_restart_interrupted"),
+    providerAcknowledged: input.providerAcknowledged === true,
+    backendQuiesced: input.backendQuiesced === true,
+    providerAcknowledgementDigest: normalizeString(input.providerAcknowledgementDigest, ""),
+    backendQuiescenceDigest: normalizeString(input.backendQuiescenceDigest, ""),
+    verifierId: safeId(input.verifierId, "reconciliation_verifier_id"),
+    processIdentityRecovered: input.processIdentityRecovered === true,
+    bindingRetainedForInspection: input.bindingRetainedForInspection === true,
+    rawWorkspacePathIncluded: false,
+  };
+  if (!Number.isInteger(receipt.expectedRevision) || receipt.expectedRevision < 1) {
+    fail("direct_workspace_worker_reconciliation_revision_invalid");
+  }
+  if (!["failed", "cancelled"].includes(receipt.outcome)) {
+    fail("direct_workspace_worker_reconciliation_outcome_invalid");
+  }
+  if (
+    !/^sha256:[a-f0-9]{64}$/.test(receipt.providerAcknowledgementDigest) ||
+    !/^sha256:[a-f0-9]{64}$/.test(receipt.backendQuiescenceDigest)
+  ) {
+    fail("direct_workspace_worker_reconciliation_evidence_invalid");
+  }
+  receipt.receiptDigest = digestFor("direct-workspace-worker-reconciliation-receipt@1", receipt);
+  return receipt;
 }
 
 function buildEvent({ operationId, operationDigest, eventKind, before, after, occurredAt }) {
@@ -262,7 +295,9 @@ class WorkspaceWorkerLifecycleRegistry {
 
   recoverySnapshot() {
     const rows = this.sessions();
-    const candidates = rows.filter((session) => ["active", "cancelling"].includes(session.state));
+    const candidates = rows.filter((session) =>
+      ["registered", "active", "cancelling"].includes(session.state) ||
+      ["reserved", "active"].includes(session.leaseState));
     const snapshot = {
       schema: "direct_workspace_worker_recovery_snapshot@1",
       status: candidates.length ? "reconciliation_required" : "clean",
@@ -276,6 +311,8 @@ class WorkspaceWorkerLifecycleRegistry {
         processState: session.processState,
         revision: session.revision,
         bindingDigest: normalizeString(session.binding?.bindingDigest, ""),
+        custodyState: normalizeString(session.workspaceCustody?.state, "unbound"),
+        custodyDigest: normalizeString(session.workspaceCustody?.custodyDigest, ""),
         automaticReplayAllowed: false,
         automaticCleanupAllowed: false,
         rawWorkspacePathIncluded: false,
@@ -336,6 +373,14 @@ class WorkspaceWorkerLifecycleRegistry {
         leaseState: "reserved",
         processState: "not_started",
         binding: null,
+        workspaceCustody: {
+          state: "unbound",
+          workerKey: "",
+          branchName: "",
+          custodyDigest: "",
+          retainedForInspection: true,
+          rawWorkspacePathIncluded: false,
+        },
         cancellation: {
           requested: false,
           reasonCode: "",
@@ -493,7 +538,57 @@ class WorkspaceWorkerLifecycleRegistry {
         if (before.binding && before.binding.bindingDigest !== binding.bindingDigest) {
           fail("direct_workspace_worker_binding_rebind_forbidden");
         }
-        return { binding };
+        if (before.workspaceCustody?.state !== "provisioning" && before.workspaceCustody?.state !== "bound") {
+          fail("direct_workspace_worker_binding_without_provisioning_custody");
+        }
+        if (
+          before.workspaceCustody.workerKey !== binding.workerKey ||
+          before.workspaceCustody.branchName !== binding.branchName
+        ) {
+          fail("direct_workspace_worker_binding_provisioning_custody_mismatch");
+        }
+        const workspaceCustody = {
+          state: "bound",
+          workerKey: binding.workerKey,
+          branchName: binding.branchName,
+          bindingDigest: binding.bindingDigest,
+          retainedForInspection: true,
+          rawWorkspacePathIncluded: false,
+        };
+        workspaceCustody.custodyDigest = digestFor("direct-workspace-worker-custody@1", workspaceCustody);
+        return { binding, workspaceCustody };
+      },
+    });
+  }
+
+  beginProvisioning(sessionId, input = {}) {
+    const workerKey = safeId(input.workerKey, "worker_key");
+    const branchName = normalizeString(input.branchName, "");
+    if (!branchName) fail("direct_workspace_worker_provisioning_branch_missing");
+    const workspaceCustody = {
+      state: "provisioning",
+      workerKey,
+      branchName,
+      bindingDigest: "",
+      retainedForInspection: true,
+      rawWorkspacePathIncluded: false,
+    };
+    workspaceCustody.custodyDigest = digestFor("direct-workspace-worker-custody@1", workspaceCustody);
+    return this.mutateSession(sessionId, {
+      operationId: input.operationId || `provision:${sessionId}:${workspaceCustody.custodyDigest}`,
+      eventKind: "workspace_provisioning_started",
+      operationInput: { workspaceCustody },
+      patch: (before) => {
+        if (before.workspaceCustody?.state === "bound") {
+          fail("direct_workspace_worker_provisioning_after_binding_forbidden");
+        }
+        if (
+          before.workspaceCustody?.state === "provisioning" &&
+          before.workspaceCustody.custodyDigest !== workspaceCustody.custodyDigest
+        ) {
+          fail("direct_workspace_worker_provisioning_custody_conflict");
+        }
+        return { workspaceCustody };
       },
     });
   }
@@ -599,6 +694,46 @@ class WorkspaceWorkerLifecycleRegistry {
     });
   }
 
+  reconcileInterruptedSession(sessionId, input = {}) {
+    const receipt = buildWorkspaceWorkerReconciliationReceipt(input.receipt || input);
+    if (receipt.sessionId !== sessionId || input.receipt?.receiptDigest &&
+      input.receipt.receiptDigest !== receipt.receiptDigest) {
+      fail("direct_workspace_worker_reconciliation_receipt_mismatch");
+    }
+    if (!receipt.providerAcknowledged || !receipt.backendQuiesced) {
+      fail("direct_workspace_worker_reconciliation_quiescence_unproven");
+    }
+    const before = this.session(sessionId);
+    if (!before) fail("direct_workspace_worker_session_missing");
+    if (!["registered", "active", "cancelling"].includes(before.state)) {
+      fail("direct_workspace_worker_reconciliation_state_invalid");
+    }
+    if (before.revision !== receipt.expectedRevision) {
+      fail("direct_workspace_worker_session_revision_conflict");
+    }
+    if (
+      (before.state === "cancelling" && receipt.outcome !== "cancelled") ||
+      (before.state !== "cancelling" && receipt.outcome !== "failed")
+    ) {
+      fail("direct_workspace_worker_reconciliation_outcome_state_mismatch");
+    }
+    const nextState = before.state === "cancelling" ? "cancelled" : "failed";
+    return this.mutateSession(sessionId, {
+      operationId: input.operationId || `reconcile:${sessionId}:${receipt.receiptDigest}`,
+      eventKind: "restart_reconciled",
+      nextState,
+      expectedRevision: receipt.expectedRevision,
+      operationInput: { receipt },
+      patch: {
+        leaseState: "released",
+        processState: "quiescent",
+        reconciliationReceipt: receipt,
+        reconciliationReceiptDigest: receipt.receiptDigest,
+        blockerCode: receipt.reasonCode,
+      },
+    });
+  }
+
   markCleanupEligible(sessionId, input = {}) {
     const plan = input.plan;
     if (!isPlainObject(plan) || plan.canRemove !== true || plan.forceRemovalAllowed !== false || !plan.planDigest) {
@@ -692,10 +827,12 @@ module.exports = {
   SESSION_STATES,
   TERMINAL_EXECUTION_STATES,
   WORKSPACE_WORKER_LIFECYCLE_EVENT_SCHEMA,
+  WORKSPACE_WORKER_RECONCILIATION_RECEIPT_SCHEMA,
   WORKSPACE_WORKER_LIFECYCLE_REGISTRY_SCHEMA,
   WORKSPACE_WORKER_REGISTRY_FILE,
   WORKSPACE_WORKER_SESSION_SCHEMA,
   WorkspaceWorkerLifecycleRegistry,
+  buildWorkspaceWorkerReconciliationReceipt,
   digestFor,
   normalizeBinding,
 };

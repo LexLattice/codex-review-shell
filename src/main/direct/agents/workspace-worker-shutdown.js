@@ -26,11 +26,13 @@ function buildWorkspaceWorkerShutdownPlan(input = {}) {
     reasonCode: normalizeString(input.reasonCode, "direct_runtime_shutdown"),
     steps: [
       { sequence: 1, action: "stop_worker_intake", required: true },
-      { sequence: 2, action: "request_child_cancellation", required: true },
-      { sequence: 3, action: "await_child_and_provider_acknowledgement", required: true },
-      { sequence: 4, action: "drain_workspace_backend_requests", required: true },
-      { sequence: 5, action: "dispose_workspace_backends", required: true },
-      { sequence: 6, action: "close_lifecycle_registry", required: true },
+      { sequence: 2, action: "verify_restart_reconciliation", required: true },
+      { sequence: 3, action: "retry_child_settlement", required: true },
+      { sequence: 4, action: "request_child_cancellation", required: true },
+      { sequence: 5, action: "await_child_and_provider_acknowledgement", required: true },
+      { sequence: 6, action: "drain_workspace_backend_requests", required: true },
+      { sequence: 7, action: "dispose_workspace_backends", required: true },
+      { sequence: 8, action: "close_lifecycle_registry", required: true },
     ],
     backendDisposalBeforeChildAcknowledgementAllowed: false,
     forcedWorkspaceCleanupAllowed: false,
@@ -56,6 +58,18 @@ async function runWorkspaceWorkerShutdown(input = {}) {
   let poolDrain;
   try {
     await invoke("stop_worker_intake", input.stopWorkerIntake);
+    const recovery = await invoke("verify_restart_reconciliation", input.verifyRestartReconciliation);
+    if (recovery?.status !== "clean") {
+      const error = new Error("direct_workspace_worker_shutdown_restart_reconciliation_required");
+      error.code = "direct_workspace_worker_shutdown_restart_reconciliation_required";
+      throw error;
+    }
+    const settlement = await invoke("retry_child_settlement", input.retryChildSettlement);
+    if (settlement?.status !== "settled") {
+      const error = new Error("direct_workspace_worker_shutdown_settlement_reconciliation_required");
+      error.code = "direct_workspace_worker_shutdown_settlement_reconciliation_required";
+      throw error;
+    }
     await invoke("request_child_cancellation", input.requestChildCancellation);
     poolDrain = await invoke("await_child_and_provider_acknowledgement", input.awaitChildAcknowledgement);
     if (poolDrain?.status !== "drained") {

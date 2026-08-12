@@ -217,6 +217,8 @@ try {
       branch,
       baseRef: seedHead,
     }, 45_000, { signal: input.signal });
+    assert.equal(provisioned.requestOutcome?.committed, true);
+    assert.equal(provisioned.requestOutcome?.retainedForInspection, true);
     const nativeRoot = provisioned.worktreePath;
     const project = childProject(parentProject, nativeRoot, input.childAgentId);
     const binding = { ...provisioned };
@@ -733,12 +735,15 @@ try {
   }
 
   for (const [childAgentId, contract] of contracts.entries()) {
+    const realization = privateRealizations.get(childAgentId);
     for (const [key, session] of [...manager.sessions.entries()]) {
       if (session.project.id.endsWith(`__${childAgentId}`)) {
         session.dispose();
         manager.sessions.delete(key);
       }
     }
+    run("git", ["restore", "--worktree", "--staged", "."], realization.nativeRoot);
+    assert.equal(gitStatus(realization.nativeRoot).length, 0, "regression teardown must not require force removal");
     const cleanup = await parentSession.request("removeGitWorktree", {
       workerKey: contract.binding.workerKey,
       branch: contract.binding.branch,
