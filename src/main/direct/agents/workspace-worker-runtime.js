@@ -16,6 +16,10 @@ const {
   workspaceWorkerInstructions,
   workspaceWorkerToolSchemas,
 } = require("./workspace-worker-contract");
+const {
+  executeWorkspaceRepositoryTool,
+  safeRepositoryRelativePath,
+} = require("./workspace-worker-repository-tools");
 
 const DIRECT_WORKSPACE_WORKER_RESULT_SCHEMA = "direct_workspace_worker_result@1";
 const DIRECT_WORKSPACE_WORKER_EXECUTION_SCHEMA = "direct_workspace_worker_execution@1";
@@ -97,29 +101,6 @@ function redactNativeRoot(value, nativeRoot) {
   return text;
 }
 
-function safeRelativePath(value) {
-  const text = normalizeString(value, "").replace(/\\/g, "/");
-  if (
-    !text ||
-    text.startsWith("/") ||
-    /^[A-Za-z]:\//.test(text) ||
-    text.includes("://") ||
-    /[\0\r\n]/.test(text) ||
-    text.split("/").includes("..")
-  ) {
-    const error = new Error("Workspace worker tools require a contained project-relative path.");
-    error.code = "direct_workspace_worker_path_invalid";
-    throw error;
-  }
-  const relativePath = text.replace(/^\.\/+/, "");
-  if (/(?:^|\/)\.git(?:\/|$)/i.test(relativePath)) {
-    const error = new Error("Workspace worker tools cannot read or address private Git realization metadata.");
-    error.code = "direct_workspace_worker_git_metadata_forbidden";
-    throw error;
-  }
-  return relativePath;
-}
-
 function safeTestTargets(value = []) {
   const source = Array.isArray(value) ? value : [];
   if (source.length > 16) {
@@ -130,7 +111,7 @@ function safeTestTargets(value = []) {
   return source.map((entry) => {
     const target = normalizeString(entry, "");
     const filePart = target.split("::", 1)[0];
-    safeRelativePath(filePart);
+    safeRepositoryRelativePath(filePart);
     if (target.startsWith("-") || /[|&;`$<>]/.test(target)) {
       const error = new Error("Workspace worker test target is outside the compiled argument grammar.");
       error.code = "direct_workspace_worker_test_target_invalid";
@@ -208,32 +189,17 @@ async function executeWorkspaceTool(input = {}) {
     workspaceBindingId: contract.binding.bindingId,
     workspaceBindingDigest: contract.binding.bindingDigest,
   };
-  if (toolName === "read_file") {
-    const relPath = safeRelativePath(args.path || args.relPath);
-    const raw = await provisioned.workspaceRequest("readFile", {
-      relPath,
-      rejectSensitive: true,
-    }, 30_000);
-    const text = redactNativeRoot(boundedText(raw?.text, MAX_TOOL_OUTPUT_CHARS), provisioned.nativeRoot);
-    const scan = scanToolResultTextForSecrets(text);
-    if (scan.status === "blocked") {
-      const error = new Error("Workspace worker read result contained auth-like material and was withheld.");
-      error.code = "direct_workspace_worker_read_redaction_failed";
-      throw error;
-    }
-    const providerOutput = {
-      kind: "read_file_result",
-      path: normalizeString(raw?.relPath, relPath),
-      text,
-      size: Number(raw?.size || 0),
-      truncated: raw?.truncated === true,
-      binary: raw?.binary === true,
-      rawWorkspacePathIncluded: false,
-    };
+  if (["inspect_repository", "list_files", "match_files", "search_text", "read_file"].includes(toolName)) {
+    const repositoryResult = await executeWorkspaceRepositoryTool({
+      toolName,
+      args,
+      contract,
+      provisioned,
+    });
     return toolResult({
       ...common,
-      summary: `${providerOutput.path} · ${providerOutput.size} bytes${providerOutput.truncated ? " · truncated" : ""}`,
-      providerOutputText: JSON.stringify(providerOutput),
+      summary: repositoryResult.summary,
+      providerOutputText: repositoryResult.providerOutputText,
       sideEffectExecuted: false,
     });
   }
@@ -283,9 +249,21 @@ async function executeWorkspaceTool(input = {}) {
       throw error;
     }
     const targets = safeTestTargets(args.targets);
+    const action = normalizeString(
+      args.action,
+      targets.length && contract.testProfile.targetedAction
+        ? contract.testProfile.targetedAction
+        : contract.testProfile.defaultAction,
+    );
+    if (contract.testProfile.actionsAllowed.length && !contract.testProfile.actionsAllowed.includes(action)) {
+      const error = new Error("Workspace worker requested a test action outside the compiled profile.");
+      error.code = "direct_workspace_worker_test_action_not_admitted";
+      throw error;
+    }
     const timeoutMs = Math.max(1000, Math.min(120_000, Number(args.timeout_ms || args.timeoutMs || 120_000) || 120_000));
     const raw = await provisioned.workspaceRequest("runDirectTest", {
       profileDigest: contract.testProfile.profileDigest,
+      action,
       targets,
       timeoutMs,
     }, timeoutMs + 10_000);
@@ -296,6 +274,7 @@ async function executeWorkspaceTool(input = {}) {
     const providerOutput = {
       kind: "run_test_result",
       testProfileId: contract.testProfile.profileId,
+      action,
       targets,
       exitCode: Number.isFinite(Number(raw?.exitCode)) ? Number(raw.exitCode) : null,
       timedOut: raw?.timedOut === true,
@@ -348,6 +327,8 @@ function executionProjection(contract, results = [], status = "running") {
     declaredTools: [...contract.authority.declaredTools],
     binding: { ...contract.binding },
     contextAdmission: { ...contract.contextAdmission },
+    repositoryPolicy: { ...contract.repositoryPolicy },
+    policyCompilation: { ...contract.policyCompilation },
     testProfile: contract.testProfile ? { ...contract.testProfile } : null,
     toolResults: results.map(publicToolResult),
     toolResultCount: results.length,

@@ -148,7 +148,14 @@ try {
     '    assert WORKER_VALUE.startswith("worker-")',
     "",
   ].join("\n"), "utf8");
-  run("git", ["add", "worker_fixture.py", "test_worker_fixture.py"], seedRoot);
+  fs.appendFileSync(path.join(seedRoot, "tests", "current_robot_tests.txt"), "\ntests/test_worker_fixture.py\n", "utf8");
+  fs.renameSync(path.join(seedRoot, "test_worker_fixture.py"), path.join(seedRoot, "tests", "test_worker_fixture.py"));
+  fs.mkdirSync(path.join(seedRoot, ".venv", "bin"), { recursive: true });
+  const fixturePython = path.join(seedRoot, ".venv", "bin", "python");
+  fs.writeFileSync(fixturePython, "#!/bin/sh\nexec python3 \"$@\"\n", "utf8");
+  fs.chmodSync(fixturePython, 0o755);
+  run("git", ["add", "worker_fixture.py", "tests/test_worker_fixture.py", "tests/current_robot_tests.txt"], seedRoot);
+  run("git", ["add", "-f", ".venv/bin/python"], seedRoot);
   run("git", [
     "-c", "user.name=Direct Workspace Worker Fixture",
     "-c", "user.email=workspace-worker@invalid.example",
@@ -231,10 +238,36 @@ try {
       return {
         terminal: { state: "tool_waiting", error: null },
         responseId,
-        normalizedEvents: toolEvents(responseId, "read_file", { path: "worker_fixture.py" }),
+        normalizedEvents: toolEvents(responseId, "inspect_repository", {}),
       };
     }
     if (step === 2) {
+      return {
+        terminal: { state: "tool_waiting", error: null },
+        responseId,
+        normalizedEvents: toolEvents(responseId, "list_files", { path: "tests", limit: 20 }),
+      };
+    }
+    if (step === 3) {
+      return {
+        terminal: { state: "tool_waiting", error: null },
+        responseId,
+        normalizedEvents: toolEvents(responseId, "search_text", {
+          query: "WORKER_VALUE",
+          path: "worker_fixture.py",
+          case_sensitive: true,
+          max_results: 10,
+        }),
+      };
+    }
+    if (step === 4) {
+      return {
+        terminal: { state: "tool_waiting", error: null },
+        responseId,
+        normalizedEvents: toolEvents(responseId, "read_file", { path: "worker_fixture.py" }),
+      };
+    }
+    if (step === 5) {
       return {
         terminal: { state: "tool_waiting", error: null },
         responseId,
@@ -251,12 +284,13 @@ try {
         }),
       };
     }
-    if (step === 3) {
+    if (step === 6) {
       return {
         terminal: { state: "tool_waiting", error: null },
         responseId,
         normalizedEvents: toolEvents(responseId, "run_test", {
-          targets: ["test_worker_fixture.py"],
+          action: "test_focus",
+          targets: ["tests/test_worker_fixture.py"],
           timeout_ms: 30_000,
         }),
       };
@@ -366,8 +400,8 @@ try {
   assert.equal(recordB.state, "completed");
   assert.equal(recordA.workspaceMode, "isolated_worktree");
   assert.equal(recordA.toolProfile, "implementation_worker");
-  assert.equal(recordA.workspaceExecution.toolResultCount, 3);
-  assert.equal(recordB.workspaceExecution.toolResultCount, 3);
+  assert.equal(recordA.workspaceExecution.toolResultCount, 6);
+  assert.equal(recordB.workspaceExecution.toolResultCount, 6);
   assert.notEqual(recordA.workspaceExecution.binding.bindingId, recordB.workspaceExecution.binding.bindingId);
   assert.notEqual(recordA.workspaceExecution.binding.branch, recordB.workspaceExecution.binding.branch);
   assert.equal(recordA.epistemicCaptureComplete, true);
@@ -375,11 +409,11 @@ try {
   assert.equal(recordA.evidenceConfidence, "exact");
   assert.equal(recordB.evidenceConfidence, "exact");
   assert.deepEqual(workerTokenUsage.get(launchA.childAgentId), {
-    inputTokens: 40,
-    cachedInputTokens: 8,
-    outputTokens: 12,
-    reasoningOutputTokens: 4,
-    totalTokens: 52,
+    inputTokens: 70,
+    cachedInputTokens: 14,
+    outputTokens: 21,
+    reasoningOutputTokens: 7,
+    totalTokens: 91,
   });
 
   const realizationA = privateRealizations.get(launchA.childAgentId);
@@ -406,12 +440,24 @@ try {
   const contractB = contracts.get(launchB.childAgentId);
   assertWorkspaceWorkerContractSafe(contractA);
   assertWorkspaceWorkerContractSafe(contractB);
-  assert.deepEqual(contractA.authority.declaredTools, ["read_file", "apply_patch", "run_test"]);
+  assert.deepEqual(contractA.authority.declaredTools, [
+    "inspect_repository",
+    "list_files",
+    "match_files",
+    "search_text",
+    "read_file",
+    "apply_patch",
+    "run_test",
+  ]);
   assert.equal(contractA.authority.recursiveSpawnAllowed, false);
   assert.equal(contractA.authority.remoteMutationAllowed, false);
   assert.equal(contractA.authority.bottomUpMessagingAllowed, false);
   assert.equal(contractA.contextAdmission.admittedMessageCount, 2);
-  assert.equal(contractA.testProfile.profileId, "python_pytest");
+  assert.equal(contractA.testProfile.profileId, "arcagi3_pinned_make_actions");
+  assert.deepEqual(contractA.testProfile.actionsAllowed, ["test_focus", "check", "test"]);
+  assert.equal(contractA.repositoryPolicy.profileId, "arcagi3-odeu-local");
+  assert.equal(contractA.repositoryPolicy.validationPosture, "exact");
+  assert.equal(contractA.authority.requestedToolProfileAdvisory, true);
   assert.equal(contractA.authority.testProcessIsolationGuaranteed, false);
   assert.equal(contractA.authority.testNetworkIsolationGuaranteed, false);
 
@@ -427,8 +473,20 @@ try {
     contextMessages: parentContextMessages,
     contextHandoffMode: "full",
   }).contract;
-  assert.deepEqual(readOnlyContract.authority.declaredTools, ["read_file"]);
-  assert.deepEqual(workspaceWorkerToolSchemas(readOnlyContract).map((tool) => tool.name), ["read_file"]);
+  assert.deepEqual(readOnlyContract.authority.declaredTools, [
+    "inspect_repository",
+    "list_files",
+    "match_files",
+    "search_text",
+    "read_file",
+  ]);
+  assert.deepEqual(workspaceWorkerToolSchemas(readOnlyContract).map((tool) => tool.name), [
+    "inspect_repository",
+    "list_files",
+    "match_files",
+    "search_text",
+    "read_file",
+  ]);
   await assert.rejects(
     () => executeWorkspaceTool({
       obligation: {
@@ -487,7 +545,15 @@ try {
 
   for (const entry of providerBodies) {
     const names = (entry.body.tools || []).map((tool) => tool.name);
-    assert.deepEqual(names, ["read_file", "apply_patch", "run_test"]);
+    assert.deepEqual(names, [
+      "inspect_repository",
+      "list_files",
+      "match_files",
+      "search_text",
+      "read_file",
+      "apply_patch",
+      "run_test",
+    ]);
     assert.equal(names.includes("run_command"), false);
     assert.equal(names.includes("spawn_agent"), false);
     assert.equal(names.includes("send_message"), false);
@@ -513,9 +579,16 @@ try {
     const captureTurn = sessionStore.readTurn(captureSessionId, captureSession.turns[0].turnId);
     assert.equal(captureTurn.requestShape.workspaceWorkerContractDigest, contract.contractDigest);
     assert.equal(captureTurn.requestShape.workspaceBindingDigest, contract.binding.bindingDigest);
-    assert.equal(captureTurn.requestShape.workspaceWorkerToolResultCount, 3);
-    assert.equal(captureTurn.toolResults.length, 3);
-    assert.deepEqual(captureTurn.toolResults.map((result) => result.tool), ["read_file", "apply_patch", "run_test"]);
+    assert.equal(captureTurn.requestShape.workspaceWorkerToolResultCount, 6);
+    assert.equal(captureTurn.toolResults.length, 6);
+    assert.deepEqual(captureTurn.toolResults.map((result) => result.tool), [
+      "inspect_repository",
+      "list_files",
+      "search_text",
+      "read_file",
+      "apply_patch",
+      "run_test",
+    ]);
   }
 
   for (const [childAgentId, contract] of contracts.entries()) {

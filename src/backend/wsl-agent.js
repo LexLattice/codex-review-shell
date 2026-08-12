@@ -17,6 +17,10 @@ const path = require("node:path");
 const readline = require("node:readline");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
+const {
+  WORKSPACE_WORKER_TOOLS,
+  pinnedWorkspaceRepositoryProfiles,
+} = require("../main/direct/agents/workspace-worker-policy-profile");
 
 const PROTOCOL_VERSION = 1;
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
@@ -56,6 +60,14 @@ const DIRECT_EPISTEMIC_PROFILE_SOURCE_BYTES = 8 * 1024 * 1024;
 const DIRECT_WORKSPACE_WORKER_TIMEOUT_MS = 120 * 1000;
 const DIRECT_WORKSPACE_WORKER_TARGET_LIMIT = 16;
 const DIRECT_WORKSPACE_WORKER_TARGET_CHARS = 500;
+const DIRECT_WORKSPACE_WORKER_MANIFEST_BYTES = 8 * 1024 * 1024;
+const DIRECT_WORKSPACE_WORKER_MANIFEST_FILE_LIMIT = 8_000;
+const DIRECT_WORKSPACE_WORKER_LIST_LIMIT = 200;
+const DIRECT_WORKSPACE_WORKER_SEARCH_FILE_LIMIT = 2_000;
+const DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES = 1024 * 1024;
+const DIRECT_WORKSPACE_WORKER_SEARCH_TOTAL_BYTES = 16 * 1024 * 1024;
+const DIRECT_WORKSPACE_WORKER_SEARCH_RESULT_LIMIT = 120;
+const DIRECT_WORKSPACE_WORKER_READ_LIMIT = 48 * 1024;
 const ARO_REALIZATION_CONTEXT_FILE_LIMIT = 12;
 const ARO_REALIZATION_CONTEXT_EXCERPT_BYTES = 12 * 1024;
 const ARO_REALIZATION_CONTEXT_TOTAL_BYTES = 96 * 1024;
@@ -80,6 +92,8 @@ const SENSITIVE_READ_FILE_PATTERNS = [
   /(?:^|\/)id_rsa$/i,
   /(?:^|\/)id_ed25519$/i,
   /(?:^|\/)secrets(?:\/|$)/i,
+  /(?:^|\/)(?:secrets?|credentials?)(?:\.[^/]*)?$/i,
+  /(?:^|\/)(?:\.npmrc|\.pypirc|\.netrc)$/i,
   /(?:^|\/)\.ssh(?:\/|$)/i,
   /(?:^|\/)\.git\/config$/i,
 ];
@@ -2547,49 +2561,276 @@ function serializeGitWorktreeMutation(operation) {
   return pending;
 }
 
+function workspaceWorkerBindingDigest(value) {
+  const digest = String(value || "").trim();
+  if (!/^sha256:[a-f0-9]{64}$/i.test(digest)) {
+    const error = new Error("Workspace repository tools require one frozen binding digest.");
+    error.code = "workspace_worker_repository_binding_missing";
+    throw error;
+  }
+  return digest;
+}
+
+function workspaceWorkerSafeManifestPath(value) {
+  const raw = String(value || "");
+  if (!raw || /[\0-\x1f\x7f]/.test(raw)) return "";
+  let normalized;
+  try {
+    normalized = displayRelPath(normalizeRelPath(raw));
+  } catch {
+    return "";
+  }
+  if (!normalized || normalized.split("/").some((part) => part.toLowerCase() === ".git")) return "";
+  if (sensitiveReadFileReason(normalized)) return "";
+  return normalized;
+}
+
+async function workspaceWorkerCanonicalFileEntry(relativePath, trackedPaths) {
+  const safePath = workspaceWorkerSafeManifestPath(relativePath);
+  if (!safePath) return null;
+  try {
+    const resolved = await resolveFileWithinRoot(safePath);
+    const requestedPath = path.resolve(resolved.requestedFullPath);
+    const physicalPath = path.resolve(resolved.fullPath);
+    if (path.resolve(resolved.realRoot) !== path.resolve(root) || requestedPath !== physicalPath) return null;
+    const requestedStat = await fs.lstat(resolved.requestedFullPath);
+    if (requestedStat.isSymbolicLink() || !requestedStat.isFile()) return null;
+    return {
+      path: safePath,
+      size: requestedStat.size,
+      tracked: trackedPaths.has(safePath),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function workspaceWorkerCanonicalManifest() {
+  await exactGitWorkspace();
+  const [trackedResult, manifestResult] = await Promise.all([
+    captureDigestProcess("git", ["ls-files", "--cached", "-z"], {
+      cwd: root,
+      timeoutMs: 20_000,
+      captureLimit: DIRECT_WORKSPACE_WORKER_MANIFEST_BYTES,
+    }),
+    captureDigestProcess("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+      cwd: root,
+      timeoutMs: 20_000,
+      captureLimit: DIRECT_WORKSPACE_WORKER_MANIFEST_BYTES,
+    }),
+  ]);
+  if ([trackedResult, manifestResult].some((result) => result.exitCode !== 0)) {
+    const error = new Error("Git could not enumerate the canonical workspace manifest.");
+    error.code = "workspace_worker_repository_manifest_unavailable";
+    throw error;
+  }
+  if (trackedResult.stdoutTruncated || manifestResult.stdoutTruncated) {
+    const error = new Error("The canonical workspace manifest exceeded its byte budget.");
+    error.code = "workspace_worker_repository_manifest_bytes_exceeded";
+    throw error;
+  }
+  const parse = (buffer) => buffer.toString("utf8").split("\0").filter(Boolean).map(workspaceWorkerSafeManifestPath).filter(Boolean);
+  const trackedPaths = new Set(parse(trackedResult.stdout));
+  const candidatePaths = [...new Set(parse(manifestResult.stdout))].sort();
+  if (candidatePaths.length > DIRECT_WORKSPACE_WORKER_MANIFEST_FILE_LIMIT) {
+    const error = new Error("The canonical workspace manifest exceeded its file-count budget.");
+    error.code = "workspace_worker_repository_manifest_file_limit_exceeded";
+    throw error;
+  }
+  const entries = [];
+  let excludedEntryCount = 0;
+  for (let offset = 0; offset < candidatePaths.length; offset += 32) {
+    const batch = await Promise.all(candidatePaths.slice(offset, offset + 32)
+      .map((relativePath) => workspaceWorkerCanonicalFileEntry(relativePath, trackedPaths)));
+    for (const entry of batch) {
+      if (entry) entries.push(entry);
+      else excludedEntryCount += 1;
+    }
+  }
+  const manifestDigest = sha256Digest(canonicalJson(entries));
+  return {
+    entries,
+    manifestDigest,
+    trackedFileCount: entries.filter((entry) => entry.tracked).length,
+    untrackedFileCount: entries.filter((entry) => !entry.tracked).length,
+    excludedEntryCount,
+  };
+}
+
+async function workspaceWorkerPinnedProfileEvidence() {
+  for (const profile of pinnedWorkspaceRepositoryProfiles()) {
+    const markerResults = [];
+    for (const marker of profile.markers) {
+      let exact = false;
+      try {
+        const resolved = await resolveFileWithinRoot(marker);
+        const stat = await fs.lstat(resolved.requestedFullPath);
+        exact = !stat.isSymbolicLink() && path.resolve(resolved.requestedFullPath) === path.resolve(resolved.fullPath);
+      } catch {}
+      markerResults.push({ marker, exact });
+    }
+    if (markerResults.some((entry) => !entry.exact)) continue;
+    const sourceRefs = [];
+    for (const source of profile.policySources) {
+      try {
+        const observed = await directEpistemicFileDigest(source.path, DIRECT_EPISTEMIC_PROFILE_SOURCE_BYTES);
+        sourceRefs.push({
+          id: source.id,
+          path: source.path,
+          facet: source.facet,
+          contentDigest: observed.contentDigest,
+          validationPosture: observed.contentDigest === source.contentDigest ? "exact" : "digest_mismatch",
+        });
+      } catch {
+        sourceRefs.push({
+          id: source.id,
+          path: source.path,
+          facet: source.facet,
+          contentDigest: source.contentDigest,
+          validationPosture: "unavailable",
+        });
+      }
+    }
+    if (sourceRefs.some((entry) => entry.validationPosture !== "exact")) continue;
+    return { profile, sourceRefs };
+  }
+  return null;
+}
+
+async function workspaceWorkerRepositoryPolicy() {
+  const pinned = await workspaceWorkerPinnedProfileEvidence();
+  if (pinned) {
+    return {
+      schema: "direct_workspace_worker_repository_policy@1",
+      profileId: pinned.profile.profileId,
+      profileRevision: pinned.profile.revision,
+      profileDigest: pinned.profile.profileDigest,
+      validationPosture: "exact",
+      allowedTools: [...pinned.profile.allowedTools],
+      selectedConstraints: [...pinned.profile.selectedConstraints],
+      sourceRefs: pinned.sourceRefs,
+      omissionLedger: pinned.profile.omittedPolicyFacets.map((reason) => ({
+        source: pinned.profile.profileId,
+        reason,
+        count: 1,
+      })),
+      testProfile: pinned.profile.testProfile,
+      rawPolicyTextIncluded: false,
+      rawWorkspacePathIncluded: false,
+    };
+  }
+  const generic = {
+    schema: "direct_workspace_worker_repository_policy@1",
+    profileId: "unprofiled_git_repository",
+    profileRevision: 0,
+    validationPosture: "unprofiled",
+    allowedTools: [...WORKSPACE_WORKER_TOOLS],
+    selectedConstraints: [
+      "Treat only files and tools in the bound Git repository as authoritative.",
+      "Keep edits scoped and do not mutate remotes or private Git metadata.",
+    ],
+    sourceRefs: [],
+    omissionLedger: [{
+      source: "repository_policy",
+      reason: "No pinned repository policy matched; raw repository instructions were not inherited.",
+      count: 1,
+    }],
+    testProfile: null,
+    rawPolicyTextIncluded: false,
+    rawWorkspacePathIncluded: false,
+  };
+  generic.profileDigest = sha256Digest(canonicalJson(generic));
+  return generic;
+}
+
+function workspaceWorkerSubstrateCapabilities(testAvailable) {
+  const availableTools = WORKSPACE_WORKER_TOOLS.filter((toolName) => toolName !== "run_test" || testAvailable);
+  const base = {
+    schema: "direct_workspace_worker_substrate_capability@1",
+    capabilityProfileId: "resident_git_workspace_tools_v1",
+    availableTools,
+    arbitraryCommandAvailableToWorker: false,
+    remoteMutationAvailableToWorker: false,
+    rawWorkspacePathIncluded: false,
+  };
+  return { ...base, capabilityDigest: sha256Digest(canonicalJson(base)) };
+}
+
+function workspaceWorkerTestProfile(base, repositoryPolicy) {
+  const profileBase = {
+    schema: "direct_workspace_worker_test_profile@1",
+    ...base,
+    workspaceKind,
+    repositoryPolicyDigest: repositoryPolicy.profileDigest,
+  };
+  return {
+    ...profileBase,
+    profileDigest: sha256Digest(canonicalJson(profileBase)),
+    available: true,
+    repositoryPolicy,
+    substrateCapabilities: workspaceWorkerSubstrateCapabilities(true),
+  };
+}
+
 async function directTestProfile() {
+  const repositoryPolicy = await workspaceWorkerRepositoryPolicy();
+  if (repositoryPolicy.validationPosture === "exact" && repositoryPolicy.testProfile) {
+    const pinned = repositoryPolicy.testProfile;
+    return workspaceWorkerTestProfile({
+      profileId: pinned.profileId,
+      command: "make",
+      actions: pinned.actions,
+      actionsAllowed: pinned.actions.map((action) => action.name),
+      defaultAction: pinned.defaultAction,
+      targetedAction: pinned.targetedAction,
+      targetsAllowed: pinned.actions.some((action) => action.targetsAllowed),
+    }, repositoryPolicy);
+  }
   const packageJsonPath = path.join(root, "package.json");
   if (await pathExists(packageJsonPath)) {
     try {
       const packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
       if (typeof packageJson?.scripts?.test === "string" && packageJson.scripts.test.trim()) {
-        const base = {
-          schema: "direct_workspace_worker_test_profile@1",
+        return workspaceWorkerTestProfile({
           profileId: "node_package_test",
           command: "npm",
           baseArgs: ["test"],
+          actions: [{ name: "test", targetsAllowed: false }],
+          actionsAllowed: ["test"],
+          defaultAction: "test",
+          targetedAction: "",
           targetsAllowed: false,
-          workspaceKind,
-        };
-        return { ...base, profileDigest: sha256Digest(canonicalJson(base)), available: true };
+        }, repositoryPolicy);
       }
     } catch {}
   }
   const pythonMarkers = ["pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini"];
   if ((await Promise.all(pythonMarkers.map((name) => pathExists(path.join(root, name))))).some(Boolean)) {
-    const base = {
-      schema: "direct_workspace_worker_test_profile@1",
+    return workspaceWorkerTestProfile({
       profileId: "python_pytest",
       command: process.platform === "win32" ? "python" : "python3",
       baseArgs: ["-m", "pytest"],
+      actions: [{ name: "test", targetsAllowed: true }],
+      actionsAllowed: ["test"],
+      defaultAction: "test",
+      targetedAction: "test",
       targetsAllowed: true,
-      workspaceKind,
-    };
-    return { ...base, profileDigest: sha256Digest(canonicalJson(base)), available: true };
+    }, repositoryPolicy);
   }
   const makefilePath = path.join(root, "Makefile");
   if (await pathExists(makefilePath)) {
     const body = await fs.readFile(makefilePath, "utf8").catch(() => "");
     if (/^test\s*:/m.test(body)) {
-      const base = {
-        schema: "direct_workspace_worker_test_profile@1",
+      return workspaceWorkerTestProfile({
         profileId: "make_test",
         command: "make",
         baseArgs: ["test"],
+        actions: [{ name: "test", makeTarget: "test", targetsAllowed: false }],
+        actionsAllowed: ["test"],
+        defaultAction: "test",
+        targetedAction: "",
         targetsAllowed: false,
-        workspaceKind,
-      };
-      return { ...base, profileDigest: sha256Digest(canonicalJson(base)), available: true };
+      }, repositoryPolicy);
     }
   }
   return {
@@ -2599,6 +2840,226 @@ async function directTestProfile() {
     available: false,
     targetsAllowed: false,
     workspaceKind,
+    actions: [],
+    actionsAllowed: [],
+    defaultAction: "",
+    targetedAction: "",
+    repositoryPolicy,
+    substrateCapabilities: workspaceWorkerSubstrateCapabilities(false),
+  };
+}
+
+async function inspectWorkspaceRepository(params = {}) {
+  const workspaceBindingDigest = workspaceWorkerBindingDigest(params.bindingDigest);
+  const [manifest, repositoryPolicy] = await Promise.all([
+    workspaceWorkerCanonicalManifest(),
+    workspaceWorkerRepositoryPolicy(),
+  ]);
+  const topLevelEntries = [...new Set(manifest.entries.map((entry) => entry.path.split("/", 1)[0]))].sort().slice(0, 80);
+  return {
+    schema: "direct_workspace_worker_repository_inspection@1",
+    workspaceBindingDigest,
+    gitCanonical: true,
+    manifestDigest: manifest.manifestDigest,
+    fileCount: manifest.entries.length,
+    trackedFileCount: manifest.trackedFileCount,
+    untrackedFileCount: manifest.untrackedFileCount,
+    excludedEntryCount: manifest.excludedEntryCount,
+    topLevelEntries,
+    repositoryPolicy,
+    manifestTruncated: false,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+function workspaceWorkerPrefixMatch(filePath, prefix) {
+  return !prefix || filePath === prefix || filePath.startsWith(`${prefix}/`);
+}
+
+function workspaceWorkerSafePrefix(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const prefix = workspaceWorkerSafeManifestPath(raw);
+  if (!prefix) {
+    const error = new Error("Repository prefix is invalid, sensitive, or private Git metadata.");
+    error.code = "workspace_worker_repository_prefix_denied";
+    throw error;
+  }
+  return prefix;
+}
+
+async function listWorkspaceRepositoryFiles(params = {}) {
+  const workspaceBindingDigest = workspaceWorkerBindingDigest(params.bindingDigest);
+  const prefix = workspaceWorkerSafePrefix(params.prefix);
+  const limit = Math.max(1, Math.min(Number(params.limit || 100) || 100, DIRECT_WORKSPACE_WORKER_LIST_LIMIT));
+  const manifest = await workspaceWorkerCanonicalManifest();
+  const matches = manifest.entries.filter((entry) => workspaceWorkerPrefixMatch(entry.path, prefix));
+  return {
+    schema: "direct_workspace_worker_repository_file_list@1",
+    workspaceBindingDigest,
+    prefix,
+    entries: matches.slice(0, limit),
+    totalMatches: matches.length,
+    truncated: matches.length > limit,
+    manifestDigest: manifest.manifestDigest,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+async function matchWorkspaceRepositoryFiles(params = {}) {
+  const workspaceBindingDigest = workspaceWorkerBindingDigest(params.bindingDigest);
+  const patterns = (Array.isArray(params.patterns) ? params.patterns : []).map((entry) => String(entry || "").trim());
+  if (!patterns.length || patterns.length > 8 || patterns.some((entry) => !entry || entry.length > 256 || /[\0\r\n]/.test(entry))) {
+    const error = new Error("Repository match patterns exceed the bounded grammar.");
+    error.code = "workspace_worker_repository_match_patterns_invalid";
+    throw error;
+  }
+  const regexes = patterns.map(globToRegex);
+  for (const pattern of patterns) {
+    const pathProbe = pattern.replace(/[?*]+/g, "x");
+    if (!workspaceWorkerSafeManifestPath(pathProbe)) {
+      const error = new Error("Repository match pattern addresses an invalid, sensitive, or private path.");
+      error.code = "workspace_worker_repository_match_pattern_denied";
+      throw error;
+    }
+  }
+  const limit = Math.max(1, Math.min(Number(params.limit || 100) || 100, DIRECT_WORKSPACE_WORKER_LIST_LIMIT));
+  const manifest = await workspaceWorkerCanonicalManifest();
+  const matches = manifest.entries.filter((entry) => matchesAnyPattern(entry.path, regexes));
+  return {
+    schema: "direct_workspace_worker_repository_file_matches@1",
+    workspaceBindingDigest,
+    patterns,
+    entries: matches.slice(0, limit),
+    totalMatches: matches.length,
+    truncated: matches.length > limit,
+    manifestDigest: manifest.manifestDigest,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+async function readWorkspaceWorkerCanonicalEntry(entry, maxBytes) {
+  const resolved = await resolveFileWithinRoot(entry.path);
+  const requestedStat = await fs.lstat(resolved.requestedFullPath);
+  if (requestedStat.isSymbolicLink() || !requestedStat.isFile() || path.resolve(resolved.requestedFullPath) !== path.resolve(resolved.fullPath)) {
+    const error = new Error("Repository file changed to an inadmissible realization.");
+    error.code = "workspace_worker_repository_file_realization_changed";
+    throw error;
+  }
+  const bytesToRead = Math.min(requestedStat.size, maxBytes);
+  const noFollow = Number(fsSync.constants.O_NOFOLLOW || 0);
+  const handle = await fs.open(resolved.requestedFullPath, fsSync.constants.O_RDONLY | noFollow);
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.dev !== requestedStat.dev || before.ino !== requestedStat.ino) {
+      throw new Error("workspace_worker_repository_file_changed_during_read");
+    }
+    const buffer = Buffer.alloc(bytesToRead);
+    if (bytesToRead) await handle.read(buffer, 0, bytesToRead, 0);
+    const after = await handle.stat();
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+      throw new Error("workspace_worker_repository_file_changed_during_read");
+    }
+    return { buffer, size: after.size, truncated: after.size > maxBytes };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readWorkspaceRepositoryFile(params = {}) {
+  const workspaceBindingDigest = workspaceWorkerBindingDigest(params.bindingDigest);
+  const relativePath = workspaceWorkerSafeManifestPath(params.relPath);
+  if (!relativePath) {
+    const error = new Error("Repository read path is invalid or sensitive.");
+    error.code = "workspace_worker_repository_read_path_denied";
+    throw error;
+  }
+  const maxBytes = Math.max(1, Math.min(Number(params.maxBytes || DIRECT_WORKSPACE_WORKER_READ_LIMIT) || DIRECT_WORKSPACE_WORKER_READ_LIMIT, DIRECT_WORKSPACE_WORKER_READ_LIMIT));
+  const manifest = await workspaceWorkerCanonicalManifest();
+  const entry = manifest.entries.find((candidate) => candidate.path === relativePath);
+  if (!entry) {
+    const error = new Error("Repository read path is outside the Git-canonical manifest.");
+    error.code = "workspace_worker_repository_read_not_canonical";
+    throw error;
+  }
+  const read = await readWorkspaceWorkerCanonicalEntry(entry, maxBytes);
+  if (looksBinary(read.buffer)) {
+    const error = new Error("Binary repository files are not admitted to workspace workers.");
+    error.code = "workspace_worker_repository_binary_denied";
+    throw error;
+  }
+  return {
+    schema: "direct_workspace_worker_repository_file_read@1",
+    workspaceBindingDigest,
+    relPath: relativePath,
+    size: read.size,
+    text: read.buffer.toString("utf8"),
+    truncated: read.truncated,
+    manifestDigest: manifest.manifestDigest,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+async function searchWorkspaceRepositoryText(params = {}) {
+  const workspaceBindingDigest = workspaceWorkerBindingDigest(params.bindingDigest);
+  const query = String(params.query || "");
+  if (!query || query.length > 256 || /[\0\r\n]/.test(query)) {
+    const error = new Error("Repository search requires one bounded single-line literal query.");
+    error.code = "workspace_worker_repository_search_query_invalid";
+    throw error;
+  }
+  const prefix = workspaceWorkerSafePrefix(params.prefix);
+  const caseSensitive = params.caseSensitive === true;
+  const needle = caseSensitive ? query : query.toLocaleLowerCase();
+  const maxResults = Math.max(1, Math.min(Number(params.maxResults || 60) || 60, DIRECT_WORKSPACE_WORKER_SEARCH_RESULT_LIMIT));
+  const manifest = await workspaceWorkerCanonicalManifest();
+  const candidates = manifest.entries.filter((entry) =>
+    workspaceWorkerPrefixMatch(entry.path, prefix) && entry.size <= DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES);
+  const matches = [];
+  let filesScanned = 0;
+  let bytesScanned = 0;
+  let truncated = candidates.length > DIRECT_WORKSPACE_WORKER_SEARCH_FILE_LIMIT;
+  for (const entry of candidates.slice(0, DIRECT_WORKSPACE_WORKER_SEARCH_FILE_LIMIT)) {
+    if (bytesScanned + entry.size > DIRECT_WORKSPACE_WORKER_SEARCH_TOTAL_BYTES) {
+      truncated = true;
+      break;
+    }
+    let read;
+    try {
+      read = await readWorkspaceWorkerCanonicalEntry(entry, DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES);
+    } catch {
+      continue;
+    }
+    if (looksBinary(read.buffer)) continue;
+    filesScanned += 1;
+    bytesScanned += read.buffer.length;
+    const lines = read.buffer.toString("utf8").split(/\r?\n/);
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const haystack = caseSensitive ? lines[lineIndex] : lines[lineIndex].toLocaleLowerCase();
+      const column = haystack.indexOf(needle);
+      if (column < 0) continue;
+      matches.push({
+        path: entry.path,
+        line: lineIndex + 1,
+        column: column + 1,
+        text: lines[lineIndex].slice(0, 500),
+      });
+      if (matches.length >= maxResults) {
+        truncated = true;
+        break;
+      }
+    }
+    if (matches.length >= maxResults) break;
+  }
+  return {
+    schema: "direct_workspace_worker_repository_text_search@1",
+    workspaceBindingDigest,
+    matches,
+    filesScanned,
+    bytesScanned,
+    truncated,
+    manifestDigest: manifest.manifestDigest,
+    rawWorkspacePathIncluded: false,
   };
 }
 
@@ -2640,17 +3101,38 @@ async function runDirectTest(params = {}) {
     throw error;
   }
   const targets = safeTestTargets(params.targets);
-  if (targets.length && profile.targetsAllowed !== true) {
+  const actionName = String(params.action || (targets.length && profile.targetedAction ? profile.targetedAction : profile.defaultAction) || "test").trim();
+  const action = (Array.isArray(profile.actions) ? profile.actions : []).find((candidate) => candidate?.name === actionName);
+  if (!action || !(Array.isArray(profile.actionsAllowed) ? profile.actionsAllowed : []).includes(actionName)) {
+    const error = new Error("The requested test action is outside the compiled repository profile.");
+    error.code = "workspace_worker_test_action_not_admitted";
+    throw error;
+  }
+  if (targets.length && action.targetsAllowed !== true) {
     const error = new Error("The compiled test profile does not permit provider-selected targets.");
     error.code = "workspace_worker_test_targets_not_allowed";
+    throw error;
+  }
+  if (!targets.length && action.targetsRequired === true) {
+    const error = new Error("The compiled test action requires at least one bounded target.");
+    error.code = "workspace_worker_test_targets_required";
     throw error;
   }
   const timeoutMs = Number.isFinite(Number(params.timeoutMs))
     ? Math.max(1000, Math.min(Number(params.timeoutMs), DIRECT_WORKSPACE_WORKER_TIMEOUT_MS))
     : DIRECT_WORKSPACE_WORKER_TIMEOUT_MS;
+  let executionArgs;
+  if (profile.profileId === "arcagi3_pinned_make_actions") {
+    executionArgs = [
+      ...(targets.length ? [`TESTS=${targets.join(" ")}`] : []),
+      action.makeTarget,
+    ];
+  } else {
+    executionArgs = [...(profile.baseArgs || []), ...targets];
+  }
   const result = await runDirectCommand({
     command: profile.command,
-    args: [...profile.baseArgs, ...targets],
+    args: executionArgs,
     cwdRelPath: "",
     timeoutMs,
   });
@@ -2659,6 +3141,7 @@ async function runDirectTest(params = {}) {
     schema: "direct_workspace_worker_test_result@1",
     command: profile.profileId,
     args: targets,
+    action: actionName,
     testProfileId: profile.profileId,
     testProfileDigest: profile.profileDigest,
     rawCommandIncluded: false,
@@ -4430,6 +4913,11 @@ async function handleRequest(method, params = {}) {
         removeGitWorktree: true,
         directTestProfile: true,
         runDirectTest: true,
+        inspectWorkspaceRepository: true,
+        listWorkspaceRepositoryFiles: true,
+        matchWorkspaceRepositoryFiles: true,
+        searchWorkspaceRepositoryText: true,
+        readWorkspaceRepositoryFile: true,
         ensureCodexSandboxArtifactIgnored: true,
         listMatchingFiles: true,
         resolvePath: true,
@@ -4473,6 +4961,11 @@ async function handleRequest(method, params = {}) {
   }
   if (method === "directTestProfile") return directTestProfile(params);
   if (method === "runDirectTest") return runDirectTest(params);
+  if (method === "inspectWorkspaceRepository") return inspectWorkspaceRepository(params);
+  if (method === "listWorkspaceRepositoryFiles") return listWorkspaceRepositoryFiles(params);
+  if (method === "matchWorkspaceRepositoryFiles") return matchWorkspaceRepositoryFiles(params);
+  if (method === "searchWorkspaceRepositoryText") return searchWorkspaceRepositoryText(params);
+  if (method === "readWorkspaceRepositoryFile") return readWorkspaceRepositoryFile(params);
   if (method === "ensureCodexSandboxArtifactIgnored") return ensureCodexSandboxArtifactIgnored(params);
   if (method === "watchStatus") return watchStatus(params);
   if (method === "listCodexThreads") return listCodexThreads(params);
