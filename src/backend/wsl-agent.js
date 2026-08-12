@@ -2776,16 +2776,37 @@ async function applyWorkspaceWorkerPatch(params = {}) {
 
 function workspaceWorkerSafeManifestPath(value) {
   const raw = String(value || "");
-  if (!raw || /[\0-\x1f\x7f]/.test(raw)) return "";
+  if (!raw || raw !== raw.trim() || /[\0-\x1f\x7f]/.test(raw)) return "";
   let normalized;
   try {
     normalized = displayRelPath(normalizeRelPath(raw));
   } catch {
     return "";
   }
+  if (normalized !== raw) return "";
   if (!normalized || normalized.split("/").some((part) => part.toLowerCase() === ".git")) return "";
   if (sensitiveReadFileReason(normalized)) return "";
   return normalized;
+}
+
+function workspaceWorkerParseGitManifest(buffer) {
+  const paths = [];
+  let excludedEntryCount = 0;
+  let start = 0;
+  for (let index = 0; index <= buffer.length; index += 1) {
+    if (index < buffer.length && buffer[index] !== 0) continue;
+    if (index > start) {
+      let raw = "";
+      try {
+        raw = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(start, index));
+      } catch {}
+      const safePath = raw ? workspaceWorkerSafeManifestPath(raw) : "";
+      if (safePath) paths.push(safePath);
+      else excludedEntryCount += 1;
+    }
+    start = index + 1;
+  }
+  return { paths, excludedEntryCount };
 }
 
 async function workspaceWorkerCanonicalFileEntry(relativePath, trackedPaths) {
@@ -2832,16 +2853,17 @@ async function workspaceWorkerCanonicalManifest() {
     error.code = "workspace_worker_repository_manifest_bytes_exceeded";
     throw error;
   }
-  const parse = (buffer) => buffer.toString("utf8").split("\0").filter(Boolean).map(workspaceWorkerSafeManifestPath).filter(Boolean);
-  const trackedPaths = new Set(parse(trackedResult.stdout));
-  const candidatePaths = [...new Set(parse(manifestResult.stdout))].sort();
-  if (candidatePaths.length > DIRECT_WORKSPACE_WORKER_MANIFEST_FILE_LIMIT) {
+  const trackedManifest = workspaceWorkerParseGitManifest(trackedResult.stdout);
+  const candidateManifest = workspaceWorkerParseGitManifest(manifestResult.stdout);
+  const trackedPaths = new Set(trackedManifest.paths);
+  const candidatePaths = [...new Set(candidateManifest.paths)].sort();
+  if (candidateManifest.paths.length > DIRECT_WORKSPACE_WORKER_MANIFEST_FILE_LIMIT) {
     const error = new Error("The canonical workspace manifest exceeded its file-count budget.");
     error.code = "workspace_worker_repository_manifest_file_limit_exceeded";
     throw error;
   }
   const entries = [];
-  let excludedEntryCount = 0;
+  let excludedEntryCount = candidateManifest.excludedEntryCount;
   for (let offset = 0; offset < candidatePaths.length; offset += 32) {
     const batch = await Promise.all(candidatePaths.slice(offset, offset + 32)
       .map((relativePath) => workspaceWorkerCanonicalFileEntry(relativePath, trackedPaths)));

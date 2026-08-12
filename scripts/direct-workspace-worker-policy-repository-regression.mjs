@@ -57,7 +57,7 @@ try {
   run("git", ["init", "-q"], tempRoot);
   fs.mkdirSync(path.join(tempRoot, "src"), { recursive: true });
   fs.mkdirSync(path.join(tempRoot, "ignored"), { recursive: true });
-  fs.writeFileSync(path.join(tempRoot, ".gitignore"), "ignored/\n", "utf8");
+  fs.writeFileSync(path.join(tempRoot, ".gitignore"), "ignored/\ndir/payload\n/leading.txt\n", "utf8");
   fs.writeFileSync(path.join(tempRoot, ".env"), "TOKEN=must-not-escape\n", "utf8");
   fs.writeFileSync(path.join(tempRoot, "package.json"), JSON.stringify({
     private: true,
@@ -69,6 +69,11 @@ try {
     "",
   ].join("\n"), "utf8");
   fs.writeFileSync(path.join(tempRoot, "src", "unicode.txt"), "A€B\n", "utf8");
+  fs.writeFileSync(path.join(tempRoot, "dir\\payload"), "tracked literal backslash\n", "utf8");
+  fs.writeFileSync(path.join(tempRoot, " leading.txt"), "tracked leading whitespace\n", "utf8");
+  fs.mkdirSync(path.join(tempRoot, "dir"), { recursive: true });
+  fs.writeFileSync(path.join(tempRoot, "dir", "payload"), "ignored alias must not be admitted\n", "utf8");
+  fs.writeFileSync(path.join(tempRoot, "leading.txt"), "ignored trimmed alias must not be admitted\n", "utf8");
   fs.writeFileSync(path.join(tempRoot, "ignored", "hidden.txt"), "ignored literal\n", "utf8");
   fs.writeFileSync(path.join(tempRoot, "binary.dat"), Buffer.from([0, 1, 2, 3]));
   fs.writeFileSync(path.join(tempRoot, "late-binary.dat"), Buffer.concat([
@@ -84,7 +89,7 @@ try {
     Buffer.from("oversized-search-target\n", "utf8"),
   ]));
   fs.symlinkSync(path.join(tempRoot, "src", "alpha.js"), path.join(tempRoot, "linked-alpha.js"));
-  run("git", ["add", ".gitignore", "package.json", "src/alpha.js", "src/unicode.txt", "binary.dat", "late-binary.dat", "invalid-utf8.txt", "oversized.log", "linked-alpha.js"], tempRoot);
+  run("git", ["add", ".gitignore", "package.json", "src/alpha.js", "src/unicode.txt", "binary.dat", "late-binary.dat", "invalid-utf8.txt", "oversized.log", "linked-alpha.js", "dir\\payload", " leading.txt"], tempRoot);
   run("git", ["add", "-f", ".env"], tempRoot);
   run("git", ["-c", "user.name=Direct Test", "-c", "user.email=direct@invalid.example", "commit", "-qm", "fixture"], tempRoot);
   run("git", ["checkout", "-qb", "codex/worker/worker-policy-fixture"], tempRoot);
@@ -217,6 +222,14 @@ try {
   assert.equal(listedPaths.includes("ignored/hidden.txt"), false);
   assert.equal(listedPaths.includes(".env"), false);
   assert.equal(listedPaths.includes("linked-alpha.js"), false);
+  assert.equal(listedPaths.includes("dir/payload"), false,
+    "lossy Git backslash normalization must not alias an ignored path into the manifest");
+  assert.equal(listedPaths.includes("leading.txt"), false,
+    "lossy Git whitespace normalization must not alias an ignored path into the manifest");
+  assert.equal(listedPaths.includes("dir\\payload"), false);
+  assert.equal(listedPaths.includes(" leading.txt"), false);
+  assert.equal(inspect.excludedEntryCount >= 4, true,
+    "the manifest must disclose paths excluded for sensitivity, symlinks, or lossy identity");
   assert.equal(JSON.stringify(listed).includes(tempRoot), false);
 
   const matched = await session.request("matchWorkspaceRepositoryFiles", {
