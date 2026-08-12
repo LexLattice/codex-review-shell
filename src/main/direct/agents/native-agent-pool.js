@@ -111,6 +111,7 @@ class DirectNativeAgentPool extends EventEmitter {
     this.workspaceWorkerRunner = typeof options.workspaceWorkerRunner === "function"
       ? options.workspaceWorkerRunner
       : null;
+    this.workspaceWorkerLifecycleRegistry = options.workspaceWorkerLifecycleRegistry || null;
     this.now = typeof options.now === "function" ? options.now : Date.now;
     this.routes = new Map();
     this.jobs = new Map();
@@ -119,6 +120,8 @@ class DirectNativeAgentPool extends EventEmitter {
     this.activeCount = 0;
     this.sequence = 0;
     this.closed = false;
+    this.closeReasonCode = "";
+    this.cancellationRequestedAll = false;
   }
 
   descriptor() {
@@ -127,6 +130,9 @@ class DirectNativeAgentPool extends EventEmitter {
       maxActiveChildren: this.maxActiveChildren,
       maxQueuedChildren: this.maxQueuedChildren,
       activeChildren: this.activeCount,
+      cancellingChildren: [...this.jobs.values()].filter((record) => record.state === "cancelling").length,
+      cancellationUnacknowledgedChildren: [...this.jobs.values()].filter((record) => record.state === "cancellation_unacknowledged").length,
+      settlementBlockedChildren: [...this.jobs.values()].filter((record) => record.state === "settlement_blocked").length,
       queuedChildren: this.queue.length,
       totalChildren: this.jobs.size,
       providerTransportAvailable: Boolean(this.providerTurnRunner),
@@ -135,6 +141,8 @@ class DirectNativeAgentPool extends EventEmitter {
       supportedWorkspaceToolProfiles: ["read_only_worker", "implementation_worker"],
       closed: this.closed,
       acceptingNewChildren: !this.closed,
+      cancellationRequestedAll: this.cancellationRequestedAll,
+      drainComplete: this.closed && this.activeCount === 0,
       capacityScope: "direct_runtime_process_shared_across_agent_tree",
       capacityIncludesPrimaryAgent: false,
       contextHandoffIndependentOfModel: true,
@@ -291,7 +299,38 @@ class DirectNativeAgentPool extends EventEmitter {
       _abortController: null,
       _externalSignal: input.signal || null,
       _externalAbortListener: null,
+      _runnerStarted: false,
+      _runnerPromise: null,
+      _cancelRequested: false,
+      _cancelReasonCode: "",
+      _cancelRequestedAt: "",
+      _cancelAcknowledgedAt: "",
+      _pendingSettlement: null,
+      _lifecycleSessionId: "",
+      _lifecycleProjection: null,
+      _lifecycleErrorCode: "",
     };
+    if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && this.workspaceWorkerLifecycleRegistry) {
+      try {
+        const session = this.workspaceWorkerLifecycleRegistry.openSession({
+          sessionId: `workspace_worker_session_${childAgentId}`,
+          leaseId: `workspace_worker_lease_${childAgentId}`,
+          childAgentId,
+          projectId,
+          workThreadId,
+          primaryThreadId,
+          toolProfile,
+          operationId: `pool-open:${childAgentId}`,
+        });
+        record._lifecycleSessionId = session.sessionId;
+        record._lifecycleProjection = this.safeLifecycleProjection(session);
+      } catch (error) {
+        return this.launchResult(null, "blocked", normalizeString(
+          error?.code,
+          "direct_workspace_worker_lifecycle_registration_failed",
+        ));
+      }
+    }
     this.jobs.set(childAgentId, record);
     this.taskIndex.set(taskKey, childAgentId);
     if (record._externalSignal?.addEventListener) {
@@ -344,13 +383,29 @@ class DirectNativeAgentPool extends EventEmitter {
       this.cancelRecord(record, "direct_agent_launch_aborted");
       return;
     }
-    record.state = "running";
-    record.startedAt = nowIso(this.now);
     record._leaseActive = true;
     record._abortController = new AbortController();
     this.activeCount += 1;
-    Promise.resolve().then(async () => {
-      if (record._settled || this.closed) return;
+    if (record._lifecycleSessionId) {
+      const lifecycleError = this.transitionLifecycle(record, "activateLease", {
+        operationId: `pool-activate:${record.childAgentId}`,
+      });
+      if (lifecycleError) {
+        this.settleRecord(record, {
+          state: "failed",
+          blockerCode: lifecycleError,
+          resultSummary: lifecycleError,
+          evidenceConfidence: "partial",
+        });
+        return;
+      }
+    }
+    record.state = "running";
+    record.startedAt = nowIso(this.now);
+    const runnerPromise = Promise.resolve().then(async () => {
+      if (record._settled) return { cancelledBeforeStart: true };
+      if (record._cancelRequested) return { cancelledBeforeStart: true };
+      record._runnerStarted = true;
       const commonInput = {
         childAgentId: record.childAgentId,
         displayLabel: record.displayLabel,
@@ -365,7 +420,7 @@ class DirectNativeAgentPool extends EventEmitter {
         primaryThreadId: record.primaryThreadId,
         signal: record._abortController.signal,
       };
-      const result = record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
+      return record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
         ? await this.workspaceWorkerRunner({
             ...commonInput,
             workspaceMode: record.workspaceMode,
@@ -374,6 +429,22 @@ class DirectNativeAgentPool extends EventEmitter {
             project: record._project,
           })
         : await this.routeFor(record).spawnAndRun(commonInput);
+    });
+    record._runnerPromise = runnerPromise;
+    runnerPromise.then((result) => {
+      if (record._settled) return;
+      if (record._cancelRequested) {
+        record._cancelAcknowledgedAt = nowIso(this.now);
+        this.settleRecord(record, {
+          state: "cancelled",
+          blockerCode: record._cancelReasonCode,
+          resultSummary: record._cancelReasonCode,
+          epistemicCapture: result?.epistemicCapture,
+          evidenceConfidence: "partial",
+          workspaceExecution: result?.workspaceExecution,
+        });
+        return;
+      }
       this.settleRecord(record, {
         state: TERMINAL_STATES.has(result.status) ? result.status : "failed",
         blockerCode: normalizeString(result.blockerCode, ""),
@@ -387,20 +458,102 @@ class DirectNativeAgentPool extends EventEmitter {
         workspaceExecution: result.workspaceExecution,
       });
     }).catch((error) => {
+      if (record._settled) return;
+      if (record._cancelRequested && error?.backendQuiesced === false) {
+        record.state = "cancellation_unacknowledged";
+        record.blockerCode = normalizeString(
+          error?.code,
+          "direct_workspace_worker_cancellation_unacknowledged",
+        );
+        record.resultSummary = record.blockerCode;
+        record._lifecycleErrorCode = record.blockerCode;
+        this.emit("changed", this.publicRecord(record));
+        return;
+      }
       const aborted = record._abortController?.signal.aborted || error?.name === "AbortError";
       const blockerCode = aborted
         ? "direct_agent_provider_aborted"
         : normalizeString(error?.code, "direct_agent_runtime_exception");
+      if (record._cancelRequested) record._cancelAcknowledgedAt = nowIso(this.now);
       this.settleRecord(record, {
         state: aborted ? "cancelled" : "failed",
-        blockerCode,
-        resultSummary: blockerCode,
+        blockerCode: record._cancelRequested ? record._cancelReasonCode : blockerCode,
+        resultSummary: record._cancelRequested ? record._cancelReasonCode : blockerCode,
         epistemicCapture: {
           status: "unavailable",
           errorCode: blockerCode,
         },
         evidenceConfidence: "partial",
       });
+    });
+  }
+
+  safeLifecycleProjection(session) {
+    if (!session) return null;
+    return {
+      schema: session.schema,
+      sessionId: session.sessionId,
+      leaseId: session.leaseId,
+      state: session.state,
+      leaseState: session.leaseState,
+      processState: session.processState,
+      revision: session.revision,
+      bindingDigest: normalizeString(session.binding?.bindingDigest, ""),
+      rawWorkspacePathIncluded: false,
+    };
+  }
+
+  transitionLifecycle(record, method, input = {}) {
+    if (!record?._lifecycleSessionId || !this.workspaceWorkerLifecycleRegistry) return "";
+    try {
+      const session = this.workspaceWorkerLifecycleRegistry[method](record._lifecycleSessionId, input);
+      record._lifecycleProjection = this.safeLifecycleProjection(session);
+      record._lifecycleErrorCode = "";
+      return "";
+    } catch (error) {
+      const code = normalizeString(error?.code, "direct_workspace_worker_lifecycle_transition_failed");
+      record._lifecycleErrorCode = code;
+      return code;
+    }
+  }
+
+  commitLifecycleSettlement(record, patch = {}) {
+    if (!record?._lifecycleSessionId || !this.workspaceWorkerLifecycleRegistry) return "";
+    const session = this.workspaceWorkerLifecycleRegistry.session(record._lifecycleSessionId);
+    if (!session) return "direct_workspace_worker_lifecycle_session_missing";
+    if (TERMINAL_STATES.has(session.state)) {
+      const expectedState = patch.state === "completed"
+        ? "completed"
+        : patch.state === "cancelled" ? "cancelled" : "failed";
+      if (session.state !== expectedState) {
+        return "direct_workspace_worker_lifecycle_settlement_conflict";
+      }
+      record._lifecycleProjection = this.safeLifecycleProjection(session);
+      return "";
+    }
+    if (patch.state === "cancelled") {
+      if (session.state === "registered" || session.state === "active") {
+        const requestError = this.transitionLifecycle(record, "requestCancellation", {
+          operationId: `pool-request-cancel:${record.childAgentId}`,
+          reasonCode: record._cancelReasonCode || patch.blockerCode,
+        });
+        if (requestError) return requestError;
+      }
+      const current = this.workspaceWorkerLifecycleRegistry.session(record._lifecycleSessionId);
+      if (current.state === "cancelled") {
+        record._lifecycleProjection = this.safeLifecycleProjection(current);
+        return "";
+      }
+      return this.transitionLifecycle(record, "acknowledgeCancellation", {
+        operationId: `pool-ack-cancel:${record.childAgentId}`,
+        reasonCode: record._cancelReasonCode || patch.blockerCode,
+      });
+    }
+    return this.transitionLifecycle(record, "settleSession", {
+      operationId: `pool-settle:${record.childAgentId}:${patch.state}`,
+      state: patch.state === "completed" ? "completed" : "failed",
+      blockerCode: patch.blockerCode,
+      resultDigest: patch.resultDigest,
     });
   }
 
@@ -425,6 +578,15 @@ class DirectNativeAgentPool extends EventEmitter {
           rawWorkspacePathIncluded: false,
         };
       }
+    }
+    const lifecycleError = this.commitLifecycleSettlement(record, patch);
+    if (lifecycleError) {
+      record.state = "settlement_blocked";
+      record.blockerCode = lifecycleError;
+      record.resultSummary = lifecycleError;
+      record._pendingSettlement = { ...patch };
+      this.emit("changed", this.publicRecord(record));
+      return false;
     }
     record._settled = true;
     record.state = TERMINAL_STATES.has(patch.state) ? patch.state : "failed";
@@ -454,6 +616,7 @@ class DirectNativeAgentPool extends EventEmitter {
     record._contextMessages = [];
     record._project = null;
     record._parentAuthorityPacket = null;
+    record._pendingSettlement = null;
     this.queue = this.queue.filter((childAgentId) => childAgentId !== record.childAgentId);
     if (record._leaseActive) {
       record._leaseActive = false;
@@ -473,30 +636,122 @@ class DirectNativeAgentPool extends EventEmitter {
 
   cancelRecord(record, blockerCode = "direct_agent_pool_closed") {
     if (!record || record._settled) return false;
-    if (record._abortController && !record._abortController.signal.aborted) {
-      record._abortController.abort(blockerCode);
-    }
-    return this.settleRecord(record, {
-      state: "cancelled",
-      blockerCode,
-      resultSummary: blockerCode,
-      epistemicCapture: {
-        status: "unavailable",
-        errorCode: blockerCode,
-      },
-      evidenceConfidence: "partial",
+    if (record._cancelRequested) return true;
+    const reasonCode = normalizeString(blockerCode, "direct_agent_cancelled");
+    record._cancelRequested = true;
+    record._cancelReasonCode = reasonCode;
+    record._cancelRequestedAt = nowIso(this.now);
+    const lifecycleError = this.transitionLifecycle(record, "requestCancellation", {
+      operationId: `pool-request-cancel:${record.childAgentId}`,
+      reasonCode,
     });
+    if (lifecycleError) record._lifecycleErrorCode = lifecycleError;
+    if (!record._leaseActive) {
+      record._cancelAcknowledgedAt = nowIso(this.now);
+      return this.settleRecord(record, {
+        state: "cancelled",
+        blockerCode: reasonCode,
+        resultSummary: reasonCode,
+        epistemicCapture: {
+          status: "unavailable",
+          errorCode: reasonCode,
+        },
+        evidenceConfidence: "partial",
+      });
+    }
+    record.state = "cancelling";
+    if (record._abortController && !record._abortController.signal.aborted) {
+      record._abortController.abort(reasonCode);
+    }
+    this.emit("changed", this.publicRecord(record));
+    return true;
   }
 
   close(options = {}) {
-    if (this.closed) return this.descriptor();
+    this.stopAccepting(options);
+    this.requestCancellationForAll(options);
+    return this.descriptor();
+  }
+
+  stopAccepting(options = {}) {
     this.closed = true;
     const blockerCode = normalizeString(options.reasonCode, "direct_agent_pool_closed");
+    this.closeReasonCode = blockerCode;
+    return this.descriptor();
+  }
+
+  requestCancellationForAll(options = {}) {
+    if (!this.closed) this.stopAccepting(options);
+    if (this.cancellationRequestedAll) return this.descriptor();
+    const blockerCode = normalizeString(
+      options.reasonCode,
+      this.closeReasonCode || "direct_agent_pool_closed",
+    );
+    this.cancellationRequestedAll = true;
     const pending = [...this.jobs.values()].filter((record) => !record._settled);
     this.queue = [];
     for (const record of pending) this.cancelRecord(record, blockerCode);
     this.routes.clear();
     return this.descriptor();
+  }
+
+  async drainAndClose(options = {}) {
+    this.close(options);
+    const timeoutMs = boundedInteger(options.timeoutMs, 30_000, 0, 300_000);
+    if (this.activeCount === 0) {
+      return { status: "drained", blockerCode: "", pool: this.descriptor() };
+    }
+    if (timeoutMs === 0) {
+      return { status: "timeout", blockerCode: "direct_agent_pool_drain_timeout", pool: this.descriptor() };
+    }
+    return new Promise((resolve) => {
+      let finished = false;
+      const finish = (status) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        this.removeListener("changed", onChanged);
+        resolve({
+          status,
+          blockerCode: status === "drained" ? "" : "direct_agent_pool_drain_timeout",
+          pool: this.descriptor(),
+        });
+      };
+      const onChanged = () => {
+        if (this.activeCount === 0) finish("drained");
+      };
+      this.on("changed", onChanged);
+      const timer = setTimeout(() => finish("timeout"), timeoutMs);
+      onChanged();
+    });
+  }
+
+  interrupt(input = {}) {
+    const record = this.resolveTarget(
+      input.target || input.childAgentId || input.taskName || input.task_name,
+      input,
+    );
+    if (!record) {
+      return { status: "blocked", blockerCode: "target_agent_missing", record: null, pool: this.descriptor() };
+    }
+    this.cancelRecord(record, normalizeString(input.reasonCode, "direct_agent_interrupted"));
+    return {
+      status: TERMINAL_STATES.has(record.state) ? "completed" : "cancelling",
+      blockerCode: "",
+      record: this.publicRecord(record),
+      pool: this.descriptor(),
+    };
+  }
+
+  retrySettlement(input = {}) {
+    const record = this.resolveTarget(
+      input.target || input.childAgentId || input.taskName || input.task_name,
+      input,
+    );
+    if (!record || !record._pendingSettlement) return false;
+    const patch = record._pendingSettlement;
+    record._pendingSettlement = null;
+    return this.settleRecord(record, patch);
   }
 
   drain() {
@@ -545,6 +800,16 @@ class DirectNativeAgentPool extends EventEmitter {
         ? { ...record.epistemicCaptureOmission }
         : null,
       evidenceConfidence: record.evidenceConfidence,
+      cancellation: {
+        requested: record._cancelRequested === true,
+        reasonCode: record._cancelReasonCode,
+        requestedAt: record._cancelRequestedAt,
+        acknowledged: Boolean(record._cancelAcknowledgedAt),
+        acknowledgedAt: record._cancelAcknowledgedAt,
+        leaseActive: record._leaseActive === true,
+      },
+      workspaceLifecycle: record._lifecycleProjection ? { ...record._lifecycleProjection } : null,
+      lifecycleErrorCode: record._lifecycleErrorCode,
       rawTaskIncluded: false,
       rawContextIncluded: false,
     };
@@ -655,7 +920,7 @@ class DirectNativeAgentPool extends EventEmitter {
           listProjection: {
             schema: "direct_native_agent_list_projection@1",
             rowCount: rows.length,
-            activeCount: rows.filter((row) => ["running", "accepted"].includes(row.state)).length,
+            activeCount: rows.filter((row) => ["running", "accepted", "cancelling", "cancellation_unacknowledged", "settlement_blocked"].includes(row.state)).length,
             queuedCount: rows.filter((row) => row.state === "queued").length,
             terminalCount: rows.filter((row) => TERMINAL_STATES.has(row.state)).length,
             rows,

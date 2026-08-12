@@ -268,7 +268,8 @@ const queuedWait = closePool.wait({
 const closedDescriptor = closePool.close({ reasonCode: "fixture_runtime_closed" });
 assert.equal(closedDescriptor.closed, true);
 assert.equal(closedDescriptor.acceptingNewChildren, false);
-assert.equal(closedDescriptor.activeChildren, 0);
+assert.equal(closedDescriptor.activeChildren, 1, "running capacity must remain leased until provider acknowledgement");
+assert.equal(closedDescriptor.cancellingChildren, 1);
 assert.equal(closedDescriptor.queuedChildren, 0);
 assert.equal(closeCalls[0].signal.aborted, true, "pool close must abort the running provider contract");
 const [closedRunning, closedQueued] = await Promise.all([runningWait, queuedWait]);
@@ -277,6 +278,8 @@ assert.equal(closedRunning.updates[0].blockerCode, "fixture_runtime_closed");
 assert.equal(closedQueued.updates[0].state, "cancelled");
 assert.equal(closedQueued.updates[0].blockerCode, "fixture_runtime_closed");
 await new Promise((resolve) => setImmediate(resolve));
+assert.equal(closePool.descriptor().activeChildren, 0, "provider acknowledgement releases the running lease");
+assert.equal(closePool.descriptor().drainComplete, true);
 closePool.drain();
 assert.equal(closeCalls.length, 1, "close must prevent queued children from draining into the provider");
 const postCloseLaunch = closePool.launch({ message: "must not launch" });

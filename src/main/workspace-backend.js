@@ -309,8 +309,37 @@ class NdjsonTransport extends EventEmitter {
 
     if (message.id !== undefined && this.pending.has(message.id)) {
       const pending = this.pending.get(message.id);
-      this.pending.delete(message.id);
-      clearTimeout(pending.timer);
+      this.clearPending(message.id);
+      if (pending.kind === "cancel_control") {
+        const target = this.pending.get(pending.targetRequestId);
+        if (!target) return;
+        if (
+          message.error ||
+          message.result?.targetRequestId !== pending.targetRequestId ||
+          message.result?.acknowledged !== true ||
+          message.result?.quiesced !== true
+        ) {
+          target.cancellationControlError = normalizeString(
+            message.error?.code || message.result?.blockerCode,
+            "workspace_backend_cancel_unacknowledged",
+          );
+          return;
+        }
+        this.clearPending(pending.targetRequestId);
+        const error = this.abortError(target, message.result);
+        target.reject(error);
+        return;
+      }
+      if (pending.abortRequested) {
+        if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+        pending.reject(this.abortError(pending, {
+          acknowledged: true,
+          quiesced: true,
+          acknowledgementKind: "request_completed_after_cancel",
+          targetRequestId: message.id,
+        }));
+        return;
+      }
       if (message.error) {
         const error = new Error(message.error.message || "Workspace backend request failed.");
         error.code = normalizeString(message.error.code, "");
@@ -325,32 +354,171 @@ class NdjsonTransport extends EventEmitter {
     this.emit("event", { type: "unmatched-message", message });
   }
 
-  request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  clearPending(id) {
+    const pending = this.pending.get(id);
+    if (!pending) return null;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    if (pending.signal?.removeEventListener && pending.abortListener) {
+      pending.signal.removeEventListener("abort", pending.abortListener);
+    }
+    return pending;
+  }
+
+  abortError(pending, cancellationReceipt = {}) {
+    const error = new Error(`Workspace backend request cancelled: ${pending.method}`);
+    error.name = "AbortError";
+    error.code = "workspace_backend_request_cancelled";
+    error.requestId = pending.requestId;
+    error.backendQuiesced = cancellationReceipt.quiesced === true;
+    error.cancellationAcknowledged = cancellationReceipt.acknowledged === true;
+    error.cancellationReceipt = {
+      targetRequestId: normalizeString(cancellationReceipt.targetRequestId, pending.requestId),
+      acknowledged: cancellationReceipt.acknowledged === true,
+      quiesced: cancellationReceipt.quiesced === true,
+      acknowledgementKind: normalizeString(cancellationReceipt.acknowledgementKind, "backend_cancel_acknowledged"),
+      rawProcessDetailsIncluded: false,
+    };
+    return error;
+  }
+
+  sendCancellationRequest(pending, options = {}) {
+    if (!pending || pending.cancelRequestId || this.closed) return;
+    const cancelRequestId = crypto.randomUUID();
+    pending.cancelRequestId = cancelRequestId;
+    const payload = {
+      id: cancelRequestId,
+      method: normalizeString(options.cancellationMethod, "cancelRequest"),
+      params: {
+        requestId: pending.requestId,
+        reasonCode: normalizeString(options.reasonCode, "workspace_backend_request_aborted"),
+      },
+    };
+    this.pending.set(cancelRequestId, {
+      kind: "cancel_control",
+      requestId: cancelRequestId,
+      targetRequestId: pending.requestId,
+      method: payload.method,
+      timer: null,
+      signal: null,
+      abortListener: null,
+    });
+    this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
+      if (!error) return;
+      this.clearPending(cancelRequestId);
+      pending.cancellationControlError = normalizeString(
+        error?.code,
+        "workspace_backend_cancel_write_failed",
+      );
+    });
+  }
+
+  request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, options = {}) {
+    if (typeof timeoutMs === "object" && timeoutMs !== null) {
+      options = timeoutMs;
+      timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    }
     if (this.closed) return Promise.reject(new Error("Workspace backend transport is closed."));
     const id = crypto.randomUUID();
     const payload = { id, method, params };
+    const signal = options.signal || null;
+    if (signal?.aborted) {
+      const pending = { requestId: id, method };
+      return Promise.reject(this.abortError(pending, {
+        acknowledged: true,
+        quiesced: true,
+        acknowledgementKind: "cancelled_before_send",
+        targetRequestId: id,
+      }));
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Workspace backend request timed out: ${method}`));
+        const pending = this.clearPending(id);
+        if (!pending) return;
+        if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+        const error = new Error(
+          pending.abortRequested
+            ? `Workspace backend cancellation was not acknowledged: ${method}`
+            : `Workspace backend request timed out: ${method}`,
+        );
+        error.code = pending.abortRequested
+          ? "workspace_backend_cancel_unacknowledged"
+          : "workspace_backend_request_timeout";
+        error.requestId = id;
+        error.backendQuiesced = false;
+        error.cancellationAcknowledged = false;
+        error.cancellationControlError = pending.cancellationControlError || "";
+        reject(error);
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer, method });
+      const pending = {
+        kind: "request",
+        requestId: id,
+        resolve,
+        reject,
+        timer,
+        method,
+        signal,
+        abortListener: null,
+        abortRequested: false,
+        cancelRequestId: "",
+        cancellationControlError: "",
+      };
+      if (signal?.addEventListener) {
+        pending.abortListener = () => {
+          if (!this.pending.has(id) || pending.abortRequested) return;
+          pending.abortRequested = true;
+          this.sendCancellationRequest(pending, {
+            cancellationMethod: options.cancellationMethod,
+            reasonCode: signal.reason,
+          });
+        };
+        signal.addEventListener("abort", pending.abortListener, { once: true });
+      }
+      this.pending.set(id, pending);
       this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
         if (!error) return;
-        clearTimeout(timer);
-        this.pending.delete(id);
+        const failedPending = this.clearPending(id);
+        if (failedPending?.cancelRequestId) this.clearPending(failedPending.cancelRequestId);
+        error.backendQuiesced = false;
+        error.cancellationAcknowledged = false;
         reject(error);
       });
     });
+  }
+
+  pendingRequestCount() {
+    return [...this.pending.values()].filter((pending) => pending.kind === "request").length;
+  }
+
+  async waitForDrain(options = {}) {
+    const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+      ? Math.max(0, Math.min(300_000, Math.floor(Number(options.timeoutMs))))
+      : 30_000;
+    if (this.pendingRequestCount() === 0) return { status: "drained", pendingRequests: 0 };
+    if (timeoutMs === 0) {
+      return { status: "timeout", blockerCode: "workspace_backend_drain_timeout", pendingRequests: this.pendingRequestCount() };
+    }
+    const startedAt = Date.now();
+    while (this.pendingRequestCount() > 0 && Date.now() - startedAt < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(10, timeoutMs)));
+    }
+    return this.pendingRequestCount() === 0
+      ? { status: "drained", blockerCode: "", pendingRequests: 0 }
+      : { status: "timeout", blockerCode: "workspace_backend_drain_timeout", pendingRequests: this.pendingRequestCount() };
   }
 
   close(error) {
     if (this.closed) return;
     this.closed = true;
     for (const [id, pending] of this.pending.entries()) {
-      clearTimeout(pending.timer);
-      pending.reject(error || new Error("Workspace backend transport closed."));
-      this.pending.delete(id);
+      this.clearPending(id);
+      if (pending.kind !== "request") continue;
+      const closeError = error || new Error("Workspace backend transport closed.");
+      if (pending.abortRequested) {
+        closeError.backendQuiesced = closeError.backendQuiesced === true;
+        closeError.cancellationAcknowledged = closeError.cancellationAcknowledged === true;
+      }
+      pending.reject(closeError);
     }
     this.emit("closed", error);
   }
@@ -612,10 +780,15 @@ class WorkspaceSession extends EventEmitter {
     }
   }
 
-  async request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  async request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, requestOptions = {}) {
     await this.attach();
     if (!this.transport) throw new Error("Workspace backend transport is unavailable.");
-    return this.transport.request(method, params, timeoutMs);
+    return this.transport.request(method, params, timeoutMs, requestOptions);
+  }
+
+  async drain(options = {}) {
+    if (!this.transport) return { status: "drained", blockerCode: "", pendingRequests: 0 };
+    return this.transport.waitForDrain(options);
   }
 
   async initializeWorkspaceWorkerBinding(binding) {
@@ -716,9 +889,9 @@ class WorkspaceBackendManager extends EventEmitter {
     return session;
   }
 
-  async requestForProject(project, method, params = {}, timeoutMs) {
+  async requestForProject(project, method, params = {}, timeoutMs, requestOptions = {}) {
     const session = await this.ensureForProject(project);
-    return session.request(method, params, timeoutMs);
+    return session.request(method, params, timeoutMs, requestOptions);
   }
 
   statusForProject(project) {
@@ -742,9 +915,25 @@ class WorkspaceBackendManager extends EventEmitter {
     for (const session of this.sessions.values()) session.dispose();
     this.sessions.clear();
   }
+
+  async drainAll(options = {}) {
+    const rows = await Promise.all([...this.sessions.values()].map(async (session) => ({
+      key: session.key,
+      ...(await session.drain(options)),
+    })));
+    const blocked = rows.filter((row) => row.status !== "drained");
+    return {
+      status: blocked.length ? "timeout" : "drained",
+      blockerCode: blocked.length ? "workspace_backend_manager_drain_timeout" : "",
+      sessions: rows,
+      pendingRequests: rows.reduce((total, row) => total + Number(row.pendingRequests || 0), 0),
+    };
+  }
 }
 
 module.exports = {
+  NdjsonTransport,
+  WorkspaceSession,
   WorkspaceBackendManager,
   normalizeWorkspace,
   workspaceLabel,
