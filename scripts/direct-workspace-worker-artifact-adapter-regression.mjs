@@ -144,6 +144,12 @@ function launchInput(childAgentId, taskName, message) {
     childAgentId, taskName, message, projectId, workThreadId,
     primaryThreadId: "adapter-parent-thread", parentAgentId: "adapter-parent",
     workspaceMode: "isolated_worktree", toolProfile: "implementation_worker",
+    spawnOperation: {
+      parentSessionId: "adapter-parent-thread",
+      parentTurnId: `adapter-parent-turn-${childAgentId}`,
+      obligationId: `adapter-obligation-${childAgentId}`,
+      callId: `adapter-call-${childAgentId}`,
+    },
     parentAuthorityPacket, project,
   };
 }
@@ -281,7 +287,7 @@ try {
   const liveScope = prepareArtifact("live-candidate");
   const producerLaunch = pool.launch(launchInput("live-producer", "live_producer",
     "Produce the bounded workspace result selected by the parent harness."));
-  assert.notEqual(producerLaunch.status, "blocked");
+  assert.notEqual(producerLaunch.status, "blocked", producerLaunch.blockerCode);
   assert.equal((await waitTerminal(producerLaunch.childAgentId)).state, "completed");
   const result = await adapterFor().run({
     scope: liveScope, revision: 1, producerChildAgentId: producerLaunch.childAgentId,
