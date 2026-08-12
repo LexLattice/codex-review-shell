@@ -110,7 +110,7 @@ try {
       return {
         status: "completed",
         outputText: "Workspace child completed its bounded implementation slice.",
-        resultDigest: "sha256:workspace_child_fixture",
+        resultDigest: `sha256:${"b".repeat(64)}`,
         workspaceExecution: {
           schema: "direct_workspace_worker_execution@1",
           status: "completed",
@@ -121,7 +121,7 @@ try {
         },
         epistemicCapture: {
           status: "captured",
-          receiptDigest: "sha256:workspace_child_capture_fixture",
+          receiptDigest: `sha256:${"c".repeat(64)}`,
           sessionId: "native_workspace_child_fixture",
           turnId: "native_workspace_child_turn_fixture",
         },

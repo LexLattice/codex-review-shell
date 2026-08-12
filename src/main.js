@@ -19,6 +19,7 @@ const { CodexSurfaceSession } = require("./main/codex-surface-session");
 const { MiddleWebHost } = require("./main/middle-web-host");
 const {
   WorkspaceBackendManager,
+  publicBackendErrorCode,
   workspaceLabel,
   workspaceRoot,
   workspaceRootIsAbsolute,
@@ -39,7 +40,10 @@ const {
   validateResidentRepositoryObservation,
 } = require("./main/direct/epistemic/repository-runtime");
 const { persistNativeChildProviderTurn } = require("./main/direct/epistemic/native-child-capture");
-const { runDirectWorkspaceWorker } = require("./main/direct/agents/workspace-worker-runtime");
+const {
+  projectAdmittedWorkspaceWorkerResult,
+  runDirectWorkspaceWorker,
+} = require("./main/direct/agents/workspace-worker-runtime");
 const {
   WORKSPACE_WORKER_TOOLS,
   createWorkspaceParentAuthorityPacket,
@@ -4033,6 +4037,7 @@ async function provisionDirectWorkspaceWorker(input = {}) {
       error.code = "direct_workspace_worker_provisioning_cancelled_binding_retained";
       error.cancellationAcknowledged = true;
       error.backendQuiesced = true;
+      error.mutationOutcome = provisioned.requestOutcome;
       error.cancellationReceipt = {
         targetRequestId: normalizeString(provisioned.requestOutcome.requestId, ""),
         acknowledged: true,
@@ -4165,8 +4170,7 @@ async function runDirectWorkspaceWorkerTurn(input = {}) {
     }
   }
   const captureComplete = epistemicCapture.status === "captured" && Boolean(epistemicCapture.receiptDigest);
-  return {
-    ...workspaceResult,
+  return projectAdmittedWorkspaceWorkerResult(workspaceResult, {
     tokenUsage: tokenUsageFromWorkspaceWorkerCapture(workspaceResult.captureResult),
     epistemicCapture,
     resultEnvelope: { confidence: captureComplete ? "exact" : "partial" },
@@ -4177,7 +4181,7 @@ async function runDirectWorkspaceWorkerTurn(input = {}) {
       ),
     },
     captureResult: undefined,
-  };
+  });
 }
 
 function ensureDirectNativeAgentPool() {
@@ -7543,7 +7547,7 @@ async function attachProjectWorkspace(project, options = {}) {
     emitShellEvent({
       type: "backend-status",
       session: manager.statusForProject(project),
-      error: error.message,
+      errorCode: publicBackendErrorCode(error?.code, "workspace_backend_attach_failed"),
       at: nowIso(),
     });
   });

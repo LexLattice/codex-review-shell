@@ -156,7 +156,34 @@ function safeWorkspaceExecutionProjection(value = {}) {
     "command",
     "baseargs",
   ]);
+  function containsNativePath(entry) {
+    const candidates = [entry];
+    for (let index = 0; index < 2; index += 1) {
+      try {
+        const decoded = decodeURIComponent(candidates.at(-1));
+        if (decoded === candidates.at(-1)) break;
+        candidates.push(decoded);
+      } catch {
+        break;
+      }
+    }
+    return candidates.some((candidate) => {
+      const text = candidate.trim();
+      return /^\//.test(text) ||
+        /^[A-Za-z]:[\\/]/.test(text) ||
+        /^\\\\/.test(text) ||
+        /^file:/i.test(text);
+    });
+  }
   function inspect(current) {
+    if (typeof current === "string") {
+      if (containsNativePath(current)) {
+        const error = new Error("Workspace worker execution projection contains an absolute native path.");
+        error.code = "direct_workspace_worker_execution_native_path_present";
+        throw error;
+      }
+      return;
+    }
     if (Array.isArray(current)) {
       for (const entry of current) inspect(entry);
       return;
@@ -166,14 +193,6 @@ function safeWorkspaceExecutionProjection(value = {}) {
       if (forbiddenKeys.has(key.toLowerCase())) {
         const error = new Error("Workspace worker execution projection contains a private realization field.");
         error.code = "direct_workspace_worker_execution_private_realization_present";
-        throw error;
-      }
-      if (
-        typeof entry === "string" &&
-        (/^\//.test(entry) || /^[A-Za-z]:[\\/]/.test(entry) || /^\\\\/.test(entry))
-      ) {
-        const error = new Error("Workspace worker execution projection contains an absolute native path.");
-        error.code = "direct_workspace_worker_execution_native_path_present";
         throw error;
       }
       inspect(entry);

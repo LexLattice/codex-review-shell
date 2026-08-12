@@ -95,7 +95,11 @@ try {
   assert.equal(status.hello.workspaceKind, "windows");
   assert.equal(status.hello.projectId, project.id);
   assert.equal(status.hello.root, project.workspace.windowsPath);
-  assert.equal(status.hello.capabilities.runDirectCommand, true);
+  assert.equal(status.hello.capabilities.runCommand, false);
+  assert.equal(status.hello.capabilities.runDirectCommand, false);
+  assert.equal(status.hello.capabilities.provisionGitWorktree, false);
+  assert.equal(status.hello.capabilities.repositorySemanticSnapshot, false);
+  assert.equal(status.hello.capabilities.readFilePreview, true);
   assert.equal(status.hygiene.skipped, true);
   assert.equal(status.hygiene.changed, false);
 
@@ -105,6 +109,28 @@ try {
   );
   assert.equal(helloAgain.sessionId, status.hello.sessionId);
   assert.equal(helloAgain.pid, status.hello.pid);
+  const unavailableTestProfile = await manager.requestForProject(
+    project,
+    "directTestProfile",
+  );
+  assert.equal(unavailableTestProfile.available, false);
+  assert.equal(
+    unavailableTestProfile.unavailableReason,
+    "workspace_windows_job_object_containment_unavailable",
+  );
+  assert.equal(
+    unavailableTestProfile.substrateCapabilities.processContainmentBlockerCode,
+    "workspace_windows_job_object_containment_unavailable",
+  );
+  await assert.rejects(
+    manager.requestForProject(project, "runCommand", { command: "cmd.exe", args: ["/c", "exit", "0"] }),
+    (error) => {
+      assert.equal(error.code, "workspace_windows_job_object_containment_unavailable");
+      assert.equal(error.backendQuiesced, true);
+      return true;
+    },
+    "native Windows process-backed work fails closed until Job Object custody is installed",
+  );
 
   const wslSession = await manager.ensureForProject(wslProject, {
     workspaceHygiene: false,
@@ -115,6 +141,7 @@ try {
   assert.equal(wslStatus.hello.workspaceKind, "wsl");
   assert.equal(wslStatus.hello.projectId, wslProject.id);
   assert.equal(wslStatus.hello.root, wslRoot);
+  assert.equal(wslStatus.hello.capabilities.runDirectCommand, true);
   assert.equal(wslStatus.hygiene.skipped, true);
   assert.equal(wslStatus.hygiene.changed, false);
   const wslHelloAgain = await manager.requestForProject(
@@ -156,6 +183,8 @@ try {
     authorityBoundary: {
       windowsProbeWorkspaceMutation: status.hygiene.changed,
       wslProbeWorkspaceMutation: wslStatus.hygiene.changed,
+      windowsProcessBackedCapabilitiesAdvertised: status.hello.capabilities.runDirectCommand,
+      windowsProcessContainmentBlocker: unavailableTestProfile.unavailableReason,
     },
   }, null, 2));
 } finally {

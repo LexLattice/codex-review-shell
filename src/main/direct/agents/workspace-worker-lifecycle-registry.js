@@ -29,7 +29,7 @@ const TERMINAL_EXECUTION_STATES = new Set(["completed", "failed", "cancelled"]);
 const ALLOWED_TRANSITIONS = new Map([
   ["registered", new Set(["active", "failed", "cancelled"])],
   ["active", new Set(["cancelling", "completed", "failed"])],
-  ["cancelling", new Set(["cancelled"])],
+  ["cancelling", new Set(["cancelled", "failed"])],
   ["completed", new Set(["cleanup_eligible"])],
   ["failed", new Set(["cleanup_eligible"])],
   ["cancelled", new Set(["cleanup_eligible"])],
@@ -43,6 +43,19 @@ function isPlainObject(value) {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function publicLifecycleErrorCode(value, fallback = "") {
+  const code = normalizeString(value, "");
+  return /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(code) ? code : fallback;
+}
+
+function lifecycleResultDigest(value) {
+  const digest = normalizeString(value, "");
+  if (digest && !/^sha256:[a-f0-9]{64}$/.test(digest)) {
+    fail("direct_workspace_worker_result_digest_invalid");
+  }
+  return digest;
 }
 
 function fail(code) {
@@ -60,6 +73,113 @@ function stableStringify(value) {
 
 function digestFor(domain, value) {
   return `sha256:${crypto.createHash("sha256").update(`${domain}\0${stableStringify(value)}`).digest("hex")}`;
+}
+
+function normalizeMutationOutcome(value) {
+  if (value == null) return null;
+  if (!isPlainObject(value) || value.schema !== "workspace_backend_mutation_outcome@1") {
+    fail("direct_workspace_worker_mutation_outcome_invalid");
+  }
+  const committed = value.committed === true;
+  const base = {
+    schema: "workspace_backend_mutation_outcome@1",
+    requestId: normalizeString(value.requestId, ""),
+    method: normalizeString(value.method, ""),
+    commitKind: normalizeString(value.commitKind, ""),
+    committed,
+    ...(committed ? {} : {
+      indeterminate: value.indeterminate === true,
+      partialMutationPossible: value.partialMutationPossible === true,
+    }),
+    retainedForInspection: value.retainedForInspection === true,
+    ...(committed
+      ? { resultDigest: normalizeString(value.resultDigest, "") }
+      : { failureCode: publicLifecycleErrorCode(value.failureCode, "") }),
+    rawPathIncluded: false,
+  };
+  const expectedDigest = `sha256:${crypto.createHash("sha256").update(stableStringify(base)).digest("hex")}`;
+  if (
+    !base.requestId || !base.method || !base.commitKind ||
+    value.rawPathIncluded !== false ||
+    value.outcomeDigest !== expectedDigest ||
+    (committed && !/^sha256:[a-f0-9]{64}$/.test(base.resultDigest)) ||
+    (!committed && (
+      base.indeterminate !== true ||
+      base.partialMutationPossible !== true ||
+      !base.failureCode
+    ))
+  ) fail("direct_workspace_worker_mutation_outcome_invalid");
+  return { ...base, outcomeDigest: expectedDigest };
+}
+
+function mergeMutationOutcome(existingValue, incomingValue) {
+  const existing = normalizeMutationOutcome(existingValue);
+  const incoming = normalizeMutationOutcome(incomingValue);
+  if (existing && incoming && existing.outcomeDigest !== incoming.outcomeDigest) {
+    fail("direct_workspace_worker_mutation_outcome_conflict");
+  }
+  return incoming || existing;
+}
+
+function normalizeRuntimeCancellationReceipt(value, mutationOutcome = null, expected = {}) {
+  if (value == null) return null;
+  if (!isPlainObject(value) || value.schema !== "direct_workspace_worker_cancellation_receipt@1") {
+    fail("direct_workspace_worker_cancellation_receipt_invalid");
+  }
+  const base = {
+    schema: "direct_workspace_worker_cancellation_receipt@1",
+    targetRequestId: normalizeString(value.targetRequestId, ""),
+    launchDigest: normalizeString(value.launchDigest, ""),
+    lifecycleSessionId: normalizeString(value.lifecycleSessionId, ""),
+    lifecycleLeaseId: normalizeString(value.lifecycleLeaseId, ""),
+    reasonCode: normalizeString(value.reasonCode, ""),
+    acknowledged: value.acknowledged === true,
+    quiesced: value.quiesced === true,
+    acknowledgementKind: normalizeString(value.acknowledgementKind, ""),
+    outcomeDigest: normalizeString(value.outcomeDigest, ""),
+    rawProcessDetailsIncluded: false,
+  };
+  const expectedDigest = digestFor("direct-workspace-worker-cancellation-receipt@1", base);
+  if (
+    base.acknowledged !== true ||
+    base.quiesced !== true ||
+    !/^sha256:[a-f0-9]{64}$/.test(base.launchDigest) ||
+    !/^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(base.reasonCode) ||
+    !/^[a-z0-9][a-z0-9._:-]{0,127}$/.test(base.acknowledgementKind) ||
+    value.rawProcessDetailsIncluded !== false ||
+    value.receiptDigest !== expectedDigest ||
+    base.outcomeDigest !== normalizeString(mutationOutcome?.outcomeDigest, "") ||
+    (mutationOutcome && base.targetRequestId !== mutationOutcome.requestId) ||
+    (expected.launchDigest && base.launchDigest !== expected.launchDigest) ||
+    (expected.sessionId && base.lifecycleSessionId !== expected.sessionId) ||
+    (expected.leaseId && base.lifecycleLeaseId !== expected.leaseId) ||
+    (expected.reasonCode && base.reasonCode !== expected.reasonCode)
+  ) fail("direct_workspace_worker_cancellation_receipt_invalid");
+  return { ...base, receiptDigest: expectedDigest };
+}
+
+function buildLifecycleCancellationReceipt(session, runtimeReceipt, reasonCode) {
+  if (!runtimeReceipt) return null;
+  const base = {
+    schema: "direct_workspace_worker_lifecycle_cancellation_receipt@1",
+    sessionId: session.sessionId,
+    leaseId: session.leaseId,
+    reasonCode: normalizeString(reasonCode, "direct_agent_cancelled"),
+    launchDigest: runtimeReceipt.launchDigest,
+    runtimeLifecycleSessionId: runtimeReceipt.lifecycleSessionId,
+    runtimeLifecycleLeaseId: runtimeReceipt.lifecycleLeaseId,
+    runtimeReceiptDigest: runtimeReceipt.receiptDigest,
+    targetRequestId: runtimeReceipt.targetRequestId,
+    acknowledgementKind: runtimeReceipt.acknowledgementKind,
+    outcomeDigest: runtimeReceipt.outcomeDigest,
+    acknowledged: true,
+    quiesced: true,
+    rawWorkspacePathIncluded: false,
+  };
+  return {
+    ...base,
+    receiptDigest: digestFor("direct-workspace-worker-lifecycle-cancellation-receipt@1", base),
+  };
 }
 
 function nowIso(now = Date.now) {
@@ -313,6 +433,8 @@ class WorkspaceWorkerLifecycleRegistry {
         bindingDigest: normalizeString(session.binding?.bindingDigest, ""),
         custodyState: normalizeString(session.workspaceCustody?.state, "unbound"),
         custodyDigest: normalizeString(session.workspaceCustody?.custodyDigest, ""),
+        mutationOutcomeDigest: normalizeString(session.mutationOutcome?.outcomeDigest, ""),
+        partialMutationPossible: session.mutationOutcome?.partialMutationPossible === true,
         automaticReplayAllowed: false,
         automaticCleanupAllowed: false,
         rawWorkspacePathIncluded: false,
@@ -334,11 +456,16 @@ class WorkspaceWorkerLifecycleRegistry {
       "lease_id",
     );
     const operationId = safeId(input.operationId || `open:${sessionId}`, "operation_id");
+    const launchDigest = normalizeString(input.launchDigest, "");
+    if (!/^sha256:[a-f0-9]{64}$/.test(launchDigest)) {
+      fail("direct_workspace_worker_launch_digest_invalid");
+    }
     const operationDigest = digestFor("direct-workspace-worker-lifecycle-operation@1", {
       eventKind: "session_registered",
       sessionId,
       leaseId,
       childAgentId,
+      launchDigest,
       projectId: safeId(input.projectId || "project_direct_agents", "project_id"),
       workThreadId: normalizeString(input.workThreadId, ""),
       primaryThreadId: normalizeString(input.primaryThreadId, ""),
@@ -358,12 +485,21 @@ class WorkspaceWorkerLifecycleRegistry {
       const existingChild = this.db.prepare(
         "select session_json from workspace_worker_sessions where child_agent_id = ?",
       ).get(childAgentId);
-      if (existing || existingChild) fail("direct_workspace_worker_session_identity_conflict");
+      const existingLaunch = this.db.prepare(
+        "select session_json from workspace_worker_sessions",
+      ).all().some((row) => parseJson(
+        row.session_json,
+        "direct_workspace_worker_session_json_invalid",
+      ).launchDigest === launchDigest);
+      if (existing || existingChild || existingLaunch) {
+        fail("direct_workspace_worker_session_identity_conflict");
+      }
       const session = {
         schema: WORKSPACE_WORKER_SESSION_SCHEMA,
         sessionId,
         leaseId,
         childAgentId,
+        launchDigest,
         projectId: safeId(input.projectId || "project_direct_agents", "project_id"),
         workThreadId: normalizeString(input.workThreadId, ""),
         primaryThreadId: normalizeString(input.primaryThreadId, ""),
@@ -388,6 +524,7 @@ class WorkspaceWorkerLifecycleRegistry {
           acknowledged: false,
           acknowledgedAt: "",
         },
+        mutationOutcome: null,
         cleanupPlanDigest: "",
         revision: 1,
         createdAt: occurredAt,
@@ -611,6 +748,9 @@ class WorkspaceWorkerLifecycleRegistry {
     const session = this.session(sessionId);
     if (!session) fail("direct_workspace_worker_session_missing");
     const reasonCode = normalizeString(input.reasonCode, "direct_agent_cancelled");
+    if (!/^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(reasonCode)) {
+      fail("direct_workspace_worker_cancellation_reason_invalid");
+    }
     if (session.state === "registered") {
       return this.mutateSession(sessionId, {
         operationId: input.operationId || `cancel-before-start:${sessionId}`,
@@ -620,6 +760,8 @@ class WorkspaceWorkerLifecycleRegistry {
         patch: {
           leaseState: "released",
           processState: "quiescent",
+          blockerCode: reasonCode,
+          resultDigest: "",
           cancellation: {
             requested: true,
             reasonCode,
@@ -650,27 +792,85 @@ class WorkspaceWorkerLifecycleRegistry {
     });
   }
 
+  recordMutationOutcome(sessionId, input = {}) {
+    const mutationOutcome = normalizeMutationOutcome(input.mutationOutcome || input);
+    if (!mutationOutcome) fail("direct_workspace_worker_mutation_outcome_required");
+    return this.mutateSession(sessionId, {
+      operationId: input.operationId ||
+        `record-mutation-outcome:${sessionId}:${mutationOutcome.outcomeDigest.slice(7, 31)}`,
+      eventKind: "mutation_outcome_recorded",
+      operationInput: { mutationOutcome },
+      patch: (before) => {
+        if (!["registered", "active", "cancelling"].includes(before.state)) {
+          fail("direct_workspace_worker_mutation_outcome_state_invalid");
+        }
+        if (
+          before.mutationOutcome &&
+          before.mutationOutcome.outcomeDigest !== mutationOutcome.outcomeDigest
+        ) fail("direct_workspace_worker_mutation_outcome_conflict");
+        return { mutationOutcome };
+      },
+    });
+  }
+
   acknowledgeCancellation(sessionId, input = {}) {
-    const reasonCode = normalizeString(
-      input.reasonCode,
-      this.session(sessionId)?.cancellation?.reasonCode || "direct_agent_cancelled",
+    const current = this.session(sessionId);
+    if (!current) fail("direct_workspace_worker_session_missing");
+    const mutationOutcome = mergeMutationOutcome(current.mutationOutcome, input.mutationOutcome);
+    const establishedReason = normalizeString(
+      current.cancellation?.reasonCode,
+      "direct_agent_cancelled",
     );
+    const suppliedReason = normalizeString(input.reasonCode, establishedReason);
+    if (suppliedReason !== establishedReason) {
+      fail("direct_workspace_worker_cancellation_reason_conflict");
+    }
+    const reasonCode = establishedReason;
+    const runtimeReceipt = normalizeRuntimeCancellationReceipt(
+      input.cancellationReceipt,
+      mutationOutcome,
+      {
+        launchDigest: current.launchDigest,
+        sessionId: current.sessionId,
+        leaseId: current.leaseId,
+        reasonCode,
+      },
+    );
+    if (!runtimeReceipt) fail("direct_workspace_worker_cancellation_receipt_required");
+    const blockerCode = publicLifecycleErrorCode(input.blockerCode, reasonCode);
+    const resultDigest = lifecycleResultDigest(input.resultDigest);
     return this.mutateSession(sessionId, {
       operationId: input.operationId || `ack-cancel:${sessionId}`,
       eventKind: "cancellation_acknowledged",
       nextState: "cancelled",
-      operationInput: { reasonCode },
-      patch: (before) => ({
-        leaseState: "released",
-        processState: "quiescent",
-        cancellation: {
-          ...before.cancellation,
-          requested: true,
-          reasonCode,
-          acknowledged: true,
-          acknowledgedAt: nowIso(this.now),
-        },
-      }),
+      operationInput: { reasonCode, blockerCode, resultDigest, mutationOutcome, runtimeReceipt },
+      patch: (before) => {
+        const effectiveOutcome = mergeMutationOutcome(before.mutationOutcome, mutationOutcome);
+        normalizeRuntimeCancellationReceipt(runtimeReceipt, effectiveOutcome, {
+          launchDigest: before.launchDigest,
+          sessionId: before.sessionId,
+          leaseId: before.leaseId,
+          reasonCode: before.cancellation?.reasonCode,
+        });
+        if (before.cancellation?.reasonCode !== reasonCode) {
+          fail("direct_workspace_worker_cancellation_reason_conflict");
+        }
+        return {
+          leaseState: "released",
+          processState: "quiescent",
+          blockerCode,
+          resultDigest,
+          cancellation: {
+            ...before.cancellation,
+            requested: true,
+            reasonCode,
+            acknowledged: true,
+            acknowledgedAt: nowIso(this.now),
+          },
+          cancellationReceipt: buildLifecycleCancellationReceipt(before, runtimeReceipt, reasonCode),
+          mutationOutcome: effectiveOutcome,
+        };
+      },
     });
   }
 
@@ -679,20 +879,77 @@ class WorkspaceWorkerLifecycleRegistry {
     if (!new Set(["completed", "failed"]).has(state)) {
       fail("direct_workspace_worker_settlement_state_invalid");
     }
+    const current = this.session(sessionId);
+    if (!current) fail("direct_workspace_worker_session_missing");
+    if (state === "completed" && normalizeString(input.blockerCode, "")) {
+      fail("direct_workspace_worker_completed_blocker_forbidden");
+    }
+    const resultDigest = lifecycleResultDigest(input.resultDigest);
+    const mutationOutcome = mergeMutationOutcome(current.mutationOutcome, input.mutationOutcome);
+    const reasonCode = normalizeString(
+      current.cancellation?.reasonCode,
+      input.blockerCode || "direct_agent_cancelled",
+    );
+    const blockerCode = publicLifecycleErrorCode(
+      input.blockerCode,
+      current.cancellation?.requested === true
+        ? publicLifecycleErrorCode(reasonCode, "direct_agent_cancelled")
+        : state === "completed" ? "" : "direct_workspace_worker_failed",
+    );
+    if (
+      current.cancellation?.requested === true &&
+      input.reasonCode &&
+      normalizeString(input.reasonCode, "") !== reasonCode
+    ) fail("direct_workspace_worker_cancellation_reason_conflict");
+    const runtimeReceipt = input.cancellationReceipt == null
+      ? null
+      : normalizeRuntimeCancellationReceipt(input.cancellationReceipt, mutationOutcome, {
+          launchDigest: current.launchDigest,
+          sessionId: current.sessionId,
+          leaseId: current.leaseId,
+          reasonCode,
+        });
     return this.mutateSession(sessionId, {
       operationId: input.operationId || `settle:${sessionId}:${state}`,
       eventKind: `session_${state}`,
       nextState: state,
       operationInput: {
         state,
-        blockerCode: normalizeString(input.blockerCode, ""),
-        resultDigest: normalizeString(input.resultDigest, ""),
+        blockerCode,
+        resultDigest,
+        mutationOutcome,
+        runtimeReceipt,
       },
-      patch: {
-        leaseState: "released",
-        processState: "quiescent",
-        blockerCode: normalizeString(input.blockerCode, ""),
-        resultDigest: normalizeString(input.resultDigest, ""),
+      patch: (before) => {
+        if (before.state === "cancelling" && !runtimeReceipt) {
+          fail("direct_workspace_worker_cancellation_receipt_required");
+        }
+        const effectiveOutcome = mergeMutationOutcome(before.mutationOutcome, mutationOutcome);
+        if (runtimeReceipt) {
+          normalizeRuntimeCancellationReceipt(runtimeReceipt, effectiveOutcome, {
+            launchDigest: before.launchDigest,
+            sessionId: before.sessionId,
+            leaseId: before.leaseId,
+            reasonCode: before.cancellation?.reasonCode,
+          });
+        }
+        return {
+          leaseState: "released",
+          processState: "quiescent",
+          blockerCode,
+          resultDigest,
+          mutationOutcome: effectiveOutcome,
+          ...(runtimeReceipt ? {
+            cancellation: {
+              ...before.cancellation,
+              requested: true,
+              reasonCode,
+              acknowledged: true,
+              acknowledgedAt: nowIso(this.now),
+            },
+            cancellationReceipt: buildLifecycleCancellationReceipt(before, runtimeReceipt, reasonCode),
+          } : {}),
+        };
       },
     });
   }
@@ -752,7 +1009,13 @@ class WorkspaceWorkerLifecycleRegistry {
     if (
       plan.sessionId !== before.sessionId ||
       Number(plan.sessionRevision) !== before.revision ||
-      plan.bindingDigest !== before.binding?.bindingDigest
+      plan.bindingDigest !== before.binding?.bindingDigest ||
+      normalizeString(plan.mutationOutcomeDigest, "") !==
+        normalizeString(before.mutationOutcome?.outcomeDigest, "") ||
+      plan.mutationOutcomeIndeterminate !== (
+        before.mutationOutcome?.indeterminate === true ||
+        before.mutationOutcome?.partialMutationPossible === true
+      )
     ) {
       fail("direct_workspace_worker_cleanup_plan_binding_mismatch");
     }
@@ -764,6 +1027,7 @@ class WorkspaceWorkerLifecycleRegistry {
       operationInput: {
         planDigest: plan.planDigest,
         bindingDigest: plan.bindingDigest,
+        mutationOutcomeDigest: normalizeString(plan.mutationOutcomeDigest, ""),
         sessionRevision: plan.sessionRevision,
       },
       patch: { cleanupPlanDigest: plan.planDigest },

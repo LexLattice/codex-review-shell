@@ -80,6 +80,15 @@ const DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES = 1024 * 1024;
 const DIRECT_WORKSPACE_WORKER_SEARCH_TOTAL_BYTES = 16 * 1024 * 1024;
 const DIRECT_WORKSPACE_WORKER_SEARCH_RESULT_LIMIT = 120;
 const DIRECT_WORKSPACE_WORKER_READ_LIMIT = 48 * 1024;
+const TRUSTED_UNSHARE_PATH = "/usr/bin/unshare";
+const SAFE_COMMAND_ENV_OVERRIDES = new Set([
+  "CI",
+  "NO_COLOR",
+  "TERM",
+  "LANG",
+  "LC_ALL",
+  "TZ",
+]);
 const ARO_REALIZATION_CONTEXT_FILE_LIMIT = 12;
 const ARO_REALIZATION_CONTEXT_EXCERPT_BYTES = 12 * 1024;
 const ARO_REALIZATION_CONTEXT_TOTAL_BYTES = 96 * 1024;
@@ -113,6 +122,7 @@ let reviewShellIgnorePromise = null;
 let gitWorktreeMutationQueue = Promise.resolve();
 let authoritativeWorkspaceWorkerBinding = null;
 let workspaceWorkerBindingInitialization = null;
+let trustedUnshareIdentity = null;
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -388,6 +398,12 @@ function terminateChild(child) {
     ? activeProcessGroups.get(child.pid)
     : null;
   if ((child.exitCode !== null || child.signalCode !== null) && !retainedGroup) return;
+  if (retainedGroup) {
+    terminateRetainedProcessGroup(retainedGroup.requestScope, retainedGroup, "SIGTERM", {
+      allowDuringCommit: true,
+    }).catch(() => {});
+    return;
+  }
   if (terminatingChildProcesses.has(child)) return;
   terminatingChildProcesses.add(child);
   terminateWorkspaceProcessTree(child, { signal: "SIGTERM", timeoutMs: 1200 })
@@ -406,8 +422,10 @@ function terminateChild(child) {
   child.once("close", () => clearTimeout(timer));
 }
 
-function trackChildProcess(child) {
-  const requestScope = cancellableRequestContext.getStore();
+function trackChildProcess(child, options = {}) {
+  const requestScope = options.systemOwned === true
+    ? null
+    : cancellableRequestContext.getStore();
   activeChildProcesses.add(child);
   if (requestScope) requestScope.children.add(child);
   if (process.platform !== "win32" && child?.pid) {
@@ -417,7 +435,12 @@ function trackChildProcess(child) {
   }
   child.once("close", () => {
     activeChildProcesses.delete(child);
-    requestScope?.children.delete(child);
+    // Windows ancestry is lossy after the leader exits. Retain its custody
+    // identity through request finalization so only a Job Object close receipt
+    // could prove that detached descendants are gone. Today process creation is
+    // denied on Windows before this point; this also keeps future routes closed
+    // if they accidentally bypass that gate.
+    if (process.platform !== "win32") requestScope?.children.delete(child);
     // Do not delete the POSIX group here. A descendant can keep that group
     // alive after the leader has exited.
   });
@@ -447,7 +470,15 @@ function terminateRetainedProcessGroup(scope, group, signal = "SIGTERM", options
   }
   const key = `process_group:${group.pid}`;
   if (scope?.terminationPromises.has(key)) return scope.terminationPromises.get(key);
-  const pending = terminateWorkspaceProcessTree(group.child, { signal, timeoutMs: 2_000 })
+  // A command inside a fresh PID namespace becomes PID 1 and therefore does
+  // not receive ordinary default-fatal signal semantics. Cancellation revokes
+  // workspace mutation authority immediately, so terminate the outer namespace
+  // group with SIGKILL; `--kill-child=SIGKILL` and namespace teardown then kill
+  // every inner session before quiescence is acknowledged.
+  const effectiveSignal = group.child.workspaceProcessContainment?.guaranteed === true
+    ? "SIGKILL"
+    : signal;
+  const pending = terminateWorkspaceProcessTree(group.child, { signal: effectiveSignal, timeoutMs: 2_000 })
     .then((receipt) => {
       if (receipt?.quiesced === true) releaseRetainedProcessGroup(scope, group);
       return receipt;
@@ -2349,13 +2380,17 @@ async function captureDigestProcess(command, args, options = {}) {
     ? Math.max(0, Number(options.captureLimit))
     : DIRECT_EPISTEMIC_CAPTURE_LIMIT_BYTES;
   return new Promise((resolve, reject) => {
-    const child = trackChildProcess(spawn(command, args, {
-      cwd: options.cwd || root,
-      env: options.env || minimalCommandEnv(),
-      shell: false,
-      windowsHide: true,
-      detached: process.platform !== "win32",
-    }));
+    let spawned;
+    try {
+      spawned = spawnWorkspaceProcess(command, args, {
+        cwd: options.cwd || root,
+        env: options.env || minimalCommandEnv(),
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const child = trackChildProcess(spawned);
     const stdoutHash = crypto.createHash("sha256");
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -2409,16 +2444,26 @@ async function runCommand(params = {}) {
   const timeoutMs = Number.isFinite(Number(params.timeoutMs))
     ? Math.max(1000, Math.min(Number(params.timeoutMs), 10 * 60_000))
     : DEFAULT_COMMAND_TIMEOUT_MS;
+  const containment = await workspaceProcessContainmentStatus();
+  if (containment.available !== true) {
+    const error = new Error("Command execution requires a proven process-containment primitive.");
+    error.code = containment.blockerCode || "workspace_process_containment_unavailable";
+    throw error;
+  }
 
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
-    const child = trackChildProcess(spawn(command, args, {
-      cwd: fullPath,
-      env: { ...process.env, ...(params.env && typeof params.env === "object" ? params.env : {}) },
-      shell: false,
-      windowsHide: true,
-      detached: process.platform !== "win32",
-    }));
+    let spawned;
+    try {
+      spawned = spawnWorkspaceProcess(command, args, {
+        cwd: fullPath,
+        env: minimalCommandEnv(params.env),
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const child = trackChildProcess(spawned);
 
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -2468,7 +2513,125 @@ function minimalCommandEnv(extraEnv = {}) {
   }
   base.CI = "1";
   base.NO_COLOR = "1";
-  return { ...base, ...(extraEnv && typeof extraEnv === "object" ? extraEnv : {}) };
+  if (extraEnv && typeof extraEnv === "object") {
+    for (const [key, value] of Object.entries(extraEnv)) {
+      if (!SAFE_COMMAND_ENV_OVERRIDES.has(key) || typeof value !== "string") continue;
+      if (value.length > 4096 || /[\0\r\n]/.test(value)) continue;
+      base[key] = value;
+    }
+  }
+  return base;
+}
+
+function openTrustedUnshareLauncher() {
+  const noFollow = Number(fsSync.constants.O_NOFOLLOW || 0);
+  let fd;
+  try {
+    fd = fsSync.openSync(TRUSTED_UNSHARE_PATH, fsSync.constants.O_RDONLY | noFollow);
+    const before = fsSync.fstatSync(fd);
+    if (
+      !before.isFile() ||
+      before.uid !== 0 ||
+      (before.mode & 0o022) !== 0 ||
+      (before.mode & 0o111) === 0
+    ) {
+      const error = new Error("The Linux process-containment launcher failed its ownership or mode invariant.");
+      error.code = "workspace_linux_pid_namespace_launcher_untrusted";
+      throw error;
+    }
+    const digest = sha256Digest(fsSync.readFileSync(fd));
+    const after = fsSync.fstatSync(fd);
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      before.ctimeMs !== after.ctimeMs
+    ) {
+      const error = new Error("The Linux process-containment launcher changed during verification.");
+      error.code = "workspace_linux_pid_namespace_launcher_changed";
+      throw error;
+    }
+    const identity = {
+      dev: String(after.dev),
+      ino: String(after.ino),
+      size: after.size,
+      mode: after.mode & 0o777,
+      uid: after.uid,
+      gid: after.gid,
+      digest,
+    };
+    const identityJson = canonicalJson(identity);
+    if (trustedUnshareIdentity && canonicalJson(trustedUnshareIdentity) !== identityJson) {
+      const error = new Error("The pinned Linux process-containment launcher identity drifted.");
+      error.code = "workspace_linux_pid_namespace_launcher_identity_drift";
+      throw error;
+    }
+    if (!trustedUnshareIdentity) trustedUnshareIdentity = identity;
+    return { fd, identity };
+  } catch (error) {
+    if (fd !== undefined) {
+      try { fsSync.closeSync(fd); } catch {}
+    }
+    if (!error.code) error.code = "workspace_linux_pid_namespace_launcher_unavailable";
+    throw error;
+  }
+}
+
+function containedWorkspaceProcessSpawn(command, args, options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform !== "linux") {
+    const error = new Error(
+      "Workspace process containment is unavailable on this host; execution is denied instead of relying on lossy process ancestry.",
+    );
+    error.code = platform === "win32"
+      ? "workspace_windows_job_object_containment_unavailable"
+      : "workspace_process_containment_unavailable";
+    throw error;
+  }
+  const { fd, identity } = openTrustedUnshareLauncher();
+  const requestedStdio = Array.isArray(options.stdio)
+    ? options.stdio.slice(0, 3)
+    : ["ignore", "pipe", "pipe"];
+  while (requestedStdio.length < 3) requestedStdio.push("pipe");
+  let child;
+  try {
+    child = spawn("/proc/self/fd/3", [
+      "--user",
+      "--map-current-user",
+      "--pid",
+      "--fork",
+      "--kill-child=SIGKILL",
+      "--mount-proc",
+      "--",
+      command,
+      ...args,
+    ], {
+      ...options,
+      env: minimalCommandEnv(options.env),
+      stdio: [...requestedStdio, fd],
+      shell: false,
+      windowsHide: true,
+      detached: true,
+    });
+    child.workspaceProcessContainment = {
+      guaranteed: true,
+      kind: "linux_pid_namespace",
+      launcherDigest: identity.digest,
+    };
+    return child;
+  } finally {
+    fsSync.closeSync(fd);
+  }
+}
+
+function spawnWorkspaceProcess(command, args, options = {}) {
+  // Every backend subprocess participates in request-level custody, including
+  // apparently read-only Git probes: helpers, hooks, or configured filters can
+  // outlive the leader and mutate the workspace. Until the Windows backend has
+  // a production Job Object broker, do not create a process that the harness
+  // cannot prove quiescent.
+  return containedWorkspaceProcessSpawn(command, args, options);
 }
 
 function killProcessTree(child, signal) {
@@ -2574,25 +2737,38 @@ async function runDirectCommand(params = {}) {
   const timeoutMs = Number.isFinite(Number(params.timeoutMs))
     ? Math.max(1000, Math.min(Number(params.timeoutMs), 2 * 60_000))
     : DEFAULT_COMMAND_TIMEOUT_MS;
+  const containment = await workspaceProcessContainmentStatus();
+  if (params.requireProcessContainment !== false && containment.available !== true) {
+    const error = new Error("This command requires a proven process-containment primitive.");
+    error.code = containment.blockerCode || "workspace_process_containment_unavailable";
+    throw error;
+  }
   const backendCapabilities = {
     shellFalseSupported: true,
     cwdContainmentSupported: true,
     timeoutKillSupported: true,
     envSanitizationSupported: true,
     networkIsolationSupported: false,
-    processTreeKillSupported: process.platform !== "win32",
+    processTreeKillSupported: containment.available === true,
+    processContainmentGuaranteed: containment.available === true,
+    processContainmentKind: containment.available === true ? containment.kind : "unavailable",
+    processContainmentBlockerCode: containment.available === true ? "" : containment.blockerCode,
     workspaceEffectScanSupported: true,
   };
   const beforeEffects = await workspaceEffectSnapshot();
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
-    const child = trackChildProcess(spawn(command, args, {
-      cwd: fullPath,
-      env: minimalCommandEnv(params.env),
-      shell: false,
-      windowsHide: true,
-      detached: process.platform !== "win32",
-    }));
+    let containedChild;
+    try {
+      containedChild = spawnWorkspaceProcess(command, args, {
+        cwd: fullPath,
+        env: minimalCommandEnv(params.env),
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const child = trackChildProcess(containedChild);
 
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -2685,13 +2861,17 @@ function captureProcess(command, args, options = {}) {
   throwIfCurrentRequestCancelled();
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
-    const child = trackChildProcess(spawn(command, args, {
-      cwd: options.cwd || root,
-      env: { ...process.env, ...(options.env && typeof options.env === "object" ? options.env : {}) },
-      shell: false,
-      windowsHide: true,
-      detached: process.platform !== "win32",
-    }));
+    let spawned;
+    try {
+      spawned = spawnWorkspaceProcess(command, args, {
+        cwd: options.cwd || root,
+        env: minimalCommandEnv(options.env),
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const child = trackChildProcess(spawned);
     const stdoutChunks = [];
     const stderrChunks = [];
     let settled = false;
@@ -2787,6 +2967,12 @@ function workspaceWorkerRootFor(topLevel, workerKey) {
 }
 
 async function provisionGitWorktree(params = {}) {
+  const containment = await workspaceProcessContainmentStatus();
+  if (containment.available !== true) {
+    const error = new Error("Workspace-worker provisioning requires a proven process-containment primitive.");
+    error.code = containment.blockerCode || "workspace_process_containment_unavailable";
+    throw error;
+  }
   const workerKey = safeWorkspaceWorkerKey(params.workerKey);
   const branch = safeWorkspaceWorkerBranch(params.branch);
   const baseRef = String(params.baseRef || "HEAD").trim();
@@ -2870,6 +3056,12 @@ async function provisionGitWorktree(params = {}) {
 }
 
 async function removeGitWorktree(params = {}) {
+  const containment = await workspaceProcessContainmentStatus();
+  if (containment.available !== true) {
+    const error = new Error("Workspace-worker cleanup requires a proven process-containment primitive.");
+    error.code = containment.blockerCode || "workspace_process_containment_unavailable";
+    throw error;
+  }
   const workerKey = safeWorkspaceWorkerKey(params.workerKey);
   const branch = safeWorkspaceWorkerBranch(params.branch);
   const git = await exactGitWorkspace();
@@ -3259,7 +3451,7 @@ async function workspaceWorkerRepositoryPolicy() {
   return { ...genericWorkspaceRepositoryProfile() };
 }
 
-function workspaceWorkerSubstrateCapabilities(testAvailable) {
+function workspaceWorkerSubstrateCapabilities(testAvailable, containment = {}) {
   const availableTools = WORKSPACE_WORKER_TOOLS.filter((toolName) => toolName !== "run_test" || testAvailable);
   const base = {
     schema: "direct_workspace_worker_substrate_capability@1",
@@ -3267,12 +3459,17 @@ function workspaceWorkerSubstrateCapabilities(testAvailable) {
     availableTools,
     arbitraryCommandAvailableToWorker: false,
     remoteMutationAvailableToWorker: false,
+    processContainmentGuaranteed: containment.available === true,
+    processContainmentKind: containment.available === true ? containment.kind : "unavailable",
+    processContainmentBlockerCode: containment.available === true
+      ? ""
+      : String(containment.blockerCode || "").trim() || "workspace_process_containment_unavailable",
     rawWorkspacePathIncluded: false,
   };
   return { ...base, capabilityDigest: sha256Digest(canonicalJson(base)) };
 }
 
-function workspaceWorkerTestProfile(base, repositoryPolicy) {
+function workspaceWorkerTestProfile(base, repositoryPolicy, containment) {
   const profileBase = {
     schema: "direct_workspace_worker_test_profile@1",
     ...base,
@@ -3284,12 +3481,108 @@ function workspaceWorkerTestProfile(base, repositoryPolicy) {
     profileDigest: sha256Digest(canonicalJson(profileBase)),
     available: true,
     repositoryPolicy,
-    substrateCapabilities: workspaceWorkerSubstrateCapabilities(true),
+    substrateCapabilities: workspaceWorkerSubstrateCapabilities(true, containment),
   };
+}
+
+let workspaceProcessContainmentProbePromise = null;
+
+function probeLinuxWorkspaceProcessContainment() {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = trackChildProcess(containedWorkspaceProcessSpawn("true", [], {
+        cwd: root,
+        env: minimalCommandEnv(),
+      }), { systemOwned: true });
+    } catch (error) {
+      resolve({ available: false, blockerCode: error?.code || "workspace_linux_pid_namespace_containment_unavailable" });
+      return;
+    }
+    let settled = false;
+    let timer = null;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const retainedGroup = child?.pid ? activeProcessGroups.get(child.pid) : null;
+      if (!retainedGroup) {
+        resolve(result);
+        return;
+      }
+      terminateRetainedProcessGroup(
+        retainedGroup.requestScope || null,
+        retainedGroup,
+        "SIGKILL",
+        { allowDuringCommit: true },
+      )
+        .then((receipt) => resolve(receipt?.quiesced === true ? result : {
+          available: false,
+          blockerCode: receipt?.blockerCode || "workspace_linux_pid_namespace_probe_quiescence_unproven",
+        }));
+    };
+    child.once("error", (error) => finish({
+      available: false,
+      blockerCode: error?.code || "workspace_linux_pid_namespace_containment_unavailable",
+    }));
+    child.once("close", (exitCode) => finish(exitCode === 0 ? {
+      available: true,
+      kind: "linux_pid_namespace",
+      blockerCode: "",
+      launcherDigest: child.workspaceProcessContainment?.launcherDigest || "",
+    } : {
+      available: false,
+      blockerCode: "workspace_linux_pid_namespace_containment_unavailable",
+    }));
+    timer = setTimeout(() => {
+      finish({
+        available: false,
+        blockerCode: "workspace_linux_pid_namespace_containment_probe_timeout",
+      });
+    }, 5_000);
+  });
+}
+
+async function workspaceProcessContainmentStatus() {
+  if (workspaceProcessContainmentProbePromise) return workspaceProcessContainmentProbePromise;
+  workspaceProcessContainmentProbePromise = (async () => {
+    if (process.platform !== "linux") {
+      return {
+        available: false,
+        kind: "unavailable",
+        blockerCode: process.platform === "win32"
+          ? "workspace_windows_job_object_containment_unavailable"
+          : "workspace_process_containment_unavailable",
+      };
+    }
+    const probe = await probeLinuxWorkspaceProcessContainment();
+    return probe.available === true
+      ? probe
+      : { ...probe, kind: "unavailable" };
+  })();
+  return workspaceProcessContainmentProbePromise;
 }
 
 async function directTestProfile() {
   const repositoryPolicy = await workspaceWorkerRepositoryPolicy();
+  const containment = await workspaceProcessContainmentStatus();
+  if (!containment.available) {
+    return {
+      schema: "direct_workspace_worker_test_profile@1",
+      profileId: "",
+      profileDigest: "",
+      available: false,
+      unavailableReason: containment.blockerCode,
+      targetsAllowed: false,
+      workspaceKind,
+      actions: [],
+      actionsAllowed: [],
+      defaultAction: "",
+      targetedAction: "",
+      repositoryPolicy,
+      substrateCapabilities: workspaceWorkerSubstrateCapabilities(false, containment),
+    };
+  }
   if (repositoryPolicy.validationPosture === "exact" && repositoryPolicy.testProfile) {
     const pinned = repositoryPolicy.testProfile;
     return workspaceWorkerTestProfile({
@@ -3300,7 +3593,7 @@ async function directTestProfile() {
       defaultAction: pinned.defaultAction,
       targetedAction: pinned.targetedAction,
       targetsAllowed: pinned.actions.some((action) => action.targetsAllowed),
-    }, repositoryPolicy);
+    }, repositoryPolicy, containment);
   }
   const packageJsonPath = path.join(root, "package.json");
   if (await pathExists(packageJsonPath)) {
@@ -3316,7 +3609,7 @@ async function directTestProfile() {
           defaultAction: "test",
           targetedAction: "",
           targetsAllowed: false,
-        }, repositoryPolicy);
+        }, repositoryPolicy, containment);
       }
     } catch {}
   }
@@ -3331,7 +3624,7 @@ async function directTestProfile() {
       defaultAction: "test",
       targetedAction: "test",
       targetsAllowed: true,
-    }, repositoryPolicy);
+    }, repositoryPolicy, containment);
   }
   const makefilePath = path.join(root, "Makefile");
   if (await pathExists(makefilePath)) {
@@ -3346,7 +3639,7 @@ async function directTestProfile() {
         defaultAction: "test",
         targetedAction: "",
         targetsAllowed: false,
-      }, repositoryPolicy);
+      }, repositoryPolicy, containment);
     }
   }
   return {
@@ -3361,7 +3654,7 @@ async function directTestProfile() {
     defaultAction: "",
     targetedAction: "",
     repositoryPolicy,
-    substrateCapabilities: workspaceWorkerSubstrateCapabilities(false),
+    substrateCapabilities: workspaceWorkerSubstrateCapabilities(false, containment),
   };
 }
 
@@ -3654,6 +3947,7 @@ async function runDirectTest(params = {}) {
     args: executionArgs,
     cwdRelPath: "",
     timeoutMs,
+    requireProcessContainment: true,
   });
   return {
     ...result,
@@ -5409,6 +5703,8 @@ async function handleRequest(method, params = {}) {
   if (method === "hello") {
     const stat = await fs.stat(root);
     if (!stat.isDirectory()) throw new Error("Workspace root is not a directory.");
+    const containment = await workspaceProcessContainmentStatus();
+    const processBacked = containment.available === true;
     return {
       protocolVersion: PROTOCOL_VERSION,
       sessionId,
@@ -5423,24 +5719,24 @@ async function handleRequest(method, params = {}) {
         listTree: true,
         readFilePreview: true,
         applyPatch: true,
-        applyWorkspaceWorkerPatch: true,
+        applyWorkspaceWorkerPatch: processBacked,
         readFileTransfer: true,
-        repositorySemanticSnapshot: true,
-        directEpistemicRepositoryObservation: true,
+        repositorySemanticSnapshot: processBacked,
+        directEpistemicRepositoryObservation: processBacked,
         repositoryRealizationContext: true,
-        runCommand: true,
-        runDirectCommand: true,
-        provisionGitWorktree: true,
-        removeGitWorktree: true,
-        initializeWorkspaceWorkerBinding: true,
+        runCommand: processBacked,
+        runDirectCommand: processBacked,
+        provisionGitWorktree: processBacked,
+        removeGitWorktree: processBacked,
+        initializeWorkspaceWorkerBinding: processBacked,
         directTestProfile: true,
-        runDirectTest: true,
-        inspectWorkspaceRepository: true,
-        listWorkspaceRepositoryFiles: true,
-        matchWorkspaceRepositoryFiles: true,
-        searchWorkspaceRepositoryText: true,
-        readWorkspaceRepositoryFile: true,
-        ensureCodexSandboxArtifactIgnored: true,
+        runDirectTest: processBacked,
+        inspectWorkspaceRepository: processBacked,
+        listWorkspaceRepositoryFiles: processBacked,
+        matchWorkspaceRepositoryFiles: processBacked,
+        searchWorkspaceRepositoryText: processBacked,
+        readWorkspaceRepositoryFile: processBacked,
+        ensureCodexSandboxArtifactIgnored: processBacked,
         listMatchingFiles: true,
         resolvePath: true,
         watchScaffold: true,

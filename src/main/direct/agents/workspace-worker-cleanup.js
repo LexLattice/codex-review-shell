@@ -102,6 +102,10 @@ function buildWorkspaceWorkerCleanupPlan(input = {}) {
   if (session.leaseState !== "released") blockers.push("cleanup_lease_not_released");
   if (session.processState !== "quiescent") blockers.push("cleanup_process_not_quiescent");
   if (!binding.bindingDigest) blockers.push("cleanup_binding_missing");
+  const mutationOutcome = isPlainObject(session.mutationOutcome) ? session.mutationOutcome : null;
+  if (mutationOutcome?.partialMutationPossible === true || mutationOutcome?.indeterminate === true) {
+    blockers.push("cleanup_mutation_outcome_indeterminate");
+  }
 
   if (observation.observationComplete !== true) blockers.push("cleanup_observation_incomplete");
   if (!normalizeString(observation.observationDigest, "")) blockers.push("cleanup_observation_digest_missing");
@@ -155,6 +159,9 @@ function buildWorkspaceWorkerCleanupPlan(input = {}) {
     leaseId: normalizeString(session.leaseId, ""),
     sessionRevision: nonNegativeInteger(session.revision, 0),
     bindingDigest: normalizeString(binding.bindingDigest, ""),
+    mutationOutcomeDigest: normalizeString(mutationOutcome?.outcomeDigest, ""),
+    mutationOutcomeIndeterminate: mutationOutcome?.indeterminate === true ||
+      mutationOutcome?.partialMutationPossible === true,
     observationDigest: normalizeString(observation.observationDigest, ""),
     action: uniqueBlockers.length ? "retain_workspace" : "remove_clean_worktree",
     canRemove: uniqueBlockers.length === 0,
@@ -247,7 +254,8 @@ function assertWorkspaceWorkerCleanupPlanSafe(plan = {}) {
     !plan.bindingVerified ||
     !plan.gitStatusVerifiedClean ||
     !plan.headVerified ||
-    !plan.uniqueWorkVerifiedAbsent
+    !plan.uniqueWorkVerifiedAbsent ||
+    plan.mutationOutcomeIndeterminate === true
   )) {
     const error = new Error("direct_workspace_worker_cleanup_plan_unsafe_allow");
     error.code = "direct_workspace_worker_cleanup_plan_unsafe_allow";

@@ -35,14 +35,42 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function publicCaptureCode(value, fallback = "") {
+  const code = normalizeString(value, "");
+  return /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(code) ? code : fallback;
+}
+
+function publicCaptureId(value) {
+  const id = normalizeString(value, "");
+  return /^[A-Za-z][A-Za-z0-9._:-]{0,255}$/.test(id) ? id : "";
+}
+
+function publicCaptureDigest(value) {
+  const digest = normalizeString(value, "");
+  return /^(?:sha256:)?[a-f0-9]{64}$/.test(digest) ? digest : "";
+}
+
 function normalizeEpistemicCapture(input = {}) {
   const source = isPlainObject(input) ? input : {};
+  const sourceStatus = normalizeString(source.status, "unavailable");
+  const status = new Set(["pending", "captured", "failed", "unavailable"]).has(sourceStatus)
+    ? sourceStatus
+    : "unavailable";
+  const unsafeStatus = status !== sourceStatus;
+  const unsafeErrorCode = Boolean(normalizeString(source.errorCode, "")) &&
+    !publicCaptureCode(source.errorCode, "");
+  const unsafeReceiptDigest = Boolean(normalizeString(source.receiptDigest, "")) &&
+    !publicCaptureDigest(source.receiptDigest);
+  const unsafeSessionId = Boolean(normalizeString(source.sessionId, "")) &&
+    !publicCaptureId(source.sessionId);
+  const unsafeTurnId = Boolean(normalizeString(source.turnId, "")) &&
+    !publicCaptureId(source.turnId);
   const capture = {
-    status: normalizeString(source.status, "unavailable"),
-    errorCode: normalizeString(source.errorCode, ""),
-    receiptDigest: normalizeString(source.receiptDigest, ""),
-    sessionId: normalizeString(source.sessionId, ""),
-    turnId: normalizeString(source.turnId, ""),
+    status,
+    errorCode: publicCaptureCode(source.errorCode, unsafeErrorCode ? "capture_error_code_invalid" : ""),
+    receiptDigest: publicCaptureDigest(source.receiptDigest),
+    sessionId: publicCaptureId(source.sessionId),
+    turnId: publicCaptureId(source.turnId),
   };
   const complete = capture.status === "captured" &&
     !capture.errorCode &&
@@ -54,9 +82,12 @@ function normalizeEpistemicCapture(input = {}) {
     schema: SUB_AGENT_EPISTEMIC_CAPTURE_OMISSION_SCHEMA,
     omissionKind: "native_child_epistemic_capture",
     captureStatus: capture.status,
-    code: capture.errorCode || (capture.status === "captured"
-      ? capture.receiptDigest ? "capture_identity_missing" : "capture_receipt_missing"
-      : `epistemic_capture_${capture.status}`),
+    code: unsafeStatus ? "capture_status_invalid"
+      : unsafeReceiptDigest ? "capture_receipt_invalid"
+        : unsafeSessionId || unsafeTurnId ? "capture_identity_invalid"
+          : capture.errorCode || (capture.status === "captured"
+            ? capture.receiptDigest ? "capture_identity_missing" : "capture_receipt_missing"
+            : `epistemic_capture_${capture.status}`),
     evidencePosture: "provider_result_without_complete_local_capture",
     rawProviderPayloadIncluded: false,
     rawTranscriptIncluded: false,

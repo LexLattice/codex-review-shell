@@ -18,6 +18,48 @@ const fs = require("node:fs");
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const ATTACH_TIMEOUT_MS = 30_000;
+const MUTATION_COMMIT_KINDS_BY_METHOD = Object.freeze({
+  applyPatch: new Set(["apply_patch_files"]),
+  applyWorkspaceWorkerPatch: new Set(["apply_patch_files"]),
+  provisionGitWorktree: new Set(["git_worktree_add"]),
+  removeGitWorktree: new Set(["git_worktree_remove_non_force"]),
+  ensureCodexSandboxArtifactIgnored: new Set(["git_exclude_append"]),
+  stageAttachment: new Set(["stage_attachment"]),
+  removeAttachmentDraft: new Set(["remove_attachment_draft"]),
+  importFile: new Set(["import_file"]),
+});
+const PUBLIC_BACKEND_CAPABILITY_NAMES = Object.freeze([
+  "listTree",
+  "readFilePreview",
+  "applyPatch",
+  "applyWorkspaceWorkerPatch",
+  "readFileTransfer",
+  "repositorySemanticSnapshot",
+  "directEpistemicRepositoryObservation",
+  "repositoryRealizationContext",
+  "runCommand",
+  "runDirectCommand",
+  "provisionGitWorktree",
+  "removeGitWorktree",
+  "initializeWorkspaceWorkerBinding",
+  "directTestProfile",
+  "runDirectTest",
+  "inspectWorkspaceRepository",
+  "listWorkspaceRepositoryFiles",
+  "matchWorkspaceRepositoryFiles",
+  "searchWorkspaceRepositoryText",
+  "readWorkspaceRepositoryFile",
+  "ensureCodexSandboxArtifactIgnored",
+  "listMatchingFiles",
+  "resolvePath",
+  "watchScaffold",
+  "listCodexThreads",
+  "readCodexThreadTranscript",
+  "analyzeCodexThread",
+  "stageAttachment",
+  "removeAttachmentDraft",
+  "importFile",
+]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -27,23 +69,78 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function normalizeBackendMutationOutcome(value) {
+function publicBackendErrorCode(value, fallback = "workspace_backend_unavailable") {
+  const code = normalizeString(value, "");
+  return /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(code)
+    ? code
+    : fallback;
+}
+
+function publicBackendCapabilities(value) {
+  const source = isPlainObject(value) ? value : {};
+  return Object.fromEntries(PUBLIC_BACKEND_CAPABILITY_NAMES.map((name) => [
+    name,
+    source[name] === true,
+  ]));
+}
+
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+}
+
+function normalizeBackendMutationOutcome(value, pending = {}, resultEnvelope = null) {
   if (!isPlainObject(value) || value.schema !== "workspace_backend_mutation_outcome@1") return null;
   const outcomeDigest = normalizeString(value.outcomeDigest, "");
   if (!/^sha256:[a-f0-9]{64}$/.test(outcomeDigest)) return null;
-  return {
+  const requestId = normalizeString(value.requestId, "");
+  const method = normalizeString(value.method, "");
+  const commitKind = normalizeString(value.commitKind, "");
+  if (
+    !requestId || !method || !commitKind ||
+    (pending.requestId && requestId !== pending.requestId) ||
+    (pending.method && method !== pending.method) ||
+    !MUTATION_COMMIT_KINDS_BY_METHOD[method]?.has(commitKind) ||
+    value.rawPathIncluded !== false
+  ) {
+    return null;
+  }
+  const committed = value.committed === true;
+  const indeterminate = value.indeterminate === true;
+  const partialMutationPossible = value.partialMutationPossible === true;
+  const failureCode = value.committed === true
+    ? ""
+    : publicBackendErrorCode(value.failureCode, "");
+  const resultDigest = normalizeString(value.resultDigest, "");
+  if (
+    (committed && (indeterminate || partialMutationPossible || failureCode || !/^sha256:[a-f0-9]{64}$/.test(resultDigest))) ||
+    (!committed && (!indeterminate || !partialMutationPossible || !failureCode || resultDigest))
+  ) {
+    return null;
+  }
+  const base = {
     schema: "workspace_backend_mutation_outcome@1",
-    requestId: normalizeString(value.requestId, ""),
-    method: normalizeString(value.method, ""),
-    commitKind: normalizeString(value.commitKind, ""),
-    committed: value.committed === true,
-    indeterminate: value.indeterminate === true,
-    partialMutationPossible: value.partialMutationPossible === true,
+    requestId,
+    method,
+    commitKind,
+    committed,
+    ...(committed ? {} : { indeterminate, partialMutationPossible }),
     retainedForInspection: value.retainedForInspection === true,
-    failureCode: normalizeString(value.failureCode, ""),
-    outcomeDigest,
+    ...(committed ? { resultDigest } : { failureCode }),
     rawPathIncluded: false,
   };
+  const expectedDigest = `sha256:${crypto.createHash("sha256").update(stableStringify(base)).digest("hex")}`;
+  if (outcomeDigest !== expectedDigest) return null;
+  if (committed && resultEnvelope) {
+    const resultBase = { ...resultEnvelope };
+    delete resultBase.requestOutcome;
+    const expectedResultDigest = `sha256:${crypto.createHash("sha256")
+      .update(stableStringify(resultBase)).digest("hex")}`;
+    if (resultDigest !== expectedResultDigest) return null;
+  }
+  return { ...base, outcomeDigest };
 }
 
 function backendIntakeClosedError() {
@@ -350,8 +447,23 @@ class NdjsonTransport extends EventEmitter {
           );
           return;
         }
+        const mutationOutcome = normalizeBackendMutationOutcome(message.result?.mutationOutcome, target);
+        if (message.result?.mutationOutcome && !mutationOutcome) {
+          target.cancellationControlError = "workspace_backend_mutation_outcome_invalid";
+          return;
+        }
+        if (mutationOutcome?.committed === true) {
+          // A cancellation receipt can prove that the commit happened, but it
+          // cannot bind or reconstruct the result payload. Retain ownership
+          // until the original response arrives and its resultDigest is checked
+          // against that exact payload.
+          clearTimeout(target.timer);
+          target.timer = null;
+          this.detachPendingSignal(target);
+          target.committedOutcomeReceipt = mutationOutcome;
+          return;
+        }
         this.clearPending(pending.targetRequestId);
-        const mutationOutcome = normalizeBackendMutationOutcome(message.result?.mutationOutcome);
         const error = mutationOutcome?.partialMutationPossible === true
           ? this.backendError({
               message: "Workspace backend mutation failed after entering its commit phase; partial mutation may have occurred.",
@@ -367,6 +479,60 @@ class NdjsonTransport extends EventEmitter {
         }
         return;
       }
+      let requestOutcome = null;
+      if (message.result?.requestOutcome !== undefined) {
+        requestOutcome = normalizeBackendMutationOutcome(
+          message.result.requestOutcome,
+          pending,
+          message.result,
+        );
+        if (!requestOutcome) {
+          if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+          if (!pending.clientSettled) {
+            pending.clientSettled = true;
+            pending.reject(this.backendError({
+              message: "Workspace backend returned an invalid or foreign mutation outcome.",
+              code: "workspace_backend_mutation_outcome_invalid",
+              backendRequestCompleted: true,
+              backendQuiesced: pending.committedOutcomeReceipt ? true : false,
+              mutationOutcome: pending.committedOutcomeReceipt || null,
+            }, pending));
+          }
+          return;
+        }
+        if (
+          pending.committedOutcomeReceipt &&
+          pending.committedOutcomeReceipt.outcomeDigest !== requestOutcome.outcomeDigest
+        ) {
+          if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+          if (!pending.clientSettled) {
+            pending.clientSettled = true;
+            pending.reject(this.backendError({
+              message: "Workspace backend commit receipts conflicted across cancellation and result delivery.",
+              code: "workspace_backend_mutation_outcome_conflict",
+              backendRequestCompleted: true,
+              backendQuiesced: true,
+              mutationOutcome: pending.committedOutcomeReceipt,
+            }, pending));
+          }
+          return;
+        }
+        message.result = { ...message.result, requestOutcome };
+      }
+      if (pending.committedOutcomeReceipt && requestOutcome?.committed !== true) {
+        if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
+        if (!pending.clientSettled) {
+          pending.clientSettled = true;
+          pending.reject(this.backendError({
+            message: "Workspace backend proved that a mutation committed but did not return its exact body-bound result receipt.",
+            code: "workspace_backend_committed_result_receipt_missing",
+            backendRequestCompleted: true,
+            backendQuiesced: true,
+            mutationOutcome: pending.committedOutcomeReceipt,
+          }, pending));
+        }
+        return;
+      }
       if (pending.abortRequested) {
         if (pending.cancelRequestId) this.clearPending(pending.cancelRequestId);
         if (message.error) {
@@ -376,7 +542,7 @@ class NdjsonTransport extends EventEmitter {
           }
           return;
         }
-        if (message.result?.requestOutcome?.committed === true) {
+        if (requestOutcome?.committed === true) {
           if (!pending.clientSettled) {
             pending.clientSettled = true;
             pending.resolve(message.result);
@@ -422,16 +588,31 @@ class NdjsonTransport extends EventEmitter {
   }
 
   backendError(messageError = {}, pending = {}) {
-    const mutationOutcome = normalizeBackendMutationOutcome(messageError.mutationOutcome);
+    const mutationOutcome = normalizeBackendMutationOutcome(messageError.mutationOutcome, pending);
     const error = new Error(messageError.message || "Workspace backend request failed.");
     error.code = normalizeString(messageError.code, "");
     error.backendStack = messageError.stack;
     error.requestId = normalizeString(pending.requestId, "");
     error.backendRequestCompleted = messageError.backendRequestCompleted === true;
     error.backendQuiesced = messageError.backendQuiesced === true;
+    error.cancellationAcknowledged = (
+      pending.abortRequested === true &&
+      error.backendRequestCompleted === true &&
+      error.backendQuiesced === true
+    );
     error.workspaceBackendRequest = true;
     error.mutationOutcome = mutationOutcome;
     error.partialMutationPossible = mutationOutcome?.partialMutationPossible === true;
+    if (error.cancellationAcknowledged) {
+      error.cancellationReceipt = {
+        targetRequestId: normalizeString(pending.requestId, ""),
+        acknowledged: true,
+        quiesced: true,
+        acknowledgementKind: "request_terminal_error_after_cancel",
+        outcomeDigest: normalizeString(mutationOutcome?.outcomeDigest, ""),
+        rawProcessDetailsIncluded: false,
+      };
+    }
     return error;
   }
 
@@ -454,7 +635,7 @@ class NdjsonTransport extends EventEmitter {
       outcomeDigest: normalizeString(cancellationReceipt.outcomeDigest, ""),
       rawProcessDetailsIncluded: false,
     };
-    error.mutationOutcome = normalizeBackendMutationOutcome(cancellationReceipt.mutationOutcome);
+    error.mutationOutcome = normalizeBackendMutationOutcome(cancellationReceipt.mutationOutcome, pending);
     error.partialMutationPossible = error.mutationOutcome?.partialMutationPossible === true;
     return error;
   }
@@ -686,7 +867,7 @@ class WorkspaceSession extends EventEmitter {
       workspaceKind: normalizeString(this.hello.workspaceKind, ""),
       platform: normalizeString(this.hello.platform, "unknown"),
       node: normalizeString(this.hello.node, ""),
-      capabilities: isPlainObject(this.hello.capabilities) ? { ...this.hello.capabilities } : {},
+      capabilities: publicBackendCapabilities(this.hello.capabilities),
       rawWorkspacePathIncluded: false,
     } : null;
     return {
@@ -701,7 +882,9 @@ class WorkspaceSession extends EventEmitter {
         "local",
       ),
       hello,
-      lastErrorCode: normalizeString(this.lastError?.code, this.lastError ? "workspace_backend_unavailable" : ""),
+      lastErrorCode: this.lastError
+        ? publicBackendErrorCode(this.lastError?.code)
+        : "",
       readySeen: this.readySeen,
       hygiene: isPlainObject(this.hygiene) ? {
         available: this.hygiene.available === true,
@@ -724,7 +907,9 @@ class WorkspaceSession extends EventEmitter {
       protocolVersion: Number(event.protocolVersion || 0),
       projectId: normalizeString(event.projectId, this.project.id),
       workspaceKind: normalizeString(event.workspaceKind, this.project.workspace?.kind || ""),
-      errorCode: normalizeString(event.error?.code || event.code, event.error ? "workspace_backend_event_error" : ""),
+      errorCode: event.error || event.code
+        ? publicBackendErrorCode(event.error?.code || event.code, "workspace_backend_event_error")
+        : "",
       rawWorkspacePathIncluded: false,
       rawProtocolFrameIncluded: false,
     };
@@ -762,7 +947,9 @@ class WorkspaceSession extends EventEmitter {
       type,
       session: this.publicSnapshot(),
       at: new Date().toISOString(),
-      errorCode: normalizeString(extra.error?.code || extra.errorCode, extra.error ? "workspace_backend_unavailable" : ""),
+      errorCode: extra.error || extra.errorCode
+        ? publicBackendErrorCode(extra.error?.code || extra.errorCode)
+        : "",
       rawWorkspacePathIncluded: false,
     };
     this.emit("status", payload);
@@ -809,11 +996,12 @@ class WorkspaceSession extends EventEmitter {
     this.emitStatus("backend-starting");
 
     if (!fs.existsSync(this.options.agentPath)) {
-      const message = `Workspace backend agent is missing: ${this.options.agentPath}`;
+      const error = new Error("Workspace backend agent is unavailable.");
+      error.code = "workspace_backend_agent_missing";
       this.status = "failed";
-      this.lastError = message;
-      this.emitStatus("backend-failed", { error: message });
-      throw new Error(message);
+      this.lastError = error;
+      this.emitStatus("backend-failed", { error });
+      throw error;
     }
 
     this.child = spawn(this.descriptor.command, this.descriptor.args, {
@@ -883,14 +1071,16 @@ class WorkspaceSession extends EventEmitter {
       this.status = "attached";
       this.emitStatus("backend-attached");
     } catch (error) {
-      const message = this.attachFailureMessage(error);
+      const privateMessage = this.attachFailureMessage(error);
+      const errorCode = publicBackendErrorCode(error?.code, "workspace_backend_attach_failed");
       this.status = "failed";
-      this.lastError = message;
-      this.emitStatus("backend-failed", { error: message });
+      const publicError = new Error("Workspace backend attach failed.");
+      publicError.code = errorCode;
+      this.lastError = publicError;
+      this.noteDiagnostic("attach-failed", privateMessage);
+      this.emitStatus("backend-failed", { error: publicError });
       this.dispose();
-      const attachError = new Error(message);
-      attachError.code = normalizeString(error?.code, "");
-      throw attachError;
+      throw publicError;
     }
   }
 
@@ -1083,6 +1273,7 @@ module.exports = {
   WorkspaceSession,
   WorkspaceBackendManager,
   normalizeWorkspace,
+  publicBackendErrorCode,
   workspaceLabel,
   workspaceRoot,
   workspaceRootIsAbsolute,
