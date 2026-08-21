@@ -204,6 +204,7 @@ function rowMatchesUsageThread(row, projectId, threadId) {
   if (rowProjectId && rowProjectId !== projectId) return false;
   const kind = normalizeString(row?.rowKind, "");
   if (kind === "rate_limit_snapshot") return true;
+  if (!threadId) return true;
   const rowThreadId = normalizeString(row?.threadId, "");
   return Boolean(threadId && rowThreadId && rowThreadId === threadId);
 }

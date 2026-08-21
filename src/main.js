@@ -319,6 +319,7 @@ const {
 } = require("./main/attachment-staging-store");
 const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
 const { readUsageLedgerAnalytics } = require("./main/usage-ledger-analytics");
+const { readDirectUsageOverview } = require("./main/direct/usage/overview");
 const {
   buildRuntimeAnalyticsProjection,
 } = require("./main/direct/analytics/runtime-analytics-adapter");
@@ -5305,6 +5306,35 @@ function buildDirectAgentUsageStatusForProject(projectId) {
       rawSecretIncluded: false,
     };
   }
+}
+
+async function buildDirectUsageOverviewForProject(project, options = {}) {
+  const requestedWindow = Number.parseInt(String(options.windowDays || "30"), 10);
+  const windowDays = [7, 30, 90].includes(requestedWindow) ? requestedWindow : 30;
+  const since = new Date();
+  since.setUTCDate(since.getUTCDate() - windowDays);
+  const [historical, projectActivity] = await Promise.all([
+    readDirectUsageOverview({
+      sinceDate: since.toISOString().slice(0, 10),
+      refresh: options.refresh === true,
+      homeDir: normalizeString(process.env.CODEX_DIRECT_USAGE_HOME, "") || undefined,
+    }),
+    readUsageLedgerAnalytics(project, ""),
+  ]);
+  return {
+    ...historical,
+    scope: {
+      projectId: project.id,
+      projectLabel: normalizeString(project.name || project.label, project.id),
+      windowDays,
+      historicalScope: "local_control_plane",
+      directEvidenceScope: "selected_project",
+    },
+    direct: {
+      agentUsage: buildDirectAgentUsageStatusForProject(project.id),
+      projectActivity,
+    },
+  };
 }
 
 function emptyDirectWorkThreadProjection(projectId, reason = "work_thread_registry_unavailable") {
@@ -12462,6 +12492,25 @@ ipcMain.handle("direct-runtime:status", async (_event, payload) => {
     ? currentProject
     : await getProjectById(requestedProjectId);
   return buildDirectRuntimeStatusForProject(project);
+});
+
+ipcMain.handle("direct-usage:overview", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(event.sender, "direct-usage:overview");
+  requireDirectWorkbenchExperience("direct-usage:overview");
+  const config = await loadConfig();
+  const projectId = normalizeString(payload?.projectId, authority.projectId || config.selectedProjectId);
+  if (!projectId || (authority.projectId && authority.projectId !== projectId)) {
+    const error = new Error("The usage overview is bound to the active Direct project.");
+    error.code = "direct_usage_project_scope_mismatch";
+    throw error;
+  }
+  const project = config.projects.find((candidate) => candidate.id === projectId);
+  if (!project) {
+    const error = new Error("The selected Direct project is unavailable.");
+    error.code = "direct_usage_project_unknown";
+    throw error;
+  }
+  return buildDirectUsageOverviewForProject(project, payload || {});
 });
 
 ipcMain.handle("direct-ui:implementation-status", async (_event, payload) => {

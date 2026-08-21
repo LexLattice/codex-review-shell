@@ -274,6 +274,27 @@
         </div>
       </aside>
 
+      <section id="directUsagePage" class="direct-usage-page" hidden aria-label="Usage overview" data-morphic-region="direct-usage-overview">
+        <header class="direct-usage-header">
+          <div>
+            <p class="eyebrow">Local control plane</p>
+            <h2>Usage</h2>
+            <p id="directUsageSubtitle" class="subline">Historical provider logs and exact Direct runtime evidence</p>
+          </div>
+          <div class="direct-usage-header-actions">
+            <div id="directUsageWindows" class="direct-usage-window-picker" aria-label="Usage time window">
+              <button type="button" data-usage-window="7" aria-pressed="false">7d</button>
+              <button type="button" data-usage-window="30" aria-pressed="true">30d</button>
+              <button type="button" data-usage-window="90" aria-pressed="false">90d</button>
+            </div>
+            <button id="directUsageRefresh" type="button">Refresh</button>
+            <button id="directUsageClose" class="drawer-close" type="button" aria-label="Close usage overview">×</button>
+          </div>
+        </header>
+        <p id="directUsageStatus" class="direct-usage-status" aria-live="polite">Open the page to load local usage evidence.</p>
+        <div id="directUsageBody" class="direct-usage-body"></div>
+      </section>
+
       <nav class="t3-utility-rail" aria-label="Thread utility surfaces">
         <button type="button" data-t3-action="projects" aria-label="Open project directory" title="Projects">P</button>
         <button type="button" data-t3-action="threads" aria-label="Focus thread directory" title="Threads">☰</button>
@@ -281,6 +302,7 @@
         <button type="button" data-runtime-tab="runtime" aria-label="Open runtime inspector" title="Runtime">R</button>
         <button type="button" data-runtime-tab="epistemic" aria-label="Open epistemic inspector" title="Epistemic context">E</button>
         <button type="button" data-t3-action="analytics" aria-label="Open thread analytics" title="Analytics">A</button>
+        <button type="button" data-t3-action="usage" aria-label="Open usage overview" title="Usage">U</button>
         <button type="button" data-t3-action="intake" aria-label="Open Direct thread intake" title="Thread intake">I</button>
         <button type="button" disabled aria-label="Files are not connected in this experiment" title="Files are not connected in this experiment">F</button>
         <button type="button" disabled aria-label="Diff is not connected in this experiment" title="Diff is not connected in this experiment">Δ</button>
@@ -342,5 +364,6 @@
     <script src="./t3-direct-surface.js"></script>
     <script src="./direct-project-directory-surface.js"></script>
     <script src="./direct-thread-intake-surface.js"></script>
+    <script src="./direct-usage-surface.js"></script>
   </body>
 </html>

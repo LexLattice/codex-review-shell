@@ -42,6 +42,9 @@ Primary reference artifacts:
 - `apps/web/src/components/chat/ChatComposer.tsx`
 - `apps/web/src/components/settings/settingsLayout.tsx`
 - `apps/web/src/components/CommandPalette.tsx`
+- `upstream/t3code/usage-page:apps/web/src/components/settings/UsageSettings.tsx`
+- `upstream/t3code/usage-page:apps/web/src/state/usage.ts`
+- `upstream/t3code/usage-page:apps/server/src/usage/*`
 
 Host artifacts:
 
@@ -121,7 +124,63 @@ Morphable:
 | Runtime inspector | existing runtime constitution/projection | right dock | existing read/control actions |
 | Analytics inspector | existing runtime analytics projection | right dock | display only |
 | Thread intake | typed main-process intake projection and read-only import store | right dock | evidence-gated resume or fresh Direct continuation |
+| Usage overview | local provider session logs plus project-scoped Direct usage projections | central bounded focus surface | read-only; spend is explicitly estimated and non-billing-grade |
 | terminal/files/diff/browser | no v0 Direct tenant adapter | utility rail | disabled with explicit explanation |
+
+## Usage-page import
+
+The T3 usage branch contributes a useful page artifact rather than a new
+control plane. Its geometry is retained: 7/30/90-day windows, summary tiles,
+a daily provider chart, model and source tables, and compact activity bars.
+Its local-log reconstruction also contributes real mechanics:
+
+- Claude message/request deduplication for resumed and forked logs;
+- Codex cumulative-token delta recovery, including counter rewinds after
+  compaction;
+- cached/fresh input separation, reasoning-token observation, latest primary
+  rate-limit evidence, and a static model price table;
+- a bounded read cache and partial-source posture.
+
+T3's reference scanner replays every recent JSONL record. That is not an
+interactive-safe assumption for this installation: the local Codex archive
+can span many gigabytes. Direct therefore discovers newest files first and
+applies both per-file and per-source byte budgets. A sliced cumulative Codex
+log establishes its first visible token snapshot as a baseline instead of
+charging the unseen prefix. If any slice or budget is used, the page calls the
+historical result a `partial_lower_bound`; it never styles that value as a
+complete estimate.
+
+Direct deliberately changes the truth language around that data. Static
+pricing produces an **estimate**, not real or billing-grade cost. Unknown
+models remain visible and unpriced. The scanner also discovers alternate
+local Codex homes such as `.codex-agentrouter`, which the T3 implementation's
+single `~/.codex/sessions` root does not cover.
+
+The page composes, rather than blends, two evidence strata:
+
+```text
+local historical session logs
+  -> derived token deltas + estimated spend across the control-plane host
+
+Direct runtime ledgers
+  -> selected-project agent/workthread/tool attribution
+  -> exact where the provider reported it
+  -> missing usage remains unknown, never zero
+```
+
+T3 currently computes several activity facts that Direct does not yet expose
+project-wide here: skills, turns by UTC hour, and lines added/deleted. Direct
+already exposes facts absent from the T3 page: missing usage row counts,
+field-confidence posture, agent/workthread/route attribution, and explicit
+privacy/provenance boundaries. Connected-machine fan-out remains a future
+control-plane concern; this slice reports the one local control-plane host and
+does not counterfeit multi-environment coverage.
+
+Morphic posture for this derivative read-only artifact is
+`medium_density + bounded_focus + evidence_first + full_explicit_state`.
+The imported chart/table mechanics own presentation only. Direct owns source
+scope, evidence labels, failure state, refresh serialization, and every claim
+of authority.
 
 ## Evidence And Authority Rules
 

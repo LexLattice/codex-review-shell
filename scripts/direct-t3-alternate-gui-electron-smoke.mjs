@@ -41,11 +41,19 @@ const projectLifecycleScreenshotPath = screenshotPath.replace(/\.png$/i, "-proje
 const threadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-directory.png");
 const narrowThreadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-directory-narrow.png");
 const epistemicScreenshotPath = screenshotPath.replace(/\.png$/i, "-epistemic.png");
+const usageScreenshotPath = screenshotPath.replace(/\.png$/i, "-usage.png");
 const localProjectRoot = path.join(testRoot, "local-fixture");
+const usageHome = path.join(testRoot, "usage-home");
 const localProjectSentinel = path.join(localProjectRoot, "workspace-preserved.txt");
 fs.mkdirSync(userDataRoot, { recursive: true, mode: 0o700 });
 fs.mkdirSync(localProjectRoot, { recursive: true });
 fs.writeFileSync(localProjectSentinel, "project binding lifecycle must not delete workspace files\n");
+const usageSessionPath = path.join(usageHome, ".codex", "sessions", "2026", "08", "usage-fixture.jsonl");
+fs.mkdirSync(path.dirname(usageSessionPath), { recursive: true });
+fs.writeFileSync(usageSessionPath, [
+  JSON.stringify({ timestamp: new Date().toISOString(), type: "session_meta", payload: { id: "usage-fixture", cwd: localProjectRoot, model: "gpt-5.6-sol" } }),
+  JSON.stringify({ timestamp: new Date().toISOString(), type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 1_000_000, cached_input_tokens: 100_000, output_tokens: 200_000, reasoning_output_tokens: 20_000 } }, rate_limits: { plan_type: "fixture", primary: { used_percent: 37, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 3600 } } } }),
+].join("\n") + "\n");
 
 fs.writeFileSync(path.join(userDataRoot, "workspace-config.json"), `${JSON.stringify({
   version: 5,
@@ -157,6 +165,7 @@ delete launchEnvironment.CODEX_DIRECT_T3_GUI;
 launchEnvironment.CODEX_EXPERIENCE = "direct-workbench";
 launchEnvironment.CODEX_REVIEW_SHELL_USER_DATA_DIR = userDataRoot;
 launchEnvironment.CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH = "";
+launchEnvironment.CODEX_DIRECT_USAGE_HOME = usageHome;
 launchEnvironment.LIBGL_ALWAYS_SOFTWARE = "1";
 
 const rendererErrors = [];
@@ -234,6 +243,23 @@ try {
     () => typeof window.codexSurfaceBridge.getWorldManagerSnapshot === "function",
   );
   assert.equal(worldManagerAuthorityExposed, false);
+
+  await page.locator('.t3-utility-rail [data-t3-action="usage"]').click();
+  await page.locator("#directUsagePage:not([hidden])").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("#directUsageStatus")?.dataset?.state === "ready");
+  const usageText = await page.locator("#directUsagePage").innerText();
+  assert.match(usageText, /Estimated spend/);
+  assert.match(usageText, /gpt-5\.6-sol/);
+  assert.match(usageText, /not billing-grade/);
+  assert.match(usageText, /missing usage as unknown, not zero/);
+  assert.match(usageText, /Historical projects/);
+  assert.equal(await page.locator('[data-t3-action="usage"]').getAttribute("aria-pressed"), "true");
+  await page.locator('[data-usage-window="7"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-usage-window="7"]')?.getAttribute("aria-pressed") === "true");
+  await page.waitForFunction(() => document.querySelector("#directUsageStatus")?.dataset?.state === "ready");
+  await page.screenshot({ path: usageScreenshotPath, fullPage: true });
+  await page.locator("#directUsageClose").click();
+  assert.equal(await page.locator("#directUsagePage").isHidden(), true);
 
   await page.locator('.t3-utility-rail [data-runtime-tab="runtime"]').click();
   await page.locator("#runtimeDrawer:not([hidden])").waitFor({ state: "visible" });
@@ -542,6 +568,7 @@ try {
     threadDirectoryScreenshotPath,
     narrowThreadDirectoryScreenshotPath,
     epistemicScreenshotPath,
+    usageScreenshotPath,
     intakeScreenshotPath,
     projectDirectoryScreenshotPath,
     projectBindingEditorScreenshotPath,

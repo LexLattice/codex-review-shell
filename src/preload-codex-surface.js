@@ -329,6 +329,8 @@ const directWorkbenchPreload = process.env.CODEX_EXPERIENCE === "direct-workbenc
 
 if (directWorkbenchPreload) {
   Object.assign(codexSurfaceApi, {
+    getDirectUsageOverview: (projectId, options = {}) =>
+      ipcRenderer.invoke("direct-usage:overview", { ...options, projectId }),
     readDirectWorkbenchProjectDirectory: () =>
       ipcRenderer.invoke("direct-workbench:project-directory"),
     readDirectWorkbenchProjectBindingDraft: (payload = {}) =>
