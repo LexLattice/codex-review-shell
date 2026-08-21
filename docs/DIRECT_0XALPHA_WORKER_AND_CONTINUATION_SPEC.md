@@ -101,6 +101,10 @@ Defaults:
 - 30 minutes total wall time;
 - 2,000,000 assembled output characters;
 - exponential retry delay capped at 8 seconds.
+- completed OpenCode raw journals retained for at most 7 days, 32 runs, and
+  64 MiB, whichever bound is reached first;
+- interrupted OpenCode run directories retained for at most 7 days so a live
+  concurrent run is never removed merely to satisfy the completed-run budgets.
 
 Environment overrides:
 
@@ -111,7 +115,17 @@ CODEX_DIRECT_0XALPHA_MAX_OUTPUT_CHARS
 CODEX_DIRECT_0XALPHA_RETRY_BASE_MS
 CODEX_OPENROUTER_ENDPOINT
 CODEX_DIRECT_OPENCODE_BIN
+CODEX_DIRECT_OPENCODE_RETENTION_MS
+CODEX_DIRECT_OPENCODE_MAX_RETAINED_RUNS
+CODEX_DIRECT_OPENCODE_MAX_RETAINED_BYTES
 ```
+
+`CODEX_OPENROUTER_ENDPOINT` may change the request path only within the
+`https://openrouter.ai` origin. It cannot redirect the Bearer credential to a
+different host or to cleartext HTTP. A non-OpenRouter endpoint is available
+only to trusted programmatic callers that supply both an explicit endpoint and
+the custom-endpoint authority flag; renderer input and inherited environment
+cannot grant that authority.
 
 Every run produces a
 `direct_external_provider_continuation_trace@1` containing attempt outcomes,
@@ -130,6 +144,14 @@ text stream is not flattened into the parent transcript. This keeps the
 higher-level agent's context bounded while preserving an addressable source for
 later semantic import or audit.
 
+After a provider turn settles, Direct removes the disposable per-run OpenCode
+SQLite database, cache, configuration, and workspace. It retains only the
+private raw-event journal and a small retention manifest. A sweep runs before
+and after turns and removes completed evidence by age, newest-first count, and
+aggregate byte budget. Interrupted directories without a completion manifest
+remain recoverable during the same age window, then expire. The normalized
+Direct capture remains canonical regardless of raw-run retention.
+
 ## Credentials
 
 OpenRouter first uses `OPENROUTER_API_KEY` from the process environment. If it
@@ -143,8 +165,12 @@ The file accepts quoted or unquoted values and must not be group/world
 accessible on POSIX hosts. The key is used only to construct the Authorization
 header and is excluded from descriptors, traces, errors, and captures.
 
-OpenCode credentials remain owned by OpenCode. Direct does not copy or expose
-them.
+The current public `opencode/x-preview-f-free` route resolves inside the
+isolated OpenCode runtime without importing the interactive OpenCode auth
+store; this was verified with a real-binary terminal `stop` smoke. Direct does
+not copy or expose OpenCode credentials. A future authenticated OpenCode route
+will require an explicit credential-projection contract rather than silently
+reusing the interactive profile.
 
 ## Provider tool shape
 

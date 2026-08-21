@@ -14,6 +14,10 @@ const OPENROUTER_OXALPHA_MODEL = "stealth/ox-alpha";
 const OPENCODE_OXALPHA_MODEL = "opencode/x-preview-f-free";
 const DEFAULT_OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const MAX_OPENCODE_REBASE_OUTPUT_CHARS = 128 * 1024;
+const DEFAULT_OPENCODE_RUN_RETENTION_MS = 7 * 24 * 60 * 60_000;
+const DEFAULT_OPENCODE_MAX_RETAINED_RUNS = 32;
+const DEFAULT_OPENCODE_MAX_RETAINED_BYTES = 64 * 1024 * 1024;
+const OPENCODE_RUN_RETENTION_SCHEMA = "direct_opencode_run_retention@1";
 const DEFAULT_CONTINUATION_PROMPT = [
   "Continue from exactly where the prior response stopped.",
   "Do not restart or repeat completed material.",
@@ -118,6 +122,38 @@ function loadOpenRouterApiKey(options = {}) {
   return { apiKey, source: "protected_env_file", envFile };
 }
 
+function resolveOpenRouterEndpoint(options = {}) {
+  const env = options.env || process.env;
+  const optionEndpoint = normalizeString(options.endpoint, "");
+  const configuredEndpoint = optionEndpoint || normalizeString(
+    env.CODEX_OPENROUTER_ENDPOINT,
+    DEFAULT_OPENROUTER_ENDPOINT,
+  );
+  let endpoint;
+  try {
+    endpoint = new URL(configuredEndpoint);
+  } catch {
+    throw safeError("direct_openrouter_endpoint_invalid", "OpenRouter endpoint is not a valid URL.");
+  }
+  if (endpoint.protocol !== "https:") {
+    throw safeError("direct_openrouter_endpoint_insecure", "OpenRouter endpoint must use HTTPS.");
+  }
+  if (endpoint.username || endpoint.password || endpoint.hash) {
+    throw safeError("direct_openrouter_endpoint_invalid", "OpenRouter endpoint must not contain credentials or a fragment.");
+  }
+  const defaultOrigin = new URL(DEFAULT_OPENROUTER_ENDPOINT).origin;
+  const trustedProgrammaticOverride = Boolean(
+    optionEndpoint && options.allowCustomOpenRouterEndpoint === true,
+  );
+  if (endpoint.origin !== defaultOrigin && !trustedProgrammaticOverride) {
+    throw safeError(
+      "direct_openrouter_endpoint_untrusted",
+      "OpenRouter credentials may only be sent to the OpenRouter origin.",
+    );
+  }
+  return endpoint.toString();
+}
+
 function providerDefaultModel(providerId = "") {
   if (providerId === PROVIDER_OPENROUTER_OXALPHA) return OPENROUTER_OXALPHA_MODEL;
   if (providerId === PROVIDER_OPENCODE_OXALPHA) return OPENCODE_OXALPHA_MODEL;
@@ -134,14 +170,18 @@ function normalizeProviderId(value, fallback = PROVIDER_CHATGPT_DIRECT) {
 function externalProviderProfile(providerId = "", options = {}) {
   if (providerId === PROVIDER_OPENROUTER_OXALPHA) {
     let credentials = "unavailable";
+    let blockerCode = "";
     try {
       loadOpenRouterApiKey(options);
       credentials = "available";
-    } catch {}
+      resolveOpenRouterEndpoint(options);
+    } catch (error) {
+      blockerCode = normalizeString(error?.code, "direct_openrouter_credentials_missing");
+    }
     return {
       providerId,
-      status: credentials === "available" ? "ready" : "blocked",
-      blockerCode: credentials === "available" ? "" : "direct_openrouter_credentials_missing",
+      status: blockerCode ? "blocked" : "ready",
+      blockerCode,
       model: OPENROUTER_OXALPHA_MODEL,
       transport: "openrouter_chat_completions_sse",
       credentials,
@@ -600,11 +640,8 @@ async function runOpenRouterOxAlphaTurnWithinDeadline(input = {}, options = {}) 
     retryBaseMs: options.retryBaseMs ?? process.env.CODEX_DIRECT_0XALPHA_RETRY_BASE_MS,
     continuationPrompt: options.continuationPrompt,
   });
+  const endpoint = resolveOpenRouterEndpoint(options);
   const credentials = loadOpenRouterApiKey(options);
-  const endpoint = normalizeString(
-    options.endpoint || process.env.CODEX_OPENROUTER_ENDPOINT,
-    DEFAULT_OPENROUTER_ENDPOINT,
-  );
   const model = normalizeString(input.requestBody?.model, OPENROUTER_OXALPHA_MODEL);
   if (model !== OPENROUTER_OXALPHA_MODEL) throw safeError("direct_openrouter_model_not_allowed");
   const messages = openRouterMessages(input.requestBody);
@@ -810,14 +847,164 @@ function openCodeRunDirectories(input = {}, options = {}) {
   const baseDirectory = path.resolve(normalizeString(options.workingDirectory, os.tmpdir()));
   const identity = normalizeString(input.attemptId, crypto.randomUUID());
   const runKey = digestFor("direct-opencode-run-directory@1", identity).slice("sha256:".length, 31);
-  const runRoot = path.join(baseDirectory, "opencode-runs", runKey);
+  const runsRoot = path.join(baseDirectory, "opencode-runs");
+  const runRoot = path.join(runsRoot, runKey);
   return {
     runKey,
+    runsRoot,
     runRoot,
     workingDirectory: path.join(runRoot, "workspace"),
     runtimeDirectory: path.join(runRoot, "runtime"),
     eventJournalPath: path.join(runRoot, "provider-events.ndjson"),
+    retentionManifestPath: path.join(runRoot, "retention.json"),
   };
+}
+
+function openCodeRetentionPolicy(options = {}) {
+  const env = options.env || process.env;
+  return {
+    retentionMs: boundedInteger(
+      options.openCodeRetentionMs ?? env.CODEX_DIRECT_OPENCODE_RETENTION_MS,
+      DEFAULT_OPENCODE_RUN_RETENTION_MS,
+      60_000,
+      90 * 24 * 60 * 60_000,
+    ),
+    maxRuns: boundedInteger(
+      options.openCodeMaxRetainedRuns ?? env.CODEX_DIRECT_OPENCODE_MAX_RETAINED_RUNS,
+      DEFAULT_OPENCODE_MAX_RETAINED_RUNS,
+      1,
+      512,
+    ),
+    maxBytes: boundedInteger(
+      options.openCodeMaxRetainedBytes ?? env.CODEX_DIRECT_OPENCODE_MAX_RETAINED_BYTES,
+      DEFAULT_OPENCODE_MAX_RETAINED_BYTES,
+      1_024,
+      2 * 1024 * 1024 * 1024,
+    ),
+  };
+}
+
+function directorySizeBytes(rootPath, stopAfterBytes = Number.MAX_SAFE_INTEGER) {
+  const pending = [rootPath];
+  let total = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    let stat;
+    try {
+      stat = fs.lstatSync(current);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) continue;
+    if (!stat.isDirectory()) {
+      total += stat.size;
+      if (total > stopAfterBytes) return total;
+      continue;
+    }
+    for (const entry of fs.readdirSync(current)) pending.push(path.join(current, entry));
+  }
+  return total;
+}
+
+function removeOpenCodeRun(runRoot) {
+  fs.rmSync(runRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+}
+
+function pruneOpenCodeRuns(runsRoot, options = {}) {
+  const configuredRoot = normalizeString(runsRoot, "");
+  if (!configuredRoot) throw safeError("direct_opencode_retention_root_missing");
+  const root = path.resolve(configuredRoot);
+  const policy = openCodeRetentionPolicy(options);
+  const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
+  let dirents;
+  try {
+    dirents = fs.readdirSync(root, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return { discovered: 0, retained: 0, removed: 0, retainedBytes: 0, policy };
+    }
+    throw safeError("direct_opencode_retention_scan_failed");
+  }
+  const finalized = [];
+  let removed = 0;
+  for (const dirent of dirents) {
+    if (!dirent.isDirectory() || !/^[a-f0-9]{24}$/.test(dirent.name)) continue;
+    const runRoot = path.join(root, dirent.name);
+    const manifestPath = path.join(runRoot, "retention.json");
+    let manifest = null;
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    } catch (error) {
+      if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) {
+        throw safeError("direct_opencode_retention_scan_failed");
+      }
+    }
+    let stat;
+    try {
+      stat = fs.statSync(runRoot);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw safeError("direct_opencode_retention_scan_failed");
+    }
+    const finalizedAtMs = Date.parse(manifest?.finalizedAt || "");
+    if (!manifest || manifest.schema !== OPENCODE_RUN_RETENTION_SCHEMA || !Number.isFinite(finalizedAtMs)) {
+      if (nowMs - stat.mtimeMs > policy.retentionMs) {
+        removeOpenCodeRun(runRoot);
+        removed += 1;
+      }
+      continue;
+    }
+    finalized.push({
+      runRoot,
+      finalizedAtMs,
+      sizeBytes: directorySizeBytes(runRoot, policy.maxBytes + 1),
+    });
+  }
+  finalized.sort((left, right) => right.finalizedAtMs - left.finalizedAtMs);
+  let retained = 0;
+  let retainedBytes = 0;
+  for (const entry of finalized) {
+    const expired = nowMs - entry.finalizedAtMs > policy.retentionMs;
+    const overCount = retained >= policy.maxRuns;
+    const overBytes = retainedBytes + entry.sizeBytes > policy.maxBytes;
+    if (expired || overCount || overBytes) {
+      removeOpenCodeRun(entry.runRoot);
+      removed += 1;
+      continue;
+    }
+    retained += 1;
+    retainedBytes += entry.sizeBytes;
+  }
+  return { discovered: dirents.length, retained, removed, retainedBytes, policy };
+}
+
+function finalizeOpenCodeRunDirectories(directories = {}, options = {}) {
+  const configuredRunRoot = normalizeString(directories.runRoot, "");
+  if (!configuredRunRoot) throw safeError("direct_opencode_retention_root_missing");
+  const runRoot = path.resolve(configuredRunRoot);
+  if (!fs.existsSync(runRoot)) return null;
+  try {
+    fs.rmSync(directories.runtimeDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    fs.rmSync(directories.workingDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    const journalPresent = fs.existsSync(directories.eventJournalPath);
+    const manifest = {
+      schema: OPENCODE_RUN_RETENTION_SCHEMA,
+      finalizedAt: new Date(Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now()).toISOString(),
+      retainedRawJournal: journalPresent,
+      journalBytes: journalPresent ? fs.statSync(directories.eventJournalPath).size : 0,
+      disposableProviderStateRemoved: true,
+    };
+    const temporaryPath = `${directories.retentionManifestPath}.tmp-${process.pid}-${crypto.randomUUID()}`;
+    fs.writeFileSync(temporaryPath, `${JSON.stringify(manifest)}\n`, { encoding: "utf8", mode: 0o600 });
+    if (process.platform !== "win32") fs.chmodSync(temporaryPath, 0o600);
+    fs.renameSync(temporaryPath, directories.retentionManifestPath);
+    if (process.platform !== "win32") fs.chmodSync(directories.retentionManifestPath, 0o600);
+    return pruneOpenCodeRuns(directories.runsRoot, options);
+  } catch (error) {
+    if (error?.code?.startsWith("direct_opencode_retention_")) throw error;
+    throw safeError("direct_opencode_retention_finalize_failed");
+  }
 }
 
 function ensureOpenCodeRunDirectories(directories = {}, options = {}) {
@@ -1070,7 +1257,8 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
     task,
   ].join("\n");
   if (!task) throw safeError("direct_external_provider_prompt_missing");
-  const runDirectories = openCodeRunDirectories(input, options);
+  const runDirectories = options.runDirectories || openCodeRunDirectories(input, options);
+  pruneOpenCodeRuns(runDirectories.runsRoot, options);
   ensureOpenCodeRunDirectories(runDirectories, options);
   const cwd = runDirectories.workingDirectory;
   const startedAt = Date.now();
@@ -1156,6 +1344,7 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
     if (!resolvedSessionId) {
       transportRetryCount += 1;
       outputText = overlapMerge(outputText, parsed.outputText);
+      if (outputText.length > policy.maxOutputChars) throw safeError("direct_external_provider_output_limit");
       tokenUsage = addUsage(tokenUsage, parsed.usage);
       rebasePending = Boolean(outputText);
       if (parsed.outputText) semanticContinuationCount += 1;
@@ -1319,19 +1508,35 @@ async function runOpenCodeOxAlphaTurn(input = {}, options = {}) {
     continuationPrompt: options.continuationPrompt,
   });
   const deadline = deadlineSignal(input.signal, policy.maxTotalMs);
+  const runDirectories = openCodeRunDirectories(input, options);
+  let result;
+  let primaryError = null;
   try {
-    return await runOpenCodeOxAlphaTurnWithinDeadline({ ...input, signal: deadline.signal }, {
+    result = await runOpenCodeOxAlphaTurnWithinDeadline({ ...input, signal: deadline.signal }, {
       ...options,
       resolvedPolicy: policy,
+      runDirectories,
     });
   } catch (error) {
     if (deadline.timedOut() && !input.signal?.aborted) {
-      throw safeError("direct_external_provider_total_timeout");
+      primaryError = safeError("direct_external_provider_total_timeout");
+    } else {
+      primaryError = error;
     }
-    throw error;
   } finally {
     deadline.dispose();
   }
+  try {
+    finalizeOpenCodeRunDirectories(runDirectories, options);
+  } catch (retentionError) {
+    if (!primaryError) throw retentionError;
+    primaryError.retentionFailureCode = normalizeString(
+      retentionError?.code,
+      "direct_opencode_retention_finalize_failed",
+    );
+  }
+  if (primaryError) throw primaryError;
+  return result;
 }
 
 async function runExternalProviderContinuationTurn(input = {}, options = {}) {
@@ -1357,13 +1562,17 @@ module.exports = {
   loadOpenRouterApiKey,
   normalizeProviderId,
   overlapMerge,
+  finalizeOpenCodeRunDirectories,
   openCodeRunDirectories,
+  openCodeRetentionPolicy,
   openOpenCodeEventJournal,
   parseEnvAssignment,
   parseOpenCodeJsonOutput,
   providerDefaultModel,
+  pruneOpenCodeRuns,
   reasoningEffortForOpenRouter,
   reasoningVariantForOpenCode,
+  resolveOpenRouterEndpoint,
   resolveOpenCodeExecutable,
   runExternalProviderContinuationTurn,
   runOpenCodeOxAlphaTurn,

@@ -17,9 +17,13 @@ const {
   PROVIDER_OPENCODE_OXALPHA,
   PROVIDER_OPENROUTER_OXALPHA,
   buildOpenCodeRebasePrompt,
+  externalProviderProfile,
+  finalizeOpenCodeRunDirectories,
   loadOpenRouterApiKey,
   openCodeRunDirectories,
   parseEnvAssignment,
+  pruneOpenCodeRuns,
+  resolveOpenRouterEndpoint,
   runOpenCodeOxAlphaTurn,
   runOpenRouterOxAlphaTurn,
   safeOpenCodeRuntimeEnv,
@@ -69,6 +73,37 @@ const openRouterEnv = { OPENROUTER_API_KEY: "fixture-openrouter-secret" };
 assert.equal(parseEnvAssignment("OPENROUTER_API_KEY='quoted-key'\n", "OPENROUTER_API_KEY"), "quoted-key");
 assert.equal(parseEnvAssignment("export OPENROUTER_API_KEY=plain-key\n", "OPENROUTER_API_KEY"), "plain-key");
 assert.equal(loadOpenRouterApiKey({ env: openRouterEnv }).source, "process_environment");
+assert.equal(resolveOpenRouterEndpoint({ env: openRouterEnv }), "https://openrouter.ai/api/v1/chat/completions");
+assert.equal(
+  resolveOpenRouterEndpoint({ env: { ...openRouterEnv, CODEX_OPENROUTER_ENDPOINT: "https://openrouter.ai/alternate" } }),
+  "https://openrouter.ai/alternate",
+);
+assert.throws(
+  () => resolveOpenRouterEndpoint({
+    env: { ...openRouterEnv, CODEX_OPENROUTER_ENDPOINT: "http://openrouter.ai/api/v1/chat/completions" },
+  }),
+  (error) => error?.code === "direct_openrouter_endpoint_insecure",
+);
+assert.throws(
+  () => resolveOpenRouterEndpoint({
+    env: { ...openRouterEnv, CODEX_OPENROUTER_ENDPOINT: "https://example.invalid/collect" },
+  }),
+  (error) => error?.code === "direct_openrouter_endpoint_untrusted",
+);
+assert.equal(
+  resolveOpenRouterEndpoint({
+    env: openRouterEnv,
+    endpoint: "https://trusted-proxy.example/v1/chat/completions",
+    allowCustomOpenRouterEndpoint: true,
+  }),
+  "https://trusted-proxy.example/v1/chat/completions",
+);
+const untrustedEndpointProfile = externalProviderProfile(PROVIDER_OPENROUTER_OXALPHA, {
+  env: { ...openRouterEnv, CODEX_OPENROUTER_ENDPOINT: "https://example.invalid/collect" },
+});
+assert.equal(untrustedEndpointProfile.status, "blocked");
+assert.equal(untrustedEndpointProfile.credentials, "available");
+assert.equal(untrustedEndpointProfile.blockerCode, "direct_openrouter_endpoint_untrusted");
 
 const interruptedBodies = [];
 const interruptedHeaders = [];
@@ -396,6 +431,27 @@ const openCodeAfterMissingSession = await runOpenCodeOxAlphaTurn({
 assert.equal(openCodeAfterMissingSession.outputText, "Recovered.");
 assert.equal(openCodeAfterMissingSession.continuationTrace.attempts[0].trigger, "opencode_session_identity_missing");
 
+await assert.rejects(
+  runOpenCodeOxAlphaTurn({
+    attemptId: "fixture-missing-session-output-limit",
+    requestBody: requestBody(OPENCODE_OXALPHA_MODEL),
+    requestShape: { reasoningEffort: "high" },
+  }, {
+    openCodeExecutable: "/fixture/opencode",
+    accessSync: () => {},
+    mkdirSync: () => {},
+    workingDirectory: "/tmp/direct-opencode-output-limit-fixture",
+    maxAttempts: 1,
+    maxOutputChars: 1_000,
+    processRunner: async () => ({
+      exitCode: 1,
+      stdout: JSON.stringify({ type: "text", part: { type: "text", text: "x".repeat(1_001) } }),
+    }),
+  }),
+  (error) => error?.code === "direct_external_provider_output_limit",
+  "a missing provider session identity must not bypass the assembled-output limit",
+);
+
 let openCodeMalformedCalls = 0;
 const openCodeAfterMalformedTail = await runOpenCodeOxAlphaTurn({
   requestBody: requestBody(OPENCODE_OXALPHA_MODEL),
@@ -543,6 +599,88 @@ assert.match(buildOpenCodeRebasePrompt({
   task: "Finish the audit.",
   outputText: "Already captured.",
 }), /Already captured\./);
+
+const retentionTempRoot = fs.mkdtempSync(path.join(
+  process.platform !== "win32" && fs.existsSync("/tmp") ? "/tmp" : os.tmpdir(),
+  "direct-opencode-retention-",
+));
+try {
+  const retentionWorkingDirectory = path.join(retentionTempRoot, "workers");
+  const retentionNow = Date.now();
+  const retentionOptions = {
+    workingDirectory: retentionWorkingDirectory,
+    openCodeRetentionMs: 60_000,
+    openCodeMaxRetainedRuns: 2,
+    openCodeMaxRetainedBytes: 4_096,
+  };
+  const seedRetainedRun = (attemptId, journalText) => {
+    const directories = openCodeRunDirectories({ attemptId }, retentionOptions);
+    fs.mkdirSync(directories.runtimeDirectory, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(directories.workingDirectory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(directories.runtimeDirectory, "opencode.db"), "disposable-provider-db");
+    fs.writeFileSync(path.join(directories.workingDirectory, "scratch.txt"), "disposable-workspace");
+    fs.writeFileSync(directories.eventJournalPath, journalText, { mode: 0o600 });
+    return directories;
+  };
+
+  const expiredRun = seedRetainedRun("retention-expired", "old-journal\n");
+  finalizeOpenCodeRunDirectories(expiredRun, {
+    ...retentionOptions,
+    nowMs: retentionNow - 120_000,
+  });
+  assert.equal(fs.existsSync(expiredRun.runtimeDirectory), false);
+  assert.equal(fs.existsSync(expiredRun.workingDirectory), false);
+  assert.equal(fs.existsSync(expiredRun.eventJournalPath), true);
+  assert.equal(
+    JSON.parse(fs.readFileSync(expiredRun.retentionManifestPath, "utf8")).schema,
+    "direct_opencode_run_retention@1",
+  );
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(expiredRun.retentionManifestPath).mode & 0o077, 0);
+  }
+
+  const currentRun = seedRetainedRun("retention-current", "current-journal\n");
+  finalizeOpenCodeRunDirectories(currentRun, { ...retentionOptions, nowMs: retentionNow });
+  assert.equal(fs.existsSync(expiredRun.runRoot), false, "expired completed runs must be removed");
+  assert.equal(fs.existsSync(currentRun.runRoot), true);
+
+  const countLimitedA = seedRetainedRun("retention-count-a", "count-a\n");
+  finalizeOpenCodeRunDirectories(countLimitedA, {
+    ...retentionOptions,
+    openCodeMaxRetainedRuns: 1,
+    nowMs: retentionNow + 1_000,
+  });
+  const countLimitedB = seedRetainedRun("retention-count-b", "count-b\n");
+  finalizeOpenCodeRunDirectories(countLimitedB, {
+    ...retentionOptions,
+    openCodeMaxRetainedRuns: 1,
+    nowMs: retentionNow + 2_000,
+  });
+  assert.equal(fs.existsSync(countLimitedA.runRoot), false, "count retention must remove older runs");
+  assert.equal(fs.existsSync(countLimitedB.runRoot), true);
+
+  const oversizedRun = seedRetainedRun("retention-oversized", "x".repeat(2_048));
+  finalizeOpenCodeRunDirectories(oversizedRun, {
+    ...retentionOptions,
+    openCodeMaxRetainedBytes: 1_024,
+    nowMs: retentionNow + 3_000,
+  });
+  assert.equal(fs.existsSync(oversizedRun.runRoot), false, "byte retention must remove oversized evidence");
+
+  const staleIncomplete = openCodeRunDirectories({ attemptId: "retention-stale-incomplete" }, retentionOptions);
+  fs.mkdirSync(staleIncomplete.runRoot, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(staleIncomplete.eventJournalPath, "interrupted\n", { mode: 0o600 });
+  const staleDate = new Date(retentionNow - 120_000);
+  fs.utimesSync(staleIncomplete.runRoot, staleDate, staleDate);
+  const pruning = pruneOpenCodeRuns(staleIncomplete.runsRoot, {
+    ...retentionOptions,
+    nowMs: retentionNow,
+  });
+  assert(pruning.removed >= 1);
+  assert.equal(fs.existsSync(staleIncomplete.runRoot), false, "stale interrupted runs must eventually expire");
+} finally {
+  fs.rmSync(retentionTempRoot, { recursive: true, force: true });
+}
 
 const journalTempRoot = process.platform !== "win32" && fs.existsSync("/tmp") ? "/tmp" : os.tmpdir();
 const journalRoot = fs.mkdtempSync(path.join(journalTempRoot, "direct-opencode-journal-"));
