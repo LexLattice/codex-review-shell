@@ -1004,6 +1004,24 @@ try {
     }
   }
 
+  const lateWriteChild = new FakeChild();
+  let lateWriteCallback = null;
+  lateWriteChild.stdin.write = (_chunk, callback) => {
+    lateWriteCallback = callback;
+    return true;
+  };
+  const lateWriteTransport = new NdjsonTransport(lateWriteChild);
+  const lateWriteRequest = lateWriteTransport.request("hello", {}, 2_000);
+  const lateWriteRequestId = [...lateWriteTransport.pending.keys()][0];
+  assert.ok(lateWriteRequestId);
+  lateWriteTransport.handleLine(JSON.stringify({ id: lateWriteRequestId, result: { ok: true } }));
+  assert.deepEqual(await lateWriteRequest, { ok: true });
+  assert.doesNotThrow(
+    () => lateWriteCallback?.(Object.assign(new Error("late write callback"), { code: "EPIPE" })),
+    "a write callback arriving after terminal response settlement must be ignored",
+  );
+  assert.equal(lateWriteTransport.pendingRequestCount(), 0);
+
   const windowsTreeChild = new EventEmitter();
   windowsTreeChild.pid = 4242;
   windowsTreeChild.exitCode = null;

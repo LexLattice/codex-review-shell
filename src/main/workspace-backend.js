@@ -741,7 +741,7 @@ class NdjsonTransport extends EventEmitter {
         error.cancellationAcknowledged = false;
         error.backendRequestCompleted = false;
         error.workspaceBackendRequest = true;
-        if (!failedPending?.clientSettled) {
+        if (failedPending && !failedPending.clientSettled) {
           failedPending.clientSettled = true;
           reject(error);
         }
