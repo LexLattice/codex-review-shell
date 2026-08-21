@@ -246,6 +246,13 @@ const {
   DirectNativeAgentPool,
 } = require("./main/direct/agents/native-agent-pool");
 const {
+  PROVIDER_CHATGPT_DIRECT,
+  PROVIDER_OPENCODE_OXALPHA,
+  PROVIDER_OPENROUTER_OXALPHA,
+  externalProviderProfile,
+  runExternalProviderContinuationTurn,
+} = require("./main/direct/agents/external-provider-continuation");
+const {
   WorkspaceWorkerLifecycleRegistry,
   normalizeBinding: normalizeWorkspaceWorkerLifecycleBinding,
 } = require("./main/direct/agents/workspace-worker-lifecycle-registry");
@@ -3891,6 +3898,90 @@ async function runDirectNativeChildProviderTurn(input = {}) {
   };
 }
 
+async function runDirectExternalChildProviderTurn(input = {}) {
+  const captureAdapter = createNativeChildLiveTurnCapture({
+    sessionStore: ensureDirectSessionStore(),
+    epistemicService: ensureDirectEpistemicService(),
+    captureInput: {
+      ...input,
+      sourceClass: "external_provider_continuation_child_turn",
+    },
+    onProgress: input.onEpistemicProgress,
+  });
+  registerDirectChildCaptureController(input, captureAdapter);
+  try {
+    const result = await runExternalProviderContinuationTurn(input, {
+      workingDirectory: path.join(app.getPath("userData"), "external-provider-workers"),
+    });
+    captureAdapter.reconcileEventPrefix(result.normalizedEvents, { sourceOffset: 0 });
+    captureAdapter.finalize({
+      ...result,
+      terminal: { state: "completed" },
+    });
+    return {
+      ...result,
+      epistemicCapture: captureAdapter.epistemicCapture(),
+    };
+  } catch (error) {
+    if (input.signal?.aborted || error?.name === "AbortError") {
+      captureAdapter.markFailed(error);
+      throw error;
+    }
+    const errorCode = normalizeString(error?.code, "direct_external_provider_failed");
+    const normalizedEvents = Array.isArray(error?.normalizedEvents)
+      ? error.normalizedEvents
+      : [];
+    try {
+      captureAdapter.reconcileEventPrefix(normalizedEvents, { sourceOffset: 0 });
+      captureAdapter.finalize({
+        terminal: { state: "failed", error: { code: errorCode } },
+        error: { code: errorCode },
+        normalizedEvents,
+      });
+    } catch (captureError) {
+      captureAdapter.markFailed(captureError);
+    }
+    return {
+      ok: false,
+      terminalState: "failed",
+      errorCode,
+      outputText: "",
+      responseId: "",
+      tokenUsage: {},
+      normalizedEvents,
+      continuationTrace: error?.continuationTrace || null,
+      epistemicCapture: captureAdapter.epistemicCapture(),
+    };
+  }
+}
+
+function directNativeChildProviderProfiles() {
+  return [
+    {
+      providerId: PROVIDER_CHATGPT_DIRECT,
+      status: "ready",
+      blockerCode: "",
+      model: normalizeString(
+        process.env.CODEX_DIRECT_SUB_AGENT_DEFAULT_MODEL,
+        "gpt-5.6-sol",
+      ),
+      transport: "chatgpt_subscription_responses_sse",
+      credentials: "chatgpt_subscription",
+      childToolsAllowed: false,
+      autoContinuation: false,
+      rawSecretIncluded: false,
+    },
+    externalProviderProfile(PROVIDER_OPENROUTER_OXALPHA),
+    externalProviderProfile(PROVIDER_OPENCODE_OXALPHA),
+  ];
+}
+
+function runDirectNativeChildProviderByProfile(input = {}) {
+  return input.providerId === PROVIDER_CHATGPT_DIRECT
+    ? runDirectNativeChildProviderTurn(input)
+    : runDirectExternalChildProviderTurn(input);
+}
+
 function directWorkspaceWorkerKey(childAgentId) {
   const normalized = normalizeString(childAgentId, `direct_child_${crypto.randomUUID().slice(0, 8)}`)
     .toLowerCase()
@@ -4191,7 +4282,8 @@ function ensureDirectNativeAgentPool() {
       process.env.CODEX_DIRECT_SUB_AGENT_DEFAULT_REASONING_EFFORT,
       "medium",
     ),
-    providerTurnRunner: (input) => runDirectNativeChildProviderTurn(input),
+    providerProfiles: directNativeChildProviderProfiles(),
+    providerTurnRunner: (input) => runDirectNativeChildProviderByProfile(input),
     workspaceWorkerRunner: (input) => runDirectWorkspaceWorkerTurn(input),
     workspaceWorkerLifecycleRegistry: ensureWorkspaceWorkerLifecycleRegistry(),
   });

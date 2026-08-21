@@ -817,6 +817,7 @@ function workspaceWorkerSpawnHasUndeclaredFields(args = {}) {
     "task_name",
     "message",
     "agent_type",
+    "provider",
     "model",
     "reasoning_effort",
     "fork_turns",
@@ -4704,6 +4705,7 @@ class DirectLiveTextController {
         taskName: args.task_name || args.taskName,
         message: args.message,
         agentType: args.agent_type || args.agentType,
+        provider: args.provider,
         model: args.model,
         reasoningEffort: args.reasoning_effort || args.reasoningEffort,
         forkTurns: args.fork_turns || args.forkTurns,
@@ -4737,6 +4739,7 @@ class DirectLiveTextController {
           taskName: normalizeString(runtimeResult.taskName, ""),
           childAgentId: normalizeString(runtimeResult.childAgentId, ""),
           state: normalizeString(runtimeResult.state, runtimeResult.status),
+          providerId: normalizeString(runtimeResult.providerId, ""),
           model: normalizeString(runtimeResult.model, ""),
           reasoningEffort: normalizeString(runtimeResult.reasoningEffort, ""),
           workspaceMode: normalizeString(runtimeResult.workspaceMode, "reasoning_only"),
@@ -4771,6 +4774,7 @@ class DirectLiveTextController {
               blockerCode: workspaceWorker
                 ? safeWorkspaceWorkerBlockerCode(update)
                 : normalizeString(update.blockerCode, ""),
+              providerId: normalizeString(update.providerId, ""),
               model: normalizeString(update.model, ""),
               reasoningEffort: normalizeString(update.reasoningEffort, ""),
               workspaceMode: normalizeString(update.workspaceMode, "reasoning_only"),
@@ -4780,6 +4784,7 @@ class DirectLiveTextController {
               epistemicCaptureComplete: update.epistemicCaptureComplete === true,
               epistemicCaptureOmission: update.epistemicCaptureOmission || null,
               evidenceConfidence: normalizeString(update.evidenceConfidence, "unknown"),
+              continuationTrace: update.continuationTrace || null,
               childOutputIncluded: false,
               rawChildProseIncluded: false,
             };

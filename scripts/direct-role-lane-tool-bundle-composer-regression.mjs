@@ -366,6 +366,10 @@ const spawnAgentRow = grounded.witness.declaredTools.find((row) => row.toolName 
 assert(spawnAgentRow, "spawn_agent should be declared in the implementation lane");
 assert.equal(spawnAgentRow.toolFamily, "agent_runtime_control");
 assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.fork_turns.type, "string");
+assert.deepEqual(
+  spawnAgentRow.providerToolSchema.parameters.properties.provider.enum,
+  ["chatgpt-direct", "openrouter-oxalpha", "opencode-oxalpha"],
+);
 assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.model.type, "string");
 assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.reasoning_effort.type, "string");
 assert.deepEqual(

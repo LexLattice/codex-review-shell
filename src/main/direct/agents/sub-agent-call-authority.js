@@ -40,6 +40,14 @@ const DEFAULT_ALLOWED_MODELS = Object.freeze([
   "gpt-5.4-mini",
   "gpt-5.3-codex",
   "gpt-5.3-codex-spark",
+  "stealth/ox-alpha",
+  "opencode/x-preview-f-free",
+]);
+
+const ALLOWED_PROVIDER_IDS = Object.freeze([
+  "chatgpt-direct",
+  "openrouter-oxalpha",
+  "opencode-oxalpha",
 ]);
 
 function boundedText(value, max = 240) {
@@ -110,13 +118,25 @@ function normalizeAgentIndex(input = {}) {
 function validateRoleModelEffort(args = {}, options = {}) {
   const blockers = [];
   const agentRole = normalizeString(args.agentRole, "child_worker");
-  const model = normalizeString(args.model, options.defaultModel || "gpt-5.5");
+  const provider = normalizeString(args.provider, "chatgpt-direct");
+  const providerDefaultModel = provider === "openrouter-oxalpha"
+    ? "stealth/ox-alpha"
+    : provider === "opencode-oxalpha"
+      ? "opencode/x-preview-f-free"
+      : options.defaultModel || "gpt-5.5";
+  const model = normalizeString(args.model, providerDefaultModel);
   const reasoningEffort = normalizeString(args.reasoningEffort, options.defaultReasoningEffort || "medium");
   const allowedModels = Array.isArray(options.allowedModels) && options.allowedModels.length ? options.allowedModels : DEFAULT_ALLOWED_MODELS;
   if (!ALLOWED_AGENT_ROLES.includes(agentRole)) blockers.push("unknown_agent_role");
+  if (!ALLOWED_PROVIDER_IDS.includes(provider)) blockers.push("provider_not_allowed");
   if (!allowedModels.includes(model)) blockers.push("model_not_allowed");
+  const externalModels = new Set(["stealth/ox-alpha", "opencode/x-preview-f-free"]);
+  if (
+    (provider === "chatgpt-direct" && externalModels.has(model)) ||
+    (provider !== "chatgpt-direct" && model !== providerDefaultModel)
+  ) blockers.push("provider_model_mismatch");
   if (!ALLOWED_REASONING_EFFORTS.includes(reasoningEffort)) blockers.push("reasoning_effort_not_allowed");
-  return { agentRole, model, reasoningEffort, allowedModels, blockers };
+  return { agentRole, provider, model, reasoningEffort, allowedModels, blockers };
 }
 
 function canonicalSpawnInput(args = {}, scope = {}, policyDigest = "") {
@@ -127,6 +147,7 @@ function canonicalSpawnInput(args = {}, scope = {}, policyDigest = "") {
     parentTurnId: scope.turnId,
     taskDigest: digestValue({ task }, "sub-agent-spawn-task@1"),
     agentRole: normalizeString(args.agentRole, "child_worker"),
+    provider: normalizeString(args.provider, "chatgpt-direct"),
     model: normalizeString(args.model, "gpt-5.5"),
     reasoningEffort: normalizeString(args.reasoningEffort, "medium"),
     noInterferencePolicy: normalizeString(args.noInterferencePolicy, "observe_only"),
@@ -168,12 +189,14 @@ function buildSpawnPlan(args = {}, scope = {}, options = {}) {
   const task = normalizeString(args.task || args.prompt || args.text, "");
   const policyDigest = digestValue({
     allowedRoles: ALLOWED_AGENT_ROLES,
+    allowedProviders: ALLOWED_PROVIDER_IDS,
     allowedReasoningEfforts: ALLOWED_REASONING_EFFORTS,
     allowedModels: policy.allowedModels,
   }, "sub-agent-spawn-policy@1");
   const canonicalInput = canonicalSpawnInput({
     ...args,
     agentRole: policy.agentRole,
+    provider: policy.provider,
     model: policy.model,
     reasoningEffort: policy.reasoningEffort,
   }, scope, policyDigest);
@@ -189,6 +212,7 @@ function buildSpawnPlan(args = {}, scope = {}, options = {}) {
     taskDigest: canonicalInput.taskDigest,
     taskPreview: boundedText(task, 220),
     agentRole: policy.agentRole,
+    provider: policy.provider,
     model: policy.model,
     reasoningEffort: policy.reasoningEffort,
     childToolsEnabled: false,
@@ -290,6 +314,7 @@ function argumentValidationFor(toolName, args, scope, helper = {}) {
         scope,
         args: {
           agentRole: args.agentRole,
+          provider: args.provider,
           model: args.model,
           reasoningEffort: args.reasoningEffort,
           targetAgentThreadId: args.agentThreadId || args.targetAgentThreadId || args.childAgentId,
@@ -427,6 +452,7 @@ function validateSubAgentPerCallAuthorityPacket(packet = {}) {
 
 module.exports = {
   ALLOWED_AGENT_ROLES,
+  ALLOWED_PROVIDER_IDS,
   ALLOWED_REASONING_EFFORTS,
   DEFAULT_ALLOWED_MODELS,
   SUB_AGENT_PER_CALL_AUTHORITY_PACKET_SCHEMA,

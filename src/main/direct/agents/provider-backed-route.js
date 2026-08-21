@@ -21,6 +21,8 @@ const SUB_AGENT_RESULT_ADMISSION_ENVELOPE_SCHEMA = "sub_agent_result_admission_e
 const SUB_AGENT_USAGE_ATTRIBUTION_ROW_SCHEMA = "sub_agent_usage_attribution_row@1";
 const SUB_AGENT_USAGE_UNAVAILABLE_ROW_SCHEMA = "sub_agent_usage_unavailable_row@1";
 const SUB_AGENT_EPISTEMIC_CAPTURE_OMISSION_SCHEMA = "sub_agent_epistemic_capture_omission@1";
+const EXTERNAL_PROVIDER_CONTINUATION_TRACE_SCHEMA = "direct_external_provider_continuation_trace@1";
+const EXTERNAL_CONTINUATION_PROVIDER_IDS = new Set(["openrouter-oxalpha", "opencode-oxalpha"]);
 
 const EXACT_TERMINAL_STATES = Object.freeze(["completed", "failed", "timeout", "cancelled"]);
 const TERMINAL_STATES = Object.freeze([...EXACT_TERMINAL_STATES, "handoff_unknown"]);
@@ -156,6 +158,69 @@ function safeTokenUsage(input = {}) {
   return Object.fromEntries(Object.entries(usage).filter(([, value]) => value !== undefined));
 }
 
+function normalizeContinuationTrace(input = {}) {
+  if (!isPlainObject(input) || input.schema !== EXTERNAL_PROVIDER_CONTINUATION_TRACE_SCHEMA) return null;
+  if (
+    input.rawOutputIncluded !== false ||
+    input.rawPromptIncluded !== false ||
+    input.rawProviderPayloadIncluded !== false ||
+    input.rawSecretIncluded !== false ||
+    !/^sha256:[a-f0-9]{64}$/.test(normalizeString(input.traceDigest, "")) ||
+    !/^sha256:[a-f0-9]{64}$/.test(normalizeString(input.outputDigest, ""))
+  ) return null;
+  const trace = {
+    schema: EXTERNAL_PROVIDER_CONTINUATION_TRACE_SCHEMA,
+    providerId: normalizeString(input.providerId, ""),
+    model: normalizeString(input.model, ""),
+    transport: normalizeString(input.transport, ""),
+    completionState: normalizeString(input.completionState, ""),
+    attemptCount: Math.max(0, Number(input.attemptCount || 0)),
+    semanticContinuationCount: Math.max(0, Number(input.semanticContinuationCount || 0)),
+    transportRetryCount: Math.max(0, Number(input.transportRetryCount || 0)),
+    terminalFinishReason: normalizeString(input.terminalFinishReason, ""),
+    outputChars: Math.max(0, Number(input.outputChars || 0)),
+    outputDigest: input.outputDigest,
+    attempts: (Array.isArray(input.attempts) ? input.attempts : []).slice(0, 64).map((attempt) => ({
+      ordinal: Math.max(0, Number(attempt?.ordinal || 0)),
+      outcome: normalizeString(attempt?.outcome, ""),
+      trigger: normalizeString(attempt?.trigger, ""),
+      finishReason: normalizeString(attempt?.finishReason, ""),
+      outputChars: Math.max(0, Number(attempt?.outputChars || 0)),
+      responseIdentityDigest: normalizeString(attempt?.responseIdentityDigest, ""),
+      usageObserved: attempt?.usageObserved === true,
+      semanticContinuationScheduled: attempt?.semanticContinuationScheduled === true,
+    })),
+    rawOutputIncluded: false,
+    rawPromptIncluded: false,
+    rawProviderPayloadIncluded: false,
+    rawSecretIncluded: false,
+  };
+  const expectedDigest = digestFor("direct-external-provider-continuation-trace@1", trace);
+  return input.traceDigest === expectedDigest
+    ? { ...trace, traceDigest: expectedDigest }
+    : null;
+}
+
+function assertExternalContinuationOutcome(providerId, model, outcome = {}) {
+  if (!EXTERNAL_CONTINUATION_PROVIDER_IDS.has(providerId) || outcome.terminalState !== "completed") return;
+  const trace = outcome.continuationTrace;
+  const valid = Boolean(
+    trace &&
+    outcome.outputText &&
+    trace.providerId === providerId &&
+    trace.model === model &&
+    trace.completionState === "completed" &&
+    trace.terminalFinishReason === "stop" &&
+    trace.outputChars === outcome.outputText.length &&
+    trace.outputDigest === digestFor("direct-external-provider-output@1", outcome.outputText),
+  );
+  if (!valid) {
+    const error = new Error("External provider terminal output did not satisfy its continuation trace contract.");
+    error.code = "direct_external_provider_continuation_trace_invalid";
+    throw error;
+  }
+}
+
 function sourceRefFor(route, callId, sourceKind = "provider_response") {
   return normalizeOdeuSourceRef({
     sourceRefId: `source_sub_agent_provider_backed_${callId}`,
@@ -238,6 +303,7 @@ function usageRowFor(route, input = {}) {
       primaryThreadId: route.primaryThreadId,
       childAgentId,
       childThreadId,
+      providerId: normalizeString(input.providerId, route.providerId),
       model: normalizeString(input.model, route.defaultModel),
       reasoningEffort: normalizeString(input.reasoningEffort, route.defaultReasoningEffort),
       sourceKind: "provider_reported",
@@ -255,6 +321,7 @@ function usageRowFor(route, input = {}) {
     projectId: route.projectId,
     workThreadId: route.workThreadId,
     primaryThreadId: route.primaryThreadId,
+    providerId: route.providerId,
     childAgentId,
     childThreadId,
     unavailableKind: "token_usage_missing",
@@ -287,16 +354,23 @@ function buildResultAdmissionArtifacts(route, input = {}) {
   const { usageAttributionRow, usageUnavailableRow } = usageRowFor(route, {
     childAgentId,
     childThreadId,
+    providerId: input.providerId,
     model: input.model,
     reasoningEffort: input.reasoningEffort,
     tokenUsage: input.tokenUsage,
   });
   const epistemicCapture = normalizeEpistemicCapture(input.epistemicCapture);
+  const continuationTrace = normalizeContinuationTrace(input.continuationTrace);
   const familyExtension = {
     childAgentId,
     childThreadId,
     terminalState,
     terminalExact,
+    providerId: normalizeString(input.providerId, route.providerId),
+    continuationTraceDigest: continuationTrace?.traceDigest || "",
+    continuationAttemptCount: continuationTrace?.attemptCount || 0,
+    semanticContinuationCount: continuationTrace?.semanticContinuationCount || 0,
+    transportRetryCount: continuationTrace?.transportRetryCount || 0,
     summaryPolicyId: policy.policyId,
     summaryDigest: summary.summaryDigest,
     usageAttributionId: usageAttributionRow?.usageAttributionId || "",
@@ -385,6 +459,7 @@ function buildResultAdmissionArtifacts(route, input = {}) {
     },
     epistemicCaptureComplete: epistemicCapture.complete,
     epistemicCaptureOmission: epistemicCapture.omission,
+    continuationTrace,
     summary,
     usageAttributionRef: usageAttributionRow?.usageAttributionId || usageUnavailableRow?.usageUnavailableId || "",
     observedAt: nowIso(route.nowMs),
@@ -403,6 +478,7 @@ function buildResultAdmissionArtifacts(route, input = {}) {
     epistemicCapture: resultAdmissionEnvelope.epistemicCapture,
     epistemicCaptureComplete: epistemicCapture.complete,
     epistemicCaptureOmission: epistemicCapture.omission,
+    continuationTrace,
   };
 }
 
@@ -492,6 +568,7 @@ function buildProviderBackedSubAgentRequest(input = {}) {
   if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
   const requestShape = {
     ...requestShapeFor(requestBody),
+    providerId: normalizeString(input.providerId || input.provider, "chatgpt-direct"),
     contextHandoffMode: contextMode,
     contextMessageCount: contextMessages.length,
     contextHandoffIndependentOfRuntimeProfile: true,
@@ -520,6 +597,7 @@ function resultFor(route, patch = {}) {
     projectId: route.projectId,
     workThreadId: route.workThreadId,
     primaryThreadId: route.primaryThreadId,
+    providerId: route.providerId,
     providerRequestStarted: patch.providerRequestStarted === true,
     providerCompleted: patch.providerCompleted === true,
     providerTransportAllowed: route.providerTransportAllowed === true,
@@ -550,6 +628,7 @@ function normalizeProviderOutcome(outcome = {}) {
     terminalState: normalizeTerminalState(source.terminalState || source.state, ok),
     tokenUsage: safeTokenUsage(source.tokenUsage || source.usage),
     errorCode: normalizeString(source.errorCode || source.error?.code, ""),
+    continuationTrace: normalizeContinuationTrace(source.continuationTrace),
     epistemicCapture,
   };
 }
@@ -560,6 +639,7 @@ class DirectProviderBackedSubAgentRoute {
     this.workThreadId = normalizeString(input.workThreadId, "work_thread_provider_backed_sub_agents");
     this.primaryThreadId = normalizeString(input.primaryThreadId, "primary_provider_backed_sub_agents");
     this.routeId = normalizeString(input.routeId, "direct_provider_backed_sub_agent_route");
+    this.providerId = normalizeString(input.providerId, "chatgpt-direct");
     this.nowMs = input.nowMs;
     this.defaultModel = normalizeString(input.defaultModel || input.model, "gpt-5.5");
     this.defaultReasoningEffort = normalizeString(input.defaultReasoningEffort || input.reasoningEffort, "medium");
@@ -568,6 +648,7 @@ class DirectProviderBackedSubAgentRoute {
       projectId: this.projectId,
       workThreadId: this.workThreadId,
       primaryThreadId: this.primaryThreadId,
+      providerId: this.providerId,
       defaultModel: this.defaultModel,
       defaultReasoningEffort: this.defaultReasoningEffort,
       nowMs: input.nowMs,
@@ -582,6 +663,7 @@ class DirectProviderBackedSubAgentRoute {
       projectId: this.projectId,
       workThreadId: this.workThreadId,
       primaryThreadId: this.primaryThreadId,
+      providerId: this.providerId,
       providerTransportAllowed: this.providerTransportAllowed,
       providerDeclarationAllowed: false,
       childToolsAllowed: false,
@@ -605,6 +687,7 @@ class DirectProviderBackedSubAgentRoute {
     const request = buildProviderBackedSubAgentRequest({
       defaultModel: this.defaultModel,
       defaultReasoningEffort: this.defaultReasoningEffort,
+      providerId: this.providerId,
       ...input,
     });
     if (!request.promptDigest) {
@@ -653,6 +736,7 @@ class DirectProviderBackedSubAgentRoute {
         projectId: this.projectId,
         workThreadId: this.workThreadId,
         primaryThreadId: this.primaryThreadId,
+        providerId: this.providerId,
         requestBody: request.requestBody,
         requestShape: request.requestShape,
         promptDigest: request.promptDigest,
@@ -665,6 +749,11 @@ class DirectProviderBackedSubAgentRoute {
         registerEpistemicCaptureController: input.registerEpistemicCaptureController,
       }));
       const terminalStatus = providerOutcome.terminalState;
+      assertExternalContinuationOutcome(
+        this.providerId,
+        request.requestShape.model,
+        providerOutcome,
+      );
       const terminalExact = EXACT_TERMINAL_STATES.includes(terminalStatus);
       const childResult = this.surface.recordChildResult({
         targetAgentId: agent.agentThreadId,
@@ -689,6 +778,8 @@ class DirectProviderBackedSubAgentRoute {
         model: request.requestShape.model,
         reasoningEffort: request.requestShape.reasoningEffort,
         tokenUsage: providerOutcome.tokenUsage,
+        providerId: this.providerId,
+        continuationTrace: providerOutcome.continuationTrace,
         epistemicCapture: providerOutcome.epistemicCapture,
         epistemicCaptureComplete: providerOutcome.epistemicCapture.complete,
       });
@@ -705,6 +796,8 @@ class DirectProviderBackedSubAgentRoute {
         responseId: providerOutcome.responseId,
         upstreamRequestId: providerOutcome.upstreamRequestId,
         tokenUsage: providerOutcome.tokenUsage,
+        providerId: this.providerId,
+        continuationTrace: providerOutcome.continuationTrace,
         epistemicCapture: providerOutcome.epistemicCapture,
         epistemicCaptureComplete: providerOutcome.epistemicCapture.complete,
         childResultDigest: childResult.resultDigest,
@@ -751,6 +844,7 @@ class DirectProviderBackedSubAgentRoute {
           model: request.requestShape.model,
           reasoningEffort: request.requestShape.reasoningEffort,
           tokenUsage: {},
+          providerId: this.providerId,
         }),
         eChannelSnapshot: this.surface.eChannelSnapshot(),
         liveToolCatalog: this.surface.liveToolCatalog({ targetAgentId: agent.agentThreadId }),
@@ -851,5 +945,6 @@ module.exports = {
   buildProviderBackedSubAgentRequest,
   buildSubAgentResultReducerPolicy,
   createDirectProviderBackedSubAgentRoute,
+  normalizeContinuationTrace,
   normalizeEpistemicCapture,
 };

@@ -1,0 +1,545 @@
+#!/usr/bin/env node
+
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const {
+  DEFAULT_CONTINUATION_PROMPT,
+  EXTERNAL_PROVIDER_CONTINUATION_TRACE_SCHEMA,
+  OPENROUTER_OXALPHA_MODEL,
+  OPENCODE_OXALPHA_MODEL,
+  PROVIDER_OPENCODE_OXALPHA,
+  PROVIDER_OPENROUTER_OXALPHA,
+  loadOpenRouterApiKey,
+  parseEnvAssignment,
+  runOpenCodeOxAlphaTurn,
+  runOpenRouterOxAlphaTurn,
+  safeOpenCodeRuntimeEnv,
+} = require("../src/main/direct/agents/external-provider-continuation");
+const { DirectNativeAgentPool } = require("../src/main/direct/agents/native-agent-pool");
+const { normalizeContinuationTrace } = require("../src/main/direct/agents/provider-backed-route");
+
+function sse(payload) {
+  return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
+function doneSse() {
+  return "data: [DONE]\n\n";
+}
+
+function responseFromChunks(chunks, options = {}) {
+  return {
+    ok: options.ok !== false,
+    status: options.status ?? 200,
+    body: {
+      async *[Symbol.asyncIterator]() {
+        for (const chunk of chunks) {
+          if (chunk instanceof Error) throw chunk;
+          yield chunk;
+        }
+      },
+    },
+  };
+}
+
+function requestBody(model) {
+  return {
+    model,
+    instructions: "Complete the delegated task without tools.",
+    input: [{
+      role: "user",
+      content: [{ type: "input_text", text: "Produce the bounded audit." }],
+    }],
+    reasoning: { effort: "xhigh" },
+  };
+}
+
+const immediateSleep = async () => {};
+const openRouterEnv = { OPENROUTER_API_KEY: "fixture-openrouter-secret" };
+
+assert.equal(parseEnvAssignment("OPENROUTER_API_KEY='quoted-key'\n", "OPENROUTER_API_KEY"), "quoted-key");
+assert.equal(parseEnvAssignment("export OPENROUTER_API_KEY=plain-key\n", "OPENROUTER_API_KEY"), "plain-key");
+assert.equal(loadOpenRouterApiKey({ env: openRouterEnv }).source, "process_environment");
+
+const interruptedBodies = [];
+const interruptedHeaders = [];
+let interruptedCall = 0;
+const interrupted = await runOpenRouterOxAlphaTurn({
+  requestBody: requestBody(OPENROUTER_OXALPHA_MODEL),
+  requestShape: { reasoningEffort: "xhigh" },
+}, {
+  env: openRouterEnv,
+  retryBaseMs: 0,
+  sleepImpl: immediateSleep,
+  fetchImpl: async (_url, init) => {
+    interruptedBodies.push(JSON.parse(init.body));
+    interruptedHeaders.push(init.headers);
+    interruptedCall += 1;
+    if (interruptedCall === 1) {
+      return responseFromChunks([
+        sse({ id: "or_partial", choices: [{ delta: { content: "Part one " }, finish_reason: null }] }),
+        new Error("socket closed"),
+      ]);
+    }
+    return responseFromChunks([
+      sse({ id: "or_final", choices: [{ delta: { content: "and done." }, finish_reason: null }] }),
+      sse({ id: "or_final", choices: [{ delta: {}, finish_reason: "stop" }], usage: {
+        prompt_tokens: 20,
+        completion_tokens: 4,
+        total_tokens: 24,
+      } }),
+      doneSse(),
+    ]);
+  },
+});
+
+assert.equal(interrupted.ok, true);
+assert.equal(interrupted.outputText, "Part one and done.");
+assert.equal(interrupted.continuationTrace.schema, EXTERNAL_PROVIDER_CONTINUATION_TRACE_SCHEMA);
+assert.equal(interrupted.continuationTrace.attemptCount, 2);
+assert.equal(interrupted.continuationTrace.semanticContinuationCount, 1);
+assert.equal(interrupted.continuationTrace.transportRetryCount, 0);
+assert.equal(interrupted.continuationTrace.terminalFinishReason, "stop");
+assert.equal(interruptedBodies[1].messages.at(-2).content, "Part one ");
+assert.equal(interruptedBodies[1].messages.at(-1).content, DEFAULT_CONTINUATION_PROMPT);
+assert.equal(interruptedBodies[1].reasoning.effort, "high");
+assert.equal(interruptedHeaders[0].Authorization, "Bearer fixture-openrouter-secret");
+assert.equal(JSON.stringify(interrupted.continuationTrace).includes("fixture-openrouter-secret"), false);
+assert.equal(interrupted.normalizedEvents.filter((event) => event.type === "response_completed").length, 1);
+assert.equal(normalizeContinuationTrace(interrupted.continuationTrace)?.traceDigest, interrupted.continuationTrace.traceDigest);
+assert.equal(normalizeContinuationTrace({
+  ...interrupted.continuationTrace,
+  semanticContinuationCount: interrupted.continuationTrace.semanticContinuationCount + 1,
+}), null, "admission must reject a continuation trace whose safe fields no longer match its digest");
+
+let retryCall = 0;
+const retryBodies = [];
+const retriedBeforeOutput = await runOpenRouterOxAlphaTurn({
+  requestBody: requestBody(OPENROUTER_OXALPHA_MODEL),
+  requestShape: { reasoningEffort: "medium" },
+}, {
+  env: openRouterEnv,
+  retryBaseMs: 0,
+  sleepImpl: immediateSleep,
+  fetchImpl: async (_url, init) => {
+    retryBodies.push(JSON.parse(init.body));
+    retryCall += 1;
+    if (retryCall === 1) return responseFromChunks([], { ok: false, status: 503 });
+    return responseFromChunks([
+      sse({ id: "or_retry", choices: [{ delta: { content: "Recovered." }, finish_reason: "stop" }] }),
+      doneSse(),
+    ]);
+  },
+});
+assert.equal(retriedBeforeOutput.outputText, "Recovered.");
+assert.equal(retriedBeforeOutput.continuationTrace.semanticContinuationCount, 0);
+assert.equal(retriedBeforeOutput.continuationTrace.transportRetryCount, 1);
+assert.deepEqual(retryBodies[1].messages, retryBodies[0].messages, "a zero-output transport retry must not invent a continuation turn");
+
+let emptyTerminalCall = 0;
+const recoveredAfterEmptyTerminal = await runOpenRouterOxAlphaTurn({
+  requestBody: requestBody(OPENROUTER_OXALPHA_MODEL),
+  requestShape: { reasoningEffort: "medium" },
+}, {
+  env: openRouterEnv,
+  retryBaseMs: 0,
+  sleepImpl: immediateSleep,
+  fetchImpl: async () => {
+    emptyTerminalCall += 1;
+    return emptyTerminalCall === 1
+      ? responseFromChunks([
+          sse({ id: "or_empty", choices: [{ delta: {}, finish_reason: "stop" }] }),
+          doneSse(),
+        ])
+      : responseFromChunks([
+          sse({ id: "or_after_empty", choices: [{ delta: { content: "Actual output." }, finish_reason: "stop" }] }),
+          doneSse(),
+        ]);
+  },
+});
+assert.equal(recoveredAfterEmptyTerminal.outputText, "Actual output.");
+assert.equal(recoveredAfterEmptyTerminal.continuationTrace.transportRetryCount, 1);
+assert.equal(recoveredAfterEmptyTerminal.continuationTrace.attempts[0].trigger, "empty_terminal_output");
+
+let lengthCall = 0;
+const continuedAfterLength = await runOpenRouterOxAlphaTurn({
+  requestBody: requestBody(OPENROUTER_OXALPHA_MODEL),
+  requestShape: { reasoningEffort: "low" },
+}, {
+  env: openRouterEnv,
+  retryBaseMs: 0,
+  sleepImpl: immediateSleep,
+  fetchImpl: async () => {
+    lengthCall += 1;
+    return lengthCall === 1
+      ? responseFromChunks([
+          sse({ id: "or_length", choices: [{ delta: { content: "Long " }, finish_reason: "length" }] }),
+          doneSse(),
+        ])
+      : responseFromChunks([
+          sse({ id: "or_length_final", choices: [{ delta: { content: "answer." }, finish_reason: "stop" }] }),
+          doneSse(),
+        ]);
+  },
+});
+assert.equal(continuedAfterLength.outputText, "Long answer.");
+assert.equal(continuedAfterLength.continuationTrace.attempts[0].trigger, "max_output_incomplete");
+
+await assert.rejects(
+  runOpenRouterOxAlphaTurn({
+    requestBody: requestBody(OPENROUTER_OXALPHA_MODEL),
+    requestShape: { reasoningEffort: "low" },
+  }, {
+    env: openRouterEnv,
+    fetchImpl: async () => responseFromChunks([], { ok: false, status: 401 }),
+  }),
+  (error) => error?.code === "direct_openrouter_http_failed",
+);
+
+await assert.rejects(
+  runOpenRouterOxAlphaTurn({
+    requestBody: requestBody(OPENROUTER_OXALPHA_MODEL),
+    requestShape: { reasoningEffort: "low" },
+  }, {
+    env: openRouterEnv,
+    maxAttempts: 2,
+    retryBaseMs: 0,
+    sleepImpl: immediateSleep,
+    fetchImpl: async () => responseFromChunks([], { ok: false, status: 503 }),
+  }),
+  (error) => (
+    error?.code === "direct_external_provider_continuation_exhausted" &&
+    error.continuationTrace?.attemptCount === 2 &&
+    error.continuationTrace?.transportRetryCount === 2
+  ),
+);
+
+await assert.rejects(
+  runOpenRouterOxAlphaTurn({
+    requestBody: requestBody(OPENROUTER_OXALPHA_MODEL),
+    requestShape: { reasoningEffort: "low" },
+  }, {
+    env: openRouterEnv,
+    maxTotalMs: 1_000,
+    fetchImpl: async (_url, init) => new Promise((_resolve, reject) => {
+      const fallback = setTimeout(() => reject(new Error("deadline signal was not delivered")), 1_500);
+      init.signal.addEventListener("abort", () => {
+        clearTimeout(fallback);
+        const error = new Error("deadline reached");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    }),
+  }),
+  (error) => error?.code === "direct_external_provider_total_timeout",
+);
+
+const openCodeCalls = [];
+const openCodeResults = [
+  {
+    exitCode: 0,
+    stdout: [
+      JSON.stringify({ type: "text", sessionID: "ses_fixture", part: { type: "text", text: "First segment " } }),
+      JSON.stringify({ type: "step_finish", sessionID: "ses_fixture", part: {
+        type: "step-finish",
+        reason: "unknown",
+        tokens: { input: 10, output: 2, reasoning: 1, total: 13, cache: { read: 0, write: 0 } },
+      } }),
+    ].join("\n"),
+  },
+  {
+    exitCode: 0,
+    stdout: [
+      JSON.stringify({ type: "text", sessionID: "ses_fixture", part: { type: "text", text: "finished." } }),
+      JSON.stringify({ type: "step_finish", sessionID: "ses_fixture", part: {
+        type: "step-finish",
+        reason: "stop",
+        tokens: { input: 12, output: 2, reasoning: 1, total: 15, cache: { read: 1, write: 0 } },
+      } }),
+    ].join("\n"),
+  },
+];
+const openCode = await runOpenCodeOxAlphaTurn({
+  requestBody: requestBody(OPENCODE_OXALPHA_MODEL),
+  requestShape: { reasoningEffort: "ultra" },
+}, {
+  openCodeExecutable: "/fixture/opencode",
+  accessSync: () => {},
+  mkdirSync: () => {},
+  workingDirectory: "/tmp/direct-opencode-fixture",
+  retryBaseMs: 0,
+  sleepImpl: immediateSleep,
+  processRunner: async (input) => {
+    openCodeCalls.push(input);
+    return openCodeResults.shift();
+  },
+});
+assert.equal(openCode.outputText, "First segment finished.");
+assert.equal(openCode.responseId, "ses_fixture");
+assert.equal(openCode.continuationTrace.semanticContinuationCount, 1);
+assert(openCodeCalls[0].args.includes("max"), "ultra should compile to the model's supported max variant");
+assert(openCodeCalls[1].args.includes("--session"));
+assert(openCodeCalls[1].args.includes("ses_fixture"));
+assert.equal(openCodeCalls[1].args.at(-1), DEFAULT_CONTINUATION_PROMPT);
+
+let openCodeProcessFailureCalls = 0;
+const openCodeAfterProcessFailure = await runOpenCodeOxAlphaTurn({
+  requestBody: requestBody(OPENCODE_OXALPHA_MODEL),
+  requestShape: { reasoningEffort: "high" },
+}, {
+  openCodeExecutable: "/fixture/opencode",
+  accessSync: () => {},
+  mkdirSync: () => {},
+  workingDirectory: "/tmp/direct-opencode-process-failure-fixture",
+  retryBaseMs: 0,
+  sleepImpl: immediateSleep,
+  processRunner: async () => {
+    openCodeProcessFailureCalls += 1;
+    if (openCodeProcessFailureCalls === 1) {
+      const error = new Error("fixture transport failure");
+      error.code = "direct_opencode_process_failed";
+      throw error;
+    }
+    return {
+      exitCode: 0,
+      stdout: [
+        JSON.stringify({ type: "text", sessionID: "ses_after_failure", part: { type: "text", text: "Recovered." } }),
+        JSON.stringify({ type: "step_finish", sessionID: "ses_after_failure", part: { type: "step-finish", reason: "stop", tokens: {} } }),
+      ].join("\n"),
+    };
+  },
+});
+assert.equal(openCodeAfterProcessFailure.outputText, "Recovered.");
+assert.equal(openCodeAfterProcessFailure.continuationTrace.transportRetryCount, 1);
+assert.equal(openCodeAfterProcessFailure.continuationTrace.semanticContinuationCount, 0);
+assert.equal(openCodeAfterProcessFailure.continuationTrace.attempts[0].trigger, "opencode_process_failed");
+
+const openCodeEmptyTerminalCalls = [];
+const openCodeAfterEmptyTerminal = await runOpenCodeOxAlphaTurn({
+  requestBody: requestBody(OPENCODE_OXALPHA_MODEL),
+  requestShape: { reasoningEffort: "high" },
+}, {
+  openCodeExecutable: "/fixture/opencode",
+  accessSync: () => {},
+  mkdirSync: () => {},
+  workingDirectory: "/tmp/direct-opencode-empty-terminal-fixture",
+  retryBaseMs: 0,
+  sleepImpl: immediateSleep,
+  processRunner: async (input) => {
+    openCodeEmptyTerminalCalls.push(input);
+    return openCodeEmptyTerminalCalls.length === 1
+      ? {
+          exitCode: 0,
+          stdout: JSON.stringify({ type: "step_finish", sessionID: "ses_empty", part: { type: "step-finish", reason: "stop", tokens: {} } }),
+        }
+      : {
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ type: "text", sessionID: "ses_after_empty", part: { type: "text", text: "Actual output." } }),
+            JSON.stringify({ type: "step_finish", sessionID: "ses_after_empty", part: { type: "step-finish", reason: "stop", tokens: {} } }),
+          ].join("\n"),
+        };
+  },
+});
+assert.equal(openCodeAfterEmptyTerminal.outputText, "Actual output.");
+assert.equal(openCodeAfterEmptyTerminal.continuationTrace.transportRetryCount, 1);
+assert.equal(openCodeAfterEmptyTerminal.continuationTrace.attempts[0].trigger, "empty_terminal_output");
+assert.equal(openCodeEmptyTerminalCalls[1].args.includes("--session"), false, "an empty first response must retry the original task without a synthetic continuation turn");
+
+let openCodeMissingSessionCalls = 0;
+const openCodeAfterMissingSession = await runOpenCodeOxAlphaTurn({
+  requestBody: requestBody(OPENCODE_OXALPHA_MODEL),
+  requestShape: { reasoningEffort: "high" },
+}, {
+  openCodeExecutable: "/fixture/opencode",
+  accessSync: () => {},
+  mkdirSync: () => {},
+  workingDirectory: "/tmp/direct-opencode-missing-session-fixture",
+  retryBaseMs: 0,
+  sleepImpl: immediateSleep,
+  processRunner: async () => {
+    openCodeMissingSessionCalls += 1;
+    return openCodeMissingSessionCalls === 1
+      ? { exitCode: 1, stdout: "" }
+      : {
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ type: "text", sessionID: "ses_after_missing", part: { type: "text", text: "Recovered." } }),
+            JSON.stringify({ type: "step_finish", sessionID: "ses_after_missing", part: { type: "step-finish", reason: "stop", tokens: {} } }),
+          ].join("\n"),
+        };
+  },
+});
+assert.equal(openCodeAfterMissingSession.outputText, "Recovered.");
+assert.equal(openCodeAfterMissingSession.continuationTrace.attempts[0].trigger, "opencode_session_identity_missing");
+
+let openCodeMalformedCalls = 0;
+const openCodeAfterMalformedTail = await runOpenCodeOxAlphaTurn({
+  requestBody: requestBody(OPENCODE_OXALPHA_MODEL),
+  requestShape: { reasoningEffort: "high" },
+}, {
+  openCodeExecutable: "/fixture/opencode",
+  accessSync: () => {},
+  mkdirSync: () => {},
+  workingDirectory: "/tmp/direct-opencode-malformed-fixture",
+  retryBaseMs: 0,
+  sleepImpl: immediateSleep,
+  processRunner: async () => {
+    openCodeMalformedCalls += 1;
+    return openCodeMalformedCalls === 1
+      ? {
+          exitCode: 1,
+          stdout: `${JSON.stringify({ type: "text", sessionID: "ses_malformed", part: { type: "text", text: "Partial " } })}\n{"type":"step_finish"`,
+        }
+      : {
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ type: "text", sessionID: "ses_malformed", part: { type: "text", text: "answer." } }),
+            JSON.stringify({ type: "step_finish", sessionID: "ses_malformed", part: { type: "step-finish", reason: "stop", tokens: {} } }),
+          ].join("\n"),
+        };
+  },
+});
+assert.equal(openCodeAfterMalformedTail.outputText, "Partial answer.");
+assert.equal(openCodeAfterMalformedTail.continuationTrace.semanticContinuationCount, 1);
+assert.equal(openCodeAfterMalformedTail.continuationTrace.attempts[0].trigger, "opencode_json_incomplete");
+
+await assert.rejects(
+  runOpenCodeOxAlphaTurn({
+    requestBody: requestBody(OPENCODE_OXALPHA_MODEL),
+    requestShape: { reasoningEffort: "high" },
+  }, {
+    openCodeExecutable: "/fixture/opencode",
+    accessSync: () => {},
+    mkdirSync: () => {},
+    workingDirectory: "/tmp/direct-opencode-fixture",
+    processRunner: async () => ({
+      exitCode: 0,
+      stdout: [
+        JSON.stringify({ type: "tool_use", sessionID: "ses_tool", part: { type: "tool", tool: "bash" } }),
+        JSON.stringify({ type: "step_finish", sessionID: "ses_tool", part: { type: "step-finish", reason: "stop", tokens: {} } }),
+      ].join("\n"),
+    }),
+  }),
+  (error) => error?.code === "direct_opencode_tool_boundary_violated",
+);
+
+const safeOpenCodeEnv = safeOpenCodeRuntimeEnv({ env: { PATH: "/fixture/bin", OPENCODE_SERVER_PASSWORD: "must-be-removed" } });
+assert.equal(safeOpenCodeEnv.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
+assert.equal(safeOpenCodeEnv.OPENCODE_DISABLE_DEFAULT_PLUGINS, "1");
+assert.equal(safeOpenCodeEnv.OPENCODE_SERVER_PASSWORD, undefined);
+assert.deepEqual(JSON.parse(safeOpenCodeEnv.OPENCODE_CONFIG_CONTENT).tools, { "*": false });
+assert.equal(JSON.parse(safeOpenCodeEnv.OPENCODE_CONFIG_CONTENT).permission, "deny");
+
+const poolCalls = [];
+const pool = new DirectNativeAgentPool({
+  maxActiveChildren: 2,
+  providerProfiles: [
+    {
+      providerId: PROVIDER_OPENROUTER_OXALPHA,
+      status: "ready",
+      blockerCode: "",
+      model: OPENROUTER_OXALPHA_MODEL,
+      transport: "fixture",
+      credentials: "available",
+      childToolsAllowed: false,
+      autoContinuation: true,
+      rawSecretIncluded: false,
+    },
+  ],
+  providerTurnRunner: async (input) => {
+    poolCalls.push(input);
+    return interrupted;
+  },
+});
+const externalLaunch = pool.launch({
+  projectId: "project_external_provider",
+  primaryThreadId: "thread_external_provider",
+  taskName: "oxalpha_audit",
+  message: "Audit this bounded object.",
+  provider: PROVIDER_OPENROUTER_OXALPHA,
+  reasoningEffort: "high",
+  forkTurns: "none",
+});
+assert.equal(externalLaunch.providerId, PROVIDER_OPENROUTER_OXALPHA);
+assert.equal(externalLaunch.model, OPENROUTER_OXALPHA_MODEL);
+const externalWait = await pool.wait({
+  projectId: "project_external_provider",
+  primaryThreadId: "thread_external_provider",
+  target: externalLaunch.childAgentId,
+  timeoutMs: 2_000,
+});
+assert.equal(externalWait.status, "completed");
+assert.equal(poolCalls[0].providerId, PROVIDER_OPENROUTER_OXALPHA);
+assert.equal(externalWait.updates[0].continuationTrace.semanticContinuationCount, 1);
+assert.equal(JSON.stringify(externalWait.updates[0]).includes("fixture-openrouter-secret"), false);
+
+const unknownProvider = pool.launch({
+  projectId: "project_external_provider",
+  primaryThreadId: "thread_external_provider",
+  taskName: "unknown_provider",
+  message: "Do not run.",
+  provider: "invented-provider",
+});
+assert.equal(unknownProvider.status, "blocked");
+assert.equal(unknownProvider.blockerCode, "direct_agent_provider_unknown");
+
+const workspaceExternal = pool.launch({
+  projectId: "project_external_provider",
+  primaryThreadId: "thread_external_provider",
+  taskName: "unsafe_workspace_external",
+  message: "Do not run.",
+  provider: PROVIDER_OPENROUTER_OXALPHA,
+  workspaceMode: "isolated_worktree",
+  toolProfile: "read_only_worker",
+  project: { id: "project_external_provider" },
+});
+assert.equal(workspaceExternal.status, "blocked");
+assert.equal(workspaceExternal.blockerCode, "direct_external_provider_workspace_mode_unsupported");
+
+const externalModelWithoutProvider = pool.launch({
+  projectId: "project_external_provider",
+  primaryThreadId: "thread_external_provider",
+  taskName: "mismatched_external_model",
+  message: "Do not run.",
+  model: OPENROUTER_OXALPHA_MODEL,
+});
+assert.equal(externalModelWithoutProvider.status, "blocked");
+assert.equal(externalModelWithoutProvider.blockerCode, "direct_agent_provider_model_mismatch");
+
+const tamperedPool = new DirectNativeAgentPool({
+  maxActiveChildren: 1,
+  providerProfiles: [{
+    providerId: PROVIDER_OPENROUTER_OXALPHA,
+    status: "ready",
+    blockerCode: "",
+    model: OPENROUTER_OXALPHA_MODEL,
+    transport: "fixture",
+    credentials: "available",
+    childToolsAllowed: false,
+    autoContinuation: true,
+    rawSecretIncluded: false,
+  }],
+  providerTurnRunner: async () => ({
+    ...interrupted,
+    outputText: `${interrupted.outputText} tampered`,
+  }),
+});
+const tamperedLaunch = tamperedPool.launch({
+  projectId: "project_external_provider_tamper",
+  primaryThreadId: "thread_external_provider_tamper",
+  taskName: "tampered_trace",
+  message: "Do not admit mismatched output.",
+  provider: PROVIDER_OPENROUTER_OXALPHA,
+});
+const tamperedWait = await tamperedPool.wait({
+  projectId: "project_external_provider_tamper",
+  primaryThreadId: "thread_external_provider_tamper",
+  target: tamperedLaunch.childAgentId,
+  timeoutMs: 2_000,
+});
+assert.equal(tamperedWait.updates[0].state, "failed");
+assert.equal(tamperedWait.updates[0].blockerCode, "direct_external_provider_continuation_trace_invalid");
+
+console.log("direct external provider continuation regression: ok");

@@ -841,6 +841,11 @@ function providerSchemaFor(toolName) {
             type: "string",
             description: "Optional role label for the child. This is independent of context handoff.",
           },
+          provider: {
+            type: "string",
+            enum: ["chatgpt-direct", "openrouter-oxalpha", "opencode-oxalpha"],
+            description: "Optional reasoning-only child provider. Defaults to chatgpt-direct. The two 0xAlpha profiles are harness-governed, tool-free workers with bounded automatic continuation after transport interruption.",
+          },
           model: {
             type: "string",
             description: "Optional child model. Omit to inherit the parent model; valid with every fork_turns mode.",

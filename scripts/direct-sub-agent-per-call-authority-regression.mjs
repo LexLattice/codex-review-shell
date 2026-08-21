@@ -92,6 +92,46 @@ assert(spawn.childProviderRunStarted === false, "spawn must not start child prov
 assert(spawn.rawTaskIncluded === false, "spawn must not include raw task as payload");
 validateSubAgentPerCallAuthorityPacket(spawn);
 
+const openRouterSpawn = buildSubAgentPerCallAuthorityPacket({
+  ...common,
+  toolName: "spawn_agent",
+  callId: "call_spawn_agent_openrouter_fixture",
+  arguments: {
+    task: "Use the bounded external reasoning worker.",
+    agentRole: "summarizer",
+    provider: "openrouter-oxalpha",
+    reasoningEffort: "high",
+  },
+}, { now: fixedNow });
+assert(openRouterSpawn.spawnPlan.accepted === true, "OpenRouter 0xAlpha spawn should pass argument policy");
+assert(openRouterSpawn.spawnPlan.provider === "openrouter-oxalpha", "spawn plan should preserve the selected provider");
+assert(openRouterSpawn.spawnPlan.model === "stealth/ox-alpha", "external provider should compile its fixed model");
+assert(openRouterSpawn.spawnPlan.canonicalInput.provider === "openrouter-oxalpha", "canonical spawn identity should include provider");
+validateSubAgentPerCallAuthorityPacket(openRouterSpawn);
+
+const mismatchedProviderModel = buildSubAgentPerCallAuthorityPacket({
+  ...common,
+  toolName: "spawn_agent",
+  callId: "call_spawn_agent_provider_model_mismatch_fixture",
+  arguments: {
+    task: "Attempt a mismatched provider/model pair.",
+    provider: "opencode-oxalpha",
+    model: "stealth/ox-alpha",
+  },
+}, { now: fixedNow });
+assert(mismatchedProviderModel.spawnPlan.blockers.includes("provider_model_mismatch"), "provider/model mismatch should block");
+
+const externalModelWithoutProvider = buildSubAgentPerCallAuthorityPacket({
+  ...common,
+  toolName: "spawn_agent",
+  callId: "call_spawn_agent_external_model_without_provider_fixture",
+  arguments: {
+    task: "Attempt an external model through the default Direct provider.",
+    model: "stealth/ox-alpha",
+  },
+}, { now: fixedNow });
+assert(externalModelWithoutProvider.spawnPlan.blockers.includes("provider_model_mismatch"), "external model must require its matching provider");
+
 const duplicateSpawn = buildSubAgentPerCallAuthorityPacket({
   ...common,
   toolName: "spawn_agent",
