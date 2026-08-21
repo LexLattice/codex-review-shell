@@ -15,7 +15,7 @@ const mainSource = read("src/main.js");
 const readme = read("README.md");
 const gitignore = read(".gitignore");
 
-const canonicalWslPath = "/home/rose/work/LexLattice/codex-review-shell";
+const canonicalWslPath = "/home/rose/work/LexLattice/codex-review-shell-direct";
 
 assert.match(
   launcher,
@@ -39,12 +39,12 @@ assert.match(
 );
 assert.match(
   readme,
-  /cd C:\\LexLattice\\codex-review-shell(?:\r?\n)/,
+  /cd C:\\LexLattice\\codex-review-shell-direct(?:\r?\n)/,
   "the Windows launcher instructions must use the canonical checkout",
 );
 assert.match(
   readme,
-  /Default source path is `\/home\/rose\/work\/LexLattice\/codex-review-shell`/,
+  /Default source path is `\/home\/rose\/work\/LexLattice\/codex-review-shell-direct`/,
   "the documented WSL source must match both launcher defaults",
 );
 assert.match(

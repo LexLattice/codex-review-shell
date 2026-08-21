@@ -149,7 +149,7 @@ bounded Direct tenant adapters exist. See the
 While building, use the tracked Windows launcher scripts in this repo so the Windows checkout mirrors the WSL worktree before each run:
 
 ```powershell
-cd C:\LexLattice\codex-review-shell
+cd C:\LexLattice\codex-review-shell-direct
 .\start-codex-review-shell.cmd
 ```
 
@@ -162,13 +162,13 @@ What it does:
 - prints the active preflight stage in the launcher console
 - starts Electron via `scripts/run-electron.mjs`
 
-Default source path is `/home/rose/work/LexLattice/codex-review-shell` in `Ubuntu`.
+Default source path is `/home/rose/work/LexLattice/codex-review-shell-direct` in `Ubuntu`.
 Override source by setting:
 
 - `CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO`
 - `CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH`
 
-If your Windows checkout predates these scripts, copy these tracked files from WSL once into `C:\LexLattice\codex-review-shell`:
+If your Windows checkout predates these scripts, copy these tracked files from WSL once into `C:\LexLattice\codex-review-shell-direct`:
 
 - `start-codex-review-shell.cmd`
 - `start-direct-workbench.cmd`
