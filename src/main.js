@@ -3912,6 +3912,7 @@ async function runDirectExternalChildProviderTurn(input = {}) {
   try {
     const result = await runExternalProviderContinuationTurn(input, {
       workingDirectory: path.join(app.getPath("userData"), "external-provider-workers"),
+      onNormalizedEventsCommitted: captureAdapter.strictCommitCallback(),
     });
     captureAdapter.reconcileEventPrefix(result.normalizedEvents, { sourceOffset: 0 });
     captureAdapter.finalize({

@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -11,11 +16,14 @@ const {
   OPENCODE_OXALPHA_MODEL,
   PROVIDER_OPENCODE_OXALPHA,
   PROVIDER_OPENROUTER_OXALPHA,
+  buildOpenCodeRebasePrompt,
   loadOpenRouterApiKey,
+  openCodeRunDirectories,
   parseEnvAssignment,
   runOpenCodeOxAlphaTurn,
   runOpenRouterOxAlphaTurn,
   safeOpenCodeRuntimeEnv,
+  spawnOpenCodeProcess,
 } = require("../src/main/direct/agents/external-provider-continuation");
 const { DirectNativeAgentPool } = require("../src/main/direct/agents/native-agent-pool");
 const { normalizeContinuationTrace } = require("../src/main/direct/agents/provider-backed-route");
@@ -236,6 +244,7 @@ await assert.rejects(
 );
 
 const openCodeCalls = [];
+const openCodeCommittedBatches = [];
 const openCodeResults = [
   {
     exitCode: 0,
@@ -261,6 +270,7 @@ const openCodeResults = [
   },
 ];
 const openCode = await runOpenCodeOxAlphaTurn({
+  attemptId: "fixture-opencode-continuation",
   requestBody: requestBody(OPENCODE_OXALPHA_MODEL),
   requestShape: { reasoningEffort: "ultra" },
 }, {
@@ -272,7 +282,13 @@ const openCode = await runOpenCodeOxAlphaTurn({
   sleepImpl: immediateSleep,
   processRunner: async (input) => {
     openCodeCalls.push(input);
+    if (openCodeCalls.length === 2) {
+      assert.equal(openCodeCommittedBatches.length, 1, "the first normalized attempt must be durable before the continuation process starts");
+    }
     return openCodeResults.shift();
+  },
+  onNormalizedEventsCommitted: async (events, details) => {
+    openCodeCommittedBatches.push({ events, details });
   },
 });
 assert.equal(openCode.outputText, "First segment finished.");
@@ -282,6 +298,12 @@ assert(openCodeCalls[0].args.includes("max"), "ultra should compile to the model
 assert(openCodeCalls[1].args.includes("--session"));
 assert(openCodeCalls[1].args.includes("ses_fixture"));
 assert.equal(openCodeCalls[1].args.at(-1), DEFAULT_CONTINUATION_PROMPT);
+assert.equal(openCodeCalls[0].cwd, openCodeCalls[1].cwd);
+assert.equal(openCodeCalls[0].runtimeDirectory, openCodeCalls[1].runtimeDirectory);
+assert.notEqual(openCodeCalls[0].cwd, "/tmp/direct-opencode-fixture");
+assert.equal(openCodeCommittedBatches.length, 2);
+assert.equal(openCodeCommittedBatches[0].details.normalizedOffset, 0);
+assert(openCodeCommittedBatches[1].details.normalizedOffset > 0);
 
 let openCodeProcessFailureCalls = 0;
 const openCodeAfterProcessFailure = await runOpenCodeOxAlphaTurn({
@@ -405,6 +427,58 @@ assert.equal(openCodeAfterMalformedTail.outputText, "Partial answer.");
 assert.equal(openCodeAfterMalformedTail.continuationTrace.semanticContinuationCount, 1);
 assert.equal(openCodeAfterMalformedTail.continuationTrace.attempts[0].trigger, "opencode_json_incomplete");
 
+const rebaseCalls = [];
+const recoveredAfterSessionLoss = await runOpenCodeOxAlphaTurn({
+  attemptId: "fixture-session-rebase",
+  requestBody: requestBody(OPENCODE_OXALPHA_MODEL),
+  requestShape: { reasoningEffort: "high" },
+}, {
+  openCodeExecutable: "/fixture/opencode",
+  accessSync: () => {},
+  mkdirSync: () => {},
+  workingDirectory: "/tmp/direct-opencode-rebase-fixture",
+  retryBaseMs: 0,
+  sleepImpl: immediateSleep,
+  processRunner: async (input) => {
+    rebaseCalls.push(input);
+    if (rebaseCalls.length === 1) {
+      return {
+        exitCode: 0,
+        stdout: [
+          JSON.stringify({ type: "text", sessionID: "ses_rebase", part: { type: "text", text: "Captured first " } }),
+          JSON.stringify({ type: "step_finish", sessionID: "ses_rebase", part: { type: "step-finish", reason: "unknown", tokens: {} } }),
+        ].join("\n"),
+      };
+    }
+    if (rebaseCalls.length === 2) {
+      return {
+        exitCode: 1,
+        stdout: JSON.stringify({ type: "error", sessionID: "ses_rebase", error: { name: "UnknownError" } }),
+      };
+    }
+    return {
+      exitCode: 0,
+      stdout: [
+        JSON.stringify({ type: "text", sessionID: "ses_rebased_fresh", part: { type: "text", text: "and finished." } }),
+        JSON.stringify({ type: "step_finish", sessionID: "ses_rebased_fresh", part: { type: "step-finish", reason: "stop", tokens: {} } }),
+      ].join("\n"),
+    };
+  },
+});
+assert.equal(recoveredAfterSessionLoss.outputText, "Captured first and finished.");
+assert.equal(rebaseCalls[1].args.includes("--session"), true);
+assert.equal(rebaseCalls[2].args.includes("--session"), false);
+assert.match(rebaseCalls[2].args.at(-1), /\[PROVIDER CONTINUITY REBASE\]/);
+assert.match(rebaseCalls[2].args.at(-1), /Captured first/);
+assert.equal(
+  recoveredAfterSessionLoss.continuationTrace.attempts[1].trigger,
+  "opencode_session_continuity_lost",
+);
+assert.equal(
+  recoveredAfterSessionLoss.normalizedEvents.some((event) => event.type === "provider_continuity_rebased"),
+  true,
+);
+
 await assert.rejects(
   runOpenCodeOxAlphaTurn({
     requestBody: requestBody(OPENCODE_OXALPHA_MODEL),
@@ -425,12 +499,93 @@ await assert.rejects(
   (error) => error?.code === "direct_opencode_tool_boundary_violated",
 );
 
-const safeOpenCodeEnv = safeOpenCodeRuntimeEnv({ env: { PATH: "/fixture/bin", OPENCODE_SERVER_PASSWORD: "must-be-removed" } });
+const isolatedRuntimeDirectory = "/tmp/direct-opencode-isolated-runtime";
+const safeOpenCodeEnv = safeOpenCodeRuntimeEnv({
+  env: {
+    PATH: "/fixture/bin",
+    XDG_DATA_HOME: "/home/rose/.local/share",
+    OPENCODE_CONFIG: "/home/rose/.config/opencode/opencode.json",
+    OPENCODE_TUI_CONFIG: "/home/rose/.config/opencode/tui.json",
+    OPENCODE_SERVER_PASSWORD: "must-be-removed",
+  },
+  openCodeRuntimeDirectory: isolatedRuntimeDirectory,
+});
 assert.equal(safeOpenCodeEnv.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
 assert.equal(safeOpenCodeEnv.OPENCODE_DISABLE_DEFAULT_PLUGINS, "1");
 assert.equal(safeOpenCodeEnv.OPENCODE_SERVER_PASSWORD, undefined);
+assert.equal(safeOpenCodeEnv.OPENCODE_CONFIG, undefined);
+assert.equal(safeOpenCodeEnv.OPENCODE_TUI_CONFIG, undefined);
+assert.equal(safeOpenCodeEnv.XDG_DATA_HOME, `${isolatedRuntimeDirectory}/data`);
+assert.equal(safeOpenCodeEnv.XDG_CACHE_HOME, `${isolatedRuntimeDirectory}/cache`);
+assert.equal(safeOpenCodeEnv.XDG_STATE_HOME, `${isolatedRuntimeDirectory}/state`);
+assert.equal(safeOpenCodeEnv.XDG_CONFIG_HOME, `${isolatedRuntimeDirectory}/config`);
+assert.equal(safeOpenCodeEnv.OPENCODE_CONFIG_DIR, `${isolatedRuntimeDirectory}/config/opencode`);
+assert.equal(safeOpenCodeEnv.XDG_DATA_HOME.includes("/home/rose/.local/share"), false);
 assert.deepEqual(JSON.parse(safeOpenCodeEnv.OPENCODE_CONFIG_CONTENT).tools, { "*": false });
 assert.equal(JSON.parse(safeOpenCodeEnv.OPENCODE_CONFIG_CONTENT).permission, "deny");
+
+const deterministicRunA = openCodeRunDirectories(
+  { attemptId: "same-direct-child" },
+  { workingDirectory: "/tmp/direct-opencode-runs" },
+);
+const deterministicRunB = openCodeRunDirectories(
+  { attemptId: "same-direct-child" },
+  { workingDirectory: "/tmp/direct-opencode-runs" },
+);
+const isolatedRun = openCodeRunDirectories(
+  { attemptId: "different-direct-child" },
+  { workingDirectory: "/tmp/direct-opencode-runs" },
+);
+assert.deepEqual(deterministicRunA, deterministicRunB);
+assert.notEqual(deterministicRunA.runtimeDirectory, isolatedRun.runtimeDirectory);
+assert.match(buildOpenCodeRebasePrompt({
+  instructions: "Remain bounded.",
+  task: "Finish the audit.",
+  outputText: "Already captured.",
+}), /Already captured\./);
+
+const journalTempRoot = process.platform !== "win32" && fs.existsSync("/tmp") ? "/tmp" : os.tmpdir();
+const journalRoot = fs.mkdtempSync(path.join(journalTempRoot, "direct-opencode-journal-"));
+try {
+  const journalPath = path.join(journalRoot, "provider-events.ndjson");
+  const journalChild = new EventEmitter();
+  journalChild.stdout = new PassThrough();
+  journalChild.stderr = new PassThrough();
+  journalChild.exitCode = null;
+  journalChild.signalCode = null;
+  journalChild.kill = () => true;
+  const journalRun = spawnOpenCodeProcess({
+    executable: "/fixture/opencode",
+    args: ["run"],
+    cwd: journalRoot,
+    runtimeDirectory: path.join(journalRoot, "runtime"),
+    eventJournalPath: journalPath,
+    attemptOrdinal: 2,
+    maxStdoutChars: 10_000,
+  }, {
+    spawnImpl: () => {
+      setImmediate(() => {
+        journalChild.stdout.write(`${JSON.stringify({ type: "text", part: { text: "durable" } })}\n`);
+        journalChild.stdout.write(JSON.stringify({ type: "step_finish", part: { reason: "stop" } }));
+        journalChild.exitCode = 0;
+        journalChild.emit("close", 0, null);
+      });
+      return journalChild;
+    },
+  });
+  await journalRun;
+  const journalRows = fs.readFileSync(journalPath, "utf8").trim().split(/\r?\n/).map(JSON.parse);
+  assert.equal(journalRows.length, 2);
+  assert.equal(journalRows[0].schema, "direct_opencode_provider_event_journal@1");
+  assert.equal(journalRows[0].attemptOrdinal, 2);
+  assert.equal(journalRows[0].event.part.text, "durable");
+  assert.equal(journalRows[1].event.part.reason, "stop");
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(journalPath).mode & 0o077, 0, "the raw provider journal must remain private");
+  }
+} finally {
+  fs.rmSync(journalRoot, { recursive: true, force: true });
+}
 
 const poolCalls = [];
 const pool = new DirectNativeAgentPool({

@@ -45,6 +45,8 @@ const {
   NdjsonTransport,
   WorkspaceBackendManager,
   publicBackendErrorCode,
+  workspaceAttachFailureCode,
+  workspaceBackendRecovery,
 } = require("../src/main/workspace-backend");
 const { terminateWorkspaceProcessTree } = require("../src/backend/workspace-process-tree");
 
@@ -2950,6 +2952,75 @@ try {
     "attach rejections canonicalize arbitrary private error codes",
   );
   missingAgentManager.disposeAll();
+
+  assert.equal(
+    workspaceAttachFailureCode({
+      error: { code: "workspace_backend_attach_handshake_timeout" },
+      descriptor: { transport: "wsl.exe" },
+      readySeen: false,
+      recentDiagnostics: [],
+    }),
+    "workspace_wsl_interop_unavailable",
+    "a WSL pre-handshake timeout is classified as host interop unavailability",
+  );
+  assert.equal(
+    workspaceAttachFailureCode({
+      error: { code: "workspace_backend_transport_closed" },
+      descriptor: { transport: "wsl.exe" },
+      readySeen: false,
+      recentDiagnostics: [{ type: "stderr", text: "Node.js is required inside the selected WSL distro." }],
+    }),
+    "workspace_wsl_node_missing",
+  );
+  assert.deepEqual(
+    workspaceBackendRecovery("workspace_wsl_interop_unavailable", "wsl"),
+    {
+      retryAvailable: true,
+      hostActionRequired: true,
+      action: "restart_wsl_interop_then_retry",
+      automaticResetAllowed: false,
+      canonicalHistoryAtRisk: false,
+    },
+    "WSL recovery remains explicit and never authorizes an automatic host reset",
+  );
+
+  const silentChild = new EventEmitter();
+  silentChild.stdin = new PassThrough();
+  silentChild.stdout = new PassThrough();
+  silentChild.stderr = new PassThrough();
+  silentChild.exitCode = null;
+  silentChild.signalCode = null;
+  silentChild.kill = (signal = "SIGTERM") => {
+    if (silentChild.exitCode !== null || silentChild.signalCode !== null) return false;
+    silentChild.exitCode = 0;
+    silentChild.signalCode = signal;
+    queueMicrotask(() => silentChild.emit("exit", 0, signal));
+    return true;
+  };
+  const hungAttachManager = new WorkspaceBackendManager({
+    agentPath: path.resolve("src/backend/wsl-agent.js"),
+    fallbackRoot: temporaryRoot,
+    attachTimeoutMs: 250,
+    spawnImpl: () => silentChild,
+  });
+  const hungAttachProject = {
+    id: "project_hung_backend_handshake",
+    repoPath: temporaryRoot,
+    workspace: { kind: "local", localPath: temporaryRoot },
+  };
+  const hungAttachStartedAt = Date.now();
+  await assert.rejects(
+    hungAttachManager.ensureForProject(hungAttachProject, { workspaceHygiene: false }),
+    (error) => error?.code === "workspace_backend_attach_handshake_timeout",
+    "a backend that never speaks must be bounded by an outer attach watchdog",
+  );
+  assert(Date.now() - hungAttachStartedAt < 2_000, "the attach watchdog must not leave startup pending indefinitely");
+  const hungAttachStatus = hungAttachManager.statusForProject(hungAttachProject);
+  assert.equal(hungAttachStatus.status, "failed");
+  assert.equal(hungAttachStatus.lastErrorCode, "workspace_backend_attach_handshake_timeout");
+  assert.equal(hungAttachStatus.recovery.retryAvailable, true);
+  assert.equal(hungAttachStatus.recovery.automaticResetAllowed, false);
+  hungAttachManager.disposeAll();
 
   const liveBackendRoot = path.join(temporaryRoot, "live-backend");
   fs.mkdirSync(liveBackendRoot, { recursive: true });

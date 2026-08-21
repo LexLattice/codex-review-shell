@@ -13,6 +13,7 @@ const PROVIDER_OPENCODE_OXALPHA = "opencode-oxalpha";
 const OPENROUTER_OXALPHA_MODEL = "stealth/ox-alpha";
 const OPENCODE_OXALPHA_MODEL = "opencode/x-preview-f-free";
 const DEFAULT_OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+const MAX_OPENCODE_REBASE_OUTPUT_CHARS = 128 * 1024;
 const DEFAULT_CONTINUATION_PROMPT = [
   "Continue from exactly where the prior response stopped.",
   "Do not restart or repeat completed material.",
@@ -521,7 +522,11 @@ function normalizedAttemptEvents(input = {}) {
     });
   }
   events.push({
-    type: input.completed ? "response_completed" : "provider_continuation_scheduled",
+    type: input.completed
+      ? "response_completed"
+      : input.continuityRebased === true
+        ? "provider_continuity_rebased"
+        : "provider_continuation_scheduled",
     responseId: input.responseId,
     stopReason: input.completed ? "completed" : normalizeString(input.trigger, "incomplete"),
     continuationOrdinal: input.ordinal,
@@ -531,6 +536,60 @@ function normalizedAttemptEvents(input = {}) {
 
 function renumberEvents(events = []) {
   return events.map((event, sequence) => ({ ...event, sequence }));
+}
+
+async function appendCommittedAttemptEvents(normalizedEvents, events, options = {}) {
+  const normalizedOffset = normalizedEvents.length;
+  const committed = (Array.isArray(events) ? events : []).map((event, index) => ({
+    ...event,
+    sequence: normalizedOffset + index,
+  }));
+  if (!committed.length) return committed;
+  normalizedEvents.push(...committed);
+  if (typeof options.onNormalizedEventsCommitted === "function") {
+    await options.onNormalizedEventsCommitted(committed, { normalizedOffset });
+  }
+  return committed;
+}
+
+function boundedOpenCodeRebaseOutput(value = "") {
+  const source = String(value || "");
+  if (source.length <= MAX_OPENCODE_REBASE_OUTPUT_CHARS) return source;
+  const headChars = Math.floor(MAX_OPENCODE_REBASE_OUTPUT_CHARS / 4);
+  const tailChars = MAX_OPENCODE_REBASE_OUTPUT_CHARS - headChars;
+  const omitted = source.length - headChars - tailChars;
+  return [
+    source.slice(0, headChars),
+    `\n\n[${omitted} captured characters omitted from the continuity projection]\n\n`,
+    source.slice(-tailChars),
+  ].join("");
+}
+
+function buildOpenCodeRebasePrompt(input = {}) {
+  const priorOutput = String(input.outputText || "");
+  return [
+    "[DIRECT CHILD CONSTITUTION]",
+    normalizeString(input.instructions, "You are a bounded Direct child agent. Answer only the delegated task."),
+    "[END DIRECT CHILD CONSTITUTION]",
+    "",
+    "[PROVIDER CONTINUITY REBASE]",
+    "The prior provider session is unavailable. The Direct Workbench capture below is the continuity authority.",
+    "Treat it as work already produced. Continue without restarting or repeating completed material.",
+    `Captured output digest: ${digestFor("direct-external-provider-output@1", priorOutput)}`,
+    "[END PROVIDER CONTINUITY REBASE]",
+    "",
+    "[ORIGINAL DELEGATED TASK]",
+    String(input.task || ""),
+    "[END ORIGINAL DELEGATED TASK]",
+    "",
+    "[CAPTURED PARTIAL OUTPUT]",
+    boundedOpenCodeRebaseOutput(priorOutput),
+    "[END CAPTURED PARTIAL OUTPUT]",
+    "",
+    "[COMPLETION CONTRACT]",
+    normalizeString(input.continuationPrompt, DEFAULT_CONTINUATION_PROMPT),
+    "[END COMPLETION CONTRACT]",
+  ].join("\n");
 }
 
 async function runOpenRouterOxAlphaTurnWithinDeadline(input = {}, options = {}) {
@@ -602,7 +661,7 @@ async function runOpenRouterOxAlphaTurnWithinDeadline(input = {}, options = {}) 
           usageObserved: Object.keys(usage).length > 0,
           semanticContinuationScheduled: false,
         }));
-        normalizedEvents.push(...normalizedAttemptEvents({
+        await appendCommittedAttemptEvents(normalizedEvents, normalizedAttemptEvents({
           ordinal,
           providerId: PROVIDER_OPENROUTER_OXALPHA,
           model,
@@ -611,7 +670,7 @@ async function runOpenRouterOxAlphaTurnWithinDeadline(input = {}, options = {}) 
           usage,
           completed: true,
           trigger: "terminal_stop",
-        }));
+        }), options);
         const continuationTrace = finalTrace({
           providerId: PROVIDER_OPENROUTER_OXALPHA,
           model,
@@ -676,7 +735,7 @@ async function runOpenRouterOxAlphaTurnWithinDeadline(input = {}, options = {}) 
       usageObserved: Object.keys(usage).length > 0,
       semanticContinuationScheduled: semanticContinuation,
     }));
-    normalizedEvents.push(...normalizedAttemptEvents({
+    await appendCommittedAttemptEvents(normalizedEvents, normalizedAttemptEvents({
       ordinal,
       providerId: PROVIDER_OPENROUTER_OXALPHA,
       model,
@@ -685,7 +744,7 @@ async function runOpenRouterOxAlphaTurnWithinDeadline(input = {}, options = {}) 
       usage,
       completed: false,
       trigger,
-    }));
+    }), options);
     if (ordinal < policy.maxAttempts) {
       await waitForRetry(continuationDelay(policy, ordinal), input.signal, options.sleepImpl);
     }
@@ -747,8 +806,85 @@ function resolveOpenCodeExecutable(options = {}) {
   return "";
 }
 
+function openCodeRunDirectories(input = {}, options = {}) {
+  const baseDirectory = path.resolve(normalizeString(options.workingDirectory, os.tmpdir()));
+  const identity = normalizeString(input.attemptId, crypto.randomUUID());
+  const runKey = digestFor("direct-opencode-run-directory@1", identity).slice("sha256:".length, 31);
+  const runRoot = path.join(baseDirectory, "opencode-runs", runKey);
+  return {
+    runKey,
+    runRoot,
+    workingDirectory: path.join(runRoot, "workspace"),
+    runtimeDirectory: path.join(runRoot, "runtime"),
+    eventJournalPath: path.join(runRoot, "provider-events.ndjson"),
+  };
+}
+
+function ensureOpenCodeRunDirectories(directories = {}, options = {}) {
+  const mkdirSync = options.mkdirSync || fs.mkdirSync;
+  for (const directory of [
+    directories.runRoot,
+    directories.workingDirectory,
+    directories.runtimeDirectory,
+    path.join(directories.runtimeDirectory, "data"),
+    path.join(directories.runtimeDirectory, "cache"),
+    path.join(directories.runtimeDirectory, "state"),
+    path.join(directories.runtimeDirectory, "config"),
+    path.join(directories.runtimeDirectory, "config", "opencode"),
+  ]) {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+  }
+}
+
+function openOpenCodeEventJournal(input = {}) {
+  const journalPath = normalizeString(input.journalPath, "");
+  if (!journalPath) return null;
+  let descriptor;
+  try {
+    fs.mkdirSync(path.dirname(journalPath), { recursive: true, mode: 0o700 });
+    descriptor = fs.openSync(journalPath, "a", 0o600);
+    if (process.platform !== "win32") fs.fchmodSync(descriptor, 0o600);
+  } catch {
+    throw safeError("direct_opencode_event_journal_unavailable");
+  }
+  let closed = false;
+  return {
+    append(event) {
+      if (closed) throw safeError("direct_opencode_event_journal_closed");
+      const record = {
+        schema: "direct_opencode_provider_event_journal@1",
+        attemptOrdinal: Math.max(1, Number(input.attemptOrdinal || 1)),
+        observedAt: new Date().toISOString(),
+        event,
+      };
+      try {
+        fs.writeSync(descriptor, `${JSON.stringify(record)}\n`, null, "utf8");
+        fs.fsyncSync(descriptor);
+      } catch {
+        throw safeError("direct_opencode_event_journal_write_failed");
+      }
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      try { fs.closeSync(descriptor); } catch {}
+    },
+  };
+}
+
 function safeOpenCodeRuntimeEnv(options = {}) {
   const env = { ...(options.env || process.env) };
+  const runtimeDirectory = path.resolve(normalizeString(
+    options.openCodeRuntimeDirectory || options.runtimeDirectory || env.CODEX_DIRECT_OPENCODE_RUNTIME_DIR,
+    path.join(os.tmpdir(), "codex-direct-opencode-runtime"),
+  ));
+  env.XDG_DATA_HOME = path.join(runtimeDirectory, "data");
+  env.XDG_CACHE_HOME = path.join(runtimeDirectory, "cache");
+  env.XDG_STATE_HOME = path.join(runtimeDirectory, "state");
+  env.XDG_CONFIG_HOME = path.join(runtimeDirectory, "config");
+  delete env.OPENCODE_CONFIG;
+  delete env.OPENCODE_TUI_CONFIG;
+  env.OPENCODE_CONFIG_DIR = path.join(runtimeDirectory, "config", "opencode");
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "1";
   env.OPENCODE_DISABLE_DEFAULT_PLUGINS = "1";
   env.OPENCODE_DISABLE_LSP_DOWNLOAD = "1";
@@ -767,20 +903,35 @@ function spawnOpenCodeProcess(input = {}, options = {}) {
   const spawnImpl = options.spawnImpl || spawn;
   return new Promise((resolve, reject) => {
     throwIfAborted(input.signal);
+    let journal;
+    try {
+      journal = openOpenCodeEventJournal({
+        journalPath: input.eventJournalPath,
+        attemptOrdinal: input.attemptOrdinal,
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
     const child = spawnImpl(input.executable, input.args, {
       cwd: input.cwd,
-      env: safeOpenCodeRuntimeEnv(options),
+      env: safeOpenCodeRuntimeEnv({
+        ...options,
+        openCodeRuntimeDirectory: input.runtimeDirectory,
+      }),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       shell: false,
     });
     let stdout = "";
+    let journalBuffer = "";
     let stderrChars = 0;
     let settled = false;
     let terminationTimer = null;
     const cleanup = () => {
       input.signal?.removeEventListener?.("abort", abort);
       if (terminationTimer) clearTimeout(terminationTimer);
+      journal?.close();
     };
     const finish = (handler, value) => {
       if (settled) return;
@@ -799,6 +950,23 @@ function spawnOpenCodeProcess(input = {}, options = {}) {
     child.stderr?.setEncoding?.("utf8");
     child.stdout?.on("data", (chunk) => {
       stdout += chunk;
+      journalBuffer += chunk;
+      const lines = journalBuffer.split(/\r?\n/);
+      journalBuffer = lines.pop() || "";
+      try {
+        for (const line of lines) {
+          if (!journal || !line.trim()) continue;
+          let parsed;
+          try { parsed = JSON.parse(line); } catch { continue; }
+          journal.append(parsed);
+        }
+      } catch (error) {
+        try { child.kill("SIGTERM"); } catch {}
+        finish(reject, error?.code?.startsWith("direct_opencode_event_journal_")
+          ? error
+          : safeError("direct_opencode_event_journal_write_failed"));
+        return;
+      }
       if (stdout.length > input.maxStdoutChars) {
         try { child.kill("SIGTERM"); } catch {}
         finish(reject, safeError("direct_opencode_output_limit"));
@@ -813,6 +981,18 @@ function spawnOpenCodeProcess(input = {}, options = {}) {
       if (input.signal?.aborted) {
         finish(reject, abortError());
         return;
+      }
+      if (journalBuffer.trim()) {
+        try {
+          journal?.append(JSON.parse(journalBuffer));
+        } catch (error) {
+          if (error?.code?.startsWith("direct_opencode_event_journal_")) {
+            finish(reject, error);
+            return;
+          }
+          // Preserve malformed tail evidence in stdout for typed incomplete
+          // handling, but never write a non-JSON record to the parsed journal.
+        }
       }
       finish(resolve, {
         exitCode: Number.isInteger(code) ? code : -1,
@@ -890,8 +1070,9 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
     task,
   ].join("\n");
   if (!task) throw safeError("direct_external_provider_prompt_missing");
-  const cwd = path.resolve(normalizeString(options.workingDirectory, os.tmpdir()));
-  (options.mkdirSync || fs.mkdirSync)(cwd, { recursive: true, mode: 0o700 });
+  const runDirectories = openCodeRunDirectories(input, options);
+  ensureOpenCodeRunDirectories(runDirectories, options);
+  const cwd = runDirectories.workingDirectory;
   const startedAt = Date.now();
   const attempts = [];
   const normalizedEvents = [];
@@ -900,19 +1081,35 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
   let semanticContinuationCount = 0;
   let transportRetryCount = 0;
   let sessionId = "";
+  let rebasePending = false;
   for (let ordinal = 1; ordinal <= policy.maxAttempts; ordinal += 1) {
     throwIfAborted(input.signal);
     if (Date.now() - startedAt >= policy.maxTotalMs) break;
+    const usedSession = Boolean(sessionId);
+    const requestedSessionId = sessionId;
+    const usedRebase = !usedSession && rebasePending && Boolean(outputText);
     const args = ["run", "--format", "json", "--dir", cwd, "--model", model, "--variant",
       reasoningVariantForOpenCode(input.requestShape?.reasoningEffort)];
-    if (sessionId) args.push("--session", sessionId);
-    args.push(sessionId ? policy.continuationPrompt : prompt);
+    if (usedSession) args.push("--session", sessionId);
+    args.push(usedSession
+      ? policy.continuationPrompt
+      : usedRebase
+        ? buildOpenCodeRebasePrompt({
+            instructions,
+            task,
+            outputText,
+            continuationPrompt: policy.continuationPrompt,
+          })
+        : prompt);
     let processResult;
     try {
       processResult = await (options.processRunner || spawnOpenCodeProcess)({
         executable,
         args,
         cwd,
+        runtimeDirectory: runDirectories.runtimeDirectory,
+        eventJournalPath: runDirectories.eventJournalPath,
+        attemptOrdinal: ordinal,
         signal: input.signal,
         maxStdoutChars: policy.maxOutputChars * 2,
       }, options);
@@ -920,26 +1117,35 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
       if (input.signal?.aborted || error?.name === "AbortError") throw abortError();
       if (error?.code !== "direct_opencode_process_failed") throw error;
       transportRetryCount += 1;
+      const continuityRebased = usedSession && Boolean(outputText);
+      const trigger = continuityRebased
+        ? "opencode_session_continuity_lost"
+        : "opencode_process_failed";
+      if (usedSession) {
+        sessionId = "";
+        rebasePending = Boolean(outputText);
+      }
       attempts.push(attemptRow({
         ordinal,
         outcome: "incomplete",
-        trigger: "opencode_process_failed",
+        trigger,
         finishReason: "",
         outputChars: 0,
-        responseId: sessionId,
+        responseId: usedSession ? requestedSessionId : "",
         usageObserved: false,
-        semanticContinuationScheduled: false,
+        semanticContinuationScheduled: continuityRebased,
       }));
-      normalizedEvents.push(...normalizedAttemptEvents({
+      await appendCommittedAttemptEvents(normalizedEvents, normalizedAttemptEvents({
         ordinal,
         providerId: PROVIDER_OPENCODE_OXALPHA,
         model,
         outputText: "",
-        responseId: sessionId,
+        responseId: "",
         usage: {},
         completed: false,
-        trigger: "opencode_process_failed",
-      }));
+        trigger,
+        continuityRebased,
+      }), options);
       if (ordinal < policy.maxAttempts) {
         await waitForRetry(continuationDelay(policy, ordinal), input.signal, options.sleepImpl);
       }
@@ -949,6 +1155,10 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
     const resolvedSessionId = normalizeString(parsed.sessionId, sessionId);
     if (!resolvedSessionId) {
       transportRetryCount += 1;
+      outputText = overlapMerge(outputText, parsed.outputText);
+      tokenUsage = addUsage(tokenUsage, parsed.usage);
+      rebasePending = Boolean(outputText);
+      if (parsed.outputText) semanticContinuationCount += 1;
       const trigger = parsed.invalidJsonObserved
         ? "opencode_json_incomplete"
         : "opencode_session_identity_missing";
@@ -960,9 +1170,9 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
         outputChars: parsed.outputText.length,
         responseId: "",
         usageObserved: Object.keys(parsed.usage).length > 0,
-        semanticContinuationScheduled: false,
+        semanticContinuationScheduled: rebasePending,
       }));
-      normalizedEvents.push(...normalizedAttemptEvents({
+      await appendCommittedAttemptEvents(normalizedEvents, normalizedAttemptEvents({
         ordinal,
         providerId: PROVIDER_OPENCODE_OXALPHA,
         model,
@@ -971,13 +1181,15 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
         usage: parsed.usage,
         completed: false,
         trigger,
-      }));
+        continuityRebased: rebasePending,
+      }), options);
       if (ordinal < policy.maxAttempts) {
         await waitForRetry(continuationDelay(policy, ordinal), input.signal, options.sleepImpl);
       }
       continue;
     }
     sessionId = resolvedSessionId;
+    rebasePending = false;
     const attemptSessionId = sessionId;
     if (parsed.toolUseObserved) throw safeError("direct_opencode_tool_boundary_violated");
     outputText = overlapMerge(outputText, parsed.outputText);
@@ -995,7 +1207,7 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
         usageObserved: Object.keys(parsed.usage).length > 0,
         semanticContinuationScheduled: false,
       }));
-      normalizedEvents.push(...normalizedAttemptEvents({
+      await appendCommittedAttemptEvents(normalizedEvents, normalizedAttemptEvents({
         ordinal,
         providerId: PROVIDER_OPENCODE_OXALPHA,
         model,
@@ -1004,7 +1216,7 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
         usage: parsed.usage,
         completed: true,
         trigger: "terminal_stop",
-      }));
+      }), options);
       return {
         ok: true,
         terminalState: "completed",
@@ -1031,7 +1243,12 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
       throw safeError("direct_opencode_content_filter_terminal");
     }
     const semanticContinuation = Boolean(parsed.outputText);
-    const trigger = parsed.finishReason === "length"
+    const continuityRebased = usedSession && !semanticContinuation && Boolean(outputText) && (
+      processResult.exitCode !== 0 || parsed.errorObserved || parsed.invalidJsonObserved
+    );
+    const trigger = continuityRebased
+      ? "opencode_session_continuity_lost"
+      : parsed.finishReason === "length"
       ? "max_output_incomplete"
       : parsed.finishReason === "unknown"
         ? "opencode_finish_unknown"
@@ -1052,9 +1269,9 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
       outputChars: parsed.outputText.length,
       responseId: attemptSessionId,
       usageObserved: Object.keys(parsed.usage).length > 0,
-      semanticContinuationScheduled: semanticContinuation,
+      semanticContinuationScheduled: semanticContinuation || continuityRebased,
     }));
-    normalizedEvents.push(...normalizedAttemptEvents({
+    await appendCommittedAttemptEvents(normalizedEvents, normalizedAttemptEvents({
       ordinal,
       providerId: PROVIDER_OPENCODE_OXALPHA,
       model,
@@ -1063,8 +1280,15 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
       usage: parsed.usage,
       completed: false,
       trigger,
-    }));
-    if (!semanticContinuation && !outputText) sessionId = "";
+      continuityRebased,
+    }), options);
+    if (continuityRebased) {
+      sessionId = "";
+      rebasePending = true;
+    } else if (!semanticContinuation && !outputText) {
+      sessionId = "";
+      rebasePending = false;
+    }
     if (ordinal < policy.maxAttempts) {
       await waitForRetry(continuationDelay(policy, ordinal), input.signal, options.sleepImpl);
     }
@@ -1127,11 +1351,14 @@ module.exports = {
   PROVIDER_OPENCODE_OXALPHA,
   PROVIDER_OPENROUTER_OXALPHA,
   addUsage,
+  buildOpenCodeRebasePrompt,
   continuationPolicy,
   externalProviderProfile,
   loadOpenRouterApiKey,
   normalizeProviderId,
   overlapMerge,
+  openCodeRunDirectories,
+  openOpenCodeEventJournal,
   parseEnvAssignment,
   parseOpenCodeJsonOutput,
   providerDefaultModel,
@@ -1142,5 +1369,6 @@ module.exports = {
   runOpenCodeOxAlphaTurn,
   runOpenRouterOxAlphaTurn,
   safeOpenCodeRuntimeEnv,
+  spawnOpenCodeProcess,
   streamOpenRouterAttempt,
 };

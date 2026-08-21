@@ -18,6 +18,7 @@ const fs = require("node:fs");
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const ATTACH_TIMEOUT_MS = 30_000;
+const MIN_ATTACH_TIMEOUT_MS = 250;
 const MUTATION_COMMIT_KINDS_BY_METHOD = Object.freeze({
   applyPatch: new Set(["apply_patch_files"]),
   applyWorkspaceWorkerPatch: new Set(["apply_patch_files"]),
@@ -82,6 +83,69 @@ function publicBackendCapabilities(value) {
     name,
     source[name] === true,
   ]));
+}
+
+function boundedAttachTimeoutMs(value) {
+  const number = Number(value);
+  return Number.isFinite(number)
+    ? Math.max(MIN_ATTACH_TIMEOUT_MS, Math.min(120_000, Math.floor(number)))
+    : ATTACH_TIMEOUT_MS;
+}
+
+function workspaceAttachFailureCode(input = {}) {
+  const originalCode = publicBackendErrorCode(
+    input.error?.code,
+    "workspace_backend_attach_failed",
+  );
+  if (input.descriptor?.transport !== "wsl.exe" || input.readySeen === true) {
+    return originalCode;
+  }
+  const diagnostic = (Array.isArray(input.recentDiagnostics) ? input.recentDiagnostics : [])
+    .map((entry) => `${entry?.type || ""}: ${entry?.text || ""}`)
+    .join(" | ");
+  if (/Node\.js is required inside the selected WSL distro/i.test(diagnostic)) {
+    return "workspace_wsl_node_missing";
+  }
+  if (/WSL_E_DISTRO_NOT_FOUND|no distribution with the supplied name|distribution .* was not found/i.test(diagnostic)) {
+    return "workspace_wsl_distro_unavailable";
+  }
+  if (
+    originalCode === "workspace_backend_attach_handshake_timeout" ||
+    originalCode === "workspace_backend_request_timeout" ||
+    /UtilAcceptVsock|accept4 failed 110|timed out after|operation timed out/i.test(diagnostic)
+  ) {
+    return "workspace_wsl_interop_unavailable";
+  }
+  return originalCode;
+}
+
+function workspaceBackendRecovery(errorCode = "", workspaceKind = "") {
+  const code = publicBackendErrorCode(errorCode, "");
+  if (workspaceKind === "wsl" && code === "workspace_wsl_interop_unavailable") {
+    return {
+      retryAvailable: true,
+      hostActionRequired: true,
+      action: "restart_wsl_interop_then_retry",
+      automaticResetAllowed: false,
+      canonicalHistoryAtRisk: false,
+    };
+  }
+  if (code && code !== "workspace_backend_agent_missing") {
+    return {
+      retryAvailable: true,
+      hostActionRequired: false,
+      action: "retry_workspace_attachment",
+      automaticResetAllowed: false,
+      canonicalHistoryAtRisk: false,
+    };
+  }
+  return {
+    retryAvailable: false,
+    hostActionRequired: false,
+    action: "none",
+    automaticResetAllowed: false,
+    canonicalHistoryAtRisk: false,
+  };
 }
 
 function stableStringify(value) {
@@ -886,6 +950,13 @@ class WorkspaceSession extends EventEmitter {
   }
 
   publicSnapshot() {
+    const workspaceKind = normalizeString(
+      this.descriptor?.workspace?.kind || this.project.workspace?.kind,
+      "local",
+    );
+    const lastErrorCode = this.lastError
+      ? publicBackendErrorCode(this.lastError?.code)
+      : "";
     const hello = this.hello ? {
       protocolVersion: this.hello.protocolVersion,
       sessionId: normalizeString(this.hello.sessionId, ""),
@@ -903,14 +974,10 @@ class WorkspaceSession extends EventEmitter {
       projectName: normalizeString(this.project.name, ""),
       status: this.status,
       transport: this.descriptor?.transport || "not-started",
-      workspaceKind: normalizeString(
-        this.descriptor?.workspace?.kind || this.project.workspace?.kind,
-        "local",
-      ),
+      workspaceKind,
       hello,
-      lastErrorCode: this.lastError
-        ? publicBackendErrorCode(this.lastError?.code)
-        : "",
+      lastErrorCode,
+      recovery: workspaceBackendRecovery(lastErrorCode, workspaceKind),
       readySeen: this.readySeen,
       hygiene: isPlainObject(this.hygiene) ? {
         available: this.hygiene.available === true,
@@ -1015,6 +1082,8 @@ class WorkspaceSession extends EventEmitter {
     this.status = "starting";
     this.lastError = null;
     this.readySeen = false;
+    this.hello = null;
+    this.hygiene = null;
     this.workspaceWorkerBinding = null;
     this.workspaceWorkerBindingInitialization = null;
     this.recentDiagnostics = [];
@@ -1030,7 +1099,8 @@ class WorkspaceSession extends EventEmitter {
       throw error;
     }
 
-    this.child = spawn(this.descriptor.command, this.descriptor.args, {
+    const spawnImpl = this.options.spawnImpl || spawn;
+    this.child = spawnImpl(this.descriptor.command, this.descriptor.args, {
       cwd: this.descriptor.cwd,
       env: this.descriptor.env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -1072,7 +1142,22 @@ class WorkspaceSession extends EventEmitter {
 
     this.status = "attaching";
     try {
-      this.hello = await this.transport.request("hello", {}, ATTACH_TIMEOUT_MS);
+      const attachTimeoutMs = boundedAttachTimeoutMs(this.options.attachTimeoutMs);
+      let handshakeTimer = null;
+      try {
+        this.hello = await Promise.race([
+          this.transport.request("hello", {}, attachTimeoutMs),
+          new Promise((_resolve, reject) => {
+            handshakeTimer = setTimeout(() => {
+              const timeoutError = new Error("Workspace backend attach handshake timed out.");
+              timeoutError.code = "workspace_backend_attach_handshake_timeout";
+              reject(timeoutError);
+            }, attachTimeoutMs);
+          }),
+        ]);
+      } finally {
+        if (handshakeTimer) clearTimeout(handshakeTimer);
+      }
       if (options.workspaceWorkerBinding) {
         await this.initializeWorkspaceWorkerBinding(options.workspaceWorkerBinding);
       }
@@ -1098,14 +1183,19 @@ class WorkspaceSession extends EventEmitter {
       this.emitStatus("backend-attached");
     } catch (error) {
       const privateMessage = this.attachFailureMessage(error);
-      const errorCode = publicBackendErrorCode(error?.code, "workspace_backend_attach_failed");
+      const errorCode = workspaceAttachFailureCode({
+        error,
+        descriptor: this.descriptor,
+        readySeen: this.readySeen,
+        recentDiagnostics: this.recentDiagnostics,
+      });
       this.status = "failed";
       const publicError = new Error("Workspace backend attach failed.");
       publicError.code = errorCode;
       this.lastError = publicError;
       this.noteDiagnostic("attach-failed", privateMessage);
       this.emitStatus("backend-failed", { error: publicError });
-      this.dispose();
+      this.dispose({ preserveStatus: true });
       throw publicError;
     }
   }
@@ -1195,10 +1285,11 @@ class WorkspaceSession extends EventEmitter {
     return pending.promise;
   }
 
-  dispose() {
-    this.status = "disposed";
+  dispose(options = {}) {
+    const preserveStatus = options.preserveStatus === true;
+    if (!preserveStatus) this.status = "disposed";
     if (this.transport) this.transport.dispose();
-    this.emitStatus("backend-disposed");
+    if (!preserveStatus) this.emitStatus("backend-disposed");
   }
 }
 
@@ -1300,6 +1391,8 @@ module.exports = {
   WorkspaceBackendManager,
   normalizeWorkspace,
   publicBackendErrorCode,
+  workspaceAttachFailureCode,
+  workspaceBackendRecovery,
   workspaceLabel,
   workspaceRoot,
   workspaceRootIsAbsolute,

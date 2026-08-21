@@ -229,6 +229,7 @@ const els = {
   repoPath: document.getElementById("repoPath"),
   workspacePath: document.getElementById("workspacePath"),
   backendStatus: document.getElementById("backendStatus"),
+  retryWorkspaceButton: document.getElementById("retryWorkspaceButton"),
   bindingStatus: document.getElementById("bindingStatus"),
   activeThreadStatus: document.getElementById("activeThreadStatus"),
   overviewTabButton: document.getElementById("overviewTabButton"),
@@ -1275,9 +1276,23 @@ function backendStatusText(project) {
   if (!status) return "backend attaching…";
   const transport = status.transport ? ` · ${status.transport}` : "";
   if (status.status === "attached") return `backend attached${transport}`;
-  if (status.status === "failed") return `backend failed${status.lastErrorCode ? ` · ${status.lastErrorCode}` : ""}`;
+  if (status.status === "failed") {
+    if (status.lastErrorCode === "workspace_wsl_interop_unavailable") {
+      return "WSL link unavailable · host restart required";
+    }
+    return `backend failed${status.lastErrorCode ? ` · ${status.lastErrorCode}` : ""}`;
+  }
   if (status.status === "closed") return `backend closed${status.lastErrorCode ? ` · ${status.lastErrorCode}` : ""}`;
   return `backend ${status.status || "unknown"}${transport}`;
+}
+
+function backendRecoveryGuidance(status = {}) {
+  if (status?.lastErrorCode === "workspace_wsl_interop_unavailable") {
+    return "Close work that depends on Ubuntu, restart the Ubuntu WSL distro from Windows, then retry. Direct Workbench history remains intact. No WSL reset is performed automatically.";
+  }
+  return status?.recovery?.retryAvailable
+    ? "Retry the workspace attachment. Direct Workbench history remains intact."
+    : backendStatusText(activeProject());
 }
 
 function updateWorkspaceFieldVisibility() {
@@ -4454,8 +4469,16 @@ function renderSelectedProject() {
   els.repoPath.title = project.repoPath;
   els.workspacePath.textContent = workspaceText;
   els.workspacePath.title = workspaceText;
+  const workspaceStatus = state.workspaceStatuses[project.id] || {};
   els.backendStatus.textContent = backendStatusText(project);
-  els.backendStatus.title = backendStatusText(project);
+  els.backendStatus.title = backendRecoveryGuidance(workspaceStatus);
+  if (els.retryWorkspaceButton) {
+    els.retryWorkspaceButton.hidden = workspaceStatus?.recovery?.retryAvailable !== true;
+    els.retryWorkspaceButton.textContent = workspaceStatus?.recovery?.hostActionRequired
+      ? "Retry after WSL restart"
+      : "Retry workspace";
+    els.retryWorkspaceButton.title = backendRecoveryGuidance(workspaceStatus);
+  }
   const codexDetails = codex.mode === "managed"
     ? `managed/${codex.runtime || "auto"}${codex.model ? ` · ${codex.model}` : ""}`
     : codex.mode;
@@ -4471,6 +4494,45 @@ function renderSelectedProject() {
   els.chatgptSurfaceTitle.title = currentThread?.url || "";
   els.watchedRulesPreview.textContent = (project.flowProfile?.watchedFilePatterns || []).join("\n");
   els.returnHeaderPreview.textContent = project.flowProfile?.returnHeader || "GPT feedback";
+}
+
+async function retryWorkspaceAttachment() {
+  const project = activeProject();
+  if (!project || !bridge.attachWorkspace) return;
+  state.workspaceStatuses[project.id] = {
+    ...(state.workspaceStatuses[project.id] || {}),
+    status: "attaching",
+    lastErrorCode: "",
+  };
+  renderSelectedProject();
+  setLastEvent(`Retrying workspace attachment: ${workspaceSummary(project)}…`);
+  try {
+    const status = await bridge.attachWorkspace(project.id);
+    state.workspaceStatuses[project.id] = status;
+    renderSelectedProject();
+    setLastEvent(`Workspace backend attached: ${status.transport || "ready"}.`);
+    await Promise.allSettled([
+      loadCodexThreads({ projectId: project.id }),
+      loadAnalyticsThreads({ projectId: project.id }),
+    ]);
+  } catch (error) {
+    state.workspaceStatuses[project.id] = {
+      status: "failed",
+      workspaceKind: projectWorkspace(project).kind,
+      lastErrorCode: publicBackendErrorCode(error?.code, "workspace_backend_attach_failed"),
+      recovery: {
+        retryAvailable: true,
+        hostActionRequired: error?.code === "workspace_wsl_interop_unavailable",
+        action: error?.code === "workspace_wsl_interop_unavailable"
+          ? "restart_wsl_interop_then_retry"
+          : "retry_workspace_attachment",
+        automaticResetAllowed: false,
+        canonicalHistoryAtRisk: false,
+      },
+    };
+    renderSelectedProject();
+    setLastEvent(`Workspace retry failed: ${state.workspaceStatuses[project.id].lastErrorCode}.`);
+  }
 }
 
 function renderThreadDeck() {
@@ -7461,9 +7523,20 @@ async function selectProject(projectId) {
     } catch (error) {
       if (isRequestStale("project", projectVersion) || isProjectRequestStale(project.id, projectVersion)) return;
       state.codexThreads = [];
+      const lastErrorCode = publicBackendErrorCode(error?.code, "workspace_backend_attach_failed");
       state.workspaceStatuses[project.id] = {
         status: "failed",
-        lastErrorCode: publicBackendErrorCode(error?.code, "workspace_backend_attach_failed"),
+        workspaceKind: projectWorkspace(project).kind,
+        lastErrorCode,
+        recovery: {
+          retryAvailable: lastErrorCode !== "workspace_backend_agent_missing",
+          hostActionRequired: lastErrorCode === "workspace_wsl_interop_unavailable",
+          action: lastErrorCode === "workspace_wsl_interop_unavailable"
+            ? "restart_wsl_interop_then_retry"
+            : "retry_workspace_attachment",
+          automaticResetAllowed: false,
+          canonicalHistoryAtRisk: false,
+        },
       };
       renderSelectedProject();
       renderThreadsWorkbench();
@@ -8721,6 +8794,11 @@ function bindEvents() {
     chooseDirectImportRoot().catch((error) => setLastEvent(`Choose import root failed: ${error.message}`));
   });
   els.workspaceKindInput.addEventListener("change", updateWorkspaceFieldVisibility);
+  els.retryWorkspaceButton?.addEventListener("click", () => {
+    retryWorkspaceAttachment().catch((error) => {
+      setLastEvent(`Workspace retry failed: ${errorMessageText(error)}`);
+    });
+  });
   els.codexDefaultPathInput?.addEventListener("change", () => {
     syncProjectRuntimeFieldsFromDefaultPath();
     updateCodexSpawnAgentControlAvailability();
