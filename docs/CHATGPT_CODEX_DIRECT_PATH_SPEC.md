@@ -36,40 +36,30 @@ dependency.
 
 ## Repository And Branch Strategy
 
-The direct path is a parallel long-term line of work, not the next incremental
-change on the current app-server branch.
-
-Recommended local layout:
+The direct path is now the primary implementation in the unified mainline
+checkout:
 
 ```text
-/home/rose/work/LexLattice/codex-review-shell
-  current mainline app-server UX path
-
 /home/rose/work/LexLattice/codex-review-shell-direct
-  long-lived direct ChatGPT/Codex subscription path
+  direct-native mainline plus bounded app-server compatibility
 ```
 
-Recommended branch:
+Canonical branch:
 
 ```text
-codex/direct-chatgpt-harness
+main
 ```
 
 Rules:
 
-- Keep `main` focused on improving the current Codex CLI/app-server UX.
-- Treat the direct-path worktree as its own working main while the harness is
-  immature.
-- Periodically merge or rebase from repository `main` into the direct branch to
-  keep UX, project binding, workspace backend, and middle-plane improvements.
-- Do not merge the direct branch back into `main` until the direct path passes
-  its acceptance criteria.
-- Keep the first direct-path commits documentation, probes, fixtures, and
-  adapter scaffolding only. Avoid live auth/transport until the ODEU profile
-  extraction loop is defined.
-
-This separation avoids blocking current shell UX work while letting the direct
-harness evolve as a coherent alternate product path.
+- Build semantics, persistence, orchestration, and context control in Direct by
+  default.
+- Retain Codex CLI/app-server paths only for bounded upstream capabilities and
+  compatibility surfaces that Direct does not yet realize.
+- Develop reviewed changes on short-lived `codex/` branches and merge them into
+  `main`; do not recreate a second long-lived product branch.
+- Keep each runtime path's authority and evidence provenance explicit even when
+  both are presented through the same UX.
 
 ## Product Boundary
 

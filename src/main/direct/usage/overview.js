@@ -47,6 +47,7 @@ const MODEL_PRICING = Object.freeze({
 
 const PRICING_SLUGS = Object.keys(MODEL_PRICING).sort((left, right) => right.length - left.length);
 const overviewCache = new Map();
+const overviewInFlight = new Map();
 
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -59,6 +60,16 @@ function safeInt(value) {
 
 function isoDay(value) {
   return typeof value === "string" && value.length >= 10 ? value.slice(0, 10) : "";
+}
+
+function usageWindowSinceDate(windowDays, now = Date.now()) {
+  const parsedDays = Number.parseInt(String(windowDays || ""), 10);
+  const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 30;
+  const date = new Date(now);
+  if (!Number.isFinite(date.getTime())) throw new TypeError("Usage window requires a valid current time.");
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() - (days - 1));
+  return date.toISOString().slice(0, 10);
 }
 
 function projectLabel(cwd) {
@@ -151,10 +162,21 @@ function recordUsage(accumulator, provider, model, day, project, tokens, costUsd
   accumulator.projects.set(project, projectBucket);
 }
 
+function selectNewestJsonlFiles(files, limit = MAX_FILES_PER_SOURCE) {
+  const discovered = Array.isArray(files) ? files : [];
+  const boundedLimit = Number.isFinite(Number(limit)) ? Math.max(0, Math.trunc(Number(limit))) : 0;
+  const sorted = [...discovered]
+    .sort((left, right) => right.mtimeMs - left.mtimeMs || left.filePath.localeCompare(right.filePath));
+  return {
+    files: sorted.slice(0, boundedLimit),
+    filesDiscovered: sorted.length,
+    truncated: sorted.length > boundedLimit,
+  };
+}
+
 async function collectJsonlFiles(roots) {
-  const files = [];
+  const discovered = [];
   const walk = async (root) => {
-    if (files.length >= MAX_FILES_PER_SOURCE) return;
     let entries = [];
     try {
       entries = await fsp.readdir(root, { withFileTypes: true });
@@ -162,19 +184,18 @@ async function collectJsonlFiles(roots) {
       return;
     }
     for (const entry of entries) {
-      if (files.length >= MAX_FILES_PER_SOURCE) break;
       const candidate = path.join(root, entry.name);
       if (entry.isDirectory()) await walk(candidate);
       else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
         try {
           const info = await fsp.stat(candidate);
-          files.push({ filePath: candidate, size: info.size, mtimeMs: info.mtimeMs });
+          discovered.push({ filePath: candidate, size: info.size, mtimeMs: info.mtimeMs });
         } catch {}
       }
     }
   };
   for (const root of roots) await walk(root);
-  return files.sort((left, right) => right.mtimeMs - left.mtimeMs || left.filePath.localeCompare(right.filePath));
+  return selectNewestJsonlFiles(discovered);
 }
 
 function staleFile(file, sinceDate) {
@@ -257,11 +278,12 @@ async function discoverCodexSessionRoots(homeDir, explicitRoots = []) {
 }
 
 async function scanClaude(accumulator, roots, sinceDate) {
-  const files = await collectJsonlFiles(roots.map((root) => path.join(root, "projects")));
+  const discovery = await collectJsonlFiles(roots.map((root) => path.join(root, "projects")));
+  const files = discovery.files;
   const seenMessages = new Set();
   let recordsRead = 0;
   let duplicatesSkipped = 0;
-  let truncated = false;
+  let truncated = discovery.truncated;
   let stopScanning = false;
   let filesScanned = 0;
   let partialFileCount = 0;
@@ -336,7 +358,8 @@ async function scanClaude(accumulator, roots, sinceDate) {
     provider: "claude",
     available: files.length > 0,
     rootsScanned: roots.length,
-    filesDiscovered: files.length,
+    filesDiscovered: discovery.filesDiscovered,
+    fileDiscoveryTruncated: discovery.truncated,
     filesScanned,
     partialFileCount,
     bytesScanned,
@@ -362,12 +385,13 @@ function parseRateLimit(limits, observedAt) {
 }
 
 async function scanCodex(accumulator, roots, sinceDate) {
-  const files = await collectJsonlFiles(roots);
+  const discovery = await collectJsonlFiles(roots);
+  const files = discovery.files;
   const seenSnapshots = new Set();
   let recordsRead = 0;
   let duplicatesSkipped = 0;
   let latestRateLimit = null;
-  let truncated = false;
+  let truncated = discovery.truncated;
   let stopScanning = false;
   let filesScanned = 0;
   let partialFileCount = 0;
@@ -478,7 +502,8 @@ async function scanCodex(accumulator, roots, sinceDate) {
       provider: "codex",
       available: files.length > 0,
       rootsScanned: roots.length,
-      filesDiscovered: files.length,
+      filesDiscovered: discovery.filesDiscovered,
+      fileDiscoveryTruncated: discovery.truncated,
       filesScanned,
       partialFileCount,
       bytesScanned,
@@ -580,11 +605,11 @@ function finalize(accumulator, sources, rateLimits, generatedAt, sinceDate) {
       tokenAccounting: "derived_from_local_session_logs",
       costComputed: true,
       costConfidence: scanPartial
-        ? "estimated_static_pricing_partial_lower_bound"
+        ? "estimated_static_pricing_partial_estimate"
         : "estimated_static_pricing",
       pricingRevision: PRICING_REVISION,
       billingGrade: false,
-      scanCompleteness: scanPartial ? "partial_lower_bound" : "bounded_complete",
+      scanCompleteness: scanPartial ? "partial_estimate" : "bounded_complete",
       providerVisibility: "detected_thread_evidence_only",
       rawPromptIncluded: false,
       rawResponseIncluded: false,
@@ -597,7 +622,7 @@ async function readDirectUsageOverview(options = {}) {
   const homeDir = path.resolve(String(options.homeDir || os.homedir()));
   const sinceDate = typeof options.sinceDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(options.sinceDate)
     ? options.sinceDate
-    : new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    : usageWindowSinceDate(30);
   const explicitCodexRoots = Array.isArray(options.codexSessionRoots) ? options.codexSessionRoots : [];
   const claudeRoots = Array.isArray(options.claudeRoots) && options.claudeRoots.length
     ? options.claudeRoots
@@ -607,16 +632,26 @@ async function readDirectUsageOverview(options = {}) {
   const now = Date.now();
   const cached = overviewCache.get(cacheKey);
   if (!options.refresh && cached && now - cached.cachedAt < CACHE_TTL_MS) return cached.value;
+  const active = overviewInFlight.get(cacheKey);
+  if (active) return active;
 
-  const accumulator = newAccumulator();
-  const [claude, codex] = await Promise.all([
-    scanClaude(accumulator, claudeRoots, sinceDate),
-    scanCodex(accumulator, codexRoots, sinceDate),
-  ]);
-  const value = finalize(accumulator, [claude, codex.report], codex.rateLimits, new Date().toISOString(), sinceDate);
-  if (overviewCache.size >= MAX_CACHE_ENTRIES) overviewCache.delete(overviewCache.keys().next().value);
-  overviewCache.set(cacheKey, { cachedAt: Date.now(), value });
-  return value;
+  const scan = (async () => {
+    const accumulator = newAccumulator();
+    const [claude, codex] = await Promise.all([
+      scanClaude(accumulator, claudeRoots, sinceDate),
+      scanCodex(accumulator, codexRoots, sinceDate),
+    ]);
+    const value = finalize(accumulator, [claude, codex.report], codex.rateLimits, new Date().toISOString(), sinceDate);
+    if (overviewCache.size >= MAX_CACHE_ENTRIES) overviewCache.delete(overviewCache.keys().next().value);
+    overviewCache.set(cacheKey, { cachedAt: Date.now(), value });
+    return value;
+  })();
+  overviewInFlight.set(cacheKey, scan);
+  try {
+    return await scan;
+  } finally {
+    if (overviewInFlight.get(cacheKey) === scan) overviewInFlight.delete(cacheKey);
+  }
 }
 
 module.exports = {
@@ -625,4 +660,6 @@ module.exports = {
   estimatedCost,
   pricingFor,
   readDirectUsageOverview,
+  selectNewestJsonlFiles,
+  usageWindowSinceDate,
 };

@@ -79,13 +79,13 @@ Example:
 ```text
 Session: codex-review-shell
   context A:
-    repo: /home/rose/work/LexLattice/codex-review-shell
-    branch: main/app-server vanilla path
+    repo: /home/rose/work/LexLattice/codex-review-shell-direct
+    branch: main
     jurisdiction: baseline, UX, app-server compatibility
 
   context B:
     repo: /home/rose/work/LexLattice/codex-review-shell-direct
-    branch: codex/direct-chatgpt-harness
+    branch: main
     jurisdiction: Direct provider path and harness-native control plane
 ```
 

@@ -1022,6 +1022,35 @@ try {
   );
   assert.equal(lateWriteTransport.pendingRequestCount(), 0);
 
+  const failedWriteChild = new FakeChild();
+  let failedWriteCallback = null;
+  failedWriteChild.stdin.write = (_chunk, callback) => {
+    failedWriteCallback = callback;
+    return true;
+  };
+  const failedWriteTransport = new NdjsonTransport(failedWriteChild);
+  const failedWritePromise = failedWriteTransport.request("applyPatch", { patch: "fixture" }, 2_000);
+  const failedWriteRequestId = [...failedWriteTransport.pending.keys()][0];
+  failedWriteCallback?.(Object.assign(new Error("fixture write failure"), { code: "EPIPE" }));
+  await assert.rejects(failedWritePromise, (error) => {
+    assert.equal(error.code, "EPIPE");
+    assert.equal(error.requestId, failedWriteRequestId);
+    assert.equal(error.workspaceBackendRequest, true);
+    assert.equal(error.backendRequestCompleted, false);
+    assert.equal(error.backendQuiesced, false);
+    assert.equal(error.partialMutationPossible, true);
+    assert.equal(error.mutationOutcome?.schema, "workspace_backend_mutation_outcome@1");
+    assert.equal(error.mutationOutcome?.requestId, failedWriteRequestId);
+    assert.equal(error.mutationOutcome?.method, "applyPatch");
+    assert.equal(error.mutationOutcome?.commitKind, "apply_patch_files");
+    assert.equal(error.mutationOutcome?.committed, false);
+    assert.equal(error.mutationOutcome?.indeterminate, true);
+    assert.equal(error.mutationOutcome?.failureCode, "EPIPE");
+    assert.match(error.mutationOutcome?.outcomeDigest || "", /^sha256:[a-f0-9]{64}$/);
+    return true;
+  });
+  assert.equal(failedWriteTransport.pendingRequestCount(), 0);
+
   const windowsTreeChild = new EventEmitter();
   windowsTreeChild.pid = 4242;
   windowsTreeChild.exitCode = null;

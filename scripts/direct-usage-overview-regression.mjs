@@ -10,7 +10,10 @@ const {
   estimatedCost,
   pricingFor,
   readDirectUsageOverview,
+  selectNewestJsonlFiles,
+  usageWindowSinceDate,
 } = require("../src/main/direct/usage/overview.js");
+const { readUsageLedgerAnalytics } = require("../src/main/usage-ledger-analytics.js");
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "direct-usage-overview-"));
 const writeJsonl = async (filePath, rows) => {
@@ -83,8 +86,8 @@ try {
 
   assert.equal(snapshot.schema, "direct_usage_overview@1");
   assert.equal(snapshot.evidencePosture.billingGrade, false);
-  assert.equal(snapshot.evidencePosture.costConfidence, "estimated_static_pricing_partial_lower_bound");
-  assert.equal(snapshot.evidencePosture.scanCompleteness, "partial_lower_bound");
+  assert.equal(snapshot.evidencePosture.costConfidence, "estimated_static_pricing_partial_estimate");
+  assert.equal(snapshot.evidencePosture.scanCompleteness, "partial_estimate");
   assert.equal(snapshot.evidencePosture.pricingRevision, PRICING_REVISION);
   assert.equal(snapshot.evidencePosture.providerVisibility, "detected_thread_evidence_only");
   assert.deepEqual(snapshot.providers.map((provider) => provider.provider), ["claude", "codex"]);
@@ -104,6 +107,75 @@ try {
   assert.ok(snapshot.sources.find((source) => source.provider === "codex")?.modelsWithoutPricing.includes("unknown-frontier-model"));
   assert.deepEqual(snapshot.sources.find((source) => source.provider === "claude")?.modelsWithoutPricing, []);
   assert.ok(snapshot.costUsd > 0);
+
+  assert.equal(usageWindowSinceDate(7, "2026-08-21T15:00:00.000Z"), "2026-08-15");
+  assert.equal(usageWindowSinceDate(30, "2026-08-21T15:00:00.000Z"), "2026-07-23");
+  assert.equal(usageWindowSinceDate(90, "2026-08-21T15:00:00.000Z"), "2026-05-24");
+  assert.deepEqual(
+    selectNewestJsonlFiles([
+      { filePath: "/old.jsonl", mtimeMs: 1 },
+      { filePath: "/new.jsonl", mtimeMs: 3 },
+      { filePath: "/middle.jsonl", mtimeMs: 2 },
+    ], 2),
+    {
+      files: [
+        { filePath: "/new.jsonl", mtimeMs: 3 },
+        { filePath: "/middle.jsonl", mtimeMs: 2 },
+      ],
+      filesDiscovered: 3,
+      truncated: true,
+    },
+    "the file cap must select the newest evidence and disclose omitted discoveries",
+  );
+
+  const projectRoot = path.join(root, "direct-ledger-project");
+  await writeJsonl(path.join(projectRoot, ".codex", "usage-ledgers", "usage.jsonl"), [
+    {
+      rowKind: "token_usage",
+      projectId: "project-scope-fixture",
+      threadId: "thread-a",
+      observedAt: "2026-08-18T15:00:00.000Z",
+      inputTokens: 11,
+      outputTokens: 2,
+      totalTokens: 13,
+      confidence: "provider_exact",
+    },
+    {
+      rowKind: "token_usage",
+      projectId: "project-scope-fixture",
+      threadId: "thread-b",
+      observedAt: "2026-08-18T16:00:00.000Z",
+      inputTokens: 22,
+      outputTokens: 4,
+      totalTokens: 26,
+      confidence: "provider_exact",
+    },
+  ]);
+  const projectFixture = {
+    id: "project-scope-fixture",
+    repoPath: projectRoot,
+    workspace: { kind: "local", localPath: projectRoot },
+    surfaceBinding: { codex: { usageLedger: { enabled: true, outputDir: ".codex/usage-ledgers" } } },
+  };
+  const threadUsage = await readUsageLedgerAnalytics(projectFixture, { scope: "thread", threadId: "thread-a" });
+  const projectUsage = await readUsageLedgerAnalytics(projectFixture, { scope: "project" });
+  assert.equal(threadUsage.analyticsScope.kind, "thread");
+  assert.equal(threadUsage.matchedRowCount, 1);
+  assert.equal(threadUsage.tokens.inputTokens, 11);
+  assert.equal(projectUsage.analyticsScope.kind, "project");
+  assert.equal(projectUsage.matchedRowCount, 2);
+  assert.equal(projectUsage.tokens.inputTokens, 22, "project scope may select the latest row across project threads");
+  await assert.rejects(
+    readUsageLedgerAnalytics(projectFixture, { scope: "thread", threadId: "" }),
+    /requires threadId/,
+    "an empty thread identifier must not silently widen into project scope",
+  );
+
+  const [concurrentOne, concurrentTwo] = await Promise.all([
+    readDirectUsageOverview({ homeDir: root, sinceDate: "2026-08-01", refresh: true }),
+    readDirectUsageOverview({ homeDir: root, sinceDate: "2026-08-01", refresh: true }),
+  ]);
+  assert.strictEqual(concurrentOne, concurrentTwo, "concurrent identical scans must share one in-flight result");
 
   const solPricing = pricingFor("gpt-5.6-sol-2026-08");
   assert.ok(solPricing);
@@ -134,6 +206,8 @@ try {
   assert.match(renderer, /missing usage as unknown, not zero/);
   assert.match(renderer, /detectedProviders\(snapshot\)/);
   assert.match(renderer, /direct-usage-provider-segment/);
+  assert.match(renderer, /totalModelTokens\(model\)/);
+  assert.doesNotMatch(renderer, /Object\.values\(model\.tokens/);
   assert.doesNotMatch(renderer, /entry\.provider === "claude"/);
 
   console.log(JSON.stringify({ ok: true, messages: snapshot.messages, models: snapshot.models.length, sources: snapshot.sources.length }));

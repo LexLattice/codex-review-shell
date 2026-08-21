@@ -8,7 +8,7 @@ Last verified:
   `be6e8eac029b183056b7e4402879f15d2c85f61b` (`rust-v0.147.0`)
 - Active Review Shell WSL CLI: npm-global `@openai/codex@0.147.0`
   at `/home/rose/.nvm/versions/node/v24.14.0/bin/codex`
-- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell`
+- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell-direct`
   on the reviewed `origin/main` lineage
 - Prior bounded release baseline: `rust-v0.145.0`
 - Verification date: 2026-08-09

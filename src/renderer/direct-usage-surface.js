@@ -100,6 +100,12 @@
       number(tokens.cacheReadTokens) + number(tokens.cacheWriteTokens);
   }
 
+  function totalModelTokens(model) {
+    const tokens = model?.tokens || {};
+    return number(tokens.inputTokens) + number(tokens.outputTokens) +
+      number(tokens.cacheReadTokens) + number(tokens.cacheWriteTokens);
+  }
+
   function section(title, detail = "", className = "") {
     const root = element("section", `direct-usage-section ${className}`.trim());
     const header = element("header", "direct-usage-section-header");
@@ -118,9 +124,9 @@
     const billableInput = number(tokens.inputTokens) + number(tokens.cacheReadTokens) + number(tokens.cacheWriteTokens);
     const rate = snapshot.rateLimits?.[0] || activity.rateLimits?.primary || null;
     const toolTotal = number(activity.tools?.total);
-    const partial = snapshot.evidencePosture?.scanCompleteness === "partial_lower_bound";
+    const partial = snapshot.evidencePosture?.scanCompleteness === "partial_estimate";
     const stats = [
-      [partial ? "Lower-bound spend" : "Estimated spend", usd(snapshot.costUsd), `${snapshot.firstDate || "no data"} to ${snapshot.lastDate || "now"}`],
+      [partial ? "Partial estimated spend" : "Estimated spend", usd(snapshot.costUsd), `${snapshot.firstDate || "no data"} to ${snapshot.lastDate || "now"}`],
       ["Local log tokens", compact(totalHistoricalTokens(snapshot)), `${compact(snapshot.messages)} usage deltas`],
       ["Cache hit", percent(tokens.cacheReadTokens, billableInput), `${compact(tokens.cacheReadTokens)} reused`],
       ["Direct turns", compact(agentTotals.turnCount), `${compact(agent.rowCount)} attributed rows`],
@@ -230,7 +236,7 @@
       mark.title = provider.label;
       label.append(mark);
       label.append(document.createTextNode(model.model));
-      const modelTokens = Object.values(model.tokens || {}).reduce((sum, value) => sum + number(value), 0);
+      const modelTokens = totalModelTokens(model);
       return [
         { node: label },
         { text: compact(modelTokens) },
@@ -334,7 +340,7 @@
     const note = element(
       "p",
       "direct-usage-evidence-note",
-      `Estimated spend is reconstructed from local session logs with static pricing revision ${snapshot.evidencePosture?.pricingRevision || "unknown"}. It is not billing-grade.${snapshot.evidencePosture?.scanCompleteness === "partial_lower_bound" ? " The bounded scan reached its read budget, so displayed historical totals are lower bounds." : ""} Direct project rows below preserve exact provider attribution and explicitly count missing usage as unknown, not zero.`,
+      `Estimated spend is reconstructed from local session logs with static pricing revision ${snapshot.evidencePosture?.pricingRevision || "unknown"}. It is not billing-grade.${snapshot.evidencePosture?.scanCompleteness === "partial_estimate" ? " The bounded scan reached a read or discovery budget, so displayed historical totals are a partial estimate." : ""} Direct project rows below preserve exact provider attribution and explicitly count missing usage as unknown, not zero.`,
     );
     body.append(note, renderStats(snapshot));
     const firstGrid = element("div", "direct-usage-section-grid");

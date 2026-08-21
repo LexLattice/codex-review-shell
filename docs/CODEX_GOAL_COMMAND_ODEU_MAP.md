@@ -21,7 +21,7 @@ Upstream Codex checkout inspected:
 
 Host shell checkout:
 
-- Path: `/home/rose/work/LexLattice/codex-review-shell`
+- Path: `/home/rose/work/LexLattice/codex-review-shell-direct`
 - Branch: `main`
 
 Primary upstream files:

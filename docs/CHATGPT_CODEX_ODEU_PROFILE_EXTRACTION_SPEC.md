@@ -28,24 +28,24 @@ tool routing, session replay, compaction, imports, and analytics should only
 become first-class features after the relevant capability is observed, probed,
 normalized, and accepted into the profile.
 
-## Worktree Strategy
+## Repository Strategy
 
-This line of work should live in a separate long-lived worktree:
+The direct work has been promoted into the unified mainline checkout:
 
 ```text
 /home/rose/work/LexLattice/codex-review-shell-direct
 ```
 
-Recommended branch:
+Canonical branch:
 
 ```text
-codex/direct-chatgpt-harness
+main
 ```
 
-`/home/rose/work/LexLattice/codex-review-shell` remains the current mainline
-Codex CLI/app-server UX path. The direct branch can periodically absorb mainline
-UX improvements, but it should not become default until the ODEU profile,
-direct auth, direct model call, tool loop, and import gates pass.
+The retired `codex-review-shell` checkout is no longer a separate app-server
+mainline. Direct is the primary implementation in this repository; bounded
+Codex CLI/app-server compatibility remains available as a fallback realization
+inside the same product and review lineage.
 
 ## Reference Specimens
 

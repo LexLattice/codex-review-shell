@@ -199,14 +199,28 @@ function usageRowObservedAt(row) {
   return { value, millis: Number.isFinite(millis) ? millis : 0 };
 }
 
-function rowMatchesUsageThread(row, projectId, threadId) {
+function normalizeUsageLedgerAnalyticsScope(value) {
+  if (!isPlainObject(value)) {
+    throw new TypeError("Usage ledger analytics requires an explicit scope object.");
+  }
+  const kind = normalizeString(value.scope, "");
+  if (kind === "project") return { kind, threadId: "" };
+  if (kind === "thread") {
+    const threadId = normalizeString(value.threadId, "");
+    if (!threadId) throw new TypeError("Thread-scoped usage analytics requires threadId.");
+    return { kind, threadId };
+  }
+  throw new TypeError("Usage ledger analytics scope must be project or thread.");
+}
+
+function rowMatchesUsageScope(row, projectId, scope) {
   const rowProjectId = normalizeString(row?.projectId, "");
   if (rowProjectId && rowProjectId !== projectId) return false;
   const kind = normalizeString(row?.rowKind, "");
   if (kind === "rate_limit_snapshot") return true;
-  if (!threadId) return true;
+  if (scope.kind === "project") return true;
   const rowThreadId = normalizeString(row?.threadId, "");
-  return Boolean(threadId && rowThreadId && rowThreadId === threadId);
+  return Boolean(rowThreadId && rowThreadId === scope.threadId);
 }
 
 function rateLimitWindowSummary(value) {
@@ -226,11 +240,12 @@ function rateLimitWindowSummary(value) {
   };
 }
 
-async function readUsageLedgerAnalytics(project, threadId) {
-  const thread = normalizeString(threadId, "");
+async function readUsageLedgerAnalytics(project, options = {}) {
+  const analyticsScope = normalizeUsageLedgerAnalyticsScope(options);
   const location = usageLedgerOutputLocation(project);
   if (location.status !== "configured") {
     return emptyUsageLedgerAnalytics(location.status, location.reason, {
+      analyticsScope,
       outputDirEvidenceKey: location.outputDirEvidenceKey || "",
     });
   }
@@ -240,12 +255,14 @@ async function readUsageLedgerAnalytics(project, threadId) {
     files = await usageLedgerJsonlFiles(location.outputDir);
   } catch {
     return emptyUsageLedgerAnalytics("failed", "Unable to list usage ledger files.", {
+      analyticsScope,
       outputDirEvidenceKey: location.outputDirEvidenceKey,
     });
   }
 
   if (!files.length) {
     return emptyUsageLedgerAnalytics("empty", "No usage ledger files have been written for this project yet.", {
+      analyticsScope,
       outputDirEvidenceKey: location.outputDirEvidenceKey,
     });
   }
@@ -285,7 +302,7 @@ async function readUsageLedgerAnalytics(project, threadId) {
 
   const handleRow = (row) => {
     rowCount += 1;
-    if (!rowMatchesUsageThread(row, project.id, thread)) return;
+    if (!rowMatchesUsageScope(row, project.id, analyticsScope)) return;
     matchedRowCount += 1;
     const observed = observeTimestamp(row);
     const confidence = normalizeString(row.confidence, "");
@@ -413,10 +430,11 @@ async function readUsageLedgerAnalytics(project, threadId) {
 
   return {
     schemaVersion: 1,
+    analyticsScope,
     status: matchedRowCount ? (skippedFileCount ? "partial" : "available") : "empty",
     reason: matchedRowCount
       ? ""
-      : "Usage ledger files exist, but no rows were matched for this thread yet.",
+      : `Usage ledger files exist, but no rows were matched for this ${analyticsScope.kind} yet.`,
     source: "codex_usage_ledger@1",
     outputDirEvidenceKey: location.outputDirEvidenceKey,
     fileCount: files.length,

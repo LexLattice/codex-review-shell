@@ -20,7 +20,7 @@ Direct review shell
 | --- | --- | --- | --- |
 | Vanilla release evidence | `/home/rose/work/codex/fork` | `origin/upstream-latest-release` | Exact remote pointer to the latest official stable `openai/codex` tag. It is a fetched inspection baseline, not a local development branch. |
 | Fork implementation | `/home/rose/work/codex/fork` | `origin/main` | Current shared fork lineage containing our custom Codex modules. Audit this ref even when local `main` is behind. |
-| Direct implementation | `/home/rose/work/LexLattice/codex-review-shell` | `origin/main` plus the active reviewed branch | Current direct-native harness and its executable information registry. |
+| Direct implementation | `/home/rose/work/LexLattice/codex-review-shell-direct` | `origin/main` plus the active reviewed branch | Current direct-native harness and its executable information registry. |
 
 The scheduled fork workflow advances `origin/upstream-latest-release` to the
 exact official stable tag. It is not merged with fork `main`, and updating it

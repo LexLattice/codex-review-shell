@@ -319,7 +319,7 @@ const {
 } = require("./main/attachment-staging-store");
 const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
 const { readUsageLedgerAnalytics } = require("./main/usage-ledger-analytics");
-const { readDirectUsageOverview } = require("./main/direct/usage/overview");
+const { readDirectUsageOverview, usageWindowSinceDate } = require("./main/direct/usage/overview");
 const {
   buildRuntimeAnalyticsProjection,
 } = require("./main/direct/analytics/runtime-analytics-adapter");
@@ -5311,15 +5311,13 @@ function buildDirectAgentUsageStatusForProject(projectId) {
 async function buildDirectUsageOverviewForProject(project, options = {}) {
   const requestedWindow = Number.parseInt(String(options.windowDays || "30"), 10);
   const windowDays = [7, 30, 90].includes(requestedWindow) ? requestedWindow : 30;
-  const since = new Date();
-  since.setUTCDate(since.getUTCDate() - windowDays);
   const [historical, projectActivity] = await Promise.all([
     readDirectUsageOverview({
-      sinceDate: since.toISOString().slice(0, 10),
+      sinceDate: usageWindowSinceDate(windowDays),
       refresh: options.refresh === true,
       homeDir: normalizeString(process.env.CODEX_DIRECT_USAGE_HOME, "") || undefined,
     }),
-    readUsageLedgerAnalytics(project, ""),
+    readUsageLedgerAnalytics(project, { scope: "project" }),
   ]);
   return {
     ...historical,
@@ -10426,8 +10424,12 @@ async function getThreadAnalyticsDashboard(projectId, threadKey) {
   const key = normalizeString(threadKey, "");
   if (!key) throw new Error("threadKey is required.");
   const dashboard = store.getProjectThreadDashboard(project.id, key);
-  const usageLedger = dashboard
-    ? await readUsageLedgerAnalytics(project, dashboard.thread?.threadId || "")
+  const providerThreadId = dashboard?.thread?.threadId || "";
+  const usageLedger = dashboard && providerThreadId
+    ? await readUsageLedgerAnalytics(project, {
+        scope: "thread",
+        threadId: providerThreadId,
+      })
     : null;
   const runtimeAnalyticsProjection = dashboard
     ? buildRuntimeAnalyticsProjection({

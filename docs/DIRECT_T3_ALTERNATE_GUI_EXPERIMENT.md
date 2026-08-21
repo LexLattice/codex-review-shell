@@ -146,9 +146,11 @@ interactive-safe assumption for this installation: the local Codex archive
 can span many gigabytes. Direct therefore discovers newest files first and
 applies both per-file and per-source byte budgets. A sliced cumulative Codex
 log establishes its first visible token snapshot as a baseline instead of
-charging the unseen prefix. If any slice or budget is used, the page calls the
-historical result a `partial_lower_bound`; it never styles that value as a
-complete estimate.
+charging the unseen prefix. File discovery is completed before the newest-file
+cap is applied, and exceeding that cap is disclosed alongside byte/record
+truncation. If any slice or budget is used, the page calls the historical result
+a `partial_estimate`; truncation can bias cumulative-log reconstruction in more
+than one direction, so the UI does not claim that the value is a lower bound.
 
 Direct deliberately changes the truth language around that data. Static
 pricing produces an **estimate**, not real or billing-grade cost. Unknown

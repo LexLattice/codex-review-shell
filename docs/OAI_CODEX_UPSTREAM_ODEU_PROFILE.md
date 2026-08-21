@@ -15,7 +15,7 @@ and what did Codex CLI choose to build on top of it?
 
 Last verified:
 
-- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell`
+- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell-direct`
   on the reviewed `origin/main` lineage
 - Codex fork implementation evidence: `/home/rose/work/codex/fork`
   `origin/main` at `923840b357e15195e66f7e82ac81ee0f39fc7050`

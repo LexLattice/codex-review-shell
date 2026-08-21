@@ -143,6 +143,27 @@ function normalizeBackendMutationOutcome(value, pending = {}, resultEnvelope = n
   return { ...base, outcomeDigest };
 }
 
+function indeterminateBackendMutationOutcome(pending = {}, failureCode = "workspace_backend_request_write_failed") {
+  const commitKinds = MUTATION_COMMIT_KINDS_BY_METHOD[pending.method];
+  if (!(commitKinds instanceof Set) || commitKinds.size !== 1) return null;
+  const base = {
+    schema: "workspace_backend_mutation_outcome@1",
+    requestId: normalizeString(pending.requestId, ""),
+    method: normalizeString(pending.method, ""),
+    commitKind: [...commitKinds][0],
+    committed: false,
+    indeterminate: true,
+    partialMutationPossible: true,
+    retainedForInspection: false,
+    failureCode: publicBackendErrorCode(failureCode, "workspace_backend_request_write_failed"),
+    rawPathIncluded: false,
+  };
+  return {
+    ...base,
+    outcomeDigest: `sha256:${crypto.createHash("sha256").update(stableStringify(base)).digest("hex")}`,
+  };
+}
+
 function backendIntakeClosedError() {
   const error = new Error("Workspace backend intake is closed for ordered drain.");
   error.code = "workspace_backend_manager_intake_closed";
@@ -737,14 +758,19 @@ class NdjsonTransport extends EventEmitter {
         if (!error) return;
         const failedPending = this.clearPending(id);
         if (failedPending?.cancelRequestId) this.clearPending(failedPending.cancelRequestId);
+        if (!failedPending || failedPending.clientSettled) return;
+        const failureCode = publicBackendErrorCode(error?.code, "workspace_backend_request_write_failed");
+        const mutationOutcome = indeterminateBackendMutationOutcome(failedPending, failureCode);
+        error.code = failureCode;
+        error.requestId = failedPending.requestId;
         error.backendQuiesced = false;
         error.cancellationAcknowledged = false;
         error.backendRequestCompleted = false;
         error.workspaceBackendRequest = true;
-        if (failedPending && !failedPending.clientSettled) {
-          failedPending.clientSettled = true;
-          reject(error);
-        }
+        error.mutationOutcome = mutationOutcome;
+        error.partialMutationPossible = mutationOutcome?.partialMutationPossible === true;
+        failedPending.clientSettled = true;
+        failedPending.reject(error);
       });
     });
   }
