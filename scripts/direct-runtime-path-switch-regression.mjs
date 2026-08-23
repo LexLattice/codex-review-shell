@@ -9,6 +9,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 
 const runtimePath = require(path.join(root, "src/main/direct/runtime/runtime-path-selection.js"));
+const {
+  createRuntimePreferenceWriteCoordinator,
+} = require(path.join(root, "src/renderer/runtime-preference-write-coordinator.js"));
 
 function read(relPath) {
   return fs.readFileSync(path.join(root, relPath), "utf8");
@@ -156,6 +159,7 @@ const codexSurfacePreloadSource = read("src/preload-codex-surface.js");
 const rendererSource = read("src/renderer/app.js");
 const codexSurfaceSource = read("src/renderer/codex-surface.js");
 const htmlSource = read("src/renderer/index.html");
+const codexSurfaceHtml = read("src/renderer/codex-surface.html");
 const codexSurfaceCss = read("src/renderer/codex-surface.css");
 
 assertIncludes(mainSource, "setCodexRuntimePath", "main process runtime switch");
@@ -237,6 +241,7 @@ assertIncludes(codexSurfaceSource, "hasGuardSessionFilePath", "runtime preferenc
 assertIncludes(codexSurfaceSource, "Refresh Direct readiness", "Direct runtime drawer exposes an in-place readiness action");
 assertIncludes(codexSurfaceSource, "Changes the task backend. This is separate from refreshing Direct readiness.", "backend transition remains distinct from readiness refresh");
 assertIncludes(codexSurfaceSource, "flushRuntimePreferenceWrites", "turn submission waits for the canonical task runtime binding");
+assertIncludes(codexSurfaceHtml, "runtime-preference-write-coordinator.js", "runtime preference coordinator loads before the Codex surface");
 assertIncludes(codexSurfaceSource, "The task binding is canonical for subsequent turns", "model controls explain task-level persistence");
 assertIncludes(codexSurfaceSource, "function applyDirectSurfaceProjection", "renderer centralizes trusted Direct projection application");
 assertIncludes(codexSurfaceSource, "capabilities: hasMainOwnedCapabilities", "renderer replaces stale connection capabilities with the main-owned refreshed projection");
@@ -274,5 +279,91 @@ assert.ok(!htmlSource.includes("Direct Tools"), "Direct tools tier should not be
 assertIncludes(codexSurfaceCss, "grid-template-areas:", "Codex surface shell uses named grid rows");
 assertIncludes(codexSurfaceCss, "grid-area: transcript", "transcript row must not depend on direct rail visibility");
 assertIncludes(codexSurfaceCss, "grid-area: composer", "composer row must not stretch into transcript row when direct rail is hidden");
+
+const scopeFields = {
+  "global-access": ["approvalPolicy", "sandboxMode"],
+  "thread-model": ["model", "reasoningEffort"],
+};
+const copyScope = (target, scope, values) => {
+  for (const field of scopeFields[scope]) target[field] = values[field];
+};
+const valuesForScope = (source, scope) => Object.fromEntries(
+  scopeFields[scope].map((field) => [field, source[field]]),
+);
+
+const crossScopeOptimistic = {
+  approvalPolicy: "on-request",
+  sandboxMode: "read-only",
+  model: "gpt-5.6-sol",
+  reasoningEffort: "high",
+};
+const crossScopeConfirmed = {
+  approvalPolicy: "never",
+  sandboxMode: "read-only",
+  model: "gpt-5.6-terra",
+  reasoningEffort: "medium",
+};
+const crossScopeCoordinator = createRuntimePreferenceWriteCoordinator({
+  persist: async (scope, requested) => {
+    if (scope === "global-access") throw new Error("fixture global write failed");
+    return { canonical: requested };
+  },
+  canonicalize: (_scope, response, requested) => response?.canonical || requested,
+  applyConfirmed: (scope, values) => copyScope(crossScopeConfirmed, scope, values),
+  applyOptimistic: (scope, values) => copyScope(crossScopeOptimistic, scope, values),
+  readConfirmed: (scope) => valuesForScope(crossScopeConfirmed, scope),
+});
+await Promise.all([
+  crossScopeCoordinator.enqueue("global-access", valuesForScope(crossScopeOptimistic, "global-access")),
+  crossScopeCoordinator.enqueue("thread-model", valuesForScope(crossScopeOptimistic, "thread-model")),
+]);
+assert.equal(crossScopeOptimistic.approvalPolicy, "never");
+assert.equal(crossScopeOptimistic.model, "gpt-5.6-sol");
+assert.equal(crossScopeConfirmed.approvalPolicy, "never");
+assert.equal(crossScopeConfirmed.model, "gpt-5.6-sol");
+assert.equal(crossScopeCoordinator.snapshot().scopes["global-access"].status, "failed");
+assert.equal(crossScopeCoordinator.snapshot().scopes["thread-model"].status, "ready");
+await assert.rejects(
+  crossScopeCoordinator.flush(),
+  (error) => error?.code === "runtime_preference_write_failed",
+  "a later successful scope must not conceal an earlier failed scope",
+);
+
+const sameScopeOptimistic = {
+  model: "gpt-5.6-terra",
+  reasoningEffort: "medium",
+};
+const sameScopeConfirmed = { ...sameScopeOptimistic };
+let sameScopeWriteOrdinal = 0;
+const sameScopeCoordinator = createRuntimePreferenceWriteCoordinator({
+  persist: async (_scope, requested) => {
+    sameScopeWriteOrdinal += 1;
+    if (sameScopeWriteOrdinal === 2) throw new Error("fixture newer write failed");
+    return { canonical: requested };
+  },
+  canonicalize: (_scope, response, requested) => response?.canonical || requested,
+  applyConfirmed: (scope, values) => copyScope(sameScopeConfirmed, scope, values),
+  applyOptimistic: (scope, values) => copyScope(sameScopeOptimistic, scope, values),
+  readConfirmed: (scope) => valuesForScope(sameScopeConfirmed, scope),
+});
+sameScopeOptimistic.model = "gpt-5.6-sol";
+sameScopeOptimistic.reasoningEffort = "high";
+const olderWrite = sameScopeCoordinator.enqueue(
+  "thread-model",
+  valuesForScope(sameScopeOptimistic, "thread-model"),
+);
+sameScopeOptimistic.model = "gpt-5.6-luna";
+sameScopeOptimistic.reasoningEffort = "max";
+const newerWrite = sameScopeCoordinator.enqueue(
+  "thread-model",
+  valuesForScope(sameScopeOptimistic, "thread-model"),
+);
+await Promise.all([olderWrite, newerWrite]);
+assert.deepEqual(
+  sameScopeOptimistic,
+  { model: "gpt-5.6-sol", reasoningEffort: "high" },
+  "a failed newer write must roll back to the most recent confirmed older generation",
+);
+assert.deepEqual(sameScopeConfirmed, sameScopeOptimistic);
 
 console.log("direct runtime path switch regression passed");

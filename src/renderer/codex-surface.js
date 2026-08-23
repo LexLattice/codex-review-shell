@@ -163,8 +163,6 @@ const state = {
   configRequirementsError: "",
   runtimePreferencesStatus: "idle",
   runtimePreferencesError: "",
-  runtimePreferenceWrite: Promise.resolve(null),
-  runtimePreferenceGeneration: 0,
   directReadinessRefreshStatus: "idle",
   directReadinessRefreshError: "",
   runtimePathSelection: "",
@@ -288,6 +286,7 @@ const state = {
   isBulkRendering: false,
   removeBridgeListener: null,
 };
+let runtimePreferenceWriteCoordinator = null;
 
 function capabilityArea(area) {
   return connection?.capabilities?.[area] || {};
@@ -3549,13 +3548,27 @@ async function loadRuntimePreferences(options = {}) {
   try {
     const response = await bridge.getRuntimePreferences(runtimePreferencesRequest(options.threadId || state.threadId));
     if (response && response.ok !== false) {
-      if (applyGlobal) applyGlobalRuntimePreferences(response.globalDefaults || {});
+      if (applyGlobal) {
+        applyGlobalRuntimePreferences(response.globalDefaults || {});
+        const scopeStatus = runtimePreferenceWriteCoordinator
+          ?.snapshot?.().scopes?.["global-access"]?.status;
+        if (scopeStatus && scopeStatus !== "saving") {
+          runtimePreferenceWriteCoordinator.reconcile("global-access");
+        }
+      }
       const stillCurrentThread =
         !guardThreadId ||
         (state.threadId === guardThreadId &&
           (!hasGuardSourceHome || state.sourceHome === guardSourceHome) &&
           (!hasGuardSessionFilePath || state.sessionFilePath === guardSessionFilePath));
-      if (applyThread && stillCurrentThread) applyThreadRuntimePreferences(response.threadDefaults || {});
+      if (applyThread && stillCurrentThread) {
+        applyThreadRuntimePreferences(response.threadDefaults || {});
+        const scopeStatus = runtimePreferenceWriteCoordinator
+          ?.snapshot?.().scopes?.["thread-model"]?.status;
+        if (scopeStatus && scopeStatus !== "saving") {
+          runtimePreferenceWriteCoordinator.reconcile("thread-model");
+        }
+      }
     }
     state.runtimePreferencesStatus = "ready";
     renderRuntimeConstitution();
@@ -3571,7 +3584,7 @@ async function loadRuntimePreferences(options = {}) {
 
 async function persistRuntimePreferences(scope, overrides = {}) {
   if (!bridge?.updateRuntimePreferences) return null;
-  const request = runtimePreferencesRequest();
+  const request = overrides.__runtimePreferenceRequest || runtimePreferencesRequest();
   if (scope === "global-access") {
     return bridge.updateRuntimePreferences({
       scope,
@@ -3589,6 +3602,97 @@ async function persistRuntimePreferences(scope, overrides = {}) {
     });
   }
   return null;
+}
+
+const RUNTIME_PREFERENCE_FIELDS_BY_SCOPE = Object.freeze({
+  "global-access": Object.freeze(["approvalPolicy", "sandboxMode"]),
+  "thread-model": Object.freeze(["model", "reasoningEffort"]),
+});
+
+function runtimePreferenceScopeValues(source = {}, scope = "") {
+  const values = {};
+  for (const field of RUNTIME_PREFERENCE_FIELDS_BY_SCOPE[scope] || []) {
+    values[field] = normalizeRuntimeOverrideValue(field, source?.[field]);
+  }
+  return values;
+}
+
+function applyRuntimePreferenceScopeValues(target = {}, scope = "", values = {}) {
+  for (const field of RUNTIME_PREFERENCE_FIELDS_BY_SCOPE[scope] || []) {
+    target[field] = normalizeRuntimeOverrideValue(field, values?.[field]);
+  }
+}
+
+function canonicalRuntimePreferenceScopeValues(scope, response, requested) {
+  if (scope === "global-access") {
+    return runtimePreferenceScopeValues(
+      response?.preferences?.globalDefaults || requested,
+      scope,
+    );
+  }
+  if (scope === "thread-model") {
+    return runtimePreferenceScopeValues(
+      response?.binding || response?.preferences?.threadDefaults || requested,
+      scope,
+    );
+  }
+  return {};
+}
+
+function runtimePreferenceWriteApplies(scope, requested = {}) {
+  if (scope !== "thread-model") return true;
+  const request = requested.__runtimePreferenceRequest;
+  if (!request) return true;
+  return String(request.projectId || "") === String(project?.id || "") &&
+    String(request.threadId || "") === String(state.threadId || "") &&
+    String(request.sourceHome || "") === String(state.sourceHome || "") &&
+    String(request.sessionFilePath || "") === String(state.sessionFilePath || "");
+}
+
+function ensureRuntimePreferenceWriteCoordinator() {
+  if (runtimePreferenceWriteCoordinator) return runtimePreferenceWriteCoordinator;
+  const createCoordinator = window.DirectRuntimePreferenceWriteCoordinator
+    ?.createRuntimePreferenceWriteCoordinator;
+  if (typeof createCoordinator !== "function") {
+    throw new Error("Runtime preference write coordinator is unavailable.");
+  }
+  runtimePreferenceWriteCoordinator = createCoordinator({
+    persist: (scope, requested) => persistRuntimePreferences(scope, requested),
+    canonicalize: canonicalRuntimePreferenceScopeValues,
+    isApplicable: runtimePreferenceWriteApplies,
+    applyConfirmed: (scope, canonical) => {
+      applyRuntimePreferenceScopeValues(
+        state.runtimeConfirmedOverrides,
+        scope,
+        canonical,
+      );
+    },
+    applyOptimistic: (scope, canonical) => {
+      applyRuntimePreferenceScopeValues(state.runtimeOverrides, scope, canonical);
+    },
+    readConfirmed: (scope) => runtimePreferenceScopeValues(
+      state.runtimeConfirmedOverrides,
+      scope,
+    ),
+    onStateChange: (projection) => {
+      state.runtimePreferencesStatus = projection.status;
+      state.runtimePreferencesError = projection.error;
+      renderRuntimeConstitution();
+    },
+    onLatestSuccess: async () => {
+      if (isDirectLiveTextSurface()) {
+        await refreshDirectSurfaceProjection({ render: false }).catch(() => {});
+      }
+      renderRuntimeConstitution();
+    },
+    onError: (error, metadata) => {
+      const label = metadata?.phase === "post_success"
+        ? "Unable to refresh the saved Codex runtime preference"
+        : "Unable to persist Codex runtime preference";
+      console.warn(label, error);
+    },
+  });
+  return runtimePreferenceWriteCoordinator;
 }
 
 function serviceTierOptions() {
@@ -3632,50 +3736,18 @@ function setRuntimeOverride(name, value) {
       ? "thread-model"
       : "";
   if (scope) {
-    const generation = ++state.runtimePreferenceGeneration;
-    const requested = { ...state.runtimeOverrides };
-    state.runtimePreferencesStatus = "saving";
-    state.runtimePreferencesError = "";
-    state.runtimePreferenceWrite = state.runtimePreferenceWrite
-      .catch(() => null)
-      .then(() => persistRuntimePreferences(scope, requested))
-      .then(async (response) => {
-        if (generation !== state.runtimePreferenceGeneration) return response;
-        if (response?.binding) {
-          state.runtimeOverrides.model = normalizeRuntimeOverrideValue("model", response.binding.model);
-          state.runtimeOverrides.reasoningEffort = normalizeRuntimeOverrideValue(
-            "reasoningEffort",
-            response.binding.reasoningEffort,
-          );
-        }
-        state.runtimeConfirmedOverrides = { ...state.runtimeOverrides };
-        state.runtimePreferencesStatus = "ready";
-        state.runtimePreferencesError = "";
-        if (isDirectLiveTextSurface()) {
-          await refreshDirectSurfaceProjection({ render: false }).catch(() => {});
-        }
-        renderRuntimeConstitution();
-        return response;
-      })
-      .catch((error) => {
-        if (generation === state.runtimePreferenceGeneration) {
-          state.runtimeOverrides = { ...state.runtimeConfirmedOverrides };
-          state.runtimePreferencesStatus = "failed";
-          state.runtimePreferencesError = String(error?.message || error || "Runtime preference update failed.");
-          renderRuntimeConstitution();
-        }
-        console.warn("Unable to persist Codex runtime preference", error);
-        return null;
-      });
+    const requested = {
+      ...state.runtimeOverrides,
+      __runtimePreferenceRequest: runtimePreferencesRequest(),
+    };
+    ensureRuntimePreferenceWriteCoordinator().enqueue(scope, requested);
   }
   renderRuntimeConstitution();
 }
 
 async function flushRuntimePreferenceWrites() {
-  await state.runtimePreferenceWrite;
-  if (state.runtimePreferencesStatus === "failed") {
-    throw new Error(state.runtimePreferencesError || "The task runtime binding could not be saved.");
-  }
+  if (!runtimePreferenceWriteCoordinator) return;
+  await runtimePreferenceWriteCoordinator.flush();
 }
 
 function reconcileAccessOverridesWithRequirements() {

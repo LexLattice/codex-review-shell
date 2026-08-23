@@ -656,18 +656,35 @@ const isolatedRuntimeDirectory = "/tmp/direct-opencode-isolated-runtime";
 const safeOpenCodeEnv = safeOpenCodeRuntimeEnv({
   env: {
     PATH: "/fixture/bin",
+    LANG: "en_US.UTF-8",
+    HTTPS_PROXY: "https://proxy.example:8443",
+    HTTP_PROXY: "http://fixture-user:fixture-password@proxy.example:8080",
     XDG_DATA_HOME: "/home/rose/.local/share",
     OPENCODE_CONFIG: "/home/rose/.config/opencode/opencode.json",
     OPENCODE_TUI_CONFIG: "/home/rose/.config/opencode/tui.json",
     OPENCODE_SERVER_PASSWORD: "must-be-removed",
+    OPENROUTER_API_KEY: "must-be-removed",
+    GITHUB_TOKEN: "must-be-removed",
+    AWS_ACCESS_KEY_ID: "must-be-removed",
+    SSH_AUTH_SOCK: "/tmp/must-not-be-inherited.sock",
+    UNRELATED_HOST_SETTING: "must-be-removed",
   },
   openCodeRuntimeDirectory: isolatedRuntimeDirectory,
 });
+assert.equal(safeOpenCodeEnv.PATH, "/fixture/bin");
+assert.equal(safeOpenCodeEnv.LANG, "en_US.UTF-8");
+assert.equal(safeOpenCodeEnv.HTTPS_PROXY, "https://proxy.example:8443");
+assert.equal(safeOpenCodeEnv.HTTP_PROXY, undefined);
 assert.equal(safeOpenCodeEnv.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
 assert.equal(safeOpenCodeEnv.OPENCODE_DISABLE_DEFAULT_PLUGINS, "1");
 assert.equal(safeOpenCodeEnv.OPENCODE_SERVER_PASSWORD, undefined);
 assert.equal(safeOpenCodeEnv.OPENCODE_CONFIG, undefined);
 assert.equal(safeOpenCodeEnv.OPENCODE_TUI_CONFIG, undefined);
+assert.equal(safeOpenCodeEnv.OPENROUTER_API_KEY, undefined);
+assert.equal(safeOpenCodeEnv.GITHUB_TOKEN, undefined);
+assert.equal(safeOpenCodeEnv.AWS_ACCESS_KEY_ID, undefined);
+assert.equal(safeOpenCodeEnv.SSH_AUTH_SOCK, undefined);
+assert.equal(safeOpenCodeEnv.UNRELATED_HOST_SETTING, undefined);
 assert.equal(safeOpenCodeEnv.XDG_DATA_HOME, `${isolatedRuntimeDirectory}/data`);
 assert.equal(safeOpenCodeEnv.XDG_CACHE_HOME, `${isolatedRuntimeDirectory}/cache`);
 assert.equal(safeOpenCodeEnv.XDG_STATE_HOME, `${isolatedRuntimeDirectory}/state`);

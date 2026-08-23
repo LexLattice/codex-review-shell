@@ -513,6 +513,162 @@ assert.equal(
   "an external provider binding without a model must inherit that provider's model rather than the parent's incompatible model",
 );
 
+const admissionRaceProjectId = "project_policy_admission_race";
+const admissionRaceThreadId = "direct_session_policy_admission_race";
+const admissionRaceStore = new DirectSessionStore({
+  rootDir: path.join(rootDir, "admission-race-sessions"),
+});
+admissionRaceStore.createSession({
+  sessionId: admissionRaceThreadId,
+  projectId: admissionRaceProjectId,
+  title: "Policy preflight admission race",
+  model: "gpt-5.4",
+  reasoningEffort: "high",
+  runtimeMode: "direct-experimental",
+  directTransport: "live-text",
+  directTier: "implementation-lane",
+  nativeDirectSession: true,
+});
+const admissionRaceProject = {
+  id: admissionRaceProjectId,
+  workspace: { kind: "local", localPath: "[REDACTED:fixture]" },
+  surfaceBinding: {
+    codex: {
+      runtimeMode: "direct-experimental",
+      directTransport: "live-text",
+      directTier: "implementation-lane",
+      model: "gpt-5.4",
+      profileId: "active-policy-admission-race-profile",
+    },
+  },
+};
+let semanticAdmissionCalls = 0;
+let releaseSemanticAdmission;
+const semanticAdmissionGate = new Promise((resolve) => {
+  releaseSemanticAdmission = resolve;
+});
+let releaseProviderResponse;
+const providerResponseGate = new Promise((resolve) => {
+  releaseProviderResponse = resolve;
+});
+const admissionRaceController = new DirectLiveTextController({
+  sessionStore: admissionRaceStore,
+  profileDoc: {
+    profile: {
+      profileId: "active-policy-admission-race-profile",
+      ontology: {
+        models: [{ id: "gpt-5.4", displayName: "GPT-5.4", status: "accepted" }],
+        continuationShapes: [{
+          id: "continuation.tool_result",
+          field: "tool-result continuation",
+          status: "accepted",
+        }],
+      },
+    },
+  },
+  authStore: {
+    readStatus: () => ({
+      status: "authenticated",
+      accountId: "fixture-account",
+      hasAccessToken: true,
+      hasRefreshToken: true,
+      storageMode: "memory",
+    }),
+    readCredentials: () => ({
+      accessToken: "fixture-access-token",
+      accountId: "fixture-account",
+    }),
+  },
+  implementationProofEvidenceResolver: () => ({
+    status: "ready",
+    evidenceState: "runtime_probed",
+    canSelectImplementationLane: true,
+    requiredCapabilities: ["read_file", "read_file_loop", "apply_patch", "run_command"]
+      .map((capabilityId) => ({
+        capabilityId,
+        status: "ready",
+        evidenceState: "runtime_probed",
+        evidenceId: `proof_${capabilityId}`,
+        sourceCaseId: `fixture_${capabilityId}`,
+        rawProviderPayloadIncluded: false,
+        rawToolArgsIncluded: false,
+        rawWorkspacePathIncluded: false,
+        rawAccountIncluded: false,
+      })),
+    missingCapabilityIds: [],
+    rawProviderPayloadIncluded: false,
+    rawToolArgsIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawAccountIncluded: false,
+  }),
+  activeSubAgentPolicySemanticPreflight: async () => {
+    semanticAdmissionCalls += 1;
+    await semanticAdmissionGate;
+    return {
+      settlement: {
+        settlementId: "policy_settlement_admission_race",
+        digest: "sha256:policy-settlement-admission-race",
+        state: "no_change",
+      },
+    };
+  },
+  fetchImpl: async () => providerResponseGate,
+});
+const firstAdmission = admissionRaceController.startTurn({
+  sessionId: admissionRaceThreadId,
+  clientTurnRequestId: "client_admission_race_first",
+  promptText: "Start the first bounded turn.",
+  model: "gpt-5.4",
+  effort: "high",
+}, { project: admissionRaceProject });
+for (let index = 0; index < 20 && semanticAdmissionCalls === 0; index += 1) {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+assert.equal(semanticAdmissionCalls, 1);
+const secondAdmission = admissionRaceController.startTurn({
+  sessionId: admissionRaceThreadId,
+  clientTurnRequestId: "client_admission_race_second",
+  promptText: "Start a conflicting second turn.",
+  model: "gpt-5.4",
+  effort: "high",
+}, { project: admissionRaceProject });
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(
+  semanticAdmissionCalls,
+  1,
+  "a second turn must wait outside semantic preflight until the first admission is committed",
+);
+releaseSemanticAdmission();
+const firstAdmissionResult = await firstAdmission;
+await assert.rejects(
+  secondAdmission,
+  (error) => error?.code === "active_turn_exists",
+  "serialized admission must recheck the active turn before a second semantic preflight",
+);
+assert.equal(
+  semanticAdmissionCalls,
+  1,
+  "a rejected concurrent turn must not spend a second semantic-settlement invocation",
+);
+releaseProviderResponse(new Response([
+  "event: response.created",
+  "data: {\"response\":{\"id\":\"resp_policy_admission_race\",\"model\":\"gpt-5.4\"}}",
+  "",
+  "event: response.output_text.delta",
+  "data: {\"item_id\":\"msg_policy_admission_race\",\"delta\":\"Finished.\"}",
+  "",
+  "event: response.completed",
+  "data: {\"response\":{\"id\":\"resp_policy_admission_race\",\"status\":\"completed\"}}",
+  "",
+].join("\n"), {
+  status: 200,
+  headers: { "content-type": "text/event-stream" },
+}));
+await admissionRaceController.waitForTurnCompletion({
+  sessionId: admissionRaceThreadId,
+  turnId: firstAdmissionResult.turn.id,
+});
+
 const storeText = fs.readFileSync(
   path.join(rootDir, "active-sub-agent-policies.json"),
   "utf8",

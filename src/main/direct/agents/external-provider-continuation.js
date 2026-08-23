@@ -1115,20 +1115,87 @@ function openOpenCodeEventJournal(input = {}) {
   };
 }
 
+const OPENCODE_HOST_ENV_ALLOWLIST = new Set([
+  "ALL_PROXY",
+  "APPDATA",
+  "CI",
+  "COLORTERM",
+  "COMMONPROGRAMFILES",
+  "COMMONPROGRAMFILES(X86)",
+  "COMSPEC",
+  "FORCE_COLOR",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "LANG",
+  "LANGUAGE",
+  "LOCALAPPDATA",
+  "LOGNAME",
+  "NODE_EXTRA_CA_CERTS",
+  "NO_COLOR",
+  "NO_PROXY",
+  "PATH",
+  "PATHEXT",
+  "PROGRAMDATA",
+  "PROGRAMFILES",
+  "PROGRAMFILES(X86)",
+  "SHELL",
+  "SSL_CERT_DIR",
+  "SSL_CERT_FILE",
+  "SYSTEMDRIVE",
+  "SYSTEMROOT",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+  "TZ",
+  "USER",
+  "USERNAME",
+  "USERPROFILE",
+  "WINDIR",
+]);
+const OPENCODE_PROXY_ENV_KEYS = new Set([
+  "ALL_PROXY",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+]);
+
+function safeOpenCodeHostEnv(options = {}) {
+  const source = options.env || process.env;
+  const env = {};
+  for (const [key, rawValue] of Object.entries(source)) {
+    const upperKey = key.toUpperCase();
+    if (!OPENCODE_HOST_ENV_ALLOWLIST.has(upperKey) && !upperKey.startsWith("LC_")) continue;
+    const value = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
+    if (!value) continue;
+    if (OPENCODE_PROXY_ENV_KEYS.has(upperKey)) {
+      try {
+        const proxyUrl = new URL(value);
+        if (proxyUrl.username || proxyUrl.password) continue;
+      } catch {
+        continue;
+      }
+    }
+    env[key] = value;
+  }
+  return env;
+}
+
 function safeOpenCodeRuntimeEnv(options = {}) {
-  const env = { ...(options.env || process.env) };
+  const source = options.env || process.env;
+  const env = safeOpenCodeHostEnv({ env: source });
   const platform = normalizeString(options.platform, process.platform);
   const pathApi = platform === "win32" ? path.win32 : path;
   const runtimeDirectory = pathApi.resolve(normalizeString(
-    options.openCodeRuntimeDirectory || options.runtimeDirectory || env.CODEX_DIRECT_OPENCODE_RUNTIME_DIR,
+    options.openCodeRuntimeDirectory || options.runtimeDirectory || source.CODEX_DIRECT_OPENCODE_RUNTIME_DIR,
     pathApi.join(os.tmpdir(), "codex-direct-opencode-runtime"),
   ));
   env.XDG_DATA_HOME = pathApi.join(runtimeDirectory, "data");
   env.XDG_CACHE_HOME = pathApi.join(runtimeDirectory, "cache");
   env.XDG_STATE_HOME = pathApi.join(runtimeDirectory, "state");
   env.XDG_CONFIG_HOME = pathApi.join(runtimeDirectory, "config");
-  delete env.OPENCODE_CONFIG;
-  delete env.OPENCODE_TUI_CONFIG;
   env.OPENCODE_CONFIG_DIR = pathApi.join(runtimeDirectory, "config", "opencode");
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "1";
   env.OPENCODE_DISABLE_DEFAULT_PLUGINS = "1";
@@ -1139,8 +1206,6 @@ function safeOpenCodeRuntimeEnv(options = {}) {
     tools: { "*": false },
     plugin: [],
   });
-  delete env.OPENCODE_SERVER_PASSWORD;
-  delete env.OPENCODE_SERVER_USERNAME;
   return env;
 }
 
@@ -1184,11 +1249,7 @@ function wslPathForWindowsPath(value, options = {}) {
 }
 
 function safeOpenCodeWslHostEnv(options = {}) {
-  const env = { ...(options.env || process.env) };
-  for (const key of Object.keys(env)) {
-    if (/(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key)) delete env[key];
-    if (key.startsWith("OPENCODE_")) delete env[key];
-  }
+  const env = safeOpenCodeHostEnv(options);
   env.WSLENV = "";
   return env;
 }
@@ -1745,6 +1806,7 @@ module.exports = {
   runExternalProviderContinuationTurn,
   runOpenCodeOxAlphaTurn,
   runOpenRouterOxAlphaTurn,
+  safeOpenCodeHostEnv,
   safeOpenCodeRuntimeEnv,
   spawnOpenCodeProcess,
   streamOpenRouterAttempt,

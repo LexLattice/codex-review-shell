@@ -1738,6 +1738,7 @@ class DirectLiveTextController {
     this.toolDecisionClaims = new Map();
     this.toolDecisionResults = new Map();
     this.forkStartLocks = new Map();
+    this.turnStartAdmissions = new Map();
     this.epistemicLedgerTurnBindings = new Map();
     this.closed = false;
   }
@@ -6804,6 +6805,23 @@ class DirectLiveTextController {
   }
 
   async startTurn(params = {}, context = {}) {
+    const sessionId = normalizeString(params.sessionId || params.threadId, "");
+    const previousAdmission = this.turnStartAdmissions.get(sessionId) ||
+      Promise.resolve();
+    const admission = previousAdmission
+      .catch(() => null)
+      .then(() => this.startTurnWithinAdmission(params, context));
+    this.turnStartAdmissions.set(sessionId, admission);
+    try {
+      return await admission;
+    } finally {
+      if (this.turnStartAdmissions.get(sessionId) === admission) {
+        this.turnStartAdmissions.delete(sessionId);
+      }
+    }
+  }
+
+  async startTurnWithinAdmission(params = {}, context = {}) {
     const project = context.project || {};
     const surfaceSession = context.surfaceSession;
     const sessionId = normalizeString(params.sessionId || params.threadId, "");
