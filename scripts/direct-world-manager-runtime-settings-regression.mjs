@@ -127,6 +127,7 @@ assert.deepEqual(projection.scope.appliesTo, [
   "project_manager",
 ]);
 assert.deepEqual(projection.scope.excludes, [
+  "constitutional_meta_role",
   "implementation_worker",
   "auditor",
 ]);
@@ -176,6 +177,7 @@ console.log(JSON.stringify({
   configuredAndObservedTruthSeparated: true,
   explicitPreferenceOverridesRoleBaseline: true,
   managerScopeExcludesWorkers: true,
+  managerScopeExcludesConstitutionalMetaRoles: true,
   freshProviderCatalogAuthorizesManagerModelOnly: true,
   providerRefreshDoesNotStartManagerCall: true,
 }, null, 2));

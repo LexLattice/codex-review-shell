@@ -160,6 +160,14 @@ Then edit or create a project binding:
 
 The app will start/attach the backend via `wsl.exe` and the work tree / preview will come from the WSL agent.
 
+If Windows-to-WSL interoperability is unhealthy, the attach handshake is
+bounded by a host-side watchdog and fails as
+`workspace_wsl_interop_unavailable`. The project and Direct thread history stay
+available because the workspace process is an execution substrate, not the
+history authority. The UI exposes an explicit attachment retry and reports that
+host action is required. It never invokes `wsl --terminate` or `wsl --shutdown`
+automatically because either command may stop unrelated user services.
+
 ## Requirements
 
 - Windows host with WSL installed.
@@ -172,7 +180,7 @@ The app will start/attach the backend via `wsl.exe` and the work tree / preview 
 - The backend is a per-session child process, not yet a named long-lived daemon reused across host restarts.
 - Watched artifact scanning is implemented as an explicit backend scan; continuous live watcher subscriptions are still deferred.
 - Command execution exists as a backend method but is not yet exposed as a full Codex relay UI.
-- WSL attach currently depends on `wsl.exe --cd`, `bash`, `wslpath`, and `node` inside the distro.
+- WSL attach depends on `wsl.exe --cd`, `bash`, `wslpath`, and `node` inside the distro. Interop failure is diagnosed and retryable, but restarting WSL remains an explicit host operation.
 - The right ChatGPT pane remains a browser surface with best-effort chrome/dark-mode behavior; there is no official consumer-thread control API assumed.
 - Packaging as `.exe` is intentionally out of scope for this version.
 

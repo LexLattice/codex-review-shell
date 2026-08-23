@@ -882,7 +882,7 @@ class DirectLiveProbeEvidenceStore {
 
   findEvidenceForScope(scope = {}, options = {}) {
     const index = this.ensure();
-    let latestRelated = null;
+    const related = [];
     for (const entry of index.evidence || []) {
       if (entry.source === FAKE_SMOKE_SOURCE && !(this.allowFakeEvidence || options.allowFakeEvidence === true)) continue;
       const completeness = normalizeString(entry.scopeCompleteness, entry.scope ? "full" : "legacy");
@@ -897,7 +897,7 @@ class DirectLiveProbeEvidenceStore {
           available: false,
           usable: false,
           status: evidence ? "live_evidence_artifact_corrupt" : "live_evidence_artifact_missing",
-          model: normalizeString(scope.model, ""),
+          model: normalizeString(entry.scope?.model || entry.model, ""),
           modelSource: "live-probe",
           modelEvidenceState: "unknown",
           evidenceId: normalizeString(entry.evidenceId, ""),
@@ -906,19 +906,52 @@ class DirectLiveProbeEvidenceStore {
           source: normalizeString(entry.source, ""),
           failureKind: "evidence_artifact",
           reason: evidence ? "live_evidence_artifact_corrupt" : "live_evidence_artifact_missing",
-          scope: {},
+          scope: {
+            modelMatches: Boolean(
+              normalizeString(entry.scope?.model || entry.model, "") &&
+              normalizeString(entry.scope?.model || entry.model, "") === normalizeString(scope.model, "")
+            ),
+          },
           scopeMismatchCategories: ["evidence_artifact"],
           rawTokensExposed: false,
           rawBackendFramesExposed: false,
         };
-        if (!latestRelated) latestRelated = artifactView;
+        related.push(artifactView);
         continue;
       }
       const view = this.viewForEvidence(evidence, { ...options, scope });
-      if (!latestRelated) latestRelated = view;
       if (view.usable) return view;
+      related.push(view);
     }
-    return latestRelated || {
+    const closestRelated = related
+      .map((view, ordinal) => {
+        const matches = view.scope || {};
+        const exactModel = matches.modelMatches === true || (
+          normalizeString(view.model, "") && normalizeString(view.model, "") === normalizeString(scope.model, "")
+        );
+        const exactScopeMatches = [
+          "profileMatches",
+          "accountMatches",
+          "authSourceMatches",
+          "endpointMatches",
+          "requestShapeClassMatches",
+          "requestShapeHashMatches",
+          "requestShapeMatches",
+          "workspaceMatches",
+          "versionMatches",
+        ].filter((key) => matches[key] === true).length;
+        return {
+          view,
+          ordinal,
+          score:
+            (exactModel ? 10_000 : 0) +
+            (view.status === "expired" ? 1_000 : 0) +
+            exactScopeMatches * 10 -
+            (Array.isArray(view.scopeMismatchCategories) ? view.scopeMismatchCategories.length : 0),
+        };
+      })
+      .sort((left, right) => right.score - left.score || left.ordinal - right.ordinal)[0]?.view || null;
+    return closestRelated || {
       available: false,
       usable: false,
       status: "missing",

@@ -469,7 +469,7 @@ function renderManagerRuntimeSettings() {
     } models`;
   elements.managerRuntimeBoundary.textContent = busy
     ? "The current transition owns its runtime binding. Changes unlock when it reaches a terminal boundary."
-    : "Apply persists a preference for the next manager provider call. It starts no call and grants no worker authority.";
+    : "Apply persists a preference for the next manager provider call. Constitutional meta-roles retain separate harness-owned realization policies; this starts no call and grants no worker authority.";
   elements.managerModelSelect.disabled = busy;
   elements.managerEffortSelect.disabled = busy;
   elements.refreshManagerModels.disabled = busy;

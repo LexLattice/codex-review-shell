@@ -296,7 +296,11 @@ function buildWorldManagerRuntimeSettingsProjection(input = {}) {
     },
     scope: {
       appliesTo: ["world_manager", "project_manager"],
-      excludes: ["implementation_worker", "auditor"],
+      excludes: [
+        "constitutional_meta_role",
+        "implementation_worker",
+        "auditor",
+      ],
       effectiveFrom: "next_manager_provider_call",
     },
     mutationAuthorityGranted: false,

@@ -54,6 +54,21 @@ const pool = new DirectNativeAgentPool({
   },
 });
 
+const unnormalizedReasoningWorkspaceRequest = pool.launch({
+  projectId: "project_pool_fixture",
+  primaryThreadId: "primary_pool_fixture",
+  taskName: "invalid_reasoning_workspace_profile",
+  message: "This programmatic request bypassed provider-ingress normalization.",
+  workspaceMode: "reasoning_only",
+  toolProfile: "read_only_worker",
+});
+assert.equal(unnormalizedReasoningWorkspaceRequest.status, "blocked");
+assert.equal(
+  unnormalizedReasoningWorkspaceRequest.blockerCode,
+  "direct_workspace_worker_tool_profile_without_workspace",
+  "the resident pool must remain strict when callers bypass provider-ingress safe narrowing",
+);
+
 const launches = Array.from({ length: 10 }, (_, index) => pool.launch({
   projectId: "project_pool_fixture",
   primaryThreadId: "primary_pool_fixture",

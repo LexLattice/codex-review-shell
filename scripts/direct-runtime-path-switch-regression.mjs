@@ -9,6 +9,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 
 const runtimePath = require(path.join(root, "src/main/direct/runtime/runtime-path-selection.js"));
+const {
+  createRuntimePreferenceWriteCoordinator,
+} = require(path.join(root, "src/renderer/runtime-preference-write-coordinator.js"));
 
 function read(relPath) {
   return fs.readFileSync(path.join(root, relPath), "utf8");
@@ -152,14 +155,24 @@ assert.deepEqual(
 
 const mainSource = read("src/main.js");
 const preloadSource = read("src/preload.js");
+const codexSurfacePreloadSource = read("src/preload-codex-surface.js");
 const rendererSource = read("src/renderer/app.js");
 const codexSurfaceSource = read("src/renderer/codex-surface.js");
 const htmlSource = read("src/renderer/index.html");
+const codexSurfaceHtml = read("src/renderer/codex-surface.html");
 const codexSurfaceCss = read("src/renderer/codex-surface.css");
 
 assertIncludes(mainSource, "setCodexRuntimePath", "main process runtime switch");
 assertIncludes(mainSource, "direct-runtime:set-path", "main process IPC");
 assertIncludes(mainSource, "direct-runtime:embark", "main process Direct embark IPC");
+assertIncludes(mainSource, "direct-runtime:refresh-readiness", "task-scoped Direct readiness refresh IPC");
+assertIncludes(mainSource, "direct-workbench:set-runtime-path", "Direct Workbench backend transition IPC");
+assertIncludes(mainSource, "requireDirectWorkbenchExperience(\"direct-workbench:set-runtime-path\")", "Direct Workbench backend transition experience gate");
+assertIncludes(mainSource, "deferSurfaceReload: true", "embedded backend transition returns before reloading its own trusted surface");
+assertIncludes(mainSource, "schema: \"direct_thread_runtime_binding@1\"", "main process persists a canonical task runtime binding");
+assertIncludes(mainSource, "modelSource: \"thread-runtime-binding\"", "task model selection supersedes the project seed at task scope");
+assertIncludes(mainSource, "ensureDirectLiveTextController().statusForProject(project, { model: effectiveModel })", "task binding resolves exact-model readiness evidence");
+assertIncludes(mainSource, "runtimeCapabilities = input.runtimeCapabilities || buildDirectLiveTextCapabilities(liveTextStatus)", "Direct projection publishes main-owned capabilities from the same task-scoped readiness witness");
 assertIncludes(mainSource, "recordDirectEmbarkLiveProbe", "main process Direct embark probe transition");
 assertIncludes(mainSource, "activeDirectTurnCountForProject", "main process active direct turn guard");
 assertIncludes(mainSource, "bindingForDirectRuntimePath", "main process persisted binding update");
@@ -180,6 +193,8 @@ assert.ok(
 );
 assertIncludes(preloadSource, "setDirectRuntimePath", "shell preload bridge");
 assertIncludes(preloadSource, "embarkDirectRuntime", "shell preload Direct embark bridge");
+assertIncludes(codexSurfacePreloadSource, "refreshDirectRuntimeReadiness", "embedded surface readiness refresh bridge");
+assertIncludes(codexSurfacePreloadSource, "setDirectWorkbenchRuntimePath", "embedded surface backend transition bridge");
 assertIncludes(rendererSource, "directRuntimePathSelect", "shell renderer selector");
 assertIncludes(rendererSource, "setDirectRuntimePathFromControl", "shell renderer apply action");
 assertIncludes(rendererSource, "embarkDirectRuntimeFromControl", "shell renderer Direct embark action");
@@ -223,6 +238,14 @@ assertIncludes(openDirectThreadSource, "guardThreadId: requestedThreadId", "dire
 assertIncludes(openDirectThreadSource, "state.directThreadOpenRequestId !== openRequestId || state.threadId !== requestedThreadId", "direct thread open rechecks stale requests after preference load");
 assertIncludes(codexSurfaceSource, "hasGuardSourceHome", "runtime preference guard distinguishes omitted source-home guard from explicit empty string");
 assertIncludes(codexSurfaceSource, "hasGuardSessionFilePath", "runtime preference guard distinguishes omitted session-file guard from explicit empty string");
+assertIncludes(codexSurfaceSource, "Refresh Direct readiness", "Direct runtime drawer exposes an in-place readiness action");
+assertIncludes(codexSurfaceSource, "Changes the task backend. This is separate from refreshing Direct readiness.", "backend transition remains distinct from readiness refresh");
+assertIncludes(codexSurfaceSource, "flushRuntimePreferenceWrites", "turn submission waits for the canonical task runtime binding");
+assertIncludes(codexSurfaceHtml, "runtime-preference-write-coordinator.js", "runtime preference coordinator loads before the Codex surface");
+assertIncludes(codexSurfaceSource, "The task binding is canonical for subsequent turns", "model controls explain task-level persistence");
+assertIncludes(codexSurfaceSource, "function applyDirectSurfaceProjection", "renderer centralizes trusted Direct projection application");
+assertIncludes(codexSurfaceSource, "capabilities: hasMainOwnedCapabilities", "renderer replaces stale connection capabilities with the main-owned refreshed projection");
+assertIncludes(codexSurfaceSource, "if (!isDirectLiveTextSurface() && !hasCapability(\"turns\", \"canStart\"))", "Direct submission has one renderer readiness gate while app-server retains its capability gate");
 const attachLiveThreadSource = codexSurfaceSource.slice(
   codexSurfaceSource.indexOf("async function attachLiveThread"),
   codexSurfaceSource.indexOf("function applyLiveThreadResult"),
@@ -256,5 +279,91 @@ assert.ok(!htmlSource.includes("Direct Tools"), "Direct tools tier should not be
 assertIncludes(codexSurfaceCss, "grid-template-areas:", "Codex surface shell uses named grid rows");
 assertIncludes(codexSurfaceCss, "grid-area: transcript", "transcript row must not depend on direct rail visibility");
 assertIncludes(codexSurfaceCss, "grid-area: composer", "composer row must not stretch into transcript row when direct rail is hidden");
+
+const scopeFields = {
+  "global-access": ["approvalPolicy", "sandboxMode"],
+  "thread-model": ["model", "reasoningEffort"],
+};
+const copyScope = (target, scope, values) => {
+  for (const field of scopeFields[scope]) target[field] = values[field];
+};
+const valuesForScope = (source, scope) => Object.fromEntries(
+  scopeFields[scope].map((field) => [field, source[field]]),
+);
+
+const crossScopeOptimistic = {
+  approvalPolicy: "on-request",
+  sandboxMode: "read-only",
+  model: "gpt-5.6-sol",
+  reasoningEffort: "high",
+};
+const crossScopeConfirmed = {
+  approvalPolicy: "never",
+  sandboxMode: "read-only",
+  model: "gpt-5.6-terra",
+  reasoningEffort: "medium",
+};
+const crossScopeCoordinator = createRuntimePreferenceWriteCoordinator({
+  persist: async (scope, requested) => {
+    if (scope === "global-access") throw new Error("fixture global write failed");
+    return { canonical: requested };
+  },
+  canonicalize: (_scope, response, requested) => response?.canonical || requested,
+  applyConfirmed: (scope, values) => copyScope(crossScopeConfirmed, scope, values),
+  applyOptimistic: (scope, values) => copyScope(crossScopeOptimistic, scope, values),
+  readConfirmed: (scope) => valuesForScope(crossScopeConfirmed, scope),
+});
+await Promise.all([
+  crossScopeCoordinator.enqueue("global-access", valuesForScope(crossScopeOptimistic, "global-access")),
+  crossScopeCoordinator.enqueue("thread-model", valuesForScope(crossScopeOptimistic, "thread-model")),
+]);
+assert.equal(crossScopeOptimistic.approvalPolicy, "never");
+assert.equal(crossScopeOptimistic.model, "gpt-5.6-sol");
+assert.equal(crossScopeConfirmed.approvalPolicy, "never");
+assert.equal(crossScopeConfirmed.model, "gpt-5.6-sol");
+assert.equal(crossScopeCoordinator.snapshot().scopes["global-access"].status, "failed");
+assert.equal(crossScopeCoordinator.snapshot().scopes["thread-model"].status, "ready");
+await assert.rejects(
+  crossScopeCoordinator.flush(),
+  (error) => error?.code === "runtime_preference_write_failed",
+  "a later successful scope must not conceal an earlier failed scope",
+);
+
+const sameScopeOptimistic = {
+  model: "gpt-5.6-terra",
+  reasoningEffort: "medium",
+};
+const sameScopeConfirmed = { ...sameScopeOptimistic };
+let sameScopeWriteOrdinal = 0;
+const sameScopeCoordinator = createRuntimePreferenceWriteCoordinator({
+  persist: async (_scope, requested) => {
+    sameScopeWriteOrdinal += 1;
+    if (sameScopeWriteOrdinal === 2) throw new Error("fixture newer write failed");
+    return { canonical: requested };
+  },
+  canonicalize: (_scope, response, requested) => response?.canonical || requested,
+  applyConfirmed: (scope, values) => copyScope(sameScopeConfirmed, scope, values),
+  applyOptimistic: (scope, values) => copyScope(sameScopeOptimistic, scope, values),
+  readConfirmed: (scope) => valuesForScope(sameScopeConfirmed, scope),
+});
+sameScopeOptimistic.model = "gpt-5.6-sol";
+sameScopeOptimistic.reasoningEffort = "high";
+const olderWrite = sameScopeCoordinator.enqueue(
+  "thread-model",
+  valuesForScope(sameScopeOptimistic, "thread-model"),
+);
+sameScopeOptimistic.model = "gpt-5.6-luna";
+sameScopeOptimistic.reasoningEffort = "max";
+const newerWrite = sameScopeCoordinator.enqueue(
+  "thread-model",
+  valuesForScope(sameScopeOptimistic, "thread-model"),
+);
+await Promise.all([olderWrite, newerWrite]);
+assert.deepEqual(
+  sameScopeOptimistic,
+  { model: "gpt-5.6-sol", reasoningEffort: "high" },
+  "a failed newer write must roll back to the most recent confirmed older generation",
+);
+assert.deepEqual(sameScopeConfirmed, sameScopeOptimistic);
 
 console.log("direct runtime path switch regression passed");

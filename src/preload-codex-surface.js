@@ -30,10 +30,24 @@ const codexSurfaceApi = {
     ipcRenderer.invoke("direct-thread-workbench:create-work-thread-draft-session", { ...options, projectId }),
   getRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:get", request || {}),
   updateRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:update", request || {}),
+  refreshDirectRuntimeReadiness: (projectId, threadId = "") =>
+    ipcRenderer.invoke("direct-runtime:refresh-readiness", { projectId, threadId }),
+  setDirectWorkbenchRuntimePath: (projectId, runtimePath, clientOperationId = "") =>
+    ipcRenderer.invoke("direct-workbench:set-runtime-path", { projectId, runtimePath, clientOperationId }),
   getDirectImplementationLaneUiStatus: (projectId) => ipcRenderer.invoke("direct-ui:implementation-status", { projectId }),
   readDirectImplementationOperationHistory: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-ui:operation-history", { ...options, projectId }),
   getDirectImplementationPolicyView: (projectId) => ipcRenderer.invoke("direct-ui:policy-readonly-view", { projectId }),
+  getDirectActiveSubAgentPolicy: (projectId, threadId = "") =>
+    ipcRenderer.invoke("direct-sub-agent-policy:projection", {
+      projectId,
+      threadId,
+    }),
+  settleDirectActiveSubAgentPolicy: (payload) =>
+    ipcRenderer.invoke(
+      "direct-sub-agent-policy:semantic-update",
+      payload || {},
+    ),
   openWorkspaceLink: (url, options = {}) => ipcRenderer.invoke("link:open", { ...options, url }),
   openExternalUrl: (url) => ipcRenderer.invoke("external:open-url", { url }),
   openProjectFile: (projectId, relPath, options = {}) => ipcRenderer.invoke("file-view:open-project-file", { ...options, projectId, relPath }),

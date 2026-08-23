@@ -47,6 +47,9 @@ const {
 const {
   WorkspaceWorkerDelegationPolicyRegistry,
 } = require("./main/direct/agents/workspace-worker-delegation-policy");
+const {
+  DirectActiveSubAgentPolicyService,
+} = require("./main/direct/agents/active-sub-agent-policy");
 const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectWorkThreadRegistryStore } = require("./main/direct/bridge/work-thread-registry");
@@ -112,11 +115,18 @@ const {
   DirectRoleRuntime,
 } = require("./main/direct/worldmanager/role-runtime");
 const {
+  buildWorldManagerModelCatalog,
   buildWorldManagerRuntimeSettingsProjection,
   normalizeWorldManagerRuntimePreferences,
   resolveWorldManagerModelEvidence,
   resolveWorldManagerRuntimeSelection,
 } = require("./main/direct/worldmanager/runtime-settings");
+const {
+  createDefaultConstitutionalMetaRoleRegistry,
+  resolveConstitutionalMetaRoleRuntimeSelection,
+  validateConstitutionalMetaRoleInvocation,
+  validateConstitutionalMetaRoleRealizationPolicy,
+} = require("./main/direct/worldmanager/constitutional-meta-role");
 const {
   DirectAroReconstructionRuntime,
 } = require("./main/direct/worldmanager/aro-reconstruction-runtime");
@@ -245,6 +255,13 @@ const {
 const {
   DirectNativeAgentPool,
 } = require("./main/direct/agents/native-agent-pool");
+const {
+  PROVIDER_CHATGPT_DIRECT,
+  PROVIDER_OPENCODE_OXALPHA,
+  PROVIDER_OPENROUTER_OXALPHA,
+  externalProviderProfile,
+  runExternalProviderContinuationTurn,
+} = require("./main/direct/agents/external-provider-continuation");
 const {
   WorkspaceWorkerLifecycleRegistry,
   normalizeBinding: normalizeWorkspaceWorkerLifecycleBinding,
@@ -503,11 +520,14 @@ let applicationQuitAfterOrderedShutdown = false;
 let degradedWorkspaceShutdownStarted = false;
 const windowsAllowedToCloseAfterOrderedShutdown = new WeakSet();
 let directWorkspaceWorkerDelegationPolicyRegistry = null;
+let directActiveSubAgentPolicyService = null;
 let directProviderMetadataAdapter = null;
 let directActivationStore = null;
 let worldManagerSemanticCoordinator = null;
 let worldManagerService = null;
 let worldManagerRoleRuntime = null;
+const constitutionalMetaRoleRegistry =
+  createDefaultConstitutionalMetaRoleRegistry();
 const worldManagerTransitionSubscribers =
   new Map();
 const directActivationLocks = new Map();
@@ -802,11 +822,63 @@ async function runWorldManagerSemanticRoleThroughDirect(input = {}) {
     error.code = "world_manager_semantic_project_unavailable";
     throw error;
   }
-  const runtimeSelection =
-    await resolveWorldManagerRuntimeSelectionForProject(
-      project,
-      input.reasoningEffort,
+  let runtimeSelection;
+  if (input.runtimeRoleClass === "constitutional_meta_role") {
+    const canonicalMember =
+      constitutionalMetaRoleRegistry.member(input.metaRoleId);
+    const canonicalPolicy =
+      constitutionalMetaRoleRegistry.realizationPolicy(
+        input.metaRoleId,
+      );
+    if (!canonicalMember || !canonicalPolicy) {
+      const error = new Error(
+        `Constitutional meta-role is not registered: ${input.metaRoleId || "<empty>"}`,
+      );
+      error.code = "constitutional_meta_role_member_unknown";
+      throw error;
+    }
+    validateConstitutionalMetaRoleInvocation(
+      input.metaRoleInvocation,
+      {
+        roleClass: constitutionalMetaRoleRegistry.roleClass,
+        member: canonicalMember,
+        realizationPolicy: canonicalPolicy,
+      },
     );
+    validateConstitutionalMetaRoleRealizationPolicy(
+      input.metaRoleRealizationPolicy,
+    );
+    if (
+      input.metaRoleRealizationPolicy.realizationPolicyId !==
+        canonicalPolicy.realizationPolicyId ||
+      input.metaRoleRealizationPolicy.digest !== canonicalPolicy.digest
+    ) {
+      const error = new Error(
+        "Constitutional meta-role realization policy does not match the harness registry.",
+      );
+      error.code = "constitutional_meta_role_runtime_policy_mismatch";
+      throw error;
+    }
+    const directProviderMetadata =
+      directProviderMetadataStatusForProject(project);
+    const catalog = buildWorldManagerModelCatalog({
+      providerMetadataProfile:
+        directProviderMetadata?.profile || null,
+      profileDoc: ensureDirectCodexProfileDoc(),
+    });
+    runtimeSelection =
+      resolveConstitutionalMetaRoleRuntimeSelection({
+        invocation: input.metaRoleInvocation,
+        realizationPolicy: canonicalPolicy,
+        catalog,
+      });
+  } else {
+    runtimeSelection =
+      await resolveWorldManagerRuntimeSelectionForProject(
+        project,
+        input.reasoningEffort,
+      );
+  }
   const model = runtimeSelection.model;
   const reasoningEffort = runtimeSelection.reasoningEffort;
   const result = await runImplementationToolInitialProbe({
@@ -860,6 +932,16 @@ async function runWorldManagerSemanticRoleThroughDirect(input = {}) {
       toolCallCount: actionCalls.length,
       toolNames: [...new Set(actionCalls.map((call) => call.name).filter(Boolean))],
       telemetrySource: usageEvent ? "provider_reported_and_harness_observed" : "harness_observed",
+      metaRoleId: normalizeString(
+        runtimeSelection.metaRoleId,
+        "",
+      ),
+      realizationPolicyRef:
+        runtimeSelection.realizationPolicyRef || null,
+      modelSource: normalizeString(
+        runtimeSelection.modelSource,
+        "",
+      ),
     },
   };
 }
@@ -2787,16 +2869,35 @@ function codexRuntimePreferenceLookup(config, payload = {}) {
   };
   const threadKey = codexThreadRuntimePreferenceKey(parts);
   const threadMatch = findCodexThreadRuntimePreference(threadDefaults, parts);
+  let directSession = null;
+  if (parts.threadId) {
+    try {
+      const candidate = ensureDirectSessionStore().readSession(parts.threadId);
+      if (candidate && (!parts.projectId || normalizeString(candidate.projectId, "") === parts.projectId)) {
+        directSession = candidate;
+      }
+    } catch {}
+  }
   return {
     globalDefaults: runtimeDefaults.codex,
-    threadDefaults: threadMatch.value,
+    threadDefaults: directSession
+      ? {
+          projectId: normalizeString(directSession.projectId, parts.projectId),
+          threadId: directSession.sessionId,
+          sourceHome: "",
+          sessionFilePath: "",
+          model: normalizeString(directSession.model, normalizeString(threadMatch.value?.model, "")),
+          reasoningEffort: normalizeReasoningEffort(directSession.reasoningEffort) || normalizeReasoningEffort(threadMatch.value?.reasoningEffort),
+          updatedAt: normalizeString(directSession.runtimeBindingUpdatedAt || directSession.updatedAt, normalizeString(threadMatch.value?.updatedAt, "")),
+        }
+      : threadMatch.value,
     threadKey,
-    resolvedThreadKey: threadMatch.key || "",
-    threadMatch: threadMatch.match,
+    resolvedThreadKey: directSession ? `direct-session:${directSession.sessionId}` : threadMatch.key || "",
+    threadMatch: directSession ? "direct-session" : threadMatch.match,
   };
 }
 
-async function updateCodexRuntimePreferences(payload = {}) {
+async function updateCodexRuntimePreferences(payload = {}, options = {}) {
   const scope = normalizeString(payload.scope, "");
   const config = await loadConfig();
   const runtimeDefaults = normalizeRuntimeDefaults(config.runtimeDefaults);
@@ -2808,7 +2909,13 @@ async function updateCodexRuntimePreferences(payload = {}) {
       sandboxMode: normalizeSandboxMode(payload.sandboxMode),
     };
   } else if (scope === "thread-model") {
-    const projectId = normalizeString(payload.projectId, "");
+    const authorityProjectId = normalizeString(options.projectId, "");
+    const projectId = normalizeString(payload.projectId, authorityProjectId);
+    if (authorityProjectId && projectId !== authorityProjectId) {
+      const error = new Error("The runtime preference update is bound to the active project.");
+      error.code = "codex_runtime_preference_project_scope_mismatch";
+      throw error;
+    }
     const threadId = normalizeString(payload.threadId, "");
     const sourceHome = normalizeString(payload.sourceHome, "");
     const sessionFilePath = normalizeString(payload.sessionFilePath, "");
@@ -2829,19 +2936,78 @@ async function updateCodexRuntimePreferences(payload = {}) {
     } else {
       delete codexThreadRuntimeDefaults[threadKey];
     }
+
+    const directSession = threadId ? ensureDirectSessionStore().readSession(threadId) : null;
+    if (directSession) {
+      if (normalizeString(directSession.projectId, "") !== projectId) {
+        const error = new Error("The Direct session does not belong to the active project.");
+        error.code = "codex_runtime_preference_session_scope_mismatch";
+        throw error;
+      }
+      const project = config.projects.find((candidate) => candidate.id === projectId);
+      if (!project) {
+        const error = new Error("The active project is unavailable.");
+        error.code = "codex_runtime_preference_project_unknown";
+        throw error;
+      }
+      const effectiveModel = model || normalizeString(project.surfaceBinding?.codex?.model, directSession.model);
+      const effectiveReasoningEffort = reasoningEffort ||
+        normalizeReasoningEffort(project.surfaceBinding?.codex?.reasoningEffort) ||
+        normalizeReasoningEffort(directSession.reasoningEffort);
+      const evidence = ensureDirectLiveTextController().statusForProject(project, { model: effectiveModel });
+      const previousSession = directSession;
+      const nextSession = {
+        ...directSession,
+        model: effectiveModel,
+        reasoningEffort: effectiveReasoningEffort,
+        modelSource: "thread-runtime-binding",
+        modelEvidenceState: evidence.modelEvidenceState || "unknown",
+        modelEvidenceId: normalizeString(evidence.evidenceId, ""),
+        runtimeBindingRevision: Math.max(0, Number(directSession.runtimeBindingRevision) || 0) + 1,
+        runtimeBindingUpdatedAt: nowIso(),
+        updatedAt: nowIso(),
+      };
+      ensureDirectSessionStore().writeSession(nextSession);
+      options.directSessionMutation = { previousSession, nextSession, evidence };
+    }
   } else {
     throw new Error(`Unsupported Codex runtime preference scope: ${scope || "missing"}.`);
   }
 
-  const saved = await saveConfig({
-    ...config,
-    runtimeDefaults,
-    codexThreadRuntimeDefaults,
-  });
+  let saved = null;
+  try {
+    saved = await saveConfig({
+      ...config,
+      runtimeDefaults,
+      codexThreadRuntimeDefaults,
+    });
+  } catch (error) {
+    if (options.directSessionMutation?.previousSession) {
+      ensureDirectSessionStore().writeSession(options.directSessionMutation.previousSession);
+    }
+    throw error;
+  }
   emitShellEvent({ type: "config-updated", reason: "codex-runtime-preferences", config: saved, at: nowIso() });
+  const binding = options.directSessionMutation?.nextSession
+    ? {
+        schema: "direct_thread_runtime_binding@1",
+        projectId: options.directSessionMutation.nextSession.projectId,
+        threadId: options.directSessionMutation.nextSession.sessionId,
+        model: options.directSessionMutation.nextSession.model,
+        reasoningEffort: options.directSessionMutation.nextSession.reasoningEffort,
+        modelSource: options.directSessionMutation.nextSession.modelSource,
+        modelEvidenceState: options.directSessionMutation.nextSession.modelEvidenceState,
+        modelEvidenceId: options.directSessionMutation.nextSession.modelEvidenceId,
+        revision: options.directSessionMutation.nextSession.runtimeBindingRevision,
+        updatedAt: options.directSessionMutation.nextSession.runtimeBindingUpdatedAt,
+        appliesToActiveTurn: false,
+        appliesFrom: "next_turn",
+      }
+    : null;
   return {
     ok: true,
     preferences: codexRuntimePreferenceLookup(saved, payload),
+    binding,
   };
 }
 
@@ -3891,6 +4057,91 @@ async function runDirectNativeChildProviderTurn(input = {}) {
   };
 }
 
+async function runDirectExternalChildProviderTurn(input = {}) {
+  const captureAdapter = createNativeChildLiveTurnCapture({
+    sessionStore: ensureDirectSessionStore(),
+    epistemicService: ensureDirectEpistemicService(),
+    captureInput: {
+      ...input,
+      sourceClass: "external_provider_continuation_child_turn",
+    },
+    onProgress: input.onEpistemicProgress,
+  });
+  registerDirectChildCaptureController(input, captureAdapter);
+  try {
+    const result = await runExternalProviderContinuationTurn(input, {
+      workingDirectory: path.join(app.getPath("userData"), "external-provider-workers"),
+      onNormalizedEventsCommitted: captureAdapter.strictCommitCallback(),
+    });
+    captureAdapter.reconcileEventPrefix(result.normalizedEvents, { sourceOffset: 0 });
+    captureAdapter.finalize({
+      ...result,
+      terminal: { state: "completed" },
+    });
+    return {
+      ...result,
+      epistemicCapture: captureAdapter.epistemicCapture(),
+    };
+  } catch (error) {
+    if (input.signal?.aborted || error?.name === "AbortError") {
+      captureAdapter.markFailed(error);
+      throw error;
+    }
+    const errorCode = normalizeString(error?.code, "direct_external_provider_failed");
+    const normalizedEvents = Array.isArray(error?.normalizedEvents)
+      ? error.normalizedEvents
+      : [];
+    try {
+      captureAdapter.reconcileEventPrefix(normalizedEvents, { sourceOffset: 0 });
+      captureAdapter.finalize({
+        terminal: { state: "failed", error: { code: errorCode } },
+        error: { code: errorCode },
+        normalizedEvents,
+      });
+    } catch (captureError) {
+      captureAdapter.markFailed(captureError);
+    }
+    return {
+      ok: false,
+      terminalState: "failed",
+      errorCode,
+      outputText: "",
+      responseId: "",
+      tokenUsage: {},
+      normalizedEvents,
+      continuationTrace: error?.continuationTrace || null,
+      epistemicCapture: captureAdapter.epistemicCapture(),
+    };
+  }
+}
+
+function directNativeChildProviderProfiles() {
+  return [
+    {
+      providerId: PROVIDER_CHATGPT_DIRECT,
+      status: "ready",
+      blockerCode: "",
+      model: normalizeString(
+        process.env.CODEX_DIRECT_SUB_AGENT_DEFAULT_MODEL,
+        "gpt-5.6-sol",
+      ),
+      transport: "chatgpt_subscription_responses_sse",
+      credentials: "chatgpt_subscription",
+      childToolsAllowed: false,
+      autoContinuation: false,
+      rawSecretIncluded: false,
+    },
+    externalProviderProfile(PROVIDER_OPENROUTER_OXALPHA),
+    externalProviderProfile(PROVIDER_OPENCODE_OXALPHA),
+  ];
+}
+
+function runDirectNativeChildProviderByProfile(input = {}) {
+  return input.providerId === PROVIDER_CHATGPT_DIRECT
+    ? runDirectNativeChildProviderTurn(input)
+    : runDirectExternalChildProviderTurn(input);
+}
+
 function directWorkspaceWorkerKey(childAgentId) {
   const normalized = normalizeString(childAgentId, `direct_child_${crypto.randomUUID().slice(0, 8)}`)
     .toLowerCase()
@@ -4191,11 +4442,40 @@ function ensureDirectNativeAgentPool() {
       process.env.CODEX_DIRECT_SUB_AGENT_DEFAULT_REASONING_EFFORT,
       "medium",
     ),
-    providerTurnRunner: (input) => runDirectNativeChildProviderTurn(input),
+    providerProfiles: directNativeChildProviderProfiles(),
+    providerTurnRunner: (input) => runDirectNativeChildProviderByProfile(input),
     workspaceWorkerRunner: (input) => runDirectWorkspaceWorkerTurn(input),
     workspaceWorkerLifecycleRegistry: ensureWorkspaceWorkerLifecycleRegistry(),
   });
   return directNativeAgentPool;
+}
+
+function ensureDirectActiveSubAgentPolicyService() {
+  if (directActiveSubAgentPolicyService) {
+    return directActiveSubAgentPolicyService;
+  }
+  directActiveSubAgentPolicyService =
+    new DirectActiveSubAgentPolicyService({
+      rootDir: path.join(
+        directSessionRootDir(),
+        "active-sub-agent-policy",
+      ),
+      metaRoleRegistry: constitutionalMetaRoleRegistry,
+      semanticRunner: (input) =>
+        runWorldManagerSemanticRoleThroughDirect(input),
+      admissionGuard: ({ scope, projectId }) => {
+        if (scope?.scopeKind !== "project") return;
+        const status = ensureDirectSessionStore().status({ projectId });
+        if (Number(status.activeTurnCount || 0) > 0) {
+          const error = new Error(
+            "Project-scoped sub-agent policy cannot change while a project turn is running.",
+          );
+          error.code = "direct_active_sub_agent_policy_turn_active";
+          throw error;
+        }
+      },
+    });
+  return directActiveSubAgentPolicyService;
 }
 
 function ensureDirectWorkspaceWorkerDelegationPolicyRegistry() {
@@ -4259,6 +4539,15 @@ function ensureDirectLiveTextController() {
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     subAgentPool: ensureDirectNativeAgentPool(),
+    activeSubAgentPolicySemanticPreflight: (input) =>
+      ensureDirectActiveSubAgentPolicyService()
+        .semanticPreflight(input),
+    activeSubAgentPolicyResolver: (input) =>
+      ensureDirectActiveSubAgentPolicyService()
+        .resolveSpawn(input),
+    activeSubAgentPolicyProjectionResolver: (input) =>
+      ensureDirectActiveSubAgentPolicyService()
+        .projection(input),
     workspaceWorkerDelegationPolicyResolver: (context) =>
       resolveDirectWorkspaceWorkerDelegationPolicy(context),
     subAgentStatusSurfaceResolver: (context) => directSubAgentStatusSurfaceFor(context),
@@ -5966,7 +6255,15 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
   const projectId = normalizeString(project?.id, "");
   const activeThreadId = normalizeString(input.threadId || input.activeThreadId || "", "");
   const runtimeStatus = input.runtimeStatus || buildDirectRuntimeStatusForProject(project);
-  const liveTextStatus = input.liveTextStatus || ensureDirectLiveTextController().statusForProject(project);
+  const activeSession = activeThreadId ? ensureDirectSessionStore().readSession(activeThreadId) : null;
+  const scopedActiveSession = activeSession && normalizeString(activeSession.projectId, "") === projectId
+    ? activeSession
+    : null;
+  const scopedModel = normalizeString(scopedActiveSession?.model, "");
+  const liveTextStatus = input.liveTextStatus || ensureDirectLiveTextController().statusForProject(project, {
+    model: scopedModel,
+  });
+  const runtimeCapabilities = input.runtimeCapabilities || buildDirectLiveTextCapabilities(liveTextStatus);
   const agentUsageStatus = input.agentUsageStatus || buildDirectAgentUsageStatusForProject(projectId);
   const workThreadBundle = input.workThreadBundle || directWorkThreadProjectionForProject(project);
   const agentRegistryBundle = input.agentRegistryBundle || directAgentRegistryProjectionForProject(project);
@@ -6000,11 +6297,37 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     workThreadBundle,
   });
   const operatorBroker = input.operatorBroker || directOperatorBrokerProjectionForProject(project, workThreadBundle);
-  const composerRuntimeWitness = buildDirectComposerRuntimeWitness({
+  const baseComposerRuntimeWitness = buildDirectComposerRuntimeWitness({
     runtimeWitnessProjection,
     contextPreview,
     agentUsageStatus,
   });
+  const taskRuntimeBinding = scopedActiveSession
+    ? {
+        schema: "direct_thread_runtime_binding@1",
+        projectId,
+        threadId: scopedActiveSession.sessionId,
+        model: scopedModel,
+        reasoningEffort: normalizeReasoningEffort(scopedActiveSession.reasoningEffort),
+        modelSource: normalizeString(scopedActiveSession.modelSource, "thread-runtime-binding"),
+        modelEvidenceState: liveTextStatus.modelEvidenceState || "unknown",
+        modelEvidenceId: normalizeString(liveTextStatus.evidenceId, ""),
+        revision: Math.max(0, Number(scopedActiveSession.runtimeBindingRevision) || 0),
+        updatedAt: normalizeString(scopedActiveSession.runtimeBindingUpdatedAt || scopedActiveSession.updatedAt, ""),
+        appliesFrom: "next_turn",
+        rawPromptIncluded: false,
+        rawCredentialsIncluded: false,
+      }
+    : null;
+  const composerRuntimeWitness = taskRuntimeBinding
+    ? {
+        ...baseComposerRuntimeWitness,
+        modelLabel: taskRuntimeBinding.model || baseComposerRuntimeWitness.modelLabel,
+        modelState: taskRuntimeBinding.modelEvidenceState,
+        reasoningLabel: taskRuntimeBinding.reasoningEffort || baseComposerRuntimeWitness.reasoningLabel,
+        reasoningState: taskRuntimeBinding.reasoningEffort ? "task_bound" : baseComposerRuntimeWitness.reasoningState,
+      }
+    : baseComposerRuntimeWitness;
   let directRuntimeAnalyticsSnapshot = null;
   try {
     directRuntimeAnalyticsSnapshot = ensureDirectThreadStore().getDirectRuntimeAnalyticsFactSnapshot(projectId, {
@@ -6025,9 +6348,11 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     generatedAt,
     runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || {}),
     liveTextStatus,
+    runtimeCapabilities,
     directAuthPreflight: input.directAuthPreflight || null,
     runtimeWitnessProjection,
     composerRuntimeWitness,
+    taskRuntimeBinding,
     providerMetadataProfile: directProviderMetadata?.profile || null,
     metadataDriftReport: directProviderMetadata?.driftReport || null,
     metadataCacheState: normalizeString(directProviderMetadata?.cacheState, ""),
@@ -6065,6 +6390,8 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     projectId,
     generatedAt,
     projection.runtimePath,
+    runtimeCapabilities.status,
+    runtimeCapabilities.turns?.canStart === true,
     runtimeAnalyticsProjection.projectionDigest,
     composerRuntimeWitness.runtimeWitnessDigest,
     composerRuntimeWitness.contextPreviewDigest,
@@ -6144,6 +6471,20 @@ function projectWithCodexBinding(project, codexBinding) {
   };
 }
 
+async function reloadCodexSurfaceAfterRuntimeTransition(project, reason, options = {}) {
+  const activationEpoch = nextSurfaceActivationEpoch(reason);
+  if (options.deferSurfaceReload === true) {
+    setTimeout(() => {
+      loadCodexSurface(project, { activationEpoch }).catch((error) => {
+        console.warn(`[Direct Workbench] deferred ${reason} surface reload failed`, error);
+      });
+    }, 75);
+    return { deferred: true, activationEpoch };
+  }
+  await loadCodexSurface(project, { activationEpoch });
+  return { deferred: false, activationEpoch };
+}
+
 async function switchActiveCodexRuntimePath(project, runtimePath, reason = "active-runtime-path-switch") {
   const projectId = normalizeString(project?.id, "");
   if (!projectId) throw new Error("Project not found.");
@@ -6156,7 +6497,7 @@ async function switchActiveCodexRuntimePath(project, runtimePath, reason = "acti
   const nextBinding = bindingForDirectRuntimePath(project.surfaceBinding?.codex || {}, runtimePath);
   const activeProject = projectWithCodexBinding(project, nextBinding);
   currentProject = activeProject;
-  await loadCodexSurface(activeProject, { activationEpoch: nextSurfaceActivationEpoch(reason) });
+  await reloadCodexSurfaceAfterRuntimeTransition(activeProject, reason);
   emitDirectRuntimeStatus(activeProject);
   return {
     ok: true,
@@ -6225,7 +6566,7 @@ async function enableDirectExperimentalProject(payload = {}) {
       }
       committed = store.markActivationCommitted(pending);
       currentProject = savedProject;
-      await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-activation") });
+      await reloadCodexSurfaceAfterRuntimeTransition(savedProject, "direct-activation", payload);
       const status = buildDirectRuntimeStatusForProject(savedProject).activation;
       emitDirectRuntimeStatus(savedProject);
       return { ok: true, activation: committed, project: savedProject, config: saved, status };
@@ -6315,7 +6656,7 @@ async function selectDirectTextOnlyRuntime(payload = {}) {
       }
       committed = store.markRuntimeSelectionCommitted(pending);
       currentProject = savedProject;
-      await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-text-only-selection") });
+      await reloadCodexSurfaceAfterRuntimeTransition(savedProject, "direct-text-only-selection", payload);
       const status = buildDirectRuntimeStatusForProject(savedProject).directTextOnly;
       emitDirectRuntimeStatus(savedProject);
       return { ok: true, selection: committed, project: savedProject, config: saved, status };
@@ -6420,9 +6761,10 @@ function directImplementationCanSelect(runtimeStatus = {}) {
     status === "enabled";
 }
 
-function directLiveProbeModel(project = {}, runtimeStatus = {}) {
+function directLiveProbeModel(project = {}, runtimeStatus = {}, options = {}) {
   return normalizeString(
-    project?.surfaceBinding?.codex?.model ||
+    options.model || options.requestedModel ||
+      project?.surfaceBinding?.codex?.model ||
       runtimeStatus.liveTextRuntime?.model ||
       runtimeStatus.liveTextRuntime?.status?.model ||
       runtimeStatus.directTextOnly?.scope?.model,
@@ -6430,10 +6772,10 @@ function directLiveProbeModel(project = {}, runtimeStatus = {}) {
   );
 }
 
-async function recordDirectEmbarkLiveProbe(project, runtimeStatus, steps = []) {
+async function recordDirectEmbarkLiveProbe(project, runtimeStatus, steps = [], options = {}) {
   const profileDoc = ensureDirectCodexProfileDoc();
   const authStore = directRuntimeAuthStore();
-  const model = directLiveProbeModel(project, runtimeStatus);
+  const model = directLiveProbeModel(project, runtimeStatus, options);
   steps.push(directEmbarkStep("probing", "started", { model: model || "profile-default" }));
   const result = await runTextOnlyDirectProbe({
     authStore,
@@ -6445,7 +6787,7 @@ async function recordDirectEmbarkLiveProbe(project, runtimeStatus, steps = []) {
   });
   const requestedModel = normalizeString(result.requestShape?.model || model, "");
   const recorded = ensureDirectLiveProbeEvidenceStore().recordProbeResult(result, {
-    source: "direct-runtime-embark",
+    source: normalizeString(options.source, "direct-runtime-embark"),
     project,
     profileDoc,
     authStatus: authStore.readStatus(),
@@ -6469,6 +6811,126 @@ async function recordDirectEmbarkLiveProbe(project, runtimeStatus, steps = []) {
       rawBackendFramesExposed: false,
     },
     recorded,
+  };
+}
+
+function directThreadRuntimeScope(project = {}, threadId = "") {
+  const projectId = normalizeString(project.id, "");
+  const safeThreadId = normalizeString(threadId, "");
+  const session = safeThreadId ? ensureDirectSessionStore().readSession(safeThreadId) : null;
+  if (safeThreadId && !session) {
+    const error = new Error("The selected Direct task is unavailable.");
+    error.code = "direct_readiness_session_unknown";
+    throw error;
+  }
+  if (session && normalizeString(session.projectId, "") !== projectId) {
+    const error = new Error("The Direct task does not belong to the active project.");
+    error.code = "direct_readiness_session_scope_mismatch";
+    throw error;
+  }
+  return {
+    session,
+    threadId: safeThreadId,
+    model: normalizeString(session?.model, normalizeString(project.surfaceBinding?.codex?.model, "")),
+    reasoningEffort: normalizeReasoningEffort(
+      session?.reasoningEffort || project.surfaceBinding?.codex?.reasoningEffort,
+    ),
+  };
+}
+
+async function refreshDirectRuntimeReadiness(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const config = await loadConfig();
+  const project = currentProject?.id === projectId
+    ? currentProject
+    : config.projects.find((candidate) => candidate.id === projectId);
+  if (!project) {
+    const error = new Error("The selected Direct project is unavailable.");
+    error.code = "direct_readiness_project_unknown";
+    throw error;
+  }
+  const runtimeScope = directThreadRuntimeScope(project, payload.threadId);
+  const steps = [directEmbarkStep("readiness_refresh_requested")];
+  const authStatus = await directEmbarkAuthStatus(steps);
+  if (!directAuthIsAuthenticated(authStatus)) {
+    return {
+      schema: "direct_runtime_readiness_refresh@1",
+      ok: false,
+      status: "auth_required",
+      projectId,
+      threadId: runtimeScope.threadId,
+      model: runtimeScope.model,
+      authStatus,
+      steps,
+      rawTokensExposed: false,
+      rawBackendFramesExposed: false,
+    };
+  }
+
+  let probeResult = null;
+  try {
+    const probe = await recordDirectEmbarkLiveProbe(
+      project,
+      buildDirectRuntimeStatusForProject(project),
+      steps,
+      { model: runtimeScope.model, source: "direct-runtime-readiness-refresh" },
+    );
+    probeResult = probe.probeResult;
+  } catch (error) {
+    return {
+      schema: "direct_runtime_readiness_refresh@1",
+      ok: false,
+      status: "probe_failed",
+      projectId,
+      threadId: runtimeScope.threadId,
+      model: runtimeScope.model,
+      authStatus: directRuntimeAuthStore().readStatus(),
+      steps,
+      error: {
+        code: normalizeString(error?.code, "direct_probe_failed"),
+        message: normalizeString(error?.message, "Direct readiness probe failed."),
+      },
+      rawTokensExposed: false,
+      rawBackendFramesExposed: false,
+    };
+  }
+
+  const liveTextStatus = ensureDirectLiveTextController().statusForProject(project, {
+    model: runtimeScope.model,
+  });
+  if (runtimeScope.session) {
+    const latest = ensureDirectSessionStore().readSession(runtimeScope.session.sessionId);
+    if (latest && normalizeString(latest.model, "") === runtimeScope.model) {
+      ensureDirectSessionStore().writeSession({
+        ...latest,
+        modelEvidenceState: liveTextStatus.modelEvidenceState || "unknown",
+        modelEvidenceId: normalizeString(liveTextStatus.evidenceId, ""),
+        updatedAt: nowIso(),
+      });
+    }
+  }
+  const projection = buildDirectCodexSurfaceProjectionForProject(project, {
+    threadId: runtimeScope.threadId,
+    liveTextStatus,
+    directProviderMetadata: directProviderMetadataStatusForProject(project),
+  });
+  return {
+    schema: "direct_runtime_readiness_refresh@1",
+    ok: liveTextStatus.status === "ready" || liveTextStatus.turnRunnable === true,
+    status: liveTextStatus.status,
+    reason: liveTextStatus.reason || "",
+    projectId,
+    threadId: runtimeScope.threadId,
+    model: runtimeScope.model,
+    reasoningEffort: runtimeScope.reasoningEffort,
+    evidenceId: normalizeString(liveTextStatus.evidenceId, ""),
+    evidenceState: liveTextStatus.modelEvidenceState || "unknown",
+    authStatus: directRuntimeAuthStore().readStatus(),
+    probeResult,
+    steps,
+    projection,
+    rawTokensExposed: false,
+    rawBackendFramesExposed: false,
   };
 }
 
@@ -6625,7 +7087,7 @@ async function setCodexRuntimePath(payload = {}) {
     const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
     const savedProject = saved.projects.find((item) => item.id === projectId) || latestProject;
     currentProject = savedProject;
-    await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("runtime-path-app-server") });
+    await reloadCodexSurfaceAfterRuntimeTransition(savedProject, "runtime-path-app-server", payload);
     emitDirectRuntimeStatus(savedProject);
     return {
       ok: true,
@@ -7748,6 +8210,7 @@ async function loadCodexSurface(project, options = {}) {
     const directSurfaceProjection = buildDirectCodexSurfaceProjectionForProject(project, {
       runtimeStatus,
       liveTextStatus,
+      runtimeCapabilities: capabilities,
       directAuthPreflight,
       directProviderMetadata,
       attachmentCapability: capabilities.attachments || null,
@@ -12240,14 +12703,20 @@ ipcMain.handle("codex-surface:focus-sub-agent", async (event, payload) => {
 });
 
 ipcMain.handle("codex-runtime-preferences:get", async (event, payload) => {
-  requireFullCodexSurfaceBridge(event.sender, "codex-runtime-preferences:get");
+  const authority = requireFullCodexSurfaceBridge(event.sender, "codex-runtime-preferences:get");
+  const requestedProjectId = normalizeString(payload?.projectId, authority.projectId);
+  if (authority.projectId && requestedProjectId !== authority.projectId) {
+    const error = new Error("The runtime preference read is bound to the active project.");
+    error.code = "codex_runtime_preference_project_scope_mismatch";
+    throw error;
+  }
   const config = await loadConfig();
-  return { ok: true, ...codexRuntimePreferenceLookup(config, payload || {}) };
+  return { ok: true, ...codexRuntimePreferenceLookup(config, { ...(payload || {}), projectId: requestedProjectId }) };
 });
 
 ipcMain.handle("codex-runtime-preferences:update", async (event, payload) => {
-  requireFullCodexSurfaceBridge(event.sender, "codex-runtime-preferences:update");
-  return updateCodexRuntimePreferences(payload || {});
+  const authority = requireFullCodexSurfaceBridge(event.sender, "codex-runtime-preferences:update");
+  return updateCodexRuntimePreferences(payload || {}, { projectId: authority.projectId });
 });
 
 ipcMain.handle("codex:respond-request", async (_event, payload) => {
@@ -12496,6 +12965,52 @@ ipcMain.handle("direct-runtime:status", async (_event, payload) => {
   return buildDirectRuntimeStatusForProject(project);
 });
 
+ipcMain.handle("direct-runtime:refresh-readiness", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(event.sender, "direct-runtime:refresh-readiness");
+  requireDirectWorkbenchExperience("direct-runtime:refresh-readiness");
+  const projectId = normalizeString(payload?.projectId, authority.projectId);
+  if (!projectId || (authority.projectId && authority.projectId !== projectId)) {
+    const error = new Error("The Direct readiness refresh is bound to the active project.");
+    error.code = "direct_readiness_project_scope_mismatch";
+    throw error;
+  }
+  return refreshDirectRuntimeReadiness({
+    projectId,
+    threadId: normalizeString(payload?.threadId, ""),
+  });
+});
+
+ipcMain.handle("direct-workbench:set-runtime-path", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:set-runtime-path");
+  requireDirectWorkbenchExperience("direct-workbench:set-runtime-path");
+  const projectId = normalizeString(payload?.projectId, authority.projectId);
+  if (!projectId || (authority.projectId && authority.projectId !== projectId)) {
+    const error = new Error("The runtime transition is bound to the active Direct Workbench project.");
+    error.code = "direct_workbench_runtime_project_scope_mismatch";
+    throw error;
+  }
+  const requestedPath = normalizeString(payload?.runtimePath, "");
+  const clientOperationId = normalizeString(payload?.clientOperationId, "") || newId("client_runtime_transition");
+  if (requestedPath === "app-server") {
+    return setCodexRuntimePath({
+      projectId,
+      runtimePath: "app-server",
+      clientOperationId,
+      deferSurfaceReload: true,
+    });
+  }
+  if (requestedPath === "direct") {
+    return embarkDirectRuntime({
+      projectId,
+      clientOperationId,
+      deferSurfaceReload: true,
+    });
+  }
+  const error = new Error("Direct Workbench supports only Appserver or Direct runtime selection.");
+  error.code = "direct_workbench_runtime_path_invalid";
+  throw error;
+});
+
 ipcMain.handle("direct-usage:overview", async (event, payload) => {
   const authority = requireFullCodexSurfaceBridge(event.sender, "direct-usage:overview");
   requireDirectWorkbenchExperience("direct-usage:overview");
@@ -12552,6 +13067,115 @@ ipcMain.handle("direct-ui:policy-readonly-view", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   const runtimeStatus = buildDirectRuntimeStatusForProject(project);
   return buildDirectPolicyReadOnlyView({ project, runtimeStatus });
+});
+
+ipcMain.handle("direct-sub-agent-policy:projection", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(
+    event.sender,
+    "direct-sub-agent-policy:projection",
+  );
+  requireDirectWorkbenchExperience(
+    "direct-sub-agent-policy:projection",
+  );
+  const projectId = normalizeString(
+    payload?.projectId,
+    authority.projectId,
+  );
+  if (
+    !projectId ||
+    (authority.projectId && authority.projectId !== projectId)
+  ) {
+    const error = new Error(
+      "The active sub-agent policy projection is bound to the active Direct project.",
+    );
+    error.code = "direct_active_sub_agent_policy_project_scope_mismatch";
+    throw error;
+  }
+  const project = await getProjectById(projectId);
+  if (normalizeString(project?.id, "") !== projectId) {
+    const error = new Error("The active sub-agent policy project is unavailable.");
+    error.code = "direct_active_sub_agent_policy_project_unknown";
+    throw error;
+  }
+  const threadId = normalizeString(payload?.threadId, "");
+  return ensureDirectActiveSubAgentPolicyService().projection({
+    projectId,
+    threadId,
+  });
+});
+
+ipcMain.handle("direct-sub-agent-policy:semantic-update", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(
+    event.sender,
+    "direct-sub-agent-policy:semantic-update",
+  );
+  requireDirectWorkbenchExperience(
+    "direct-sub-agent-policy:semantic-update",
+  );
+  const projectId = normalizeString(
+    payload?.projectId,
+    authority.projectId,
+  );
+  if (
+    !projectId ||
+    (authority.projectId && authority.projectId !== projectId)
+  ) {
+    const error = new Error(
+      "The active sub-agent policy update is bound to the active Direct project.",
+    );
+    error.code = "direct_active_sub_agent_policy_project_scope_mismatch";
+    throw error;
+  }
+  const project = await getProjectById(projectId);
+  if (normalizeString(project?.id, "") !== projectId) {
+    const error = new Error("The active sub-agent policy project is unavailable.");
+    error.code = "direct_active_sub_agent_policy_project_unknown";
+    throw error;
+  }
+  const threadId = normalizeString(payload?.threadId, "");
+  const session = threadId
+    ? ensureDirectSessionStore().readSession(threadId)
+    : null;
+  if (
+    !session ||
+    normalizeString(session.projectId, "") !== projectId
+  ) {
+    const error = new Error(
+      "A policy update requires an exact Direct task binding.",
+    );
+    error.code = "direct_active_sub_agent_policy_thread_scope_mismatch";
+    throw error;
+  }
+  const storeStatus = ensureDirectSessionStore().status({ projectId });
+  if (Number(storeStatus.activeTurnCount || 0) > 0) {
+    const error = new Error(
+      "Active sub-agent policy cannot change while a project turn is running.",
+    );
+    error.code = "direct_active_sub_agent_policy_turn_active";
+    throw error;
+  }
+  const userText = normalizeString(payload?.text, "");
+  if (!userText) {
+    const error = new Error(
+      "Active sub-agent policy settlement requires a natural-language statement.",
+    );
+    error.code = "direct_active_sub_agent_policy_text_missing";
+    throw error;
+  }
+  return ensureDirectActiveSubAgentPolicyService().semanticPreflight({
+    projectId,
+    threadId,
+    clientRequestId: normalizeString(
+      payload?.clientRequestId,
+      newId("direct_sub_agent_policy_request"),
+    ),
+    userText,
+    scopeBinding: ["thread", "project"].includes(
+      normalizeString(payload?.scopeKind, ""),
+    )
+      ? normalizeString(payload.scopeKind, "")
+      : "thread",
+  });
 });
 
 ipcMain.handle("direct-meta-session:status", async (_event, payload) => {

@@ -409,9 +409,11 @@ const sessionStore = {
 };
 let launchCount = 0;
 let launchedPacket = null;
+let launchedInput = null;
 const pool = {
   launch: (input) => {
     launchCount += 1;
+    launchedInput = input;
     launchedPacket = input.parentAuthorityPacket;
     return {
       status: "accepted",
@@ -783,5 +785,78 @@ const reasoningEnvelope = await controller(undefined).buildNativeSubAgentRuntime
 );
 assert.equal(reasoningEnvelope.status, "ready_for_provider_continuation");
 assert.equal(launchCount, 2, "reasoning-only dispatch must not depend on workspace delegation policy");
+
+const safelyNormalizedReasoningEnvelope = await controller(undefined).buildNativeSubAgentRuntimeEnvelope(
+  "direct_parent_provider_workspace",
+  "turn_reasoning_child_over_specified",
+  {
+    name: "spawn_agent",
+    callId: "call_reasoning_child_over_specified",
+    obligationId: "obligation_reasoning_child_over_specified",
+    argumentsText: JSON.stringify({
+      task_name: "reasoning_child_over_specified",
+      message: "Analyze the bounded concern without a workspace.",
+      provider: "opencode-oxalpha",
+      workspace_mode: "reasoning_only",
+      tool_profile: "read_only_worker",
+    }),
+  },
+  project,
+);
+assert.equal(safelyNormalizedReasoningEnvelope.status, "ready_for_provider_continuation");
+assert.equal(launchCount, 3, "explicit reasoning-only mode should safely ignore an inapplicable workspace profile");
+assert.equal(launchedInput.workspaceMode, "reasoning_only");
+assert.equal(launchedInput.toolProfile, "");
+assert.deepEqual(safelyNormalizedReasoningEnvelope.providerOutput.requestNormalization, {
+  schema: "direct_spawn_request_normalization@1",
+  status: "safe_narrowing",
+  ignoredFields: ["tool_profile"],
+  reason: "tool_profile_inapplicable_to_explicit_reasoning_only_mode",
+  workspaceAuthorityWidened: false,
+  toolAuthorityWidened: false,
+});
+
+const ambiguousReasoningEnvelope = await controller(undefined).buildNativeSubAgentRuntimeEnvelope(
+  "direct_parent_provider_workspace",
+  "turn_reasoning_child_ambiguous",
+  {
+    name: "spawn_agent",
+    callId: "call_reasoning_child_ambiguous",
+    obligationId: "obligation_reasoning_child_ambiguous",
+    argumentsText: JSON.stringify({
+      task_name: "reasoning_child_ambiguous",
+      message: "The realization mode was not explicitly selected.",
+      tool_profile: "read_only_worker",
+    }),
+  },
+  project,
+);
+assert.equal(ambiguousReasoningEnvelope.status, "blocked");
+assert.equal(
+  ambiguousReasoningEnvelope.providerOutput.blockerCode,
+  "direct_workspace_worker_tool_profile_without_workspace",
+  "an unpaired workspace profile must remain fail-closed",
+);
+assert.equal(launchCount, 3);
+
+const liveControllerSource = fs.readFileSync(
+  new URL("../src/main/direct/controller/live-text-controller.js", import.meta.url),
+  "utf8",
+);
+assert.equal(
+  liveControllerSource.includes("Direct launched or inspected native child-agent work"),
+  false,
+  "the user-visible runtime notice must not claim a blocked child was launched",
+);
+assert.equal(
+  liveControllerSource.includes('observationKind: "native_child_agent_runtime"'),
+  true,
+  "admitted native runtime results must be emitted as typed observations",
+);
+assert.equal(
+  liveControllerSource.includes('blocked ? "warning" : "direct/runtime-status"'),
+  true,
+  "native runtime notification posture must distinguish blocked from admitted results",
+);
 
 console.log("direct-provider-workspace-worker-policy regression passed");

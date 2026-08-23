@@ -50,6 +50,7 @@ const spawnParameters = spawnDeclaration.providerToolSchema.parameters;
 assert.deepEqual(spawnParameters.required, ["task"], "spawn_agent schema should require task, not model-supplied child identity");
 assert(spawnParameters.properties.task, "spawn_agent schema should expose task");
 assert(spawnParameters.properties.agentRole, "spawn_agent schema should expose agentRole");
+assert.deepEqual(spawnParameters.properties.provider.enum, ["chatgpt-direct", "openrouter-oxalpha", "opencode-oxalpha"], "spawn_agent schema should expose governed provider choices");
 assert(spawnParameters.properties.model, "spawn_agent schema should expose model");
 assert(spawnParameters.properties.reasoningEffort, "spawn_agent schema should expose reasoningEffort");
 assert(spawnParameters.properties.idempotencyKey, "spawn_agent schema should expose idempotencyKey");

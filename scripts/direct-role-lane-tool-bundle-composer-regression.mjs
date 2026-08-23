@@ -27,6 +27,7 @@ const implementationToolNames = [
   "apply_patch",
   "get_context_remaining",
   "inspect_agent",
+  "inspect_self_constitution",
   "list_agents",
   "list_mcp_resource_templates",
   "list_mcp_resources",
@@ -41,7 +42,7 @@ const implementationToolNames = [
 ];
 const implementationToolNamesWithHostedWeb = [...implementationToolNames, "web_search"].sort((a, b) => a.localeCompare(b));
 const defaultCandidateToolNames = [...implementationToolNames, "image_generation", "web_search"].sort((a, b) => a.localeCompare(b));
-const safeResidentUtilityToolNames = ["get_context_remaining", "request_user_input", "update_plan"];
+const safeResidentUtilityToolNames = ["get_context_remaining", "inspect_self_constitution", "request_user_input", "update_plan"];
 const readOnlySubAgentStatusToolNames = ["inspect_agent", "list_agents"];
 const externalPromotedToolNames = ["list_mcp_resource_templates", "list_mcp_resources", "read_mcp_resource", "tool_search"];
 const blockedSubAgentControlToolNames = ["close_agent", "interrupt_agent", "recursive_spawn", "resume_agent", "send_message"];
@@ -366,6 +367,10 @@ const spawnAgentRow = grounded.witness.declaredTools.find((row) => row.toolName 
 assert(spawnAgentRow, "spawn_agent should be declared in the implementation lane");
 assert.equal(spawnAgentRow.toolFamily, "agent_runtime_control");
 assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.fork_turns.type, "string");
+assert.deepEqual(
+  spawnAgentRow.providerToolSchema.parameters.properties.provider.enum,
+  ["chatgpt-direct", "openrouter-oxalpha", "opencode-oxalpha"],
+);
 assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.model.type, "string");
 assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.reasoning_effort.type, "string");
 assert.deepEqual(
@@ -382,8 +387,16 @@ assert.equal(
   "reasoning-only children must not inherit a workspace tool profile implicitly",
 );
 assert.equal(spawnAgentRow.providerToolSchema.parameters.additionalProperties, false);
-assert(spawnAgentRow.providerToolSchema.description.includes("independent"));
-assert(spawnAgentRow.providerToolSchema.description.includes("isolated_worktree"));
+assert(spawnAgentRow.providerToolSchema.description.includes("active sub-agent policy"));
+assert(spawnAgentRow.providerToolSchema.description.includes("inherits"));
+assert.deepEqual(
+  spawnAgentRow.providerToolSchema.parameters.properties.policy_disposition.enum,
+  ["one_time_exception", "propose_policy_update"],
+);
+assert.equal(
+  spawnAgentRow.providerToolSchema.parameters.properties.policy_exception_reason.type,
+  "string",
+);
 
 const reviewLaneSelection = buildDirectRoleLaneSelection({
   registry,

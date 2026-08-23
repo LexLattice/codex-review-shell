@@ -35,6 +35,7 @@ const {
 } = require("./sub-agent-capability-profile");
 const {
   ALLOWED_AGENT_ROLES,
+  ALLOWED_PROVIDER_IDS,
   ALLOWED_REASONING_EFFORTS,
   DEFAULT_ALLOWED_MODELS,
 } = require("./sub-agent-call-authority");
@@ -315,6 +316,7 @@ function toolSchemaFor(toolName) {
         properties: {
           task: { type: "string", description: "Bounded child task. Raw task text is digested and policy-gated before provider transport." },
           agentRole: { type: "string", enum: [...ALLOWED_AGENT_ROLES] },
+          provider: { type: "string", enum: [...ALLOWED_PROVIDER_IDS] },
           model: { type: "string", enum: [...DEFAULT_ALLOWED_MODELS] },
           reasoningEffort: { type: "string", enum: [...ALLOWED_REASONING_EFFORTS] },
           idempotencyKey: { type: "string", description: "Optional stable idempotency key; omitted keys are derived from canonical safe metadata." },

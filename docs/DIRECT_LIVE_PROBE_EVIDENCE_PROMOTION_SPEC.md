@@ -564,8 +564,47 @@ The first implementation should keep UI small:
 - runtime status can show `Live probe: missing/runtime_probed/expired`;
 - direct live text readiness can say whether it is unlocked by static profile or
   live probe evidence;
-- no in-app button to run the live probe yet;
+- Direct Workbench exposes a main-process-owned `Refresh Direct readiness`
+  action for the active task. It refreshes Direct OAuth when possible, runs the
+  bounded probe for the task's canonical model, persists exact-scope evidence,
+  and does not switch to App Server;
 - no model selector expansion from probe evidence beyond the proven model.
+
+### Task runtime binding and recovery UX
+
+The project model and reasoning effort seed new tasks. Once a Direct task
+exists, its persisted task runtime binding is authoritative for subsequent
+turns. A model/effort change in the chat is written to both the preference
+projection and the native Direct session before the next turn may start. An
+already-running turn retains its frozen request; the updated binding applies
+from the next turn.
+
+All consumers resolve the same binding:
+
+```text
+task runtime binding
+  -> model/effort shown in the chat
+  -> exact live-probe evidence scope
+  -> compiled root constitution
+  -> provider request
+  -> persisted Direct session
+```
+
+When exact evidence is missing, expired, or mismatched, the conversation shows
+an actionable recovery object and the runtime drawer shows the same readiness
+state, evidence id, blocker, and refresh action. Backend selection remains a
+separate transition: changing `Direct <-> Appserver` never acts as a hidden
+readiness refresh.
+
+The refreshed main-process projection publishes the task-scoped readiness
+witness and its derived runtime capabilities together. The renderer replaces
+its earlier connection capability snapshot from that projection; it does not
+derive or mint `turns.canStart` locally. A successful readiness transition
+therefore cannot remain visibly ready while an older blocked turn capability
+continues to govern submission. Direct turn submission uses this task-scoped
+readiness artifact as its sole renderer readiness gate; the generic app-server
+`turns.canStart` check remains confined to the app-server path. The Direct
+controller still revalidates readiness and authority in the main process.
 
 A later bundle can add a safe "Run live probe" action if the product needs it.
 

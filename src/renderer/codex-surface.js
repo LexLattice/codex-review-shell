@@ -163,7 +163,19 @@ const state = {
   configRequirementsError: "",
   runtimePreferencesStatus: "idle",
   runtimePreferencesError: "",
+  directReadinessRefreshStatus: "idle",
+  directReadinessRefreshError: "",
+  runtimePathSelection: "",
+  runtimePathTransitionStatus: "idle",
+  runtimePathTransitionError: "",
   runtimeOverrides: {
+    model: project?.codex?.model || "",
+    reasoningEffort: project?.codex?.reasoningEffort || "",
+    approvalPolicy: "",
+    sandboxMode: "",
+    serviceTier: "",
+  },
+  runtimeConfirmedOverrides: {
     model: project?.codex?.model || "",
     reasoningEffort: project?.codex?.reasoningEffort || "",
     approvalPolicy: "",
@@ -175,6 +187,7 @@ const state = {
   runtimeConstitution: null,
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
+  runtimeObservationsByThread: new Map(),
   analyticsPanelOpen: localStorageGet("codex.threadAnalyticsPanel.open", "false") === "true",
   analyticsPanelDock: localStorageGet("codex.threadAnalyticsPanel.dock", "right"),
   directSurfaceProjection: payload.directSurfaceProjection || connection?.directSurfaceProjection || null,
@@ -183,6 +196,11 @@ const state = {
   directUiStatusError: "",
   directUiOperationHistory: null,
   directUiPolicyView: null,
+  directActiveSubAgentPolicy: null,
+  directActiveSubAgentPolicyStatus: "idle",
+  directActiveSubAgentPolicyError: "",
+  directActiveSubAgentPolicyDraft: "",
+  directActiveSubAgentPolicyScope: "thread",
   directEpistemicProjection: null,
   directEpistemicStatus: "idle",
   directEpistemicError: "",
@@ -268,6 +286,7 @@ const state = {
   isBulkRendering: false,
   removeBridgeListener: null,
 };
+let runtimePreferenceWriteCoordinator = null;
 
 function capabilityArea(area) {
   return connection?.capabilities?.[area] || {};
@@ -544,6 +563,7 @@ const els = {
   morphicTurnChip: document.getElementById("morphicTurnChip"),
   morphicNewThreadButton: document.getElementById("morphicNewThreadButton"),
   morphicAnalyticsButton: document.getElementById("morphicAnalyticsButton"),
+  morphicObservationsButton: document.getElementById("morphicObservationsButton"),
   morphicSettingsButton: document.getElementById("morphicSettingsButton"),
   morphicThreadRail: document.getElementById("morphicThreadRail"),
   morphicThreadRailList: document.getElementById("morphicThreadRailList"),
@@ -624,10 +644,49 @@ function updateSurfaceHeader(title = "", detail = "") {
 }
 
 function runtimePathLabel() {
-  if (isDirectLiveTextSurface()) return "Direct";
+  if (isDirectRuntimeSurface()) return "Direct";
   if (connectionAvailable()) return "Appserver";
   if (payload.runtimeStartupPending) return "Starting";
   return "Offline";
+}
+
+function currentWorkbenchRuntimePath() {
+  return isDirectRuntimeSurface() ? "direct" : "app-server";
+}
+
+async function applyWorkbenchRuntimePath() {
+  const target = state.runtimePathSelection || currentWorkbenchRuntimePath();
+  const current = currentWorkbenchRuntimePath();
+  if (target === current) return null;
+  if (typeof bridge?.setDirectWorkbenchRuntimePath !== "function" || !project?.id) {
+    throw new Error("Runtime switching is unavailable in this surface.");
+  }
+  state.runtimePathTransitionStatus = "transitioning";
+  state.runtimePathTransitionError = "";
+  renderRuntimeConstitution();
+  try {
+    const response = await bridge.setDirectWorkbenchRuntimePath(
+      project.id,
+      target,
+      `codex_surface_runtime_${Date.now()}`,
+    );
+    if (response?.ok === false) {
+      const message = response?.error?.message || response?.status || "Runtime transition was blocked.";
+      state.runtimePathTransitionStatus = "failed";
+      state.runtimePathTransitionError = message;
+      renderRuntimeConstitution();
+      addSystemMessage(`Runtime transition blocked: ${message}`);
+      return response;
+    }
+    state.runtimePathTransitionStatus = "reloading";
+    renderRuntimeConstitution();
+    return response;
+  } catch (error) {
+    state.runtimePathTransitionStatus = "failed";
+    state.runtimePathTransitionError = String(error?.message || error || "Runtime transition failed.");
+    renderRuntimeConstitution();
+    throw error;
+  }
 }
 
 function canStartThreadFromCompactBar() {
@@ -697,6 +756,16 @@ function renderMorphicCockpit() {
       : state.turnPending || turnIsActive()
         ? "New thread is unavailable while the current Codex turn is active."
         : "Current runtime has not exposed thread start capability.";
+  }
+  if (els.morphicObservationsButton) {
+    const count = runtimeObservationsForThread().length;
+    const observationDrawerOpen = state.runtimeDrawerOpen && state.runtimeDrawerTab === "observations";
+    els.morphicObservationsButton.textContent = count ? `Observations ${count}` : "Observations";
+    els.morphicObservationsButton.classList.toggle("active", observationDrawerOpen);
+    els.morphicObservationsButton.setAttribute("aria-expanded", observationDrawerOpen ? "true" : "false");
+    els.morphicObservationsButton.title = count
+      ? `${count} bounded runtime observation${count === 1 ? "" : "s"} for this task.`
+      : "No runtime observations recorded for this task yet.";
   }
   renderMorphicThreadRail();
 }
@@ -930,6 +999,7 @@ function renderComposerAttachments() {
 
 const RUNTIME_DRAWER_TABS = [
   ["runtime", "Runtime"],
+  ["observations", "Observations"],
   ["model", "Model"],
   ["access", "Access"],
   ["usage", "Usage"],
@@ -941,6 +1011,44 @@ const RUNTIME_DRAWER_TABS = [
   ["environment", "Environment"],
   ["advanced", "Advanced"],
 ];
+
+const MAX_RUNTIME_OBSERVATIONS_PER_THREAD = 120;
+
+function runtimeObservationsForThread(threadId = state.threadId) {
+  const key = String(threadId || "unbound");
+  return state.runtimeObservationsByThread.get(key) || [];
+}
+
+function recordRuntimeObservation(params = {}) {
+  const threadId = String(params.threadId || state.threadId || "unbound");
+  const rows = [...runtimeObservationsForThread(threadId)];
+  const observation = {
+    observationId: String(params.observationId || `runtime_observation_${Date.now()}_${rows.length}`),
+    observationKind: String(params.observationKind || "runtime_status"),
+    operation: String(params.operation || "runtime"),
+    lifecycleState: String(params.lifecycleState || "observed"),
+    childAgentId: String(params.childAgentId || ""),
+    taskName: String(params.taskName || ""),
+    providerId: String(params.providerId || ""),
+    model: String(params.model || ""),
+    blockerCode: String(params.blockerCode || ""),
+    message: String(params.message || "Direct runtime status updated."),
+    turnId: String(params.turnId || ""),
+    observedAt: String(params.observedAt || nowIso()),
+  };
+  const existingIndex = rows.findIndex((row) => row.observationId === observation.observationId);
+  if (existingIndex >= 0) rows[existingIndex] = observation;
+  else rows.push(observation);
+  state.runtimeObservationsByThread.set(
+    threadId,
+    rows.slice(-MAX_RUNTIME_OBSERVATIONS_PER_THREAD),
+  );
+  const activeThread = !params.threadId || threadId === String(state.threadId || "unbound");
+  if (activeThread) {
+    renderMorphicCockpit();
+    if (state.runtimeDrawerOpen && state.runtimeDrawerTab === "observations") renderRuntimeDrawer();
+  }
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -1005,6 +1113,28 @@ function providerSettingsProjection() {
 function directSurfaceProjection() {
   const projection = state.directSurfaceProjection || connection?.directSurfaceProjection || null;
   return projection?.schema === "direct_codex_surface_projection@1" ? projection : null;
+}
+
+function applyDirectSurfaceProjection(projection) {
+  if (projection?.schema !== "direct_codex_surface_projection@1") return false;
+  state.directSurfaceProjection = projection;
+  if (connection) {
+    const runtimeCapabilities = projection.runtimeCapabilities;
+    const hasMainOwnedCapabilities =
+      runtimeCapabilities &&
+      typeof runtimeCapabilities === "object" &&
+      runtimeCapabilities.coreRuntime?.transport === DIRECT_LIVE_TEXT_TRANSPORT;
+    connection = {
+      ...connection,
+      directSurfaceProjection: projection,
+      directLiveText: projection.liveTextStatus || connection.directLiveText || null,
+      capabilities: hasMainOwnedCapabilities
+        ? runtimeCapabilities
+        : connection.capabilities,
+    };
+  }
+  applyDirectMetadataModels(projection);
+  return true;
 }
 
 function directComposerWitness() {
@@ -2613,8 +2743,10 @@ async function refreshDirectImplementationUi({ force = false } = {}) {
   if (state.directUiStatusState === "loading" && !force) return;
   state.directUiStatusState = "loading";
   state.directUiStatusError = "";
+  state.directActiveSubAgentPolicyStatus = "loading";
+  state.directActiveSubAgentPolicyError = "";
   try {
-    const [status, history, policy] = await Promise.all([
+    const [status, history, policy, activeSubAgentPolicy] = await Promise.all([
       bridge.getDirectImplementationLaneUiStatus(project.id),
       bridge.readDirectImplementationOperationHistory
         ? bridge.readDirectImplementationOperationHistory(project.id, { scope: "active-turn", limit: 24 })
@@ -2622,14 +2754,27 @@ async function refreshDirectImplementationUi({ force = false } = {}) {
       bridge.getDirectImplementationPolicyView
         ? bridge.getDirectImplementationPolicyView(project.id)
         : Promise.resolve(null),
+      bridge.getDirectActiveSubAgentPolicy
+        ? bridge.getDirectActiveSubAgentPolicy(
+            project.id,
+            state.threadId || "",
+          )
+        : Promise.resolve(null),
     ]);
     state.directUiStatus = status || null;
     state.directUiOperationHistory = history || null;
     state.directUiPolicyView = policy || null;
+    state.directActiveSubAgentPolicy =
+      activeSubAgentPolicy || null;
+    state.directActiveSubAgentPolicyStatus = "ready";
+    state.directActiveSubAgentPolicyError = "";
     state.directUiStatusState = "ready";
   } catch (error) {
     state.directUiStatusState = "failed";
     state.directUiStatusError = error?.message || "Direct implementation UI status unavailable.";
+    state.directActiveSubAgentPolicyStatus = "failed";
+    state.directActiveSubAgentPolicyError =
+      error?.message || "Active sub-agent policy unavailable.";
   }
   renderRuntimeConstitution();
 }
@@ -2641,10 +2786,7 @@ async function refreshDirectSurfaceProjection(options = {}) {
       refreshMetadata: options.refreshMetadata === true,
       threadId: state.threadId || "",
     });
-    if (projection?.schema === "direct_codex_surface_projection@1") {
-      state.directSurfaceProjection = projection;
-      if (connection) connection = { ...connection, directSurfaceProjection: projection };
-      applyDirectMetadataModels(projection);
+    if (applyDirectSurfaceProjection(projection)) {
       if (options.render !== false) {
         renderRuntimeConstitution();
         renderComposerRuntimeBand();
@@ -2814,6 +2956,7 @@ function openRuntimeDrawer(tab = "runtime") {
 function closeRuntimeDrawer() {
   state.runtimeDrawerOpen = false;
   renderRuntimeDrawer();
+  renderMorphicCockpit();
 }
 
 function fieldRow(key, value) {
@@ -2872,6 +3015,7 @@ function renderRuntimeDrawer() {
     button.addEventListener("click", () => {
       state.runtimeDrawerTab = id;
       renderRuntimeDrawer();
+      renderMorphicCockpit();
       if (["implementation", "history", "policy"].includes(id)) refreshDirectImplementationUi();
       if (id === "epistemic") refreshDirectEpistemicProjection();
     });
@@ -2930,6 +3074,29 @@ function textField(label, value, onInput, config = {}) {
   input.value = value || "";
   input.placeholder = config.placeholder || "";
   input.maxLength = Number(config.maxLength || 800);
+  input.disabled = Boolean(config.disabled);
+  input.addEventListener("input", () => onInput(input.value));
+  wrapper.append(labelNode, input);
+  if (config.description) {
+    const description = document.createElement("span");
+    description.className = "runtime-control-description";
+    description.textContent = config.description;
+    wrapper.appendChild(description);
+  }
+  return wrapper;
+}
+
+function textAreaField(label, value, onInput, config = {}) {
+  const wrapper = document.createElement("label");
+  wrapper.className = "runtime-control runtime-control-textarea";
+  const labelNode = document.createElement("span");
+  labelNode.className = "runtime-control-label";
+  labelNode.textContent = label;
+  const input = document.createElement("textarea");
+  input.value = value || "";
+  input.placeholder = config.placeholder || "";
+  input.maxLength = Number(config.maxLength || 4000);
+  input.rows = Number(config.rows || 5);
   input.disabled = Boolean(config.disabled);
   input.addEventListener("input", () => onInput(input.value));
   wrapper.append(labelNode, input);
@@ -3350,6 +3517,8 @@ function applyGlobalRuntimePreferences(defaults = {}) {
   state.runtimeOverrides.approvalPolicy = normalizeRuntimeOverrideValue("approvalPolicy", defaults.approvalPolicy);
   state.runtimeOverrides.sandboxMode = normalizeRuntimeOverrideValue("sandboxMode", defaults.sandboxMode);
   reconcileAccessOverridesWithRequirements();
+  state.runtimeConfirmedOverrides.approvalPolicy = state.runtimeOverrides.approvalPolicy;
+  state.runtimeConfirmedOverrides.sandboxMode = state.runtimeOverrides.sandboxMode;
 }
 
 function applyThreadRuntimePreferences(defaults = {}) {
@@ -3361,6 +3530,8 @@ function applyThreadRuntimePreferences(defaults = {}) {
       state.runtimeOverrides.reasoningEffort = selectedModel()?.defaultReasoningEffort || "";
     }
   }
+  state.runtimeConfirmedOverrides.model = state.runtimeOverrides.model;
+  state.runtimeConfirmedOverrides.reasoningEffort = state.runtimeOverrides.reasoningEffort;
 }
 
 async function loadRuntimePreferences(options = {}) {
@@ -3377,13 +3548,27 @@ async function loadRuntimePreferences(options = {}) {
   try {
     const response = await bridge.getRuntimePreferences(runtimePreferencesRequest(options.threadId || state.threadId));
     if (response && response.ok !== false) {
-      if (applyGlobal) applyGlobalRuntimePreferences(response.globalDefaults || {});
+      if (applyGlobal) {
+        applyGlobalRuntimePreferences(response.globalDefaults || {});
+        const scopeStatus = runtimePreferenceWriteCoordinator
+          ?.snapshot?.().scopes?.["global-access"]?.status;
+        if (scopeStatus && scopeStatus !== "saving") {
+          runtimePreferenceWriteCoordinator.reconcile("global-access");
+        }
+      }
       const stillCurrentThread =
         !guardThreadId ||
         (state.threadId === guardThreadId &&
           (!hasGuardSourceHome || state.sourceHome === guardSourceHome) &&
           (!hasGuardSessionFilePath || state.sessionFilePath === guardSessionFilePath));
-      if (applyThread && stillCurrentThread) applyThreadRuntimePreferences(response.threadDefaults || {});
+      if (applyThread && stillCurrentThread) {
+        applyThreadRuntimePreferences(response.threadDefaults || {});
+        const scopeStatus = runtimePreferenceWriteCoordinator
+          ?.snapshot?.().scopes?.["thread-model"]?.status;
+        if (scopeStatus && scopeStatus !== "saving") {
+          runtimePreferenceWriteCoordinator.reconcile("thread-model");
+        }
+      }
     }
     state.runtimePreferencesStatus = "ready";
     renderRuntimeConstitution();
@@ -3397,14 +3582,14 @@ async function loadRuntimePreferences(options = {}) {
   }
 }
 
-async function persistRuntimePreferences(scope) {
+async function persistRuntimePreferences(scope, overrides = {}) {
   if (!bridge?.updateRuntimePreferences) return null;
-  const request = runtimePreferencesRequest();
+  const request = overrides.__runtimePreferenceRequest || runtimePreferencesRequest();
   if (scope === "global-access") {
     return bridge.updateRuntimePreferences({
       scope,
-      approvalPolicy: state.runtimeOverrides.approvalPolicy,
-      sandboxMode: state.runtimeOverrides.sandboxMode,
+      approvalPolicy: overrides.approvalPolicy ?? state.runtimeOverrides.approvalPolicy,
+      sandboxMode: overrides.sandboxMode ?? state.runtimeOverrides.sandboxMode,
     });
   }
   if (scope === "thread-model") {
@@ -3412,11 +3597,102 @@ async function persistRuntimePreferences(scope) {
     return bridge.updateRuntimePreferences({
       scope,
       ...request,
-      model: state.runtimeOverrides.model,
-      reasoningEffort: state.runtimeOverrides.reasoningEffort,
+      model: overrides.model ?? state.runtimeOverrides.model,
+      reasoningEffort: overrides.reasoningEffort ?? state.runtimeOverrides.reasoningEffort,
     });
   }
   return null;
+}
+
+const RUNTIME_PREFERENCE_FIELDS_BY_SCOPE = Object.freeze({
+  "global-access": Object.freeze(["approvalPolicy", "sandboxMode"]),
+  "thread-model": Object.freeze(["model", "reasoningEffort"]),
+});
+
+function runtimePreferenceScopeValues(source = {}, scope = "") {
+  const values = {};
+  for (const field of RUNTIME_PREFERENCE_FIELDS_BY_SCOPE[scope] || []) {
+    values[field] = normalizeRuntimeOverrideValue(field, source?.[field]);
+  }
+  return values;
+}
+
+function applyRuntimePreferenceScopeValues(target = {}, scope = "", values = {}) {
+  for (const field of RUNTIME_PREFERENCE_FIELDS_BY_SCOPE[scope] || []) {
+    target[field] = normalizeRuntimeOverrideValue(field, values?.[field]);
+  }
+}
+
+function canonicalRuntimePreferenceScopeValues(scope, response, requested) {
+  if (scope === "global-access") {
+    return runtimePreferenceScopeValues(
+      response?.preferences?.globalDefaults || requested,
+      scope,
+    );
+  }
+  if (scope === "thread-model") {
+    return runtimePreferenceScopeValues(
+      response?.binding || response?.preferences?.threadDefaults || requested,
+      scope,
+    );
+  }
+  return {};
+}
+
+function runtimePreferenceWriteApplies(scope, requested = {}) {
+  if (scope !== "thread-model") return true;
+  const request = requested.__runtimePreferenceRequest;
+  if (!request) return true;
+  return String(request.projectId || "") === String(project?.id || "") &&
+    String(request.threadId || "") === String(state.threadId || "") &&
+    String(request.sourceHome || "") === String(state.sourceHome || "") &&
+    String(request.sessionFilePath || "") === String(state.sessionFilePath || "");
+}
+
+function ensureRuntimePreferenceWriteCoordinator() {
+  if (runtimePreferenceWriteCoordinator) return runtimePreferenceWriteCoordinator;
+  const createCoordinator = window.DirectRuntimePreferenceWriteCoordinator
+    ?.createRuntimePreferenceWriteCoordinator;
+  if (typeof createCoordinator !== "function") {
+    throw new Error("Runtime preference write coordinator is unavailable.");
+  }
+  runtimePreferenceWriteCoordinator = createCoordinator({
+    persist: (scope, requested) => persistRuntimePreferences(scope, requested),
+    canonicalize: canonicalRuntimePreferenceScopeValues,
+    isApplicable: runtimePreferenceWriteApplies,
+    applyConfirmed: (scope, canonical) => {
+      applyRuntimePreferenceScopeValues(
+        state.runtimeConfirmedOverrides,
+        scope,
+        canonical,
+      );
+    },
+    applyOptimistic: (scope, canonical) => {
+      applyRuntimePreferenceScopeValues(state.runtimeOverrides, scope, canonical);
+    },
+    readConfirmed: (scope) => runtimePreferenceScopeValues(
+      state.runtimeConfirmedOverrides,
+      scope,
+    ),
+    onStateChange: (projection) => {
+      state.runtimePreferencesStatus = projection.status;
+      state.runtimePreferencesError = projection.error;
+      renderRuntimeConstitution();
+    },
+    onLatestSuccess: async () => {
+      if (isDirectLiveTextSurface()) {
+        await refreshDirectSurfaceProjection({ render: false }).catch(() => {});
+      }
+      renderRuntimeConstitution();
+    },
+    onError: (error, metadata) => {
+      const label = metadata?.phase === "post_success"
+        ? "Unable to refresh the saved Codex runtime preference"
+        : "Unable to persist Codex runtime preference";
+      console.warn(label, error);
+    },
+  });
+  return runtimePreferenceWriteCoordinator;
 }
 
 function serviceTierOptions() {
@@ -3454,17 +3730,24 @@ function setRuntimeOverride(name, value) {
       state.runtimeOverrides.reasoningEffort = selectedModel()?.defaultReasoningEffort || "";
     }
   }
-  renderRuntimeConstitution();
   const scope = name === "approvalPolicy" || name === "sandboxMode"
     ? "global-access"
     : name === "model" || name === "reasoningEffort"
       ? "thread-model"
       : "";
   if (scope) {
-    persistRuntimePreferences(scope).catch((error) => {
-      console.warn("Unable to persist Codex runtime preference", error);
-    });
+    const requested = {
+      ...state.runtimeOverrides,
+      __runtimePreferenceRequest: runtimePreferencesRequest(),
+    };
+    ensureRuntimePreferenceWriteCoordinator().enqueue(scope, requested);
   }
+  renderRuntimeConstitution();
+}
+
+async function flushRuntimePreferenceWrites() {
+  if (!runtimePreferenceWriteCoordinator) return;
+  await runtimePreferenceWriteCoordinator.flush();
 }
 
 function reconcileAccessOverridesWithRequirements() {
@@ -3601,6 +3884,173 @@ function policyRows(policy = {}) {
     ["network risk", policy.networkRisk?.summary || "unknown"],
     ["private config", policy.privateConfigIncluded ? "included" : "excluded"],
   ];
+}
+
+function activeSubAgentPolicyRows(projection = {}) {
+  if (!projection) {
+    return [[
+      "status",
+      state.directActiveSubAgentPolicyStatus === "loading"
+        ? "loading"
+        : "not loaded",
+    ]];
+  }
+  const policy = projection.activePolicy;
+  const latest = projection.latestSemanticSettlement;
+  const updateRequests = Array.isArray(projection.recentUpdateRequests)
+    ? projection.recentUpdateRequests
+    : [];
+  return [
+    ["state", projection.state || "unsettled"],
+    ["resolution", projection.resolutionSource || "none"],
+    ["scope", policy?.scope?.scopeKind || "none"],
+    ["revision", policy?.revision || 0],
+    ["spawn posture", projection.spawnPosture || "unknown"],
+    ["policy concurrency", policy?.maxActiveChildren || "runtime limit"],
+    ["one-time authority", policy?.deviationRule?.oneTimeAuthority || "unsettled"],
+    ["latest settlement", latest
+      ? `${latest.state} · ${latest.summary || latest.actionName}`
+      : "none"],
+    ["clarification", latest?.clarificationQuestion || "none"],
+    ["candidate revisions", updateRequests.length],
+    ["latest candidate", updateRequests[0]
+      ? `${updateRequests[0].roleId} · ${updateRequests[0].state} · admission required`
+      : "none"],
+    ["error", state.directActiveSubAgentPolicyError || "none"],
+  ];
+}
+
+function activeSubAgentPolicyBindingRows(projection = {}) {
+  const bindings = projection?.activePolicy?.roleBindings;
+  if (!Array.isArray(bindings) || !bindings.length) {
+    return [["roles", "No active role bindings."]];
+  }
+  return bindings.map((binding) => [
+    binding.roleId,
+    [
+      binding.providerId && `provider ${binding.providerId}`,
+      binding.model && `model ${binding.model}`,
+      binding.reasoningEffort && `effort ${binding.reasoningEffort}`,
+      binding.forkTurns && `context ${binding.forkTurns}`,
+      binding.workspaceMode && `workspace ${binding.workspaceMode}`,
+      binding.toolProfile && `tools ${binding.toolProfile}`,
+    ].filter(Boolean).join(" · ") || "inherit request, then parent runtime",
+  ]);
+}
+
+function activeSubAgentPolicyHistoryRows(projection = {}) {
+  const history = Array.isArray(projection?.history)
+    ? projection.history
+    : [];
+  if (!history.length) return [["history", "No admitted revisions."]];
+  return history.slice(0, 8).map((policy) => [
+    `${policy.scope?.scopeKind || "scope"} · revision ${policy.revision}`,
+    `${new Date(policy.updatedAt).toLocaleString()} · ${policy.digest?.slice(0, 22) || "no digest"}`,
+  ]);
+}
+
+async function settleDirectActiveSubAgentPolicy() {
+  if (
+    !project?.id ||
+    !state.threadId ||
+    !bridge?.settleDirectActiveSubAgentPolicy
+  ) return;
+  const text = String(
+    state.directActiveSubAgentPolicyDraft || "",
+  ).trim();
+  if (!text) {
+    state.directActiveSubAgentPolicyError =
+      "Write the standing policy change in natural language.";
+    renderRuntimeDrawer();
+    return;
+  }
+  state.directActiveSubAgentPolicyStatus = "saving";
+  state.directActiveSubAgentPolicyError = "";
+  renderRuntimeDrawer();
+  try {
+    const result = await bridge.settleDirectActiveSubAgentPolicy({
+      projectId: project.id,
+      threadId: state.threadId,
+      text,
+      scopeKind: state.directActiveSubAgentPolicyScope,
+      clientRequestId: createClientTurnRequestId(),
+    });
+    state.directActiveSubAgentPolicy = result?.projection || null;
+    state.directActiveSubAgentPolicyDraft = "";
+    state.directActiveSubAgentPolicyStatus = "ready";
+  } catch (error) {
+    state.directActiveSubAgentPolicyStatus = "failed";
+    state.directActiveSubAgentPolicyError =
+      error?.message || "Active sub-agent policy settlement failed.";
+  }
+  renderRuntimeDrawer();
+}
+
+function activeSubAgentPolicyEditorSection() {
+  const saving =
+    state.directActiveSubAgentPolicyStatus === "saving";
+  const section = drawerSection("Active Sub-Agent Policy Editor", [
+    ["authority", "operator semantic admission"],
+    ["router", "harness-owned constitutional meta-role"],
+    ["content schema", "open semantic content · typed discharge"],
+  ]);
+  section.appendChild(selectField(
+    "Scope",
+    state.directActiveSubAgentPolicyScope,
+    [
+      { value: "thread", label: "This task" },
+      { value: "project", label: "This project" },
+    ],
+    (value) => {
+      state.directActiveSubAgentPolicyScope = value;
+      renderRuntimeDrawer();
+    },
+    {
+      disabled: saving,
+      description: "The editor region fixes the referent; the semantic router settles the policy content.",
+    },
+  ));
+  let submitButton = null;
+  section.appendChild(textAreaField(
+    "Standing policy",
+    state.directActiveSubAgentPolicyDraft,
+    (value) => {
+      state.directActiveSubAgentPolicyDraft = value;
+      if (submitButton) {
+        submitButton.disabled =
+          saving || !state.threadId || !String(value || "").trim();
+      }
+    },
+    {
+      disabled: saving || !state.threadId,
+      rows: 5,
+      maxLength: 4000,
+      placeholder: "For implementation workers, use Sol at high effort with no inherited dialogue. Keep review auditors on…",
+      description: "State the durable rule once. The router proposes typed fields; the harness admits and enforces the resulting policy object.",
+    },
+  ));
+  submitButton = refreshButton(
+    "Settle active policy",
+    () => settleDirectActiveSubAgentPolicy(),
+    {
+      busy: saving,
+      disabled: saving || !state.threadId ||
+        !String(state.directActiveSubAgentPolicyDraft || "").trim(),
+      description: "Runs the semantic-router meta-role, then admits only an operator-authorized policy delta.",
+    },
+  );
+  section.appendChild(submitButton);
+  if (!state.threadId) {
+    section.appendChild(unsupportedControlNote(
+      "Open a Direct task before settling task- or project-scoped worker policy.",
+    ));
+  }
+  if (state.directActiveSubAgentPolicyError) {
+    section.appendChild(unsupportedControlNote(
+      state.directActiveSubAgentPolicyError,
+    ));
+  }
+  return section;
 }
 
 function appEvidenceRows(snapshot = {}) {
@@ -3952,9 +4402,46 @@ function directEpistemicDrawerSections() {
 
 function runtimeDrawerSections(c, tab) {
   if (tab === "epistemic") return directEpistemicDrawerSections();
-  if (tab === "runtime") {
+  if (tab === "observations") {
+    const observations = [...runtimeObservationsForThread()].reverse();
     return [
-      drawerSection("Runtime", [
+      drawerSection("Observation posture", [
+        ["scope", "active task"],
+        ["main transcript", "excluded"],
+        ["authority", "read-only evidence"],
+        ["retention", `last ${MAX_RUNTIME_OBSERVATIONS_PER_THREAD} live observations`],
+        ["recorded", observations.length],
+      ]),
+      drawerSection(
+        "Recent runtime observations",
+        observations.length
+          ? observations.map((observation) => [
+              `${new Date(observation.observedAt).toLocaleTimeString()} · ${observation.operation}`,
+              [
+                observation.message,
+                observation.taskName || observation.childAgentId,
+                observation.providerId,
+                observation.model,
+              ].filter(Boolean).join(" · "),
+            ])
+          : [["status", "No runtime observations recorded for this task yet."]],
+      ),
+    ];
+  }
+  if (tab === "runtime") {
+    const readiness = isDirectLiveTextSurface() ? directLiveTextReadinessStatus() : null;
+    const currentPath = currentWorkbenchRuntimePath();
+    const controlSection = drawerSection("Runtime control", [
+      ["backend", currentPath === "direct" ? "Direct" : "Appserver"],
+      ["transition", state.runtimePathTransitionStatus],
+      ["task model", activeModelId() || readiness?.model || "unknown"],
+      ...(readiness ? [
+        ["readiness", state.directReadinessRefreshStatus === "refreshing" ? "refreshing" : readiness.status || "unknown"],
+        ["evidence", readiness.modelEvidenceState || "unknown"],
+        ["blocker", state.directReadinessRefreshError || readiness.reason || "none"],
+      ] : []),
+    ]);
+    const runtimeSection = drawerSection("Runtime evidence", [
         ["provider", c.provider?.label || c.provider?.kind || "unknown"],
         ["provider kind", c.provider?.kind || "unknown"],
         ["configured flavor", c.provider?.executable?.flavor?.configuredFlavor || c.provider?.flavor || "—"],
@@ -3972,7 +4459,56 @@ function runtimeDrawerSections(c, tab) {
         ["last notification", state.lastAppServerNotificationEvidence?.method || "not observed"],
         ["app-server emitted", state.lastAppServerNotificationEvidence?.emittedAt || "not exposed"],
         ["locally received", state.lastAppServerNotificationEvidence?.receivedAt || "not observed"],
-      ], [...(c.provider?.evidenceRefs || []), ...c.runtime.evidenceRefs, ...c.thread.evidenceRefs]),
+        ...(readiness ? [["readiness evidence id", readiness.evidenceId || "—"]] : []),
+      ], [...(c.provider?.evidenceRefs || []), ...c.runtime.evidenceRefs, ...c.thread.evidenceRefs]);
+    if (readiness) {
+      controlSection.appendChild(refreshButton(
+        "Refresh Direct readiness",
+        () => refreshDirectReadiness().catch((error) => {
+          addSystemMessage(`Direct readiness refresh failed: ${error.message}`);
+        }),
+        {
+          busy: state.directReadinessRefreshStatus === "refreshing",
+          disabled: state.directReadinessRefreshStatus === "refreshing",
+          description: "Refresh Direct OAuth if needed and run the bounded readiness probe for this task's canonical model without changing backend.",
+        },
+      ));
+    }
+    if (isDirectWorkbenchExperience() && typeof bridge?.setDirectWorkbenchRuntimePath === "function") {
+      controlSection.appendChild(selectField(
+        "Backend",
+        state.runtimePathSelection || currentPath,
+        [
+          { value: "direct", label: "Direct" },
+          { value: "app-server", label: "Appserver" },
+        ],
+        (value) => {
+          state.runtimePathSelection = value;
+          state.runtimePathTransitionError = "";
+          renderRuntimeConstitution();
+        },
+        {
+          disabled: ["transitioning", "reloading"].includes(state.runtimePathTransitionStatus),
+          description: "Changes the task backend. This is separate from refreshing Direct readiness.",
+        },
+      ));
+      controlSection.appendChild(refreshButton(
+        "Apply backend",
+        () => applyWorkbenchRuntimePath().catch((error) => addSystemMessage(`Runtime transition failed: ${error.message}`)),
+        {
+          busy: ["transitioning", "reloading"].includes(state.runtimePathTransitionStatus),
+          disabled: ["transitioning", "reloading"].includes(state.runtimePathTransitionStatus) ||
+            (state.runtimePathSelection || currentPath) === currentPath,
+          description: "Switch the active project between the Direct harness and the managed Codex app-server.",
+        },
+      ));
+      if (state.runtimePathTransitionError) {
+        controlSection.appendChild(unsupportedControlNote(`Backend transition failed: ${state.runtimePathTransitionError}`));
+      }
+    }
+    return [
+      controlSection,
+      runtimeSection,
       drawerSection("Account", [
         ["status", c.account.status],
         ["label", c.account.label],
@@ -3996,7 +4532,13 @@ function runtimeDrawerSections(c, tab) {
       description: "Uses the selected model's supported reasoning efforts.",
     }));
     section.appendChild(refreshButton("Refresh models", () => refreshModelList(true)));
-    section.appendChild(unsupportedControlNote("Project/session-default persistence is not enabled yet; these controls are runtime turn overrides."));
+    section.appendChild(unsupportedControlNote(
+      state.runtimePreferencesStatus === "saving"
+        ? "Saving the task runtime binding…"
+        : state.runtimePreferencesStatus === "failed"
+          ? `Task runtime binding failed: ${state.runtimePreferencesError}`
+          : "The task binding is canonical for subsequent turns; the project default only seeds new tasks.",
+    ));
     return [section];
   }
   if (tab === "access") {
@@ -4086,11 +4628,32 @@ function runtimeDrawerSections(c, tab) {
   }
   if (tab === "policy") {
     return [
-      drawerSection("Policy Snapshot", policyRows(state.directUiPolicyView)),
+      drawerSection("Implementation Policy Snapshot", policyRows(state.directUiPolicyView)),
+      drawerSection(
+        "Active Sub-Agent Policy",
+        activeSubAgentPolicyRows(
+          state.directActiveSubAgentPolicy,
+        ),
+      ),
+      drawerSection(
+        "Worker Role Bindings",
+        activeSubAgentPolicyBindingRows(
+          state.directActiveSubAgentPolicy,
+        ),
+      ),
+      activeSubAgentPolicyEditorSection(),
+      drawerSection(
+        "Policy Revision History",
+        activeSubAgentPolicyHistoryRows(
+          state.directActiveSubAgentPolicy,
+        ),
+      ),
       drawerSection("Boundary", [
-        ["view", "read-only"],
-        ["policy editor", "not enabled"],
+        ["implementation policy", "read-only"],
+        ["sub-agent policy", "semantic editor enabled"],
         ["runtime authority", "main-process revalidation only"],
+        ["silent launch override", "forbidden"],
+        ["policy update during active turn", "blocked"],
         ["right-pane ChatGPT", "separate"],
         ["handoff queue", "unchanged"],
       ]),
@@ -5724,12 +6287,100 @@ function directLiveTextBlockedMessage() {
   return status?.reason || status?.status || "Direct runtime is not ready for turns.";
 }
 
+function directReadinessFailureMessage(value = "") {
+  const code = String(value || "").trim();
+  const labels = {
+    live_probe_evidence_expired: "Readiness evidence for this task's selected model has expired.",
+    live_probe_evidence_missing: "This task's selected model has not been verified on the Direct path.",
+    live_probe_evidence_scope_mismatch: "The available readiness evidence belongs to a different runtime scope.",
+    profile_required: "The selected model needs a fresh Direct readiness check.",
+    auth_required: "Direct authentication must be refreshed before this task can run.",
+  };
+  return labels[code] || code || "Direct readiness could not be established.";
+}
+
+async function refreshDirectReadiness(options = {}) {
+  if (!isDirectLiveTextSurface() || typeof bridge?.refreshDirectRuntimeReadiness !== "function" || !project?.id) {
+    throw new Error("Direct readiness refresh is unavailable in this surface.");
+  }
+  await flushRuntimePreferenceWrites();
+  state.directReadinessRefreshStatus = "refreshing";
+  state.directReadinessRefreshError = "";
+  renderRuntimeConstitution();
+  try {
+    const response = await bridge.refreshDirectRuntimeReadiness(project.id, state.threadId || "");
+    applyDirectSurfaceProjection(response?.projection);
+    state.directReadinessRefreshStatus = response?.ok ? "ready" : "failed";
+    state.directReadinessRefreshError = response?.ok
+      ? ""
+      : directReadinessFailureMessage(response?.reason || response?.status || response?.error?.message);
+    if (response?.ok && state.liveAttached && !turnIsActive()) {
+      const inputAllowed = state.threadDirectInput?.allowsMutation !== false;
+      setComposerEnabled(
+        inputAllowed,
+        inputAllowed ? "" : appServerEvidence.directInputBlockMessage(state.threadDirectInput),
+      );
+    }
+    renderRuntimeConstitution();
+    if (options.report !== false) {
+      addSystemMessage(response?.ok
+        ? `Direct readiness verified for ${response.model || activeModelId() || "the selected model"}.`
+        : `Direct readiness refresh did not complete: ${state.directReadinessRefreshError}`);
+    }
+    return response;
+  } catch (error) {
+    state.directReadinessRefreshStatus = "failed";
+    state.directReadinessRefreshError = String(error?.message || error || "Direct readiness refresh failed.");
+    renderRuntimeConstitution();
+    throw error;
+  }
+}
+
+function addDirectReadinessActionMessage(text) {
+  const id = `system_direct_readiness_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  setMessageText(id, "system", text, "Direct readiness");
+  const node = state.itemMap.get(id);
+  const bubble = node?.querySelector(".bubble");
+  if (!bubble) return;
+  const actions = document.createElement("div");
+  actions.className = "system-message-actions";
+  actions.appendChild(refreshButton(
+    "Refresh Direct readiness",
+    () => refreshDirectReadiness().catch((error) => {
+      addSystemMessage(`Direct readiness refresh failed: ${error.message}`);
+    }),
+    {
+      busy: state.directReadinessRefreshStatus === "refreshing",
+      disabled: state.directReadinessRefreshStatus === "refreshing",
+      description: "Refresh Direct OAuth if needed, run the bounded probe for this task's selected model, and remain on Direct.",
+    },
+  ));
+  const inspect = refreshButton("Inspect runtime", () => openRuntimeDrawer("runtime"));
+  inspect.classList.add("secondary");
+  actions.appendChild(inspect);
+  bubble.appendChild(actions);
+}
+
+function handleTurnSubmissionFailure(error) {
+  const message = String(error?.message || error || "Turn failed.");
+  if (isDirectLiveTextSurface() && (
+    message.includes("live_probe_evidence") ||
+    message.includes("profile_required") ||
+    message.includes("auth_required") ||
+    message.includes("Direct runtime is not ready")
+  )) {
+    addDirectReadinessActionMessage(`Turn blocked. ${directReadinessFailureMessage(message.replace(/^.*?(live_probe_evidence_[a-z_]+).*$/, "$1"))}`);
+    return;
+  }
+  addSystemMessage(`Turn failed: ${message}`);
+}
+
 function enforceDirectLiveTextStartupReadiness() {
   if (!isDirectLiveTextSurface()) return;
   if (directLiveTextReady()) return;
   const message = directLiveTextBlockedMessage();
   setComposerEnabled(false, message);
-  addSystemMessage(`Direct runtime blocked: ${message}`);
+  addDirectReadinessActionMessage(`Direct runtime blocked. ${directReadinessFailureMessage(message)}`);
 }
 
 function directThreadTimeLabel(value) {
@@ -8704,13 +9355,14 @@ async function startNewThread() {
 
 async function startCodexTurn(text, options = {}) {
   assertThreadAcceptsDirectInput();
+  await flushRuntimePreferenceWrites();
   if (isDirectLiveTextSurface()) {
     await refreshDirectSurfaceProjection({ render: false }).catch(() => {});
     if (!directLiveTextReady()) {
       throw new Error(directLiveTextBlockedMessage());
     }
   }
-  if (!hasCapability("turns", "canStart")) {
+  if (!isDirectLiveTextSurface() && !hasCapability("turns", "canStart")) {
     throw new Error("Active Codex runtime does not expose turn/start capability.");
   }
   const params = {
@@ -9095,8 +9747,13 @@ function handleNotification(method, params) {
   }
   if (method === "warning") {
     if (!params?.threadId || String(params.threadId) === String(state.threadId || "")) {
+      if (params?.observationKind) recordRuntimeObservation(params);
       addSystemMessage(`Codex warning: ${params?.message || "Unknown warning."}`);
     }
+    return;
+  }
+  if (method === "direct/runtime-status") {
+    recordRuntimeObservation(params);
     return;
   }
   if (method === "serverRequest/resolved") {
@@ -9190,6 +9847,12 @@ function handleNotification(method, params) {
       renderTurnCompletionNotice(completedTurnId, params?.turn || {});
       refreshDirectSurfaceProjection({ render: false }).catch(() => {});
       refreshDirectThreadList({ showErrors: false }).catch(() => {});
+      if (
+        state.runtimeDrawerOpen &&
+        state.runtimeDrawerTab === "policy"
+      ) {
+        refreshDirectImplementationUi({ force: true }).catch(() => {});
+      }
       if (state.directEpistemicProjection) {
         refreshDirectEpistemicProjection({ force: true }).catch(() => {});
       }
@@ -9231,10 +9894,7 @@ function handleBridgeEvent(event) {
   if (event.type === "connection-status") {
     if (event.connection) {
       connection = { ...connection, ...event.connection };
-      if (event.connection.directSurfaceProjection?.schema === "direct_codex_surface_projection@1") {
-        state.directSurfaceProjection = event.connection.directSurfaceProjection;
-        applyDirectMetadataModels(event.connection.directSurfaceProjection);
-      }
+      applyDirectSurfaceProjection(event.connection.directSurfaceProjection);
     }
     if (event.status === "connected") {
       state.connected = true;
@@ -9532,10 +10192,7 @@ async function connect() {
   renderDirectThreadList();
   const connectedSession = await bridge.connect(connection);
   if (connectedSession?.connection) connection = { ...connection, ...connectedSession.connection };
-  if (connection?.directSurfaceProjection?.schema === "direct_codex_surface_projection@1") {
-    state.directSurfaceProjection = connection.directSurfaceProjection;
-    applyDirectMetadataModels(connection.directSurfaceProjection);
-  }
+  applyDirectSurfaceProjection(connection?.directSurfaceProjection);
   state.connected = true;
   state.connectionStatus = "connected";
   await refreshDirectSurfaceProjection({ render: false });
@@ -9579,7 +10236,7 @@ els.composerForm.addEventListener("submit", (event) => {
     showComposerDispositionMenu();
     return;
   }
-  submitIdleComposerDraft().catch((error) => addSystemMessage(`Turn failed: ${error.message}`));
+  submitIdleComposerDraft().catch((error) => handleTurnSubmissionFailure(error));
 });
 
 els.composerStopButton?.addEventListener("click", () => {
@@ -9866,6 +10523,7 @@ function toggleThreadAnalyticsPanel() {
 
 els.analyticsPanelButton?.addEventListener("click", () => toggleThreadAnalyticsPanel());
 els.morphicAnalyticsButton?.addEventListener("click", () => toggleThreadAnalyticsPanel());
+els.morphicObservationsButton?.addEventListener("click", () => openRuntimeDrawer("observations"));
 els.morphicSettingsButton?.addEventListener("click", () => openRuntimeDrawer("runtime"));
 
 els.threadAnalyticsPanelClose?.addEventListener("click", () => {
