@@ -104,6 +104,13 @@ selection remains governed by their project and task constitution. An active
 WorldManager transition owns its existing runtime binding; preference mutation
 is rejected until the transition reaches a terminal boundary.
 
+It also does not apply to constitutional meta-roles. Those are harness-owned
+institutional functions, invisible in the ordinary role/model picker, with
+independent realization policies. The first production member is
+`semantic_router`, whose preferred realization is GPT-5.3-Codex-Spark at high
+effort with selection-time provider-default fallback. See
+[Direct Constitutional Meta-Role Specification](./DIRECT_CONSTITUTIONAL_META_ROLE_SPEC.md).
+
 Selectable models come from the account-scoped provider catalog when it is
 fresh. A bundled ODEU profile is rendered as diagnostic fallback evidence, not
 counterfeit live availability. For manager roles only, a fresh exact provider
@@ -161,7 +168,7 @@ routing, and graph-first manager context:
 ```text
 typed message
   -> durable received user evidence
-  -> fixed WorldManager semantic-ingress role
+  -> compiled semantic_router constitutional meta-role invocation
   -> validated and persisted SemanticSettlement
   -> exact typed scope/ID constraint validation
   -> mechanical K2 task-settlement adapter

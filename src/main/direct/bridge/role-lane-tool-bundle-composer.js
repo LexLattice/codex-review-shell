@@ -64,7 +64,7 @@ const DEFAULT_ROLE_LANES = Object.freeze([
     roleId: "implementation_worker",
     displayName: "Implementation worker",
     agentClassSpecId: "agent_class_spec_implementation_worker",
-    defaultToolNames: ["read_file", "apply_patch", "run_command", "get_context_remaining", "update_plan", "request_user_input", "spawn_agent", "list_agents", "inspect_agent", "wait_agent", "tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "web_search", "image_generation"],
+    defaultToolNames: ["read_file", "apply_patch", "run_command", "get_context_remaining", "inspect_self_constitution", "update_plan", "request_user_input", "spawn_agent", "list_agents", "inspect_agent", "wait_agent", "tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "web_search", "image_generation"],
     allowedToolFamilies: ["workspace_process_authority", "local_perception", "session_control_state", "plan_projection", "human_authority_bridge", "agent_runtime_status", "agent_runtime_control", "external_capability_discovery", "external_resource_read", "provider_hosted_web_search", "provider_hosted_image_generation"],
     laneLawIds: ["direct_implementation_lane_tool_law@1", "direct_workspace_authority_law@1"],
   },
@@ -146,6 +146,15 @@ const TOOL_METADATA = Object.freeze({
     targetScopePolicyId: "direct_context_remaining_display_scope_policy@1",
     resultEnvelopePolicyId: "direct_context_remaining_result_envelope@1",
     contextAdmissionPolicyId: "direct_context_remaining_context_admission@1",
+  },
+  inspect_self_constitution: {
+    capabilityId: "direct.inspect_self_constitution",
+    toolFamily: "session_control_state",
+    implementedState: "restricted_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_self_constitution_projection_scope_policy@1",
+    resultEnvelopePolicyId: "direct_self_constitution_result_envelope@1",
+    contextAdmissionPolicyId: "direct_self_constitution_context_admission@1",
   },
   update_plan: {
     capabilityId: "direct.update_plan",
@@ -724,6 +733,18 @@ function authorityTemplateFor(toolName, laneSelection) {
 }
 
 function providerSchemaFor(toolName) {
+  if (toolName === "inspect_self_constitution") {
+    return {
+      type: "function",
+      name: "inspect_self_constitution",
+      description: "Read the harness-owned current constitution for this agent: role, project/workspace binding, persistence, selected versus potential capabilities, authority state, provider readiness, context binding, and delegation capacity. This projection is read-only and grants no authority.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    };
+  }
   if (toolName === "tool_search") {
     return {
       type: "function",
@@ -825,7 +846,7 @@ function providerSchemaFor(toolName) {
     return {
       type: "function",
       name: "spawn_agent",
-      description: "Spawn a bounded Direct child agent asynchronously. Context handoff, model, reasoning effort, and workspace constitution are independent choices. Omit workspace_mode for the existing reasoning-only child; request isolated_worktree only when the child must inspect or change the project in its own local Git worktree.",
+      description: "Spawn a bounded Direct child agent asynchronously under the task's active sub-agent policy. Normally supply only the task and role: the harness inherits provider, model, effort, context handoff, workspace realization, and tools from policy. An explicit mismatch requires both a reason and a disposition.",
       parameters: {
         type: "object",
         properties: {
@@ -868,6 +889,15 @@ function providerSchemaFor(toolName) {
             type: "string",
             enum: ["read_only_worker", "implementation_worker"],
             description: "Required when workspace_mode is isolated_worktree; omit for reasoning_only. The harness derives the actual tools and test profile; this does not grant arbitrary shell, remote Git, messaging, or recursive spawn.",
+          },
+          policy_exception_reason: {
+            type: "string",
+            description: "Required when any explicit launch dimension differs from active policy. Explain the task-local semantic reason; this is persisted as an exception witness, not treated as a silent override.",
+          },
+          policy_disposition: {
+            type: "string",
+            enum: ["one_time_exception", "propose_policy_update"],
+            description: "How an explicit policy mismatch should be handled. A permanent update is not launch authority and must be admitted through the semantic policy path.",
           },
         },
         required: ["message", "task_name"],

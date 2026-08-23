@@ -34,6 +34,9 @@ const {
   normalizeProviderId,
   providerDefaultModel,
 } = require("./external-provider-continuation");
+const {
+  validateActiveSubAgentSpawnDecision,
+} = require("./active-sub-agent-policy");
 
 const DIRECT_NATIVE_AGENT_POOL_SCHEMA = "direct_native_agent_pool@1";
 const DIRECT_NATIVE_AGENT_LAUNCH_SCHEMA = "direct_native_agent_launch@1";
@@ -398,6 +401,7 @@ function normalizeProviderProfiles(input = [], defaultModel = "gpt-5.6-sol") {
     blockerCode: "",
     model: defaultModel,
     transport: "chatgpt_subscription_responses_sse",
+    executionSubstrate: "direct",
     credentials: "chatgpt_subscription",
     childToolsAllowed: false,
     autoContinuation: false,
@@ -412,6 +416,7 @@ function normalizeProviderProfiles(input = [], defaultModel = "gpt-5.6-sol") {
       blockerCode: normalizeString(source.blockerCode, ""),
       model: normalizeString(source.model, providerDefaultModel(providerId) || defaultModel),
       transport: normalizeString(source.transport, "unknown"),
+      executionSubstrate: normalizeString(source.executionSubstrate, "unknown"),
       credentials: normalizeString(source.credentials, "unavailable"),
       childToolsAllowed: source.childToolsAllowed === true,
       autoContinuation: source.autoContinuation === true,
@@ -488,6 +493,19 @@ class DirectNativeAgentPool extends EventEmitter {
     };
     descriptor.poolDigest = digestFor("direct-native-agent-pool@1", descriptor);
     return descriptor;
+  }
+
+  activeCountForScope(input = {}) {
+    const projectId = normalizeString(input.projectId, "");
+    const primaryThreadId = normalizeString(
+      input.primaryThreadId || input.parentThreadId,
+      "",
+    );
+    return [...this.jobs.values()].filter((record) =>
+      !TERMINAL_STATES.has(record.state) &&
+      (!projectId || record.projectId === projectId) &&
+      (!primaryThreadId || record.primaryThreadId === primaryThreadId)
+    ).length;
   }
 
   recoverySnapshot() {
@@ -575,6 +593,58 @@ class DirectNativeAgentPool extends EventEmitter {
   launch(input = {}) {
     if (this.closed) return this.launchResult(null, "blocked", "direct_agent_pool_closed");
     if (input.signal?.aborted) return this.launchResult(null, "blocked", "direct_agent_launch_aborted");
+    let activeSubAgentPolicyDecision = null;
+    if (input.requireActiveSubAgentPolicy === true) {
+      try {
+        activeSubAgentPolicyDecision =
+          validateActiveSubAgentSpawnDecision(
+            input.activeSubAgentPolicyDecision,
+            {
+              projectId: normalizeString(
+                input.projectId,
+                "project_direct_agents",
+              ),
+              threadId: normalizeString(
+                input.primaryThreadId || input.parentThreadId,
+                "primary_direct_agent",
+              ),
+            },
+          );
+      } catch (error) {
+        return this.launchResult(
+          null,
+          "blocked",
+          normalizeString(
+            error?.code,
+            "direct_active_sub_agent_policy_decision_invalid",
+          ),
+        );
+      }
+      if (
+        !activeSubAgentPolicyDecision.launchEligible ||
+        !activeSubAgentPolicyDecision.effectiveSpawn
+      ) {
+        return this.launchResult(
+          null,
+          "blocked",
+          normalizeString(
+            activeSubAgentPolicyDecision.blockerCode,
+            "direct_active_sub_agent_policy_spawn_blocked",
+          ),
+        );
+      }
+      const effective = activeSubAgentPolicyDecision.effectiveSpawn;
+      input = {
+        ...input,
+        agentType: effective.roleId,
+        provider: effective.providerId,
+        model: effective.model,
+        reasoningEffort: effective.reasoningEffort,
+        forkTurns: effective.forkTurns,
+        workspaceMode: effective.workspaceMode,
+        toolProfile: effective.toolProfile,
+      };
+    }
     let workspaceMode;
     let toolProfile;
     try {
@@ -774,6 +844,16 @@ class DirectNativeAgentPool extends EventEmitter {
       launchDigest,
       parentAgentId,
       role,
+      activeSubAgentPolicyDecisionRef:
+        activeSubAgentPolicyDecision
+          ? {
+              kind: "active_sub_agent_spawn_decision",
+              id: activeSubAgentPolicyDecision.decisionId,
+              digest: activeSubAgentPolicyDecision.digest,
+            }
+          : null,
+      activeSubAgentPolicyRef:
+        activeSubAgentPolicyDecision?.policyRef || null,
       providerRoleLabelAcceptedAsAuthority: false,
       providerRoleLabelIgnored: Boolean(delegationAuthority && requestedRoleLabel && requestedRoleLabel !== role),
       displayLabel: normalizeString(input.displayLabel, taskName),
@@ -916,6 +996,10 @@ class DirectNativeAgentPool extends EventEmitter {
       pool: this.descriptor(),
       rawTaskIncluded: false,
       rawContextIncluded: false,
+      activeSubAgentPolicyDecisionRef:
+        record?.activeSubAgentPolicyDecisionRef || null,
+      activeSubAgentPolicyRef:
+        record?.activeSubAgentPolicyRef || null,
     };
     result.resultDigest = digestFor("direct-native-agent-launch@1", result);
     return result;
@@ -1914,6 +1998,10 @@ class DirectNativeAgentPool extends EventEmitter {
       launchDigest: record.launchDigest,
       parentAgentId: record.parentAgentId,
       role: record.role,
+      activeSubAgentPolicyDecisionRef:
+        record.activeSubAgentPolicyDecisionRef || null,
+      activeSubAgentPolicyRef:
+        record.activeSubAgentPolicyRef || null,
       providerRoleLabelAcceptedAsAuthority: false,
       providerRoleLabelIgnored: record.providerRoleLabelIgnored === true,
       displayLabel: record.displayLabel,

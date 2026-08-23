@@ -18,6 +18,7 @@ const DEFAULT_OPENCODE_RUN_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_OPENCODE_MAX_RETAINED_RUNS = 32;
 const DEFAULT_OPENCODE_MAX_RETAINED_BYTES = 64 * 1024 * 1024;
 const OPENCODE_RUN_RETENTION_SCHEMA = "direct_opencode_run_retention@1";
+const OPENCODE_LAUNCH_TARGET_SCHEMA = "direct_opencode_launch_target@1";
 const DEFAULT_CONTINUATION_PROMPT = [
   "Continue from exactly where the prior response stopped.",
   "Do not restart or repeat completed material.",
@@ -191,13 +192,14 @@ function externalProviderProfile(providerId = "", options = {}) {
     };
   }
   if (providerId === PROVIDER_OPENCODE_OXALPHA) {
-    const executable = resolveOpenCodeExecutable(options);
+    const launchTarget = resolveOpenCodeLaunchTarget(options);
     return {
       providerId,
-      status: executable ? "ready" : "blocked",
-      blockerCode: executable ? "" : "direct_opencode_executable_missing",
+      status: launchTarget ? "ready" : "blocked",
+      blockerCode: launchTarget ? "" : "direct_opencode_executable_missing",
       model: OPENCODE_OXALPHA_MODEL,
       transport: "opencode_cli_json",
+      executionSubstrate: launchTarget?.substrate || "unavailable",
       credentials: "managed_by_opencode",
       childToolsAllowed: false,
       autoContinuation: true,
@@ -827,20 +829,74 @@ async function runOpenRouterOxAlphaTurn(input = {}, options = {}) {
   }
 }
 
-function resolveOpenCodeExecutable(options = {}) {
+function inferredOpenCodeWslExecutable(env = {}) {
+  const configured = normalizeString(env.CODEX_DIRECT_OPENCODE_WSL_BIN, "");
+  if (configured) return configured;
+  const projectPath = normalizeString(env.CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH, "");
+  const homeMatch = /^(\/home\/[^/]+)(?:\/|$)/.exec(projectPath.replace(/\\/g, "/"));
+  return homeMatch ? `${homeMatch[1]}/.opencode/bin/opencode` : "";
+}
+
+function resolveOpenCodeLaunchTarget(options = {}) {
   const env = options.env || process.env;
+  const platform = normalizeString(options.platform, process.platform);
+  const pathApi = platform === "win32" ? path.win32 : path;
+  const homeDir = normalizeString(options.homeDir, os.homedir());
+  const accessSync = options.accessSync || fs.accessSync;
   const candidates = [
     normalizeString(options.openCodeExecutable, ""),
     normalizeString(env.CODEX_DIRECT_OPENCODE_BIN, ""),
-    path.join(os.homedir(), ".opencode", "bin", process.platform === "win32" ? "opencode.exe" : "opencode"),
+    pathApi.join(homeDir, ".opencode", "bin", platform === "win32" ? "opencode.exe" : "opencode"),
   ].filter(Boolean);
   for (const candidate of candidates) {
     try {
-      (options.accessSync || fs.accessSync)(candidate, fs.constants.X_OK);
-      return candidate;
+      accessSync(candidate, platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+      return Object.freeze({
+        schema: OPENCODE_LAUNCH_TARGET_SCHEMA,
+        substrate: "native",
+        command: candidate,
+        openCodeExecutable: candidate,
+        distro: "",
+        rawExecutablePathExposed: false,
+      });
     } catch {}
   }
-  return "";
+  if (platform !== "win32") return null;
+
+  const distro = normalizeString(
+    options.openCodeWslDistro || env.CODEX_DIRECT_OPENCODE_WSL_DISTRO ||
+      env.CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO,
+    "",
+  );
+  const openCodeWslExecutable = normalizeString(
+    options.openCodeWslExecutable,
+    inferredOpenCodeWslExecutable(env),
+  );
+  const windowsRoot = normalizeString(env.SystemRoot || env.WINDIR, "C:\\Windows");
+  const wslCandidates = [
+    normalizeString(options.wslExecutable, ""),
+    normalizeString(env.CODEX_DIRECT_WSL_EXE, ""),
+    path.win32.join(windowsRoot, "System32", "wsl.exe"),
+  ].filter(Boolean);
+  if (!distro || !openCodeWslExecutable.startsWith("/")) return null;
+  for (const wslExecutable of wslCandidates) {
+    try {
+      accessSync(wslExecutable, fs.constants.F_OK);
+      return Object.freeze({
+        schema: OPENCODE_LAUNCH_TARGET_SCHEMA,
+        substrate: "wsl",
+        command: wslExecutable,
+        openCodeExecutable: openCodeWslExecutable,
+        distro,
+        rawExecutablePathExposed: false,
+      });
+    } catch {}
+  }
+  return null;
+}
+
+function resolveOpenCodeExecutable(options = {}) {
+  return resolveOpenCodeLaunchTarget(options)?.openCodeExecutable || "";
 }
 
 function openCodeRunDirectories(input = {}, options = {}) {
@@ -1061,17 +1117,19 @@ function openOpenCodeEventJournal(input = {}) {
 
 function safeOpenCodeRuntimeEnv(options = {}) {
   const env = { ...(options.env || process.env) };
-  const runtimeDirectory = path.resolve(normalizeString(
+  const platform = normalizeString(options.platform, process.platform);
+  const pathApi = platform === "win32" ? path.win32 : path;
+  const runtimeDirectory = pathApi.resolve(normalizeString(
     options.openCodeRuntimeDirectory || options.runtimeDirectory || env.CODEX_DIRECT_OPENCODE_RUNTIME_DIR,
-    path.join(os.tmpdir(), "codex-direct-opencode-runtime"),
+    pathApi.join(os.tmpdir(), "codex-direct-opencode-runtime"),
   ));
-  env.XDG_DATA_HOME = path.join(runtimeDirectory, "data");
-  env.XDG_CACHE_HOME = path.join(runtimeDirectory, "cache");
-  env.XDG_STATE_HOME = path.join(runtimeDirectory, "state");
-  env.XDG_CONFIG_HOME = path.join(runtimeDirectory, "config");
+  env.XDG_DATA_HOME = pathApi.join(runtimeDirectory, "data");
+  env.XDG_CACHE_HOME = pathApi.join(runtimeDirectory, "cache");
+  env.XDG_STATE_HOME = pathApi.join(runtimeDirectory, "state");
+  env.XDG_CONFIG_HOME = pathApi.join(runtimeDirectory, "config");
   delete env.OPENCODE_CONFIG;
   delete env.OPENCODE_TUI_CONFIG;
-  env.OPENCODE_CONFIG_DIR = path.join(runtimeDirectory, "config", "opencode");
+  env.OPENCODE_CONFIG_DIR = pathApi.join(runtimeDirectory, "config", "opencode");
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "1";
   env.OPENCODE_DISABLE_DEFAULT_PLUGINS = "1";
   env.OPENCODE_DISABLE_LSP_DOWNLOAD = "1";
@@ -1084,6 +1142,111 @@ function safeOpenCodeRuntimeEnv(options = {}) {
   delete env.OPENCODE_SERVER_PASSWORD;
   delete env.OPENCODE_SERVER_USERNAME;
   return env;
+}
+
+const OPENCODE_WSL_RUNTIME_ENV_KEYS = Object.freeze([
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+  "XDG_CONFIG_HOME",
+  "OPENCODE_CONFIG_DIR",
+  "OPENCODE_DISABLE_PROJECT_CONFIG",
+  "OPENCODE_DISABLE_DEFAULT_PLUGINS",
+  "OPENCODE_DISABLE_LSP_DOWNLOAD",
+  "OPENCODE_CONFIG_CONTENT",
+]);
+const OPENCODE_WSL_PATH_ENV_KEYS = new Set([
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+  "XDG_CONFIG_HOME",
+  "OPENCODE_CONFIG_DIR",
+]);
+
+function wslPathForWindowsPath(value, options = {}) {
+  const source = normalizeString(value, "");
+  if (!source) throw safeError("direct_opencode_wsl_path_translation_failed");
+  if (source.startsWith("/")) return source.replace(/\\/g, "/");
+  const normalized = source.replace(/\//g, "\\");
+  const uncMatch = /^\\\\(?:wsl\.localhost|wsl\$)\\([^\\]+)(?:\\(.*))?$/i.exec(normalized);
+  if (uncMatch) {
+    const expectedDistro = normalizeString(options.distro, "");
+    if (expectedDistro && uncMatch[1].toLowerCase() !== expectedDistro.toLowerCase()) {
+      throw safeError("direct_opencode_wsl_path_distro_mismatch");
+    }
+    return `/${normalizeString(uncMatch[2], "").replace(/\\/g, "/")}`;
+  }
+  const driveMatch = /^([A-Za-z]):\\(.*)$/.exec(normalized);
+  if (driveMatch) {
+    return `/mnt/${driveMatch[1].toLowerCase()}/${driveMatch[2].replace(/\\/g, "/")}`;
+  }
+  throw safeError("direct_opencode_wsl_path_translation_failed");
+}
+
+function safeOpenCodeWslHostEnv(options = {}) {
+  const env = { ...(options.env || process.env) };
+  for (const key of Object.keys(env)) {
+    if (/(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key)) delete env[key];
+    if (key.startsWith("OPENCODE_")) delete env[key];
+  }
+  env.WSLENV = "";
+  return env;
+}
+
+function openCodeProcessLaunchDescriptor(input = {}, options = {}) {
+  const launchTarget = input.launchTarget || {
+    schema: OPENCODE_LAUNCH_TARGET_SCHEMA,
+    substrate: "native",
+    command: input.executable,
+    openCodeExecutable: input.executable,
+    distro: "",
+  };
+  if (launchTarget.substrate !== "wsl") {
+    return {
+      command: launchTarget.command || input.executable,
+      args: [...(Array.isArray(input.args) ? input.args : [])],
+      cwd: input.cwd,
+      env: safeOpenCodeRuntimeEnv({
+        ...options,
+        openCodeRuntimeDirectory: input.runtimeDirectory,
+      }),
+      transport: "native",
+    };
+  }
+
+  const translatePath = options.wslPathTranslator || wslPathForWindowsPath;
+  const runtimeEnv = safeOpenCodeRuntimeEnv({
+    ...options,
+    openCodeRuntimeDirectory: input.runtimeDirectory,
+  });
+  const runtimeAssignments = OPENCODE_WSL_RUNTIME_ENV_KEYS.map((key) => {
+    const rawValue = normalizeString(runtimeEnv[key], "");
+    const value = OPENCODE_WSL_PATH_ENV_KEYS.has(key)
+      ? translatePath(rawValue, { distro: launchTarget.distro })
+      : rawValue;
+    return `${key}=${value}`;
+  });
+  const providerCwd = normalizeString(
+    input.providerCwd,
+    translatePath(input.cwd, { distro: launchTarget.distro }),
+  );
+  return {
+    command: launchTarget.command,
+    args: [
+      "-d",
+      launchTarget.distro,
+      "--cd",
+      providerCwd,
+      "--",
+      "/usr/bin/env",
+      ...runtimeAssignments,
+      launchTarget.openCodeExecutable,
+      ...(Array.isArray(input.args) ? input.args : []),
+    ],
+    cwd: input.cwd,
+    env: safeOpenCodeWslHostEnv(options),
+    transport: "wsl.exe",
+  };
 }
 
 function spawnOpenCodeProcess(input = {}, options = {}) {
@@ -1100,12 +1263,10 @@ function spawnOpenCodeProcess(input = {}, options = {}) {
       reject(error);
       return;
     }
-    const child = spawnImpl(input.executable, input.args, {
-      cwd: input.cwd,
-      env: safeOpenCodeRuntimeEnv({
-        ...options,
-        openCodeRuntimeDirectory: input.runtimeDirectory,
-      }),
+    const descriptor = openCodeProcessLaunchDescriptor(input, options);
+    const child = spawnImpl(descriptor.command, descriptor.args, {
+      cwd: descriptor.cwd,
+      env: descriptor.env,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       shell: false,
@@ -1239,8 +1400,8 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
     retryBaseMs: options.retryBaseMs ?? process.env.CODEX_DIRECT_0XALPHA_RETRY_BASE_MS,
     continuationPrompt: options.continuationPrompt,
   });
-  const executable = resolveOpenCodeExecutable(options);
-  if (!executable) throw safeError("direct_opencode_executable_missing");
+  const launchTarget = resolveOpenCodeLaunchTarget(options);
+  if (!launchTarget) throw safeError("direct_opencode_executable_missing");
   const model = normalizeString(input.requestBody?.model, OPENCODE_OXALPHA_MODEL);
   if (model !== OPENCODE_OXALPHA_MODEL) throw safeError("direct_opencode_model_not_allowed");
   const task = requestInputText(input.requestBody);
@@ -1261,6 +1422,9 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
   pruneOpenCodeRuns(runDirectories.runsRoot, options);
   ensureOpenCodeRunDirectories(runDirectories, options);
   const cwd = runDirectories.workingDirectory;
+  const providerCwd = launchTarget.substrate === "wsl"
+    ? (options.wslPathTranslator || wslPathForWindowsPath)(cwd, { distro: launchTarget.distro })
+    : cwd;
   const startedAt = Date.now();
   const attempts = [];
   const normalizedEvents = [];
@@ -1276,7 +1440,7 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
     const usedSession = Boolean(sessionId);
     const requestedSessionId = sessionId;
     const usedRebase = !usedSession && rebasePending && Boolean(outputText);
-    const args = ["run", "--format", "json", "--dir", cwd, "--model", model, "--variant",
+    const args = ["run", "--format", "json", "--dir", providerCwd, "--model", model, "--variant",
       reasoningVariantForOpenCode(input.requestShape?.reasoningEffort)];
     if (usedSession) args.push("--session", sessionId);
     args.push(usedSession
@@ -1292,9 +1456,11 @@ async function runOpenCodeOxAlphaTurnWithinDeadline(input = {}, options = {}) {
     let processResult;
     try {
       processResult = await (options.processRunner || spawnOpenCodeProcess)({
-        executable,
+        executable: launchTarget.openCodeExecutable,
+        launchTarget,
         args,
         cwd,
+        providerCwd,
         runtimeDirectory: runDirectories.runtimeDirectory,
         eventJournalPath: runDirectories.eventJournalPath,
         attemptOrdinal: ordinal,
@@ -1561,6 +1727,7 @@ module.exports = {
   externalProviderProfile,
   loadOpenRouterApiKey,
   normalizeProviderId,
+  openCodeProcessLaunchDescriptor,
   overlapMerge,
   finalizeOpenCodeRunDirectories,
   openCodeRunDirectories,
@@ -1574,10 +1741,12 @@ module.exports = {
   reasoningVariantForOpenCode,
   resolveOpenRouterEndpoint,
   resolveOpenCodeExecutable,
+  resolveOpenCodeLaunchTarget,
   runExternalProviderContinuationTurn,
   runOpenCodeOxAlphaTurn,
   runOpenRouterOxAlphaTurn,
   safeOpenCodeRuntimeEnv,
   spawnOpenCodeProcess,
   streamOpenRouterAttempt,
+  wslPathForWindowsPath,
 };

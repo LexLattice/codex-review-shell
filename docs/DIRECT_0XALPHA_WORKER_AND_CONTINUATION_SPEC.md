@@ -48,6 +48,37 @@ An external provider cannot currently be combined with
 OpenCode workspace-worker authority and lifecycle adapter; it must not be
 smuggled through the reasoning-only profile.
 
+At provider-tool ingress, an explicit `workspace_mode: reasoning_only` remains
+authoritative if the model also emits an inapplicable `tool_profile`. The
+harness safely drops that profile, records a
+`direct_spawn_request_normalization@1` witness in the parent result, and never
+widens workspace or tool authority. A `tool_profile` without an explicit
+workspace mode remains ambiguous and fails closed. The resident pool also
+retains its strict tuple validation for callers that bypass provider ingress.
+
+The renderer projects the resulting typed state truthfully: an admitted native
+child-runtime transition is a neutral Direct runtime status, while a blocked
+transition remains a warning. Merely attempting or inspecting a child call must
+not be described as having launched a child.
+
+A successful spawn is still only a lifecycle acknowledgement. The compiled
+native-agent continuation contract re-reads the current user completion
+contract: requests requiring child output, terminal status, inspection, or
+aggregation must advance through bounded `wait_agent` calls and any requested
+`inspect_agent` evidence before the parent may answer final. Explicit
+background-only launches remain asynchronous and may return their live status.
+This distinction preserves parallel orchestration without confusing acceptance
+into the pool with completion of delegated work.
+
+Neutral child-lifecycle transitions are operational observations, not
+conversation. The main process emits them as typed `direct/runtime-status`
+evidence with operation, subject, provider, model, lifecycle state, and stable
+observation identity. Direct Workbench keeps a bounded per-task live projection
+in the optional Runtime Inspector `Observations` surface and excludes these
+events from the main transcript. Blocked transitions and failures remain visible
+warnings because they may require user action. The observation surface is
+read-only and cannot mint lifecycle or agent authority.
+
 ## Typed interruption contract
 
 Automatic continuation is a harness transition, not a model suggestion.
@@ -115,6 +146,9 @@ CODEX_DIRECT_0XALPHA_MAX_OUTPUT_CHARS
 CODEX_DIRECT_0XALPHA_RETRY_BASE_MS
 CODEX_OPENROUTER_ENDPOINT
 CODEX_DIRECT_OPENCODE_BIN
+CODEX_DIRECT_OPENCODE_WSL_DISTRO
+CODEX_DIRECT_OPENCODE_WSL_BIN
+CODEX_DIRECT_WSL_EXE
 CODEX_DIRECT_OPENCODE_RETENTION_MS
 CODEX_DIRECT_OPENCODE_MAX_RETAINED_RUNS
 CODEX_DIRECT_OPENCODE_MAX_RETAINED_BYTES
@@ -171,6 +205,18 @@ store; this was verified with a real-binary terminal `stop` smoke. Direct does
 not copy or expose OpenCode credentials. A future authenticated OpenCode route
 will require an explicit credential-projection contract rather than silently
 reusing the interactive profile.
+
+When Direct Workbench runs as native Windows Electron and OpenCode is installed
+inside WSL, the provider is realized through an explicit Windows-to-WSL launch
+target rather than host `PATH`. Direct resolves `wsl.exe`, the configured
+distro, and the Linux OpenCode executable; translates the bounded Windows run
+and runtime directories to `/mnt/<drive>/...`; invokes OpenCode without a shell;
+and clears `WSLENV` plus secret-bearing host variables at that boundary. The
+existing `CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO` and
+`CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH` settings are sufficient when the latter
+is under `/home/<user>` and OpenCode is installed at
+`~/.opencode/bin/opencode`. Other layouts can set the three WSL-specific
+overrides listed above.
 
 ## Provider tool shape
 

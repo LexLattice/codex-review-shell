@@ -26,7 +26,8 @@ const CONTINUATION_TRANSPORT_PREVIOUS_RESPONSE_ID = "previous_response_id";
 const DEFAULT_TEXT_PROBE_PROMPT = "Reply with exactly: direct text probe ok";
 const DEFAULT_TEXT_PROBE_INSTRUCTIONS = "You are Codex running a text-only direct transport probe. Do not request tools.";
 const DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS = [
-  "You are Codex running a direct implementation-lane turn in a disposable workspace.",
+  "You are Codex running a Direct implementation-lane turn in the workspace bound by the harness for this task.",
+  "Do not infer whether that workspace is persistent, disposable, shared, or isolated from this fallback text; use the owner-issued self constitution when it is present.",
   "Use only the declared tools when local file evidence, patching, or command execution is needed.",
   "Do not invent file contents, patch results, or command results.",
   "After receiving a local tool result, produce a concise final answer.",
@@ -215,7 +216,7 @@ function directImplementationToolSchemas(toolNames = []) {
     read_file: {
       type: "function",
       name: "read_file",
-      description: "Read one UTF-8 text file from the disposable workspace by project-relative path.",
+      description: "Read one UTF-8 text file from the current constitution-bound project workspace by project-relative path.",
       parameters: {
         type: "object",
         properties: {
@@ -228,7 +229,7 @@ function directImplementationToolSchemas(toolNames = []) {
     apply_patch: {
       type: "function",
       name: "apply_patch",
-      description: "Propose one git-style unified diff to apply to the disposable workspace.",
+      description: "Propose one git-style unified diff to apply to the current constitution-bound project workspace.",
       parameters: {
         type: "object",
         properties: {
@@ -242,7 +243,7 @@ function directImplementationToolSchemas(toolNames = []) {
     run_command: {
       type: "function",
       name: "run_command",
-      description: "Run one package-manager script in the disposable workspace.",
+      description: "Run one package-manager script in the current constitution-bound project workspace.",
       parameters: {
         type: "object",
         properties: {

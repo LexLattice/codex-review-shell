@@ -9,6 +9,8 @@ if not defined CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO set "CODEX_REVIEW_SHELL_DEF
 if not defined CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH set "CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH=/home/rose/work/LexLattice/codex-review-shell-direct"
 if not defined CODEX_REVIEW_SHELL_DEFAULT_HOST_CODEX_HOME set "CODEX_REVIEW_SHELL_DEFAULT_HOST_CODEX_HOME=%ROOT_DIR%\.codex-home"
 if not defined CODEX_REVIEW_SHELL_DEFAULT_WSL_CODEX_HOME set "CODEX_REVIEW_SHELL_DEFAULT_WSL_CODEX_HOME=/home/rose/.codex"
+if not defined CODEX_DIRECT_OPENCODE_WSL_DISTRO set "CODEX_DIRECT_OPENCODE_WSL_DISTRO=%CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO%"
+if not defined CODEX_DIRECT_OPENCODE_WSL_BIN set "CODEX_DIRECT_OPENCODE_WSL_BIN=/home/rose/.opencode/bin/opencode"
 
 set "POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 set "NODE_EXE=C:\Program Files\nodejs\node.exe"

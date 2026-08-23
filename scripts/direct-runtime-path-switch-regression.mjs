@@ -152,6 +152,7 @@ assert.deepEqual(
 
 const mainSource = read("src/main.js");
 const preloadSource = read("src/preload.js");
+const codexSurfacePreloadSource = read("src/preload-codex-surface.js");
 const rendererSource = read("src/renderer/app.js");
 const codexSurfaceSource = read("src/renderer/codex-surface.js");
 const htmlSource = read("src/renderer/index.html");
@@ -160,6 +161,14 @@ const codexSurfaceCss = read("src/renderer/codex-surface.css");
 assertIncludes(mainSource, "setCodexRuntimePath", "main process runtime switch");
 assertIncludes(mainSource, "direct-runtime:set-path", "main process IPC");
 assertIncludes(mainSource, "direct-runtime:embark", "main process Direct embark IPC");
+assertIncludes(mainSource, "direct-runtime:refresh-readiness", "task-scoped Direct readiness refresh IPC");
+assertIncludes(mainSource, "direct-workbench:set-runtime-path", "Direct Workbench backend transition IPC");
+assertIncludes(mainSource, "requireDirectWorkbenchExperience(\"direct-workbench:set-runtime-path\")", "Direct Workbench backend transition experience gate");
+assertIncludes(mainSource, "deferSurfaceReload: true", "embedded backend transition returns before reloading its own trusted surface");
+assertIncludes(mainSource, "schema: \"direct_thread_runtime_binding@1\"", "main process persists a canonical task runtime binding");
+assertIncludes(mainSource, "modelSource: \"thread-runtime-binding\"", "task model selection supersedes the project seed at task scope");
+assertIncludes(mainSource, "ensureDirectLiveTextController().statusForProject(project, { model: effectiveModel })", "task binding resolves exact-model readiness evidence");
+assertIncludes(mainSource, "runtimeCapabilities = input.runtimeCapabilities || buildDirectLiveTextCapabilities(liveTextStatus)", "Direct projection publishes main-owned capabilities from the same task-scoped readiness witness");
 assertIncludes(mainSource, "recordDirectEmbarkLiveProbe", "main process Direct embark probe transition");
 assertIncludes(mainSource, "activeDirectTurnCountForProject", "main process active direct turn guard");
 assertIncludes(mainSource, "bindingForDirectRuntimePath", "main process persisted binding update");
@@ -180,6 +189,8 @@ assert.ok(
 );
 assertIncludes(preloadSource, "setDirectRuntimePath", "shell preload bridge");
 assertIncludes(preloadSource, "embarkDirectRuntime", "shell preload Direct embark bridge");
+assertIncludes(codexSurfacePreloadSource, "refreshDirectRuntimeReadiness", "embedded surface readiness refresh bridge");
+assertIncludes(codexSurfacePreloadSource, "setDirectWorkbenchRuntimePath", "embedded surface backend transition bridge");
 assertIncludes(rendererSource, "directRuntimePathSelect", "shell renderer selector");
 assertIncludes(rendererSource, "setDirectRuntimePathFromControl", "shell renderer apply action");
 assertIncludes(rendererSource, "embarkDirectRuntimeFromControl", "shell renderer Direct embark action");
@@ -223,6 +234,13 @@ assertIncludes(openDirectThreadSource, "guardThreadId: requestedThreadId", "dire
 assertIncludes(openDirectThreadSource, "state.directThreadOpenRequestId !== openRequestId || state.threadId !== requestedThreadId", "direct thread open rechecks stale requests after preference load");
 assertIncludes(codexSurfaceSource, "hasGuardSourceHome", "runtime preference guard distinguishes omitted source-home guard from explicit empty string");
 assertIncludes(codexSurfaceSource, "hasGuardSessionFilePath", "runtime preference guard distinguishes omitted session-file guard from explicit empty string");
+assertIncludes(codexSurfaceSource, "Refresh Direct readiness", "Direct runtime drawer exposes an in-place readiness action");
+assertIncludes(codexSurfaceSource, "Changes the task backend. This is separate from refreshing Direct readiness.", "backend transition remains distinct from readiness refresh");
+assertIncludes(codexSurfaceSource, "flushRuntimePreferenceWrites", "turn submission waits for the canonical task runtime binding");
+assertIncludes(codexSurfaceSource, "The task binding is canonical for subsequent turns", "model controls explain task-level persistence");
+assertIncludes(codexSurfaceSource, "function applyDirectSurfaceProjection", "renderer centralizes trusted Direct projection application");
+assertIncludes(codexSurfaceSource, "capabilities: hasMainOwnedCapabilities", "renderer replaces stale connection capabilities with the main-owned refreshed projection");
+assertIncludes(codexSurfaceSource, "if (!isDirectLiveTextSurface() && !hasCapability(\"turns\", \"canStart\"))", "Direct submission has one renderer readiness gate while app-server retains its capability gate");
 const attachLiveThreadSource = codexSurfaceSource.slice(
   codexSurfaceSource.indexOf("async function attachLiveThread"),
   codexSurfaceSource.indexOf("function applyLiveThreadResult"),

@@ -20,14 +20,17 @@ const {
   externalProviderProfile,
   finalizeOpenCodeRunDirectories,
   loadOpenRouterApiKey,
+  openCodeProcessLaunchDescriptor,
   openCodeRunDirectories,
   parseEnvAssignment,
   pruneOpenCodeRuns,
   resolveOpenRouterEndpoint,
+  resolveOpenCodeLaunchTarget,
   runOpenCodeOxAlphaTurn,
   runOpenRouterOxAlphaTurn,
   safeOpenCodeRuntimeEnv,
   spawnOpenCodeProcess,
+  wslPathForWindowsPath,
 } = require("../src/main/direct/agents/external-provider-continuation");
 const { DirectNativeAgentPool } = require("../src/main/direct/agents/native-agent-pool");
 const { normalizeContinuationTrace } = require("../src/main/direct/agents/provider-backed-route");
@@ -104,6 +107,100 @@ const untrustedEndpointProfile = externalProviderProfile(PROVIDER_OPENROUTER_OXA
 assert.equal(untrustedEndpointProfile.status, "blocked");
 assert.equal(untrustedEndpointProfile.credentials, "available");
 assert.equal(untrustedEndpointProfile.blockerCode, "direct_openrouter_endpoint_untrusted");
+
+const windowsWslExecutable = "C:\\Windows\\System32\\wsl.exe";
+const windowsOpenCodeEnv = {
+  SystemRoot: "C:\\Windows",
+  CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO: "Ubuntu",
+  CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH: "/home/rose/work/LexLattice/codex-review-shell-direct",
+  OPENROUTER_API_KEY: "must-not-cross-wsl-launch-boundary",
+  WSLENV: "OPENROUTER_API_KEY/u",
+};
+const windowsWslAccessSync = (candidate) => {
+  if (candidate === windowsWslExecutable) return;
+  const error = new Error("fixture path missing");
+  error.code = "ENOENT";
+  throw error;
+};
+const windowsWslTarget = resolveOpenCodeLaunchTarget({
+  platform: "win32",
+  homeDir: "C:\\Users\\Rose",
+  env: windowsOpenCodeEnv,
+  accessSync: windowsWslAccessSync,
+});
+assert.equal(windowsWslTarget.substrate, "wsl");
+assert.equal(windowsWslTarget.command, windowsWslExecutable);
+assert.equal(windowsWslTarget.distro, "Ubuntu");
+assert.equal(windowsWslTarget.openCodeExecutable, "/home/rose/.opencode/bin/opencode");
+assert.equal(
+  externalProviderProfile(PROVIDER_OPENCODE_OXALPHA, {
+    platform: "win32",
+    homeDir: "C:\\Users\\Rose",
+    env: windowsOpenCodeEnv,
+    accessSync: windowsWslAccessSync,
+  }).executionSubstrate,
+  "wsl",
+);
+const windowsWslProfilePool = new DirectNativeAgentPool({
+  providerProfiles: [externalProviderProfile(PROVIDER_OPENCODE_OXALPHA, {
+    platform: "win32",
+    homeDir: "C:\\Users\\Rose",
+    env: windowsOpenCodeEnv,
+    accessSync: windowsWslAccessSync,
+  })],
+  providerTurnRunner: async () => ({ ok: true, terminalState: "completed", outputText: "fixture" }),
+});
+assert.equal(
+  windowsWslProfilePool.descriptor().providerProfiles.find(
+    (profile) => profile.providerId === PROVIDER_OPENCODE_OXALPHA,
+  ).executionSubstrate,
+  "wsl",
+  "the agent pool must preserve the provider realization substrate for inspection",
+);
+assert.equal(
+  wslPathForWindowsPath("C:\\Users\\Rose\\AppData\\Local\\worker space", { distro: "Ubuntu" }),
+  "/mnt/c/Users/Rose/AppData/Local/worker space",
+);
+assert.equal(
+  wslPathForWindowsPath("\\\\wsl.localhost\\Ubuntu\\home\\rose\\worker", { distro: "Ubuntu" }),
+  "/home/rose/worker",
+);
+assert.throws(
+  () => wslPathForWindowsPath("\\\\wsl.localhost\\Debian\\home\\rose\\worker", { distro: "Ubuntu" }),
+  (error) => error?.code === "direct_opencode_wsl_path_distro_mismatch",
+);
+const windowsWslDescriptor = openCodeProcessLaunchDescriptor({
+  launchTarget: windowsWslTarget,
+  executable: windowsWslTarget.openCodeExecutable,
+  args: [
+    "run",
+    "--format",
+    "json",
+    "--dir",
+    "/mnt/c/Users/Rose/AppData/Local/worker space",
+  ],
+  cwd: "C:\\Users\\Rose\\AppData\\Local\\worker space",
+  providerCwd: "/mnt/c/Users/Rose/AppData/Local/worker space",
+  runtimeDirectory: "C:\\Users\\Rose\\AppData\\Local\\worker runtime",
+}, {
+  platform: "win32",
+  env: windowsOpenCodeEnv,
+});
+assert.equal(windowsWslDescriptor.command, windowsWslExecutable);
+assert.equal(windowsWslDescriptor.transport, "wsl.exe");
+assert.deepEqual(windowsWslDescriptor.args.slice(0, 6), [
+  "-d",
+  "Ubuntu",
+  "--cd",
+  "/mnt/c/Users/Rose/AppData/Local/worker space",
+  "--",
+  "/usr/bin/env",
+]);
+assert(windowsWslDescriptor.args.includes("XDG_CONFIG_HOME=/mnt/c/Users/Rose/AppData/Local/worker runtime/config"));
+assert(windowsWslDescriptor.args.includes("/home/rose/.opencode/bin/opencode"));
+assert.equal(windowsWslDescriptor.args.some((arg) => arg.includes("must-not-cross")), false);
+assert.equal(windowsWslDescriptor.env.OPENROUTER_API_KEY, undefined);
+assert.equal(windowsWslDescriptor.env.WSLENV, "");
 
 const interruptedBodies = [];
 const interruptedHeaders = [];

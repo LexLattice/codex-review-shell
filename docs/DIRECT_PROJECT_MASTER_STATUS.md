@@ -13,8 +13,9 @@ custody, or new action authority.
 
 Status: canonical human-readable carryover entrypoint for the direct harness.
 
-Last updated: 2026-08-09 after implementation of the ordinary Direct native
-multi-agent reasoning pool, in addition to the first restricted
+Last updated: 2026-08-23 after implementation of the owner-issued Direct
+self-constitution snapshot and inspection tool, following the ordinary Direct
+native multi-agent reasoning pool and the first restricted
 `WM-SC11` role-governed epistemic-ledger and semantic-CI foundation, following implementation
 of the governed semantic sequence through the `WM-SC7.2` current-to-target
 bridge, provisional `WM-SC8.1` ARO
@@ -108,6 +109,21 @@ compresses, exposes, authorizes, mutates, or audits.
 
 Root doctrine:
 [DIRECT_INFORMATION_BRIDGE_CONSTITUTION.md](./DIRECT_INFORMATION_BRIDGE_CONSTITUTION.md).
+
+## Direct Self-Knowledge (2026-08-23)
+
+Direct implementation turns now receive an owner-issued
+`SelfConstitutionSnapshot` compiled from current harness state. It truthfully
+separates role-catalogued capability, this-turn declaration, per-call
+authorization, and runtime enactment; records the real persistent-project,
+isolated-worktree, or reasoning-only workspace binding; and projects current
+provider readiness and delegation capacity without raw paths or credentials.
+
+The same compiler backs the read-only `inspect_self_constitution` resident
+tool. Generic prompt prose is presentation rather than constitutional
+authority, and the stale claim that every Direct turn uses a disposable
+workspace has been removed. See the
+[Direct Self-Constitution Snapshot spec](./DIRECT_SELF_CONSTITUTION_SNAPSHOT_SPEC.md).
 
 ## Post-Wave-26 World Manager And Unified UX Target (2026-07-26)
 
@@ -327,6 +343,16 @@ if vanilla behavior conflicts with those laws
 
 Do not remove the app-server path while building Direct. Do not fork the UX by
 backend when the same normalized projection can serve both paths.
+
+Direct Workbench now presents that choice in the embedded runtime drawer. The
+backend selector is an explicit project transition, while `Refresh Direct
+readiness` is an in-place task-scoped operation. The latter refreshes Direct
+OAuth when possible and records bounded exact-model evidence without leaving
+Direct. Model and reasoning controls are canonical task bindings: project
+values seed a new task, task values govern its next turn, and an active turn
+keeps the already-frozen request. Task-scoped readiness refreshes atomically
+republish the corresponding main-owned runtime capabilities, preventing stale
+surface-connect gates from contradicting the newer readiness witness.
 
 Relevant documents:
 
@@ -683,6 +709,7 @@ Relevant documents:
 - [Context policy and pack](./DIRECT_CONTEXT_POLICY_AND_PACK_SPEC.md)
 - [Context maintenance, memory, frontier, baton](./DIRECT_CONTEXT_MAINTENANCE_MEMORY_FRONTIER_BATON_SPEC.md)
 - [Resident checkpoint compaction](./DIRECT_WAVE25_RESIDENT_CHECKPOINT_COMPACTION_SPEC.md)
+- [Active sub-agent policy](./DIRECT_ACTIVE_SUB_AGENT_POLICY_SPEC.md)
 
 ## Persistence Architecture And Open Retention Decision
 
@@ -998,6 +1025,16 @@ Current local frontier after Wave 26 acceptance reconciliation:
   slice, are implemented and locally
   proven for durable ingress, idempotency, canonical graph binding,
   provider-backed semantic lane/scope/role settlement, no lexical fallback,
+  a reusable harness-owned `constitutional_meta_role` class with immutable
+  member, realization-policy, invocation, and registry-projection contracts,
+  `semantic_router` migrated as its first production member, independent
+  Spark-high preferred realization, selection-time provider fallback, and
+  explicit exclusion from ordinary Manager/project/worker model selection,
+  plus task/project-scoped active sub-agent policy admission through that
+  meta-role, durable role realization bindings, exact-thread-before-project
+  inheritance, trusted native-pool spawn decisions, fail-closed missing-policy
+  and silent-deviation posture, reasoned one-time exception witnesses,
+  self-constitution projection, and the Direct Policy panel semantic editor,
   atomically persisted semantic witnesses, versioned history relations,
   materialized shelves, provisional legacy reconstruction, durable semantic
   child contracts, independent child constitutions and Direct role turns, one

@@ -4,6 +4,12 @@ const {
   digestFor,
   stableId,
 } = require("./control-plane");
+const {
+  SEMANTIC_ROUTER_META_ROLE_ID,
+  createDefaultConstitutionalMetaRoleRegistry,
+  validateConstitutionalMetaRoleInvocation,
+  validateConstitutionalMetaRoleMember,
+} = require("./constitutional-meta-role");
 
 const LEGACY_SEMANTIC_SETTLEMENT_SCHEMA =
   "direct_world_manager_semantic_settlement@1";
@@ -515,7 +521,18 @@ function semanticDischargeTools() {
 }
 
 function semanticIngressInstructions(options = {}) {
+  const metaRoleInvocation = options.metaRoleInvocation || null;
+  if (metaRoleInvocation) {
+    validateConstitutionalMetaRoleInvocation(metaRoleInvocation);
+  }
   const instructions = [
+    ...(metaRoleInvocation
+      ? [
+          `You are executing the harness-owned constitutional meta-role ${metaRoleInvocation.metaRoleId}.`,
+          "This invocation is not a user task role, visible speaker, project worker, or ordinary model-selected agent.",
+          "Your only standing is the compiled capability and authority envelope supplied for this invocation.",
+        ]
+      : []),
     "You are the constitutional semantic ingress of one unified WorldManager communications plane.",
     "Interpret the current utterance by meaning, discourse, referents, intended scope, and intended effects.",
     "Select exactly one provided wm_discharge_* action. The action name selects the applicable top-level semantic meta-contract.",
@@ -642,9 +659,22 @@ function semanticIngressPrompt(input = {}) {
 function semanticIngressOutputContract(options = {}) {
   const semanticChildMode =
     options.semanticChildMode === true;
+  const metaRoleMember = options.metaRoleMember || null;
+  const metaRoleInvocation = options.metaRoleInvocation || null;
+  if (metaRoleMember) validateConstitutionalMetaRoleMember(metaRoleMember);
+  if (metaRoleInvocation) {
+    validateConstitutionalMetaRoleInvocation(metaRoleInvocation);
+  }
   const tools = semanticDischargeTools().filter((tool) =>
     !semanticChildMode ||
     tool.name !== ACTION_NAMES.SPLIT);
+  if (
+    metaRoleMember &&
+    tools.some((tool) =>
+      !metaRoleMember.capabilityNames.includes(tool.name))
+  ) {
+    fail("world_manager_semantic_discharge_meta_role_capability_mismatch");
+  }
   const contract = {
     schema: SEMANTIC_ACTION_CONTRACT_SCHEMA,
     outputContractId: semanticChildMode
@@ -658,6 +688,27 @@ function semanticIngressOutputContract(options = {}) {
     naturalLanguageAnswerConstrained: false,
     canonicalAdmissionEffect: false,
     grantsAuthority: false,
+    ...(metaRoleMember
+      ? {
+          roleClassRef: metaRoleMember.roleClassRef,
+          metaRoleMemberRef: {
+            kind: "constitutional_meta_role_member",
+            id: metaRoleMember.metaRoleId,
+            digest: metaRoleMember.digest,
+          },
+          realizationPolicyRef:
+            metaRoleMember.realizationPolicyRef,
+        }
+      : {}),
+    ...(metaRoleInvocation
+      ? {
+          metaRoleInvocationRef: {
+            kind: "constitutional_meta_role_invocation",
+            id: metaRoleInvocation.metaRoleInvocationId,
+            digest: metaRoleInvocation.digest,
+          },
+        }
+      : {}),
     tools,
   };
   contract.digest = digestFor(
@@ -1805,7 +1856,11 @@ function validateSemanticSettlement(value) {
   return true;
 }
 
-function normalizeTelemetry(value = {}, state = "completed") {
+function normalizeTelemetry(
+  value = {},
+  state = "completed",
+  metaRoleInvocation = null,
+) {
   return {
     runtimeMode: normalizeString(
       value.runtimeMode,
@@ -1822,13 +1877,31 @@ function normalizeTelemetry(value = {}, state = "completed") {
       "harness_observed",
     ),
     terminalState: state,
+    metaRoleId: normalizeString(
+      value.metaRoleId,
+      metaRoleInvocation?.metaRoleId || "",
+    ),
+    metaRoleInvocationRef: metaRoleInvocation
+      ? {
+          kind: "constitutional_meta_role_invocation",
+          id: metaRoleInvocation.metaRoleInvocationId,
+          digest: metaRoleInvocation.digest,
+        }
+      : null,
+    realizationPolicyRef:
+      metaRoleInvocation?.realizationPolicyRef || null,
     effectCount: 0,
     rawProviderPayloadStored: false,
     rawChainOfThoughtStored: false,
   };
 }
 
-function requestManifest(input, instructions, outputContract) {
+function requestManifest(
+  input,
+  instructions,
+  outputContract,
+  metaRoleInvocation = null,
+) {
   const scopeHint = input.request?.scopeHint || {};
   const manifest = {
     schema: SEMANTIC_INGRESS_REQUEST_MANIFEST_SCHEMA,
@@ -1866,6 +1939,19 @@ function requestManifest(input, instructions, outputContract) {
       id: outputContract.outputContractId,
       digest: outputContract.digest,
     },
+    constitutionalMetaRoleInvocation:
+      metaRoleInvocation || null,
+    metaRoleInvocationRef: metaRoleInvocation
+      ? {
+          kind: "constitutional_meta_role_invocation",
+          id: metaRoleInvocation.metaRoleInvocationId,
+          digest: metaRoleInvocation.digest,
+        }
+      : null,
+    metaRoleMemberRef:
+      outputContract.metaRoleMemberRef || null,
+    metaRoleRealizationPolicyRef:
+      outputContract.realizationPolicyRef || null,
     projectIndexDigest: digestFor(
       "direct-world-manager-semantic-ingress-project-index@1",
       (Array.isArray(input.projects) ? input.projects : []).map(
@@ -1998,23 +2084,60 @@ class DirectWorldManagerSemanticIngressRuntime {
     this.now = typeof options.now === "function"
       ? options.now
       : Date.now;
+    this.metaRoleRegistry = options.metaRoleRegistry ||
+      createDefaultConstitutionalMetaRoleRegistry();
   }
 
   available() {
     return Boolean(this.runner);
   }
 
+  metaRoleProjection() {
+    return this.metaRoleRegistry.projection();
+  }
+
   run(input = {}) {
     const createdAt = nowIso(this.now);
     const semanticChildMode =
       Boolean(input.semanticChildContract);
+    const metaRoleMember = this.metaRoleRegistry.member(
+      SEMANTIC_ROUTER_META_ROLE_ID,
+    );
+    const metaRoleRealizationPolicy =
+      this.metaRoleRegistry.realizationPolicy(
+        SEMANTIC_ROUTER_META_ROLE_ID,
+      );
+    const metaRoleInvocation =
+      this.metaRoleRegistry.compileInvocation({
+        metaRoleId: SEMANTIC_ROUTER_META_ROLE_ID,
+        activationRef: {
+          kind: "world_manager_semantic_event",
+          id: input.event.semanticEventId,
+          digest: input.event.eventDigest || digestFor(
+            "world_manager_semantic_event_activation@1",
+            {
+              semanticEventId: input.event.semanticEventId,
+              clientRequestId: input.event.clientRequestId || "",
+            },
+          ),
+        },
+        createdAt,
+      });
     const instructions = semanticIngressInstructions({
       semanticChildMode,
+      metaRoleInvocation,
     });
     const outputContract = semanticIngressOutputContract({
       semanticChildMode,
+      metaRoleMember,
+      metaRoleInvocation,
     });
-    const manifest = requestManifest(input, instructions, outputContract);
+    const manifest = requestManifest(
+      input,
+      instructions,
+      outputContract,
+      metaRoleInvocation,
+    );
     const finalize = (runnerResult, runnerError = null) => {
       let validated;
       if (runnerError) {
@@ -2072,6 +2195,7 @@ class DirectWorldManagerSemanticIngressRuntime {
         telemetry: normalizeTelemetry(
           runnerResult?.telemetry,
           runState,
+          metaRoleInvocation,
         ),
         runState,
         createdAt,
@@ -2105,7 +2229,10 @@ class DirectWorldManagerSemanticIngressRuntime {
         outputContract,
         tools: outputContract.tools,
         toolChoicePolicy: "required",
-        reasoningEffort: "low",
+        runtimeRoleClass: "constitutional_meta_role",
+        metaRoleId: SEMANTIC_ROUTER_META_ROLE_ID,
+        metaRoleInvocation,
+        metaRoleRealizationPolicy,
         grantsAuthority: false,
       });
       if (result && typeof result.then === "function") {

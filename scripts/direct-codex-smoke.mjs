@@ -2236,6 +2236,26 @@ try {
   assert(evidenceBackedStatus.modelSource === "live-probe", "Expected live probe evidence to drive model source.");
   assert(evidenceBackedStatus.modelEvidenceState === "runtime_probed", "Expected live probe evidence state to be runtime_probed.");
   assert(evidenceBackedStatus.liveProbeEvidence.usable === true, "Expected controller status to expose renderer-safe live evidence view.");
+  let explicitlyScopedModel = "";
+  const explicitlyScopedController = new DirectLiveTextController({
+    sessionStore: liveSessionStore,
+    profileDoc,
+    authStore: liveAuthStore,
+    modelEvidenceResolver: (context) => {
+      explicitlyScopedModel = context.model;
+      return {
+        model: context.model,
+        modelSource: "live-probe",
+        modelEvidenceState: "runtime_probed",
+        accepted: true,
+        evidenceId: "explicit_task_model_evidence",
+        liveProbeEvidence: { usable: true, status: "runtime_probed" },
+      };
+    },
+  });
+  const explicitlyScopedStatus = explicitlyScopedController.statusForProject(liveProject, { model: "gpt-5.5" });
+  assert(explicitlyScopedModel === "gpt-5.5", "Task readiness must resolve evidence for the task-bound model, not the project seed model.");
+  assert(explicitlyScopedStatus.model === "gpt-5.5", "Task readiness must project the task-bound model.");
 
   const strictEvidenceStore = new DirectLiveProbeEvidenceStore({ rootDir: liveProbeEvidenceRoot });
   const { allowFakeEvidence: _allowFakeEvidence, source: _fakeSource, evidenceId: _fakeEvidenceId, ...normalResolverContext } = liveProbeContext;
@@ -2270,6 +2290,25 @@ try {
   assert(expiredResolved.accepted === false, "Expired live probe evidence must not unlock runtime.");
   assert(expiredResolved.liveProbeEvidence.status === "expired", "Expected expired evidence status to be computed.");
   assert(expiredResolved.modelEvidenceState === "expired", "Expired live probe evidence must project an expired model-evidence state.");
+  expiredEvidenceStore.recordProbeResult(promotionResult, {
+    ...liveProbeContext,
+    model: "gpt-5.5",
+    evidenceId: "live_probe_evidence_newer_wrong_model",
+    nowMs: 1_700_000_060_500,
+    ttlMs: 1,
+  });
+  const closestExpiredResolved = expiredEvidenceStore.resolveModelEvidence({
+    ...liveProbeContext,
+    nowMs: 1_700_000_061_000,
+  });
+  assert(
+    closestExpiredResolved.liveProbeEvidence.evidenceId === "live_probe_evidence_expired",
+    "An exact-model expired artifact must outrank newer evidence from a different model scope.",
+  );
+  assert(
+    closestExpiredResolved.liveProbeEvidence.status === "expired",
+    "The resolver must report the actionable exact-model expiry instead of a misleading scope mismatch.",
+  );
   const expiredEvidenceController = new DirectLiveTextController({
     sessionStore: liveSessionStore,
     profileDoc,
@@ -2406,6 +2445,27 @@ try {
   assert(liveConfigRequirements.status === "none", "Expected live text configRequirements/read to return no requirements.");
   const liveThread = await liveSurface.request("thread/start", { model: "gpt-5.4" });
   assert(liveThread.thread.id, "Expected live text thread start to create a direct session.");
+  const liveThreadBeforeBindingCheck = liveSessionStore.readSession(liveThread.thread.id);
+  liveSessionStore.writeSession({
+    ...liveThreadBeforeBindingCheck,
+    model: "gpt-5.5",
+    reasoningEffort: "xhigh",
+    modelSource: "thread-runtime-binding",
+  });
+  let staleRuntimeBindingError = null;
+  try {
+    await liveController.startTurn({
+      threadId: liveThread.thread.id,
+      promptText: "stale model must not run",
+      clientTurnRequestId: "client_req_stale_runtime_binding",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+    }, { project: liveProject, surfaceSession: liveSurface });
+  } catch (error) {
+    staleRuntimeBindingError = error;
+  }
+  assert(staleRuntimeBindingError?.code === "direct_turn_runtime_binding_stale", "Renderer turn fields must not override the canonical task runtime binding.");
+  liveSessionStore.writeSession(liveThreadBeforeBindingCheck);
   const liveAck = await liveSurface.request("turn/start", {
     threadId: liveThread.thread.id,
     promptText: "live text prompt",

@@ -7002,6 +7002,8 @@ class DirectWorldManagerService extends EventEmitter {
             : "wm_k3",
       semanticIngressAvailable:
         this.semanticIngress.available(),
+      constitutionalMetaRoles:
+        this.semanticIngress.metaRoleProjection?.() || null,
       aroReconstructionAutomaticSchedulingAvailable:
         this.aroReconstructionAvailable(),
       aroTargetDefinitionAvailable:
@@ -9660,7 +9662,9 @@ class DirectWorldManagerService extends EventEmitter {
       semanticIngressAvailable:
         this.semanticIngress.available(),
       semanticIngressMode:
-        "fixed_world_manager_semantic_role",
+        "constitutional_meta_role",
+      constitutionalMetaRoles:
+        this.semanticIngress.metaRoleProjection?.() || null,
       graphProjectionAvailable: true,
       managerTurnBootPacketAvailable: true,
       taskConstitutionAvailable: true,

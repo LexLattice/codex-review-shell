@@ -232,6 +232,36 @@ try {
   const secondProjectThreadId = await page.locator("#morphicThreadRailList .morphic-thread-tab.active").getAttribute("data-thread-id");
   assert.ok(secondProjectThreadId);
   assert.notEqual(secondProjectThreadId, firstProjectThreadId);
+  const taskRuntimeBindingResult = await page.evaluate(async ({ projectId, threadId }) =>
+    window.codexSurfaceBridge.updateRuntimePreferences({
+      scope: "thread-model",
+      projectId,
+      threadId,
+      sourceHome: "",
+      sessionFilePath: "",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+    }), {
+    projectId: "project_t3_gui_fixture",
+    threadId: secondProjectThreadId,
+  });
+  assert.equal(taskRuntimeBindingResult.binding.schema, "direct_thread_runtime_binding@1");
+  assert.equal(taskRuntimeBindingResult.binding.threadId, secondProjectThreadId);
+  assert.equal(taskRuntimeBindingResult.binding.model, "gpt-5.6-sol");
+  assert.equal(taskRuntimeBindingResult.binding.reasoningEffort, "xhigh");
+  const taskRuntimePreferenceRead = await page.evaluate(async ({ projectId, threadId }) =>
+    window.codexSurfaceBridge.getRuntimePreferences({
+      projectId,
+      threadId,
+      sourceHome: "",
+      sessionFilePath: "",
+    }), {
+    projectId: "project_t3_gui_fixture",
+    threadId: secondProjectThreadId,
+  });
+  assert.equal(taskRuntimePreferenceRead.threadMatch, "direct-session");
+  assert.equal(taskRuntimePreferenceRead.threadDefaults.model, "gpt-5.6-sol");
+  assert.equal(taskRuntimePreferenceRead.threadDefaults.reasoningEffort, "xhigh");
   await page.locator(`#morphicThreadRailList .morphic-thread-tab[data-thread-id="${firstProjectThreadId}"]`).click();
   await page.waitForFunction(
     (threadId) => document.querySelector("#morphicThreadRailList .morphic-thread-tab.active")?.dataset?.threadId === threadId,
@@ -267,6 +297,41 @@ try {
     await page.locator('.t3-utility-rail [data-runtime-tab="runtime"]').getAttribute("aria-pressed"),
     "true",
   );
+  const embeddedBackendSelect = page.getByLabel("Backend");
+  await embeddedBackendSelect.waitFor({ state: "visible" });
+  assert.equal(await embeddedBackendSelect.inputValue(), "direct");
+  assert.deepEqual(
+    await embeddedBackendSelect.locator("option").evaluateAll((options) => options.map((option) => option.textContent)),
+    ["Direct", "Appserver"],
+  );
+  assert.equal(await page.getByRole("button", { name: "Apply backend" }).isDisabled(), true);
+
+  await page.getByRole("button", { name: "Policy", exact: true }).click();
+  await page.waitForFunction(() =>
+    document.querySelector("#runtimeDrawerTitle")?.textContent === "Policy"
+  );
+  await page.waitForFunction(() =>
+    /Active Sub-Agent Policy Editor/.test(
+      document.querySelector("#runtimeDrawerBody")?.textContent || "",
+    )
+  );
+  const policyBody = await page.locator("#runtimeDrawerBody").innerText();
+  assert.match(policyBody, /Active Sub-Agent Policy/);
+  assert.match(policyBody, /Worker Role Bindings/);
+  assert.match(policyBody, /operator semantic admission/);
+  assert.match(policyBody, /silent launch override/i);
+  assert.equal(
+    await page.getByRole("button", { name: "Settle active policy" }).isDisabled(),
+    true,
+    "an empty semantic policy statement must not be submitted",
+  );
+  const policyStatement = page.getByLabel("Standing policy");
+  await policyStatement.fill("Use Sol high workers for implementation.");
+  assert.equal(
+    await page.getByRole("button", { name: "Settle active policy" }).isEnabled(),
+    true,
+  );
+  await policyStatement.fill("");
 
   await page.locator('.t3-utility-rail [data-runtime-tab="epistemic"]').click();
   await page.waitForFunction(() => document.querySelector("#runtimeDrawerTitle")?.textContent === "Epistemic");

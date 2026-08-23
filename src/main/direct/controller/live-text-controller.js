@@ -19,6 +19,12 @@ const {
   composeDirectToolBundle,
 } = require("../bridge/role-lane-tool-bundle-composer");
 const {
+  DIRECT_SELF_CONSTITUTION_TOOL_NAME,
+  buildSelfConstitutionResultEnvelope,
+  compileDirectSelfConstitutionSnapshot,
+  renderDirectSelfConstitutionInstructions,
+} = require("../bridge/self-constitution");
+const {
   validateRoleLedgerToolBundle,
 } = require("../worldmanager/ledger-tool-compiler");
 const {
@@ -130,6 +136,7 @@ const DEFAULT_READONLY_WORKSPACE_TIMEOUT_MS = 30_000;
 const DEFAULT_TOOL_DECISION_CACHE_LIMIT = 512;
 const SAFE_RESIDENT_UTILITY_TOOL_NAMES = Object.freeze([
   "get_context_remaining",
+  DIRECT_SELF_CONSTITUTION_TOOL_NAME,
   "update_plan",
   "request_user_input",
 ]);
@@ -145,6 +152,23 @@ const NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES = Object.freeze([
 ]);
 const NATIVE_SUB_AGENT_RUNTIME_TOOL_SET = new Set(NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES);
 const MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS = 32;
+const NATIVE_AGENT_RUNTIME_CONTINUATION_INSTRUCTIONS = [
+  "You are Codex orchestrating a Direct child-agent lifecycle after a resident agent-runtime result.",
+  "Treat a spawn result in running, queued, or accepted state as launch acknowledgement only, never as evidence that the delegated task completed.",
+  "Re-read the current user request and preserve its completion contract.",
+  "If the request requires child output, terminal state, inspection, or aggregated results, request exactly one supported next agent-runtime tool call: use wait_agent for pending children, then inspect_agent only when inspection evidence is requested or necessary.",
+  "If a bounded wait returns while a required child is still nonterminal, request another bounded wait rather than answering final.",
+  "Answer final only after the requested child lifecycle evidence is available, unless the user explicitly requested a background-only launch.",
+  "Never invent child output, terminal state, continuation counts, transport counts, or epistemic-capture status.",
+  "Do not request workspace, shell, patch, browser, network, MCP, or unrelated tools in this continuation lane.",
+].join(" ");
+const SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS = [
+  "You are Codex continuing after an owner-issued inspect_self_constitution result.",
+  "Use the returned snapshot as the authoritative account of your current role, project/workspace binding, persistence, declared versus potential capabilities, authority state, provider readiness, context binding, and delegation capacity.",
+  "Distinguish potential, selected, authorized, and executed capability states exactly as represented.",
+  "Do not use stale generic prompt prose to override the snapshot, and do not invent unavailable runtime facts.",
+  "Answer the user's introspection question directly without requesting another tool.",
+].join(" ");
 const EXTERNAL_DISCOVERY_TOOL_NAMES = Object.freeze([
   "tool_search",
   "list_mcp_resources",
@@ -823,6 +847,8 @@ function workspaceWorkerSpawnHasUndeclaredFields(args = {}) {
     "fork_turns",
     "workspace_mode",
     "tool_profile",
+    "policy_exception_reason",
+    "policy_disposition",
   ]);
   return Object.keys(isPlainObject(args) ? args : {}).some((key) => !admittedFields.has(key));
 }
@@ -884,6 +910,58 @@ function parseToolArgumentsObject(obligation = {}) {
   } catch (_error) {
     return {};
   }
+}
+
+function selfConstitutionEnactmentUpdatesFromTurn(turn = {}) {
+  const updates = {};
+  for (const obligation of Array.isArray(turn.unresolvedObligations)
+    ? turn.unresolvedObligations
+    : []) {
+    const toolName = normalizeString(obligation?.name, "");
+    if (!toolName) continue;
+    const status = normalizeString(obligation.status, "requested");
+    const result = isPlainObject(obligation.result) ? obligation.result : {};
+    const hasExecutionEvidence = Boolean(
+      obligation.sideEffectExecuted === true ||
+      result.sideEffectExecuted === true ||
+      normalizeString(result.resultId, "") ||
+      normalizeString(result.envelopeId, ""),
+    );
+    let enactmentState = "requested";
+    if (hasExecutionEvidence) {
+      enactmentState = "executed";
+    } else if (["approved", "executing"].includes(status)) {
+      enactmentState = "scheduled";
+    } else if (["declined", "canceled", "unsupported", "failed"].includes(status)) {
+      enactmentState = "failed";
+    }
+    let authorityState = "not_requested";
+    if (["approval_waiting", "human_decision_waiting", "waiting"].includes(
+      normalizeString(obligation.authorityState, status),
+    )) {
+      authorityState = "approval_gated";
+    } else if (["declined", "canceled"].includes(status)) {
+      authorityState = "denied";
+    } else if (["unsupported", "failed"].includes(status)) {
+      authorityState = "blocked";
+    } else if (
+      hasExecutionEvidence ||
+      ["approved", "executing", "continuation_ready", "continuation_sent"].includes(status)
+    ) {
+      authorityState = "authorized";
+    }
+    updates[toolName] = {
+      state: enactmentState,
+      evidenceRef: normalizeString(
+        result.resultId || result.envelopeId || obligation.obligationId || obligation.callId,
+        "",
+      ),
+      authority: {
+        state: authorityState,
+      },
+    };
+  }
+  return updates;
 }
 
 function safeResidentUtilityActivationRow(toolName, projectId = "") {
@@ -1150,10 +1228,28 @@ function commandRepairContinuationToolNames(status = {}, prompt = "") {
   return appendProviderHostedTools(appendExternalPromotedTools(names, status), status);
 }
 
-function implementationContextInstructions(contextInstructions = "") {
+function implementationContextInstructions(contextInstructions = "", selfConstitutionSnapshot = null) {
   const contextText = normalizeString(contextInstructions, "");
-  if (!contextText) return DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS;
-  return `${contextText}\n\n${DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS}`;
+  const constitutionText = selfConstitutionSnapshot
+    ? renderDirectSelfConstitutionInstructions(selfConstitutionSnapshot)
+    : DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS;
+  if (!contextText) return constitutionText;
+  return `${contextText}\n\n${constitutionText}`;
+}
+
+function selfConstitutionRequestShapeFields(snapshot = {}) {
+  if (!isPlainObject(snapshot) || !normalizeString(snapshot.digest, "")) return {};
+  return {
+    selfConstitutionSnapshotId: normalizeString(snapshot.snapshotId, ""),
+    selfConstitutionSnapshotDigest: normalizeString(snapshot.digest, ""),
+    selfConstitutionSchema: normalizeString(snapshot.schema, ""),
+    selfConstitutionBindingKind: normalizeString(snapshot.projectBinding?.bindingKind, ""),
+    selfConstitutionSubstrateKind: normalizeString(snapshot.projectBinding?.substrateKind, ""),
+    selfConstitutionDeclaredToolCount: Number(snapshot.capabilities?.declaredThisTurn?.length || 0),
+    selfConstitutionOwner: normalizeString(snapshot.currentness?.owner, ""),
+    selfConstitutionRawWorkspacePathIncluded: snapshot.safety?.rawWorkspacePathIncluded === true,
+    selfConstitutionRawSecretIncluded: snapshot.safety?.rawSecretIncluded === true,
+  };
 }
 
 function initialDirectTurnRequestShape(requestBody = {}, options = {}) {
@@ -1588,6 +1684,18 @@ class DirectLiveTextController {
     this.subAgentPool = options.subAgentPool && typeof options.subAgentPool.launch === "function"
       ? options.subAgentPool
       : null;
+    this.activeSubAgentPolicySemanticPreflight =
+      typeof options.activeSubAgentPolicySemanticPreflight === "function"
+        ? options.activeSubAgentPolicySemanticPreflight
+        : null;
+    this.activeSubAgentPolicyResolver =
+      typeof options.activeSubAgentPolicyResolver === "function"
+        ? options.activeSubAgentPolicyResolver
+        : null;
+    this.activeSubAgentPolicyProjectionResolver =
+      typeof options.activeSubAgentPolicyProjectionResolver === "function"
+        ? options.activeSubAgentPolicyProjectionResolver
+        : null;
     this.workspaceWorkerDelegationPolicyResolver =
       typeof options.workspaceWorkerDelegationPolicyResolver === "function"
         ? options.workspaceWorkerDelegationPolicyResolver
@@ -1803,8 +1911,12 @@ class DirectLiveTextController {
     }
   }
 
-  requestedModelForProject(project = {}) {
-    return normalizeString(project.surfaceBinding?.codex?.model || project.codex?.model || "", "");
+  requestedModelForProject(project = {}, options = {}) {
+    return normalizeString(
+      options.model || options.requestedModel ||
+        project.surfaceBinding?.codex?.model || project.codex?.model || "",
+      "",
+    );
   }
 
   resolveLiveModelEvidence(project = {}, requestedModel = "") {
@@ -1931,8 +2043,8 @@ class DirectLiveTextController {
     }
   }
 
-  modelEvidenceForProject(project = {}) {
-    const requestedModel = this.requestedModelForProject(project);
+  modelEvidenceForProject(project = {}, options = {}) {
+    const requestedModel = this.requestedModelForProject(project, options);
     const staticEvidence = modelEvidenceFor(this.profileDoc, requestedModel);
     const liveEvidence = this.resolveLiveModelEvidence(project, requestedModel || staticEvidence.model);
     if (liveEvidence?.accepted) return liveEvidence;
@@ -1945,9 +2057,43 @@ class DirectLiveTextController {
     };
   }
 
-  statusForProject(project = {}) {
+  compileSelfConstitutionSnapshot(input = {}) {
+    const project = isPlainObject(input.project) ? input.project : {};
+    const session = isPlainObject(input.session)
+      ? input.session
+      : this.sessionStore.readSession(normalizeString(input.sessionId, "")) || {};
+    const status = isPlainObject(input.status)
+      ? input.status
+      : this.statusForProject(project, {
+          model: normalizeString(input.model || session.model, ""),
+        });
+    const subAgentPoolDescriptor = this.subAgentPool && typeof this.subAgentPool.descriptor === "function"
+      ? this.subAgentPool.descriptor()
+      : {};
+    const activeSubAgentPolicy = this.activeSubAgentPolicyProjectionResolver
+      ? this.activeSubAgentPolicyProjectionResolver({
+          projectId: normalizeString(
+            project.id || project.projectId || session.projectId,
+            "",
+          ),
+          threadId: normalizeString(session.sessionId, ""),
+        })
+      : null;
+    return compileDirectSelfConstitutionSnapshot({
+      ...input,
+      project,
+      session,
+      status,
+      declaredToolNames: input.declaredToolNames || input.toolComposition?.toolNames,
+      toolComposition: input.toolComposition?.composition || input.toolComposition,
+      subAgentPoolDescriptor,
+      activeSubAgentPolicy,
+    });
+  }
+
+  statusForProject(project = {}, options = {}) {
     const auth = this.authStatus();
-    const evidence = this.modelEvidenceForProject(project);
+    const evidence = this.modelEvidenceForProject(project, options);
     const implementationLaneProof = this.resolveImplementationProofEvidence(project, evidence.model);
     const externalCapabilityProfile = this.resolveExternalCapabilityProfile(project);
     const providerHostedToolsStatus = this.resolveProviderHostedToolsStatus(project);
@@ -2018,9 +2164,9 @@ class DirectLiveTextController {
     };
   }
 
-  assertReady(project = {}) {
+  assertReady(project = {}, options = {}) {
     this.assertOpen();
-    const status = this.statusForProject(project);
+    const status = this.statusForProject(project, options);
     if (status.status !== "ready") {
       const error = new Error(liveTextReadinessErrorMessage(status));
       error.code = status.status;
@@ -2097,7 +2243,8 @@ class DirectLiveTextController {
   startThread(params = {}, context = {}) {
     const project = context.project || {};
     const projectId = normalizeString(project.id, "");
-    const status = this.assertReady(project);
+    const requestedModel = normalizeString(params.model, "");
+    const status = this.assertReady(project, { model: requestedModel });
     const workThreadCarrier = directWorkThreadContextCarrier(params, context);
     const requestedSessionId = normalizeString(params.sessionId || params.threadId, "");
     if (requestedSessionId) {
@@ -2295,7 +2442,6 @@ class DirectLiveTextController {
       ...session,
       updatedAt: nowIso(),
       status,
-      model: normalizeString(model, session.model),
       messages: nextMessages,
     });
   }
@@ -4112,6 +4258,47 @@ class DirectLiveTextController {
   buildSafeResidentUtilityEnvelope(obligation = {}, options = {}) {
     const projectId = normalizeString(options.project?.id || options.project?.projectId || options.project?.name, "");
     const toolName = normalizeString(obligation.name, "");
+    if (toolName === DIRECT_SELF_CONSTITUTION_TOOL_NAME) {
+      const sessionId = normalizeString(options.sessionId, obligation.sessionId);
+      const turnId = normalizeString(options.turnId, obligation.turnId);
+      const session = this.sessionStore.readSession(sessionId) || {};
+      const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+      const previousSnapshot = isPlainObject(turn.selfConstitutionSnapshot)
+        ? turn.selfConstitutionSnapshot
+        : {};
+      const snapshot = this.compileSelfConstitutionSnapshot({
+        project: options.project || {},
+        session,
+        sessionId,
+        turnId,
+        model: normalizeString(turn.model, session.model),
+        reasoningEffort: normalizeString(turn.reasoningEffort, session.reasoningEffort),
+        potentialToolNames: previousSnapshot.capabilities?.potentialToolNames,
+        declaredToolNames: turn.requestShape?.declaredToolNames ||
+          previousSnapshot.capabilities?.declaredThisTurn,
+        compiledAgentContext: turn.compiledAgentContext,
+        contextBuildId: normalizeString(turn.contextBuildId, ""),
+        requestManifestId: normalizeString(turn.requestManifestId, ""),
+        supersedesDigest: normalizeString(previousSnapshot.digest, ""),
+        enactmentUpdates: {
+          ...selfConstitutionEnactmentUpdatesFromTurn(turn),
+          [DIRECT_SELF_CONSTITUTION_TOOL_NAME]: {
+            state: "executed",
+            evidenceRef: normalizeString(
+              obligation.obligationId || obligation.callId,
+              "inspect_self_constitution_call",
+            ),
+            authority: {
+              requirement: "none_read_only_projection",
+              state: "not_required",
+            },
+          },
+        },
+      });
+      return buildSelfConstitutionResultEnvelope(snapshot, {
+        callId: normalizeString(obligation.callId, ""),
+      });
+    }
     const slice = buildSafeResidentUtilitySlice(toolName, projectId);
     const gate = buildDirectFirstToolCallGate({
       slice,
@@ -4306,6 +4493,7 @@ class DirectLiveTextController {
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
     const resultKind = normalizeString(envelope.resultKind, "");
     const ledgerContinuation = resultKind === "epistemic_ledger_act";
+    const selfConstitutionContinuation = resultKind === "self_constitution_snapshot";
     const agentRuntimeContinuation = [
       "direct_sub_agent_runtime",
       "sub_agent_list_status",
@@ -4365,7 +4553,11 @@ class DirectLiveTextController {
       profileDoc: this.profileDoc,
       model: normalizeString(turn.model, ""),
       fetchImpl: this.fetchImpl || undefined,
-      instructions: DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
+      instructions: agentRuntimeContinuation
+        ? NATIVE_AGENT_RUNTIME_CONTINUATION_INSTRUCTIONS
+        : selfConstitutionContinuation
+          ? SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS
+          : DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
       continuationTools: continuationToolComposition.tools,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
@@ -4622,12 +4814,61 @@ class DirectLiveTextController {
 
   async emitReadOnlySubAgentStatusRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
     const envelope = this.buildReadOnlySubAgentStatusEnvelope(sessionId, turnId, obligation, project);
+    this.emitNativeSubAgentRuntimePosture(surfaceSession, sessionId, turnId, envelope, obligation);
     await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
     return 1;
   }
 
   isNativeSubAgentRuntimeObligation(obligation = {}) {
     return isNativeSubAgentRuntimeToolName(obligation?.name);
+  }
+
+  emitNativeSubAgentRuntimePosture(surfaceSession, sessionId, turnId, envelope = {}, obligation = {}) {
+    const blocked = normalizeString(envelope.status, "blocked") === "blocked";
+    const toolName = normalizeString(envelope.toolName || obligation.name, "agent_runtime");
+    const providerOutput = isPlainObject(envelope.providerOutput) ? envelope.providerOutput : {};
+    const updates = Array.isArray(providerOutput.updates) ? providerOutput.updates : [];
+    const firstUpdate = isPlainObject(updates[0]) ? updates[0] : {};
+    const childAgentId = normalizeString(
+      providerOutput.childAgentId || providerOutput.agentId || firstUpdate.childAgentId,
+      "",
+    );
+    const taskName = normalizeString(providerOutput.taskName || firstUpdate.taskName, "");
+    const lifecycleState = normalizeString(
+      providerOutput.state || providerOutput.lifecycleState || firstUpdate.state || providerOutput.status,
+      blocked ? "blocked" : "completed",
+    );
+    const blockerCode = normalizeString(
+      providerOutput.blockerCode || envelope.blockerCodes?.[0],
+      "",
+    );
+    const subject = taskName || childAgentId || "native child-agent runtime";
+    const message = blocked
+      ? `Direct ${toolName} blocked${blockerCode ? ` · ${blockerCode}` : ""}.`
+      : toolName === "spawn_agent"
+        ? `Child launch acknowledged · ${subject} · ${lifecycleState}.`
+        : toolName === "wait_agent"
+          ? `Child wait resolved · ${updates.length || 0} update${updates.length === 1 ? "" : "s"} · ${lifecycleState}.`
+          : toolName === "inspect_agent"
+            ? `Child inspected · ${subject} · ${lifecycleState}.`
+            : toolName === "list_agents"
+              ? `Agent pool observed · ${Number(providerOutput.agentCount || 0)} agent${Number(providerOutput.agentCount || 0) === 1 ? "" : "s"}.`
+              : `Direct processed ${toolName} and continued the provider turn.`;
+    this.emitNotification(surfaceSession, blocked ? "warning" : "direct/runtime-status", {
+      threadId: sessionId,
+      turnId,
+      observationId: normalizeString(envelope.envelopeId, `${turnId}:${obligation.obligationId || toolName}`),
+      observationKind: "native_child_agent_runtime",
+      operation: toolName,
+      lifecycleState,
+      childAgentId,
+      taskName,
+      providerId: normalizeString(providerOutput.providerId || firstUpdate.providerId, ""),
+      model: normalizeString(providerOutput.model || firstUpdate.model, ""),
+      blockerCode,
+      observedAt: nowIso(),
+      message,
+    });
   }
 
   async buildNativeSubAgentRuntimeEnvelope(sessionId, turnId, obligation = {}, project = {}) {
@@ -4641,6 +4882,7 @@ class DirectLiveTextController {
       "work_thread_direct_agents",
     );
     let runtimeResult;
+    let spawnRequestNormalization = null;
     if (!this.subAgentPool) {
       runtimeResult = {
         status: "blocked",
@@ -4648,17 +4890,106 @@ class DirectLiveTextController {
         updates: [],
       };
     } else if (toolName === "spawn_agent") {
-      const workspaceMode = normalizeString(args.workspace_mode || args.workspaceMode, "reasoning_only");
+      let spawnArgs = args;
+      let activeSubAgentPolicyDecision = null;
+      if (this.activeSubAgentPolicyResolver) {
+        try {
+          activeSubAgentPolicyDecision =
+            await this.activeSubAgentPolicyResolver({
+              projectId,
+              threadId: sessionId,
+              args,
+              parentModel: normalizeString(turn.model, session.model),
+              parentReasoningEffort: normalizeString(
+                turn.reasoningEffort,
+                session.reasoningEffort,
+              ),
+              activeChildren:
+                typeof this.subAgentPool.activeCountForScope === "function"
+                  ? this.subAgentPool.activeCountForScope({
+                      projectId,
+                      primaryThreadId: sessionId,
+                    })
+                  : 0,
+              projectActiveChildren:
+                typeof this.subAgentPool.activeCountForScope === "function"
+                  ? this.subAgentPool.activeCountForScope({
+                      projectId,
+                    })
+                  : 0,
+            });
+          if (!activeSubAgentPolicyDecision?.launchEligible) {
+            runtimeResult = {
+              status: "blocked",
+              blockerCode: normalizeString(
+                activeSubAgentPolicyDecision?.blockerCode,
+                "direct_active_sub_agent_policy_spawn_blocked",
+              ),
+              activeSubAgentPolicyDecision,
+              updates: [],
+            };
+          } else {
+            const effective =
+              activeSubAgentPolicyDecision.effectiveSpawn || {};
+            spawnArgs = {
+              ...args,
+              agent_type: effective.roleId,
+              provider: effective.providerId,
+              model: effective.model,
+              reasoning_effort: effective.reasoningEffort,
+              fork_turns: effective.forkTurns,
+              workspace_mode: effective.workspaceMode,
+              ...(effective.toolProfile
+                ? { tool_profile: effective.toolProfile }
+                : { tool_profile: "" }),
+            };
+          }
+        } catch (error) {
+          runtimeResult = {
+            status: "blocked",
+            blockerCode: normalizeString(
+              error?.code,
+              "direct_active_sub_agent_policy_resolution_failed",
+            ),
+            updates: [],
+          };
+        }
+      }
+      const workspaceModeExplicit =
+        Object.prototype.hasOwnProperty.call(spawnArgs, "workspace_mode") ||
+        Object.prototype.hasOwnProperty.call(spawnArgs, "workspaceMode");
+      const workspaceMode = normalizeString(spawnArgs.workspace_mode || spawnArgs.workspaceMode, "reasoning_only");
+      const requestedToolProfile = normalizeString(spawnArgs.tool_profile || spawnArgs.toolProfile, "");
+      const safelyIgnoredReasoningToolProfile =
+        workspaceModeExplicit &&
+        workspaceMode === "reasoning_only" &&
+        Boolean(requestedToolProfile);
+      spawnRequestNormalization = safelyIgnoredReasoningToolProfile
+        ? {
+            schema: "direct_spawn_request_normalization@1",
+            status: "safe_narrowing",
+            ignoredFields: ["tool_profile"],
+            reason: "tool_profile_inapplicable_to_explicit_reasoning_only_mode",
+            workspaceAuthorityWidened: false,
+            toolAuthorityWidened: false,
+          }
+        : null;
       let parentAuthorityPacket = null;
-      if (workspaceMode === "isolated_worktree") {
-        const requestedProfileId = normalizeString(args.tool_profile || args.toolProfile, "");
+      if (!runtimeResult && !workspaceModeExplicit && requestedToolProfile) {
+        runtimeResult = {
+          status: "blocked",
+          blockerCode: "direct_workspace_worker_tool_profile_without_workspace",
+          updates: [],
+        };
+      } else if (!runtimeResult && workspaceMode === "isolated_worktree") {
+        const requestedProfileId = requestedToolProfile;
         if (!projectAllowsProviderWorkspaceWorkers(project)) {
           runtimeResult = {
             status: "blocked",
             blockerCode: "direct_workspace_worker_implementation_lane_required",
             updates: [],
           };
-        } else if (workspaceWorkerSpawnHasUndeclaredFields(args)) {
+        } else if (workspaceWorkerSpawnHasUndeclaredFields(spawnArgs)) {
           runtimeResult = {
             status: "blocked",
             blockerCode: "direct_workspace_worker_spawn_arguments_unsafe",
@@ -4702,15 +5033,15 @@ class DirectLiveTextController {
         workThreadId,
         primaryThreadId: sessionId,
         parentAgentId: normalizeString(session.agentThreadId || session.agentId, sessionId),
-        taskName: args.task_name || args.taskName,
-        message: args.message,
-        agentType: args.agent_type || args.agentType,
-        provider: args.provider,
-        model: args.model,
-        reasoningEffort: args.reasoning_effort || args.reasoningEffort,
-        forkTurns: args.fork_turns || args.forkTurns,
+        taskName: spawnArgs.task_name || spawnArgs.taskName,
+        message: spawnArgs.message,
+        agentType: spawnArgs.agent_type || spawnArgs.agentType,
+        provider: spawnArgs.provider,
+        model: spawnArgs.model,
+        reasoningEffort: spawnArgs.reasoning_effort || spawnArgs.reasoningEffort,
+        forkTurns: spawnArgs.fork_turns || spawnArgs.forkTurns,
         workspaceMode,
-        toolProfile: args.tool_profile || args.toolProfile,
+        toolProfile: safelyIgnoredReasoningToolProfile ? "" : requestedToolProfile,
         parentAuthorityPacket,
         spawnOperation: workspaceMode === "isolated_worktree" ? {
           parentSessionId: sessionId,
@@ -4722,6 +5053,9 @@ class DirectLiveTextController {
         parentModel: normalizeString(turn.model, session.model),
         parentReasoningEffort: normalizeString(turn.reasoningEffort, session.reasoningEffort),
         parentContextMessages: directParentContextMessages(session),
+        activeSubAgentPolicyDecision,
+        requireActiveSubAgentPolicy:
+          Boolean(this.activeSubAgentPolicyResolver),
       });
     } else {
       runtimeResult = await this.subAgentPool.wait({
@@ -4748,6 +5082,20 @@ class DirectLiveTextController {
           contextHandoff: runtimeResult.contextHandoff || null,
           contextMessageCount: Number(runtimeResult.contextMessageCount || 0),
           runtimeProfileIndependentOfContext: runtimeResult.runtimeProfileIndependentOfContext === true,
+          requestNormalization: spawnRequestNormalization,
+          activeSubAgentPolicyDecisionRef:
+            runtimeResult.activeSubAgentPolicyDecisionRef ||
+            (runtimeResult.activeSubAgentPolicyDecision
+              ? {
+                  kind: "active_sub_agent_spawn_decision",
+                  id: runtimeResult.activeSubAgentPolicyDecision.decisionId,
+                  digest: runtimeResult.activeSubAgentPolicyDecision.digest,
+                }
+              : null),
+          activeSubAgentPolicyRef:
+            runtimeResult.activeSubAgentPolicyRef ||
+            runtimeResult.activeSubAgentPolicyDecision?.policyRef ||
+            null,
           replayed: runtimeResult.replayed === true,
           providerRoleLabelAcceptedAsAuthority: false,
           pool: runtimeResult.pool || this.subAgentPool?.descriptor?.() || null,
@@ -4837,6 +5185,7 @@ class DirectLiveTextController {
 
   async emitNativeSubAgentRuntimeRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
     const envelope = await this.buildNativeSubAgentRuntimeEnvelope(sessionId, turnId, obligation, project);
+    this.emitNativeSubAgentRuntimePosture(surfaceSession, sessionId, turnId, envelope, obligation);
     await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
     return 1;
   }
@@ -5071,6 +5420,10 @@ class DirectLiveTextController {
         createdCount += await this.emitReadOnlySubAgentStatusRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
       }
+      if (normalizeString(obligation.name, "") === DIRECT_SELF_CONSTITUTION_TOOL_NAME) {
+        createdCount += await this.emitSafeResidentUtilityRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
       if (!surfaceSession) {
         if (normalizeString(obligation.name, "") !== "read_file") {
           return createdCount;
@@ -5178,17 +5531,17 @@ class DirectLiveTextController {
         this.isEpistemicLedgerObligation(sessionId, turnId, obligation));
       const agentRuntimeOnly = continuation.nextToolObligations.every((obligation) =>
         this.isNativeSubAgentRuntimeObligation(obligation) || this.isReadOnlySubAgentStatusObligation(obligation));
-      this.emitNotification(surfaceSession, "warning", {
-        threadId: sessionId,
-        turnId,
-        message: ledgerOnly
-          ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
-          : agentRuntimeOnly
-            ? "Direct processed a native child-agent runtime call and continued the provider turn."
-          : createdApprovalRequests
-          ? normalizeString(options.approvalMessage, "Direct implementation continuation requested another tool. Local approval is required.")
-          : normalizeString(options.unavailableMessage, "Direct implementation continuation requested another tool call, but it is not available for approval."),
-      });
+      if (!agentRuntimeOnly) {
+        this.emitNotification(surfaceSession, "warning", {
+          threadId: sessionId,
+          turnId,
+          message: ledgerOnly
+            ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
+            : createdApprovalRequests
+              ? normalizeString(options.approvalMessage, "Direct implementation continuation requested another tool. Local approval is required.")
+              : normalizeString(options.unavailableMessage, "Direct implementation continuation requested another tool call, but it is not available for approval."),
+        });
+      }
       return true;
     }
     this.emitNotification(surfaceSession, "turn/completed", {
@@ -6452,11 +6805,24 @@ class DirectLiveTextController {
 
   async startTurn(params = {}, context = {}) {
     const project = context.project || {};
-    const status = this.assertReady(project);
     const surfaceSession = context.surfaceSession;
     const sessionId = normalizeString(params.sessionId || params.threadId, "");
     const session = this.sessionStore.readSession(sessionId);
     if (!session) throw new Error(`Direct live text session not found: ${sessionId}`);
+    if (!sessionMatchesProject(session, normalizeString(project.id, ""))) {
+      const error = new Error("Direct live text session does not belong to the active project.");
+      error.code = "direct_session_project_scope_mismatch";
+      throw error;
+    }
+    const requestedTurnModel = normalizeString(params.model, "");
+    const model = normalizeString(session.model, "") || this.requestedModelForProject(project);
+    if (requestedTurnModel && model && requestedTurnModel !== model) {
+      const error = new Error("The turn model is stale relative to the task runtime binding.");
+      error.code = "direct_turn_runtime_binding_stale";
+      error.canonicalModel = model;
+      throw error;
+    }
+    const status = this.assertReady(project, { model });
     const clientTurnRequestId = normalizeString(params.clientTurnRequestId, "");
     if (!clientTurnRequestId) {
       const error = new Error("Direct live text turn requires clientTurnRequestId.");
@@ -6559,8 +6925,20 @@ class DirectLiveTextController {
       error.status = activeTurn.state;
       throw error;
     }
-    const model = normalizeString(params.model, "") || status.model;
-    const reasoningEffort = normalizeString(params.reasoningEffort || params.reasoning_effort || params.effort, session.reasoningEffort);
+    const requestedTurnReasoningEffort = normalizeString(
+      params.reasoningEffort || params.reasoning_effort || params.effort,
+      "",
+    );
+    const reasoningEffort = normalizeString(session.reasoningEffort, requestedTurnReasoningEffort);
+    if (
+      requestedTurnReasoningEffort && reasoningEffort &&
+      requestedTurnReasoningEffort !== reasoningEffort
+    ) {
+      const error = new Error("The turn reasoning effort is stale relative to the task runtime binding.");
+      error.code = "direct_turn_runtime_binding_stale";
+      error.canonicalReasoningEffort = reasoningEffort;
+      throw error;
+    }
     const existingTurnIds = this.sessionStore.listTurnIdsFromDisk(session.sessionId);
     const existingTurnCount = existingTurnIds.length;
     const summaries = Array.isArray(session.turns) ? session.turns : [];
@@ -6573,6 +6951,20 @@ class DirectLiveTextController {
       binding.directTier === "text-only";
     const implementationTier = directLiveTier &&
       binding.directTier === "implementation-lane";
+    let activeSubAgentPolicySemanticResult = null;
+    if (
+      implementationTier &&
+      this.activeSubAgentPolicySemanticPreflight
+    ) {
+      activeSubAgentPolicySemanticResult =
+        await this.activeSubAgentPolicySemanticPreflight({
+          projectId: normalizeString(project.id, session.projectId),
+          threadId: session.sessionId,
+          clientRequestId: clientTurnRequestId,
+          userText: rawPrompt,
+        });
+      this.assertOpen();
+    }
     const implementationToolNames = implementationTier
       ? implementationInitialPolicyCandidateToolNames(status, prompt)
       : [];
@@ -6700,13 +7092,26 @@ class DirectLiveTextController {
       model: requestBody.model,
       reasoningEffort,
       clientTurnRequestId,
-      requestShape: initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
+      requestShape: {
+        ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
+        ...(activeSubAgentPolicySemanticResult?.settlement
+          ? {
+              activeSubAgentPolicySemanticSettlementId:
+                activeSubAgentPolicySemanticResult.settlement.settlementId,
+              activeSubAgentPolicySemanticSettlementDigest:
+                activeSubAgentPolicySemanticResult.settlement.digest,
+              activeSubAgentPolicySemanticSettlementState:
+                activeSubAgentPolicySemanticResult.settlement.state,
+            }
+          : {}),
+      },
     });
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
     let contextResult = null;
     let controlledRoutingResult = null;
     let requestShape = null;
     let epistemicContextDeliveryBinding = null;
+    let selfConstitutionSnapshot = null;
     try {
       if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForTextTurn === "function") {
         this.indexDirectThreadStoreSession(session.sessionId);
@@ -6792,6 +7197,18 @@ class DirectLiveTextController {
               roleLedgerToolBundle: epistemicLedgerTurnBinding?.bundle,
             })
           : null;
+        selfConstitutionSnapshot = implementationTier
+          ? this.compileSelfConstitutionSnapshot({
+              project,
+              session,
+              turnId: turn.turnId,
+              model,
+              reasoningEffort,
+              status,
+              toolComposition: implementationToolComposition,
+              compiledAgentContext,
+            })
+          : null;
         contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
           session: this.sessionStore.readSession(session.sessionId) || session,
           projectId: session.projectId,
@@ -6807,7 +7224,10 @@ class DirectLiveTextController {
           expectedContextProjectionId: normalizeString(params.expectedContextProjectionId, frozenContextProjection?.projectionId || ""),
           expectedContextProjectionDigest: normalizeString(params.expectedContextProjectionDigest, frozenContextProjection?.projectionDigest || ""),
           model: requestBody.model,
-          requestShape: initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
+          requestShape: {
+            ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
+            ...selfConstitutionRequestShapeFields(selfConstitutionSnapshot),
+          },
           endpointClass: "chatgpt-codex-responses",
           endpointHash: this.endpoint ? sha256(this.endpoint) : "",
           modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
@@ -6868,7 +7288,10 @@ class DirectLiveTextController {
               profileDoc: this.profileDoc,
               model,
               prompt: contextResult.providerInput.prompt,
-              instructions: implementationContextInstructions(contextResult.providerInput.instructions),
+              instructions: implementationContextInstructions(
+                contextResult.providerInput.instructions,
+                selfConstitutionSnapshot,
+              ),
               reasoningEffort,
               tools: implementationToolComposition.tools,
               toolChoicePolicy: "auto",
@@ -6881,8 +7304,48 @@ class DirectLiveTextController {
               reasoningEffort,
             });
       }
+      if (implementationTier && !selfConstitutionSnapshot) {
+        selfConstitutionSnapshot = this.compileSelfConstitutionSnapshot({
+          project,
+          session,
+          turnId: turn.turnId,
+          model,
+          reasoningEffort,
+          status,
+          toolComposition: implementationToolComposition,
+          compiledAgentContext,
+        });
+      }
+      if (implementationTier) {
+        requestBody = buildImplementationToolInitialRequest({
+          profileDoc: this.profileDoc,
+          model,
+          prompt: normalizeString(contextResult?.providerInput?.prompt, prompt),
+          instructions: implementationContextInstructions(
+            contextResult?.providerInput?.instructions,
+            selfConstitutionSnapshot,
+          ),
+          reasoningEffort,
+          tools: implementationToolComposition.tools,
+          toolChoicePolicy: "auto",
+        });
+      }
       requestShape = {
         ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
+        ...selfConstitutionRequestShapeFields(selfConstitutionSnapshot),
+        ...(activeSubAgentPolicySemanticResult?.settlement
+          ? {
+              activeSubAgentPolicySemanticSettlementId:
+                activeSubAgentPolicySemanticResult.settlement.settlementId,
+              activeSubAgentPolicySemanticSettlementDigest:
+                activeSubAgentPolicySemanticResult.settlement.digest,
+              activeSubAgentPolicySemanticSettlementState:
+                activeSubAgentPolicySemanticResult.settlement.state,
+              activeSubAgentPolicyRef:
+                activeSubAgentPolicySemanticResult.settlement
+                  .admittedPolicyRef || null,
+            }
+          : {}),
         directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
         directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
         directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
@@ -6926,6 +7389,13 @@ class DirectLiveTextController {
       };
       this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
         requestShape,
+        ...(selfConstitutionSnapshot ? {
+          selfConstitutionSnapshot,
+        } : {}),
+        ...(activeSubAgentPolicySemanticResult?.settlement ? {
+          activeSubAgentPolicySemanticSettlement:
+            activeSubAgentPolicySemanticResult.settlement,
+        } : {}),
         ...(epistemicLedgerTurnBinding ? {
           epistemicLedgerToolBinding: epistemicLedgerTurnBinding,
         } : {}),
@@ -7502,17 +7972,17 @@ class DirectLiveTextController {
         this.isEpistemicLedgerObligation(sessionId, turnId, obligation));
       const agentRuntimeOnly = obligationResult.obligations.every((obligation) =>
         this.isNativeSubAgentRuntimeObligation(obligation) || this.isReadOnlySubAgentStatusObligation(obligation));
-      this.emitNotification(surfaceSession, "warning", {
-        threadId: sessionId,
-        turnId,
-        message: ledgerOnly
-          ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
-          : agentRuntimeOnly
-            ? "Direct launched or inspected native child-agent work and continued the provider turn."
-          : createdApprovalRequests
-          ? "Direct live text detected a tool call. Local approval is required before local authority is used."
-          : "Direct live text detected a tool call, but the required direct tool continuation evidence is not enabled.",
-      });
+      if (!agentRuntimeOnly) {
+        this.emitNotification(surfaceSession, "warning", {
+          threadId: sessionId,
+          turnId,
+          message: ledgerOnly
+            ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
+            : createdApprovalRequests
+              ? "Direct live text detected a tool call. Local approval is required before local authority is used."
+              : "Direct live text detected a tool call, but the required direct tool continuation evidence is not enabled.",
+        });
+      }
     } else if (toolBlockedTextOnly) {
       this.emitNotification(surfaceSession, "warning", {
         threadId: sessionId,

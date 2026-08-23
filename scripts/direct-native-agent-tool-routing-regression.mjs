@@ -126,6 +126,8 @@ try {
     },
   });
   const waitCalls = [];
+  const surfaceEvents = [];
+  const surfaceSession = { sendEvent: (event) => surfaceEvents.push(event) };
   const poolWait = pool.wait.bind(pool);
   pool.wait = async (input) => {
     waitCalls.push(input);
@@ -214,7 +216,7 @@ try {
     }, 1)],
   ).obligations;
   const spawnHandled = await controller.emitToolApprovalRequests(
-    null,
+    surfaceSession,
     "direct_parent_native_agents",
     "turn_spawn",
     spawnObligation,
@@ -230,6 +232,16 @@ try {
   assert.equal(parentBodies.length, 3, "spawn, nested spawn, and nested wait should remain in one provider turn");
   assert.match(JSON.stringify(parentBodies[0]), /spawn_agent_result/);
   assert.match(JSON.stringify(parentBodies[0]), /bounded_analysis/);
+  assert.match(
+    parentBodies[0].instructions,
+    /launch acknowledgement only, never as evidence that the delegated task completed/,
+    "native-agent continuation must preserve lifecycle closure rather than reuse read-file instructions",
+  );
+  assert.match(
+    parentBodies[0].instructions,
+    /use wait_agent for pending children/,
+    "required child output must compile a bounded wait obligation into the parent continuation contract",
+  );
   assert(parentBodies[0].tools.some((tool) => tool.name === "spawn_agent"));
   assert(parentBodies[0].tools.some((tool) => tool.name === "wait_agent"));
   assert.match(JSON.stringify(parentBodies[1]), /bounded_analysis_two/);
@@ -254,6 +266,23 @@ try {
     projectId: project.id,
     primaryThreadId: "direct_parent_native_agents",
   }).length, 2);
+  assert(
+    surfaceEvents.some((event) =>
+      event.type === "rpc-notification" &&
+      event.method === "direct/runtime-status" &&
+      event.params?.observationKind === "native_child_agent_runtime" &&
+      event.params?.operation === "spawn_agent" &&
+      /Child launch acknowledged/.test(event.params?.message || "")),
+    "successful native child runtime transitions must emit typed neutral observations",
+  );
+  assert.equal(
+    surfaceEvents.some((event) =>
+      event.type === "rpc-notification" &&
+      event.method === "warning" &&
+      event.params?.observationKind === "native_child_agent_runtime"),
+    false,
+    "successful native child runtime transitions must not render as warnings",
+  );
 
   sessionStore.createTurn("direct_parent_native_agents", {
     turnId: "turn_wait",
@@ -272,7 +301,7 @@ try {
     }, 2)],
   ).obligations;
   const waitHandled = await controller.emitToolApprovalRequests(
-    null,
+    surfaceSession,
     "direct_parent_native_agents",
     "turn_wait",
     waitObligation,
@@ -308,7 +337,7 @@ try {
     }, 3)],
   ).obligations;
   const workspaceSpawnHandled = await controller.emitToolApprovalRequests(
-    null,
+    surfaceSession,
     "direct_parent_native_agents",
     "turn_spawn_workspace",
     workspaceSpawnObligation,
@@ -331,10 +360,39 @@ try {
     JSON.stringify(workspaceSpawnTurn.unresolvedObligations[0].result),
     /direct_workspace_worker_delegation_policy_missing/,
   );
+  assert(
+    surfaceEvents.some((event) =>
+      event.type === "rpc-notification" &&
+      event.method === "warning" &&
+      event.params?.operation === "spawn_agent" &&
+      /Direct spawn_agent blocked/.test(event.params?.message || "")),
+    "blocked native child runtime transitions must retain warning posture",
+  );
   assert.equal(
     JSON.stringify(workspaceSpawnTurn.unresolvedObligations[0].result).includes("repoPath"),
     false,
   );
+
+  const rendererSource = await fs.readFile(
+    new URL("../src/renderer/codex-surface.js", import.meta.url),
+    "utf8",
+  );
+  const rendererHtml = await fs.readFile(
+    new URL("../src/renderer/codex-surface.html", import.meta.url),
+    "utf8",
+  );
+  const runtimeStatusHandler = rendererSource.slice(
+    rendererSource.indexOf('if (method === "direct/runtime-status")'),
+    rendererSource.indexOf('if (method === "serverRequest/resolved")'),
+  );
+  assert.match(runtimeStatusHandler, /recordRuntimeObservation\(params\)/);
+  assert.doesNotMatch(
+    runtimeStatusHandler,
+    /addSystemMessage/,
+    "neutral runtime observations must not enter the conversational transcript",
+  );
+  assert.match(rendererSource, /\["observations", "Observations"\]/);
+  assert.match(rendererHtml, /id="morphicObservationsButton"/);
 
   console.log(JSON.stringify({
     ok: true,

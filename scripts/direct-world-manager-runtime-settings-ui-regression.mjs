@@ -107,7 +107,11 @@ function runtimeSettings(configured = {}) {
     },
     scope: {
       appliesTo: ["world_manager", "project_manager"],
-      excludes: ["implementation_worker", "auditor"],
+      excludes: [
+        "constitutional_meta_role",
+        "implementation_worker",
+        "auditor",
+      ],
       effectiveFrom: "next_manager_provider_call",
     },
     mutationAuthorityGranted: false,
@@ -211,7 +215,7 @@ assert.equal(
 );
 assert.match(
   await page.locator("#managerRuntimeBoundary").innerText(),
-  /next manager provider call.*no worker authority/i,
+  /next manager provider call.*constitutional meta-role.*no worker authority/i,
 );
 const screenshotPath = path.join(
   os.tmpdir(),
@@ -229,5 +233,6 @@ console.log(JSON.stringify({
   screenshotPath,
   configuredAndObservedRenderedSeparately: true,
   explicitApplyBoundaryVerified: true,
+  constitutionalMetaRolesRemainOutsideSelector: true,
   modelSpecificEffortSelectionVerified: true,
 }, null, 2));

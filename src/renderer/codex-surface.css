@@ -156,6 +156,12 @@ textarea {
   padding: 0 8px;
 }
 
+.compact-thread-button.active {
+  color: #cfe4ff;
+  border-color: rgba(121, 184, 255, 0.42);
+  background: rgba(121, 184, 255, 0.16);
+}
+
 .compact-thread-button:hover:not(:disabled),
 .compact-thread-chip.runtime:hover:not(:disabled) {
   background: rgba(121, 184, 255, 0.18);
@@ -656,6 +662,13 @@ textarea {
   background: rgba(255, 255, 255, 0.035);
 }
 
+.runtime-section[data-runtime-drawer-section="runtime-control"] {
+  border-color: rgba(111, 222, 165, 0.26);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(111, 222, 165, 0.1), transparent 42%),
+    rgba(255, 255, 255, 0.045);
+}
+
 .thread-analytics-panel {
   position: absolute;
   z-index: 4;
@@ -1078,7 +1091,8 @@ textarea {
 }
 
 .runtime-control select,
-.runtime-control input {
+.runtime-control input,
+.runtime-control textarea {
   width: 100%;
   min-height: 34px;
   padding: 0 10px;
@@ -1088,8 +1102,17 @@ textarea {
   color: var(--text);
 }
 
+.runtime-control textarea {
+  min-height: 104px;
+  padding: 9px 10px;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.45;
+}
+
 .runtime-control select:disabled,
-.runtime-control input:disabled {
+.runtime-control input:disabled,
+.runtime-control textarea:disabled {
   color: var(--muted);
   border-color: rgba(255, 255, 255, 0.08);
   opacity: 0.7;
@@ -1798,6 +1821,19 @@ button.typed-token {
 
 .message.system .bubble {
   background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+}
+
+.system-message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.system-message-actions .runtime-action.secondary {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.12);
   color: var(--muted);
 }
 

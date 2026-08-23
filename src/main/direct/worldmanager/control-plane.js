@@ -5341,6 +5341,8 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
       k4Running ||
       latestReconciliation?.state === "processing",
     activeProjectId: focusedProjectId,
+    constitutionalMetaRoles:
+      input.constitutionalMetaRoles || null,
     worldPosture: {
       state: lifecycleState,
       title: clarificationCount
@@ -6422,6 +6424,15 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
                 runtimeMode:
                   latestSemanticIngress.telemetry
                     ?.runtimeMode || "",
+                metaRoleId:
+                  latestSemanticIngress.telemetry
+                    ?.metaRoleId || "",
+                metaRoleInvocationRef:
+                  latestSemanticIngress.telemetry
+                    ?.metaRoleInvocationRef || null,
+                realizationPolicyRef:
+                  latestSemanticIngress.telemetry
+                    ?.realizationPolicyRef || null,
                 model:
                   latestSemanticIngress.telemetry?.model ||
                   "",
