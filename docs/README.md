@@ -70,6 +70,12 @@
 - [Direct Native Multi-Agent Pool](./DIRECT_NATIVE_MULTI_AGENT_POOL_SPEC.md) -
   implemented ordinary-Direct reasoning pool with eight default child leases,
   bounded queuing, and independent context/model/effort selection.
+- [Direct Semantic Service v0 Constitution](./DIRECT_SEMANTIC_SERVICE_V0_CONSTITUTION.md) -
+  frozen implementation design for the Electron-independent semantic-compute
+  daemon: revision-bounded principals, pinned compiler/runtime artifacts,
+  immutable project snapshots, closed execution/evidence/terminal sets,
+  explicit attempts and admission, SQLite/CAS/quarantine custody,
+  acknowledged restart-safe delivery, and a model-free fake-worker gate.
 - [Direct Usage, Quota, Model Evidence, And Mainline Readiness Spec](./DIRECT_USAGE_QUOTA_MODEL_EVIDENCE_AND_MAINLINE_READINESS_SPEC.md)
 - [ODEU Role-Lane Multi-Agent Architecture Spec](./ODEU_ROLE_LANE_MULTI_AGENT_ARCHITECTURE_SPEC.md)
 - [Direct Role-Lane Tool Bundle Composer Spec](./DIRECT_ROLE_LANE_TOOL_BUNDLE_COMPOSER_SPEC.md)
