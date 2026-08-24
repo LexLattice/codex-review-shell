@@ -13,8 +13,10 @@ custody, or new action authority.
 
 Status: canonical human-readable carryover entrypoint for the direct harness.
 
-Last updated: 2026-08-23 after implementation of the owner-issued Direct
-self-constitution snapshot and inspection tool, following the ordinary Direct
+Last updated: 2026-08-24 after freezing the model-independent
+[Direct Semantic Service v0 constitution](./DIRECT_SEMANTIC_SERVICE_V0_CONSTITUTION.md),
+following implementation of the owner-issued Direct self-constitution snapshot
+and inspection tool, following the ordinary Direct
 native multi-agent reasoning pool and the first restricted
 `WM-SC11` role-governed epistemic-ledger and semantic-CI foundation, following implementation
 of the governed semantic sequence through the `WM-SC7.2` current-to-target
@@ -124,6 +126,24 @@ tool. Generic prompt prose is presentation rather than constitutional
 authority, and the stale claim that every Direct turn uses a disposable
 workspace has been removed. See the
 [Direct Self-Constitution Snapshot spec](./DIRECT_SELF_CONSTITUTION_SNAPSHOT_SPEC.md).
+
+## Direct Semantic Service v0 Frontier (2026-08-24)
+
+The first persistent external-auditor runtime is now design-frozen in the
+[Direct Semantic Service v0 constitution](./DIRECT_SEMANTIC_SERVICE_V0_CONSTITUTION.md).
+The standalone semantic compiler remains the versioned source of semantic law;
+Direct owns the headless daemon, principals, immutable project/compiler
+registry revisions and target snapshots, closed execution/evidence/terminal
+sets, distinct project/worker runtimes, scheduling, isolation, storage, output
+admission, accounting, and acknowledged durable delivery. The initial Blue
+review's DSS-R001 through DSS-R007 amendments are incorporated in the frozen
+constitution.
+
+No service implementation is claimed yet. The next bounded frontier is the
+principal/API/registry schema freeze followed by the append-only SQLite/CAS/
+quarantine job kernel and deterministic fake worker. Spark or another model
+backend may be added only after restart, replay, rejection, subscription, and
+delivery laws pass without model compute.
 
 ## Post-Wave-26 World Manager And Unified UX Target (2026-07-26)
 
