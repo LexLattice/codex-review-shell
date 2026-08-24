@@ -98,6 +98,13 @@ const RECORD_KINDS = Object.freeze([
   "projectionRevision",
   "job",
 ]);
+const REGISTRY_OWNED_KINDS = new Set([
+  "projectRegistryRevision",
+  "targetSnapshotReceipt",
+  "compilerPin",
+  "executionProfileRevision",
+  "attemptPolicy",
+]);
 
 const RECORD_REF_FIELDS = Object.freeze({
   projectRegistryRevision: Object.freeze(["registryRevisionRef", "recordRef"]),
@@ -209,6 +216,9 @@ function createRecordAuthority(externalRegistry) {
 
   function admit(kind, value) {
     if (!RECORD_KINDS.includes(kind)) fail("direct_semantic_record_kind_invalid", kind);
+    if (REGISTRY_OWNED_KINDS.has(kind)) {
+      fail("direct_semantic_registry_owned_local_admission_forbidden", kind);
+    }
     const record = safeRecordCopy(value);
     if (RECORD_CONTRACT_SCHEMAS[kind]) {
       validate(RECORD_CONTRACT_SCHEMAS[kind], record, "direct_semantic_record_contract_invalid");
@@ -244,7 +254,9 @@ function createRecordAuthority(externalRegistry) {
       throw error;
     }
     if (!candidate) return null;
-    if (typeof externalRegistry.assertRecord === "function") {
+    if (typeof externalRegistry.assertExecutionEligible === "function") {
+      externalRegistry.assertExecutionEligible(kind, candidate);
+    } else if (typeof externalRegistry.assertRecord === "function") {
       externalRegistry.assertRecord(kind, candidate);
     } else if (typeof externalRegistry.isTrustedRecord === "function" && !externalRegistry.isTrustedRecord(kind, candidate)) {
       fail("direct_semantic_record_untrusted", `${kind}:${ref}`);
@@ -253,24 +265,27 @@ function createRecordAuthority(externalRegistry) {
     } else if (typeof externalRegistry.resolveRecord !== "function" && typeof externalRegistry.getRecord !== "function" && typeof externalRegistry.resolve !== "function" && typeof externalRegistry.get !== "function") {
       fail("direct_semantic_record_authority_missing", kind);
     }
-    const copyValue = safeRecordCopy(candidate);
-    if (refFor(kind, copyValue) !== ref) fail("direct_semantic_record_binding_mismatch", `${kind}:${ref}`);
-    const digest = digestFor("direct-semantic-immutable-record", copyValue);
+    if (refFor(kind, candidate) !== ref) fail("direct_semantic_record_binding_mismatch", `${kind}:${ref}`);
+    const digest = digestFor("direct-semantic-immutable-record", candidate);
     const priorDigest = externalDigests[kind].get(ref);
     if (priorDigest && priorDigest !== digest) fail("direct_semantic_record_mutated", `${kind}:${ref}`);
     if (!priorDigest) {
       externalDigests[kind].set(ref, digest);
-      recordTokens[kind].set(copyValue, { kind, ref, record: copyValue });
-      recordByRef[kind].set(ref, copyValue);
+      recordTokens[kind].set(candidate, { kind, ref, record: candidate });
+      recordByRef[kind].set(ref, candidate);
     }
-    return copyValue;
+    return recordByRef[kind].get(ref);
   }
 
   function resolve(kind, refValue, candidate) {
     if (!RECORD_KINDS.includes(kind)) fail("direct_semantic_record_kind_invalid", kind);
     const ref = requiredRef(refValue, `${kind}.ref`);
-    const local = localResolve(kind, ref, candidate);
-    if (local) return local;
+    if (!REGISTRY_OWNED_KINDS.has(kind)) {
+      const local = localResolve(kind, ref, candidate);
+      if (local) return local;
+    } else if (candidate !== undefined) {
+      fail("direct_semantic_registry_owned_candidate_forbidden", kind);
+    }
     const external = externalResolve(kind, ref);
     if (external) return external;
     fail("direct_semantic_record_missing", `${kind}:${ref}`);
@@ -315,7 +330,11 @@ function createAuthorizationAuthority(options = {}) {
   if (!capabilityAuthority || typeof capabilityAuthority.assertBoundToPrincipal !== "function" || typeof capabilityAuthority.assertCapability !== "function") {
     fail("direct_semantic_capability_authority_required");
   }
-  const records = createRecordAuthority(options.registry || options.recordAuthority);
+  const registry = options.registry || options.recordAuthority;
+  if (!registry || typeof registry.resolveRecord !== "function" || typeof registry.assertExecutionEligible !== "function") {
+    fail("direct_semantic_registry_authority_required");
+  }
+  const records = createRecordAuthority(registry);
   const idempotency = new Map();
   const clock = options.now || options.clock;
   const authorityMarker = Object.freeze({});
@@ -348,6 +367,9 @@ function createAuthorizationAuthority(options = {}) {
     if (candidate.requesterRef !== undefined) requiredNonEmptyString(candidate.requesterRef, "requesterRef");
     if (operation === "submit_job") {
       if (!["partial_selection", "exhaustive_compilation"].includes(candidate.selectionMode)) fail("direct_semantic_selection_mode_invalid");
+      if (candidate.selectionMode === "exhaustive_compilation") {
+        fail("direct_semantic_exhaustive_submission_not_implemented");
+      }
       const allowEmpty = candidate.selectionMode === "exhaustive_compilation";
       candidate.edgeOccurrenceRefs = list(candidate.edgeOccurrenceRefs, "edgeOccurrenceRefs", allowEmpty);
       if (!allowEmpty && candidate.edgeOccurrenceRefs.length === 0) fail("direct_semantic_selection_empty");
@@ -468,7 +490,7 @@ function createAuthorizationAuthority(options = {}) {
     const replicateCount = attemptPolicy.replicateCountPerCell ?? 1;
     if (typeof replicateCount !== "number" || !Number.isSafeInteger(replicateCount) || replicateCount < 1) fail("direct_semantic_attempt_policy_invalid");
     if (replicateCount > cap.maximumReplicatesPerCell) fail("direct_semantic_replicates_quota_exceeded");
-    if (estimate.replicatesPerCell < replicateCount) fail("direct_semantic_replicates_underdeclared");
+    if (estimate.replicatesPerCell !== replicateCount) fail("direct_semantic_replicates_estimate_mismatch");
     // Kernels are compiler-owned semantic law, not provider/runtime policy.
     // Submission freezes the capability's exact admissible kernel set; the
     // later ExecutionPlan must intersect every selected cell with that set.
@@ -557,8 +579,8 @@ function createAuthorizationAuthority(options = {}) {
       ({ project, snapshot } = assertProjectAndSnapshot(request, cap));
       computation = assertCompilerExecutionAndAttempt(request, cap, estimate);
       projection = assertProjection(request, cap);
-      if (estimate.cells !== request.edgeOccurrenceRefs.length && request.selectionMode === "partial_selection") fail("direct_semantic_resource_estimate_mismatch");
-      if (estimate.cells === 0 && request.selectionMode === "partial_selection") fail("direct_semantic_selection_empty");
+      if (estimate.cells !== request.edgeOccurrenceRefs.length) fail("direct_semantic_resource_estimate_mismatch");
+      if (estimate.cells === 0) fail("direct_semantic_selection_empty");
     } else if (["inspect_job", "read_results", "subscribe_results", "request_cancel"].includes(operation)) {
       job = assertJob(request, cap, semanticRecord, operation);
       projection = assertProjection(request, cap);
@@ -677,16 +699,8 @@ function createAuthorizationAuthority(options = {}) {
     assertAuthorizationReceipt,
     isAuthorizationReceipt,
     describeReceipt,
-    registerRecord: records.admit,
-    resolveRecord: records.resolve,
-    assertRecord: records.assertToken,
-    registerProjectRegistryRevision: records.registerProjectRegistryRevision,
-    registerTargetSnapshotReceipt: records.registerTargetSnapshotReceipt,
-    registerCompilerPin: records.registerCompilerPin,
     registerKernelRevision: records.registerKernelRevision,
-    registerExecutionProfileRevision: records.registerExecutionProfileRevision,
     registerProviderProfileRevision: records.registerProviderProfileRevision,
-    registerAttemptPolicy: records.registerAttemptPolicy,
     registerProjectionRevision: records.registerProjectionRevision,
     registerJob: records.registerJob,
   });

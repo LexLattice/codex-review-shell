@@ -4,9 +4,16 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { createPrincipalAuthority } = require("../src/main/direct/semantic-service/principal-authority.js");
-const { createCapabilityAuthority } = require("../src/main/direct/semantic-service/capability-authority.js");
-const { createAuthorizationAuthority } = require("../src/main/direct/semantic-service/authorization.js");
+const {
+  createDirectSemanticServiceFoundation,
+  COMPILER_BUILD_PIN_SCHEMA,
+  PROJECT_EVIDENCE_RUNTIME_REVISION_SCHEMA,
+  PROJECT_REGISTRY_REVISION_SCHEMA,
+  TARGET_SNAPSHOT_RECEIPT_SCHEMA,
+  WORKER_EXECUTION_RUNTIME_REVISION_SCHEMA,
+  EXECUTION_PROFILE_REVISION_SCHEMA,
+  ATTEMPT_POLICY_SCHEMA,
+} = require("../src/main/direct/semantic-service");
 
 const NOW = "2026-08-24T10:00:00.000Z";
 const DIGEST = `sha256:${"a".repeat(64)}`;
@@ -16,18 +23,38 @@ function expectCode(code, action) {
   assert.throws(action, (error) => error?.code === code, `expected ${code}`);
 }
 
-const principalAuthority = createPrincipalAuthority({ authorityId: "principal-authority-1", now: NOW });
-const capabilityAuthority = createCapabilityAuthority({
-  authorityId: "capability-authority-1",
-  principalAuthority,
-  now: NOW,
-});
-const authorization = createAuthorizationAuthority({
-  authorityId: "authorization-authority-1",
+const {
   principalAuthority,
   capabilityAuthority,
+  registryAuthority: registry,
+  authorizationAuthority: authorization,
+} = createDirectSemanticServiceFoundation({
   now: NOW,
+  principalAuthorityId: "principal-authority-1",
+  capabilityAuthorityId: "capability-authority-1",
+  registryAuthorityRef: "registry-authority-1",
+  authorizationAuthorityId: "authorization-authority-1",
 });
+
+const registryTransport = principalAuthority.deriveTransportPrincipal({
+  transport: "internal", hostUserId: "registry-service-1", observedAt: NOW,
+});
+const registryPrincipal = principalAuthority.issueSemanticPrincipal({
+  principalId: "registry-operator-1", issuerRevision: "registry-issuer-1",
+  principalClass: "operator", subjectRef: "registry-service-1", projectScopes: [],
+  purposeScopes: ["semantic_registry_admit"], transportPrincipal: registryTransport,
+});
+const registryCapability = capabilityAuthority.issue({
+  capabilityId: "admin-capability-1", principal: registryPrincipal, operation: "administer_service",
+  jobRefs: [], projectRegistryRevisionRefs: [], allowedTargetORevisions: [], targetSnapshotReceiptRefs: [],
+  compilerPinRefs: [], kernelRevisionRefs: [], executionProfileRevisionRefs: [], providerProfileRevisionRefs: [],
+  allowedModels: [], allowedReasoningEfforts: [], attemptPolicyRevisionRefs: [],
+  purposeScopes: ["semantic_registry_admit"], returnProjectionRefs: [], maximumJobs: 0,
+  maximumCellsPerJob: 0, maximumReplicatesPerCell: 0, maximumInputTokensPerJob: 0,
+  maximumOutputTokensPerJob: 0, maximumCostMicrounitsPerJob: null, issuedAt: NOW,
+  nonce: "admin-capability-nonce-1",
+});
+const admissionAuthority = { capability: registryCapability, semanticPrincipal: registryPrincipal };
 
 const transport = principalAuthority.deriveTransportPrincipal({
   transport: "unix_socket",
@@ -44,49 +71,90 @@ const principal = principalAuthority.issueSemanticPrincipal({
   transportPrincipal: transport,
 });
 
-const project = authorization.registerProjectRegistryRevision({
-  schema: "direct_semantic_project_registry_revision@1",
+const projectRuntimeInput = {
+  schema: PROJECT_EVIDENCE_RUNTIME_REVISION_SCHEMA,
+  projectEvidenceRuntimeRevisionRef: "project-runtime-1",
+  projectRef: "project-1",
+  substrateBinding: "wsl",
+  operatingSystemRevision: "linux-1",
+  interpreterExecutableDigest: DIGEST,
+  toolchainArtifactDigests: [DIGEST],
+  installedDependencyEnvironmentDigest: DIGEST,
+  deterministicCheckRegistryDigest: DIGEST,
+  admittedEnvironmentInputDigest: DIGEST,
+  runtimePolicyDigest: DIGEST,
+};
+const projectRuntime = registry.admitProjectEvidenceRuntimeRevision(
+  projectRuntimeInput,
+  { ...projectRuntimeInput },
+  admissionAuthority,
+);
+const project = registry.admitProjectRegistryRevision({
+  schema: PROJECT_REGISTRY_REVISION_SCHEMA,
   registryRevisionRef: "registry-revision-1",
   projectRef: "project-1",
   substrateBinding: "wsl",
   repositoryIdentity: "repo-1",
+  privateRepositoryLocatorRef: "private-locator-1",
   targetRevisionPolicy: { kind: "exact_git_commit_allowlist", allowedCommits: ["target-o-1"], cleanTreeRequired: true },
-  projectEvidenceRuntimeRevisionRef: "project-runtime-1",
+  projectEvidenceRuntimeRevisionRef: projectRuntime.projectEvidenceRuntimeRevisionRef,
   evidenceCartographyRevisionRef: "cartography-1",
   authorityPolicyRef: "authority-policy-1",
-  admittedByCapabilityRef: "admin-capability-1",
+  admittedByCapabilityRef: registryCapability.capabilityId,
   admittedAt: NOW,
-});
-const snapshot = authorization.registerTargetSnapshotReceipt({
-  schema: "direct_semantic_target_snapshot_receipt@1",
+}, admissionAuthority);
+const snapshotInput = {
+  schema: TARGET_SNAPSHOT_RECEIPT_SCHEMA,
   targetSnapshotReceiptRef: "snapshot-1",
   projectRegistryRevisionRef: project.registryRevisionRef,
   repositoryIdentity: "repo-1",
   targetORevision: "target-o-1",
   gitCommit: "target-o-1",
   gitTree: "tree-1",
-  snapshotDigest: "snapshot-digest-1",
+  submoduleClosureDigest: DIGEST,
+  lfsObjectClosureDigest: DIGEST,
+  admittedGeneratedInputDigest: DIGEST,
+  evidenceCartographyRevisionRef: project.evidenceCartographyRevisionRef,
+  projectEvidenceRuntimeRevisionRef: projectRuntime.projectEvidenceRuntimeRevisionRef,
+  projectRuntimeInputDigest: DIGEST,
+  sourceStatusDigest: DIGEST,
+  snapshotArtifactRef: "snapshot-artifact-1",
+  snapshotMaterializationMode: "isolated_read_only_snapshot",
+  preObservationReceiptRef: "snapshot-pre-1",
+  postObservationReceiptRef: "snapshot-post-1",
+  snapshotDigest: DIGEST,
   capturedAt: NOW,
-});
-const compiler = authorization.registerCompilerPin({
-  schema: "direct_semantic_compiler_build_pin@1",
+};
+const snapshot = registry.admitTargetSnapshotReceipt(snapshotInput, {
+  ...snapshotInput,
+  preObservation: { receiptRef: snapshotInput.preObservationReceiptRef, observationDigest: DIGEST },
+  postObservation: { receiptRef: snapshotInput.postObservationReceiptRef, observationDigest: DIGEST },
+  immutableArtifact: {
+    artifactRef: snapshotInput.snapshotArtifactRef,
+    digest: snapshotInput.snapshotDigest,
+    materializationMode: snapshotInput.snapshotMaterializationMode,
+  },
+}, admissionAuthority);
+const compilerInput = {
+  schema: COMPILER_BUILD_PIN_SCHEMA,
   compilerPinRef: "compiler-pin-1",
   repositoryIdentity: "semantic-compiler",
   gitCommit: "compiler-commit-1",
   gitTree: "compiler-tree-1",
-  sourceArtifactDigest: "source-1",
-  executableArtifactDigest: "exec-1",
-  interpreterToolchainDigest: "toolchain-1",
-  dependencyLockDigest: "lock-1",
-  installedDependencyEnvironmentDigest: "env-1",
-  invocationContractDigest: "invoke-1",
-  canonicalSchemaDigests: ["schema-1"],
-  patternLibraryDigests: ["patterns-1"],
-  evidenceCatalogDigests: ["catalog-1"],
-  compilerGateReceiptDigest: "gate-1",
+  sourceArtifactDigest: DIGEST,
+  executableArtifactDigest: DIGEST,
+  interpreterToolchainDigest: DIGEST,
+  dependencyLockDigest: DIGEST,
+  installedDependencyEnvironmentDigest: DIGEST,
+  invocationContractDigest: DIGEST,
+  canonicalSchemaDigests: [DIGEST],
+  patternLibraryDigests: [DIGEST],
+  evidenceCatalogDigests: [DIGEST],
+  compilerGateReceiptDigest: DIGEST,
   adapterRevision: "adapter-1",
   admittedAt: NOW,
-});
+};
+const compiler = registry.admitCompilerBuildPin(compilerInput, { ...compilerInput }, admissionAuthority);
 const kernel = authorization.registerKernelRevision({
   schema: "semantic_kernel_revision@1",
   kernelRef: "kernel-1",
@@ -105,8 +173,8 @@ const provider = authorization.registerProviderProfileRevision({
   provider: "fake",
   admittedAt: NOW,
 });
-const attemptPolicy = authorization.registerAttemptPolicy({
-  schema: "direct_semantic_attempt_policy@1",
+const attemptPolicy = registry.admitAttemptPolicy({
+  schema: ATTEMPT_POLICY_SCHEMA,
   attemptPolicyRef: "attempt-policy-1",
   retryableFailureClasses: ["transport_unavailable_before_dispatch"],
   maximumAttemptsPerReplicateSlot: 2,
@@ -115,21 +183,39 @@ const attemptPolicy = authorization.registerAttemptPolicy({
   timeoutMs: 1000,
   outputByteLimit: 10000,
   fixedBeforeExecution: true,
-});
-const execution = authorization.registerExecutionProfileRevision({
-  schema: "direct_semantic_execution_profile_revision@1",
+}, admissionAuthority);
+const workerRuntimeInput = {
+  schema: WORKER_EXECUTION_RUNTIME_REVISION_SCHEMA,
+  workerExecutionRuntimeRevisionRef: "worker-runtime-1",
+  substrateBinding: "remote_api",
+  backendAdapterRevision: "fake-backend-1",
+  processLauncherDigest: DIGEST,
+  sandboxPolicyDigest: DIGEST,
+  scratchPolicyDigest: DIGEST,
+  environmentAllowlistDigest: DIGEST,
+  credentialExclusionPolicyDigest: DIGEST,
+  outputCapturePolicyDigest: DIGEST,
+  runtimeArtifactDigest: DIGEST,
+};
+const workerRuntime = registry.admitWorkerExecutionRuntimeRevision(
+  workerRuntimeInput,
+  { ...workerRuntimeInput },
+  admissionAuthority,
+);
+const execution = registry.admitExecutionProfileRevision({
+  schema: EXECUTION_PROFILE_REVISION_SCHEMA,
   executionProfileRevisionRef: "execution-profile-1",
   providerProfileRevisionRef: provider.providerProfileRevisionRef,
   allowedModels: ["fake-model"],
   allowedReasoningEfforts: ["minimal"],
-  workerExecutionRuntimeRevisionRef: "worker-runtime-1",
+  workerExecutionRuntimeRevisionRef: workerRuntime.workerExecutionRuntimeRevisionRef,
   attemptPolicyRevisionRefs: [attemptPolicy.attemptPolicyRef],
   maximumConcurrentAttempts: 1,
   maximumInputTokensPerAttempt: 1000,
   maximumOutputTokensPerAttempt: 1000,
   maximumCostMicrounitsPerAttempt: 100,
-  executionPolicyDigest: "execution-policy-1",
-});
+  executionPolicyDigest: DIGEST,
+}, admissionAuthority);
 const projection = authorization.registerProjectionRevision({
   schema: "direct_semantic_return_projection_revision@1",
   projectionRef: "projection-1",

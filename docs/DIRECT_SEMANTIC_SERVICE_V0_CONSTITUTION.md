@@ -1671,8 +1671,14 @@ Implementation status (2026-08-24): complete as an in-process foundation.
 Direct now exposes the frozen contract/schema ABI, canonical digest rules,
 opaque transport and semantic principals, operation-specific capabilities,
 atomic bounded authorization, immutable registry admission, exact compiler /
-target / runtime pin verification, and one composition root. The focused gate
-is `npm run direct:semantic-service-dss01`. This status does not claim daemon,
+target / runtime pin verification, and one composition root. Registry admission
+requires custody of an opaque `administer_service` capability; verification-
+required records cannot be admitted without a verification receipt, and job
+bindings preserve the receipt digests. Authorization resolves registry-owned
+records only through that authority. DSS-0.1 accepts exact partial selections
+only: `exhaustive_compilation` fails closed until a compiler-produced complete
+occurrence set can be reconciled and reserved service-side. The focused gate is
+`npm run direct:semantic-service-dss01`. This status does not claim daemon,
 durable storage, scheduling, model execution, or restart recovery; those begin
 at DSS-0.2.
 

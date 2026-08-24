@@ -23,7 +23,6 @@ function createDirectSemanticServiceFoundation(options = {}) {
     "principalAuthorityId",
     "capabilityAuthorityId",
     "registryAuthorityRef",
-    "registryAdmissionCapabilityRef",
     "authorizationAuthorityId",
   ]);
   for (const key of Object.keys(options)) {
@@ -41,10 +40,8 @@ function createDirectSemanticServiceFoundation(options = {}) {
     ...(clock === undefined ? {} : { now: clock }),
   });
   const registryAuthority = createRegistryAuthority({
+    capabilityAuthority,
     ...(options.registryAuthorityRef === undefined ? {} : { authorityRef: options.registryAuthorityRef }),
-    ...(options.registryAdmissionCapabilityRef === undefined
-      ? {}
-      : { admissionCapabilityRef: options.registryAdmissionCapabilityRef }),
   });
   const authorizationAuthority = createAuthorizationAuthority({
     principalAuthority,

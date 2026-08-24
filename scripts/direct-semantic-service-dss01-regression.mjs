@@ -29,7 +29,6 @@ const foundation = createDirectSemanticServiceFoundation({
   principalAuthorityId: "dss01-principal-authority",
   capabilityAuthorityId: "dss01-capability-authority",
   registryAuthorityRef: "dss01-registry-authority",
-  registryAdmissionCapabilityRef: "dss01-registry-admission",
   authorizationAuthorityId: "dss01-authorization-authority",
 });
 const {
@@ -39,7 +38,27 @@ const {
   authorizationAuthority: authorization,
 } = foundation;
 
-const projectRuntime = registry.admitProjectEvidenceRuntimeRevision({
+const registryTransport = principalAuthority.deriveTransportPrincipal({
+  transport: "internal", hostUserId: "dss01-registry-service", observedAt: NOW,
+});
+const registryPrincipal = principalAuthority.issueSemanticPrincipal({
+  principalId: "dss01-registry-operator", issuerRevision: "dss01-registry-issuer-r1",
+  principalClass: "operator", subjectRef: "dss01-registry-service", projectScopes: [],
+  purposeScopes: ["semantic_registry_admit"], transportPrincipal: registryTransport,
+});
+const registryCapability = capabilityAuthority.issue({
+  capabilityId: "dss01-registry-admission", principal: registryPrincipal, operation: "administer_service",
+  jobRefs: [], projectRegistryRevisionRefs: [], allowedTargetORevisions: [], targetSnapshotReceiptRefs: [],
+  compilerPinRefs: [], kernelRevisionRefs: [], executionProfileRevisionRefs: [], providerProfileRevisionRefs: [],
+  allowedModels: [], allowedReasoningEfforts: [], attemptPolicyRevisionRefs: [],
+  purposeScopes: ["semantic_registry_admit"], returnProjectionRefs: [], maximumJobs: 0,
+  maximumCellsPerJob: 0, maximumReplicatesPerCell: 0, maximumInputTokensPerJob: 0,
+  maximumOutputTokensPerJob: 0, maximumCostMicrounitsPerJob: null, issuedAt: NOW,
+  nonce: "dss01-registry-admission-nonce",
+});
+const admissionAuthority = { capability: registryCapability, semanticPrincipal: registryPrincipal };
+
+const projectRuntimeInput = {
   schema: PROJECT_EVIDENCE_RUNTIME_REVISION_SCHEMA,
   projectEvidenceRuntimeRevisionRef: "project-runtime-r1",
   projectRef: "project-arcagi3",
@@ -51,7 +70,12 @@ const projectRuntime = registry.admitProjectEvidenceRuntimeRevision({
   deterministicCheckRegistryDigest: DIGEST_A,
   admittedEnvironmentInputDigest: DIGEST_A,
   runtimePolicyDigest: DIGEST_A,
-});
+};
+const projectRuntime = registry.admitProjectEvidenceRuntimeRevision(
+  projectRuntimeInput,
+  { ...projectRuntimeInput },
+  admissionAuthority,
+);
 const project = registry.admitProjectRegistryRevision({
   schema: PROJECT_REGISTRY_REVISION_SCHEMA,
   registryRevisionRef: "project-registry-r1",
@@ -69,8 +93,8 @@ const project = registry.admitProjectRegistryRevision({
   authorityPolicyRef: "authority-policy-r1",
   admittedByCapabilityRef: "dss01-registry-admission",
   admittedAt: NOW,
-});
-const target = registry.admitTargetSnapshotReceipt({
+}, admissionAuthority);
+const targetInput = {
   schema: TARGET_SNAPSHOT_RECEIPT_SCHEMA,
   targetSnapshotReceiptRef: "target-snapshot-r1",
   projectRegistryRevisionRef: project.registryRevisionRef,
@@ -91,8 +115,19 @@ const target = registry.admitTargetSnapshotReceipt({
   postObservationReceiptRef: "post-observation-r1",
   snapshotDigest: DIGEST_A,
   capturedAt: NOW,
-});
-const compiler = registry.admitCompilerBuildPin({
+};
+const targetObservation = {
+  ...targetInput,
+  preObservation: { receiptRef: targetInput.preObservationReceiptRef, observationDigest: DIGEST_A },
+  postObservation: { receiptRef: targetInput.postObservationReceiptRef, observationDigest: DIGEST_A },
+  immutableArtifact: {
+    artifactRef: targetInput.snapshotArtifactRef,
+    digest: targetInput.snapshotDigest,
+    materializationMode: targetInput.snapshotMaterializationMode,
+  },
+};
+const target = registry.admitTargetSnapshotReceipt(targetInput, targetObservation, admissionAuthority);
+const compilerInput = {
   schema: COMPILER_BUILD_PIN_SCHEMA,
   compilerPinRef: "compiler-pin-r1",
   repositoryIdentity: "semantic-compiler-repository",
@@ -110,8 +145,9 @@ const compiler = registry.admitCompilerBuildPin({
   compilerGateReceiptDigest: DIGEST_A,
   adapterRevision: "compiler-adapter-r1",
   admittedAt: NOW,
-});
-const workerRuntime = registry.admitWorkerExecutionRuntimeRevision({
+};
+const compiler = registry.admitCompilerBuildPin(compilerInput, { ...compilerInput }, admissionAuthority);
+const workerRuntimeInput = {
   schema: WORKER_EXECUTION_RUNTIME_REVISION_SCHEMA,
   workerExecutionRuntimeRevisionRef: "worker-runtime-r1",
   substrateBinding: "remote_api",
@@ -123,7 +159,8 @@ const workerRuntime = registry.admitWorkerExecutionRuntimeRevision({
   credentialExclusionPolicyDigest: DIGEST_A,
   outputCapturePolicyDigest: DIGEST_A,
   runtimeArtifactDigest: DIGEST_A,
-});
+};
+const workerRuntime = registry.admitWorkerExecutionRuntimeRevision(workerRuntimeInput, { ...workerRuntimeInput }, admissionAuthority);
 const attemptPolicy = registry.admitAttemptPolicy({
   schema: ATTEMPT_POLICY_SCHEMA,
   attemptPolicyRef: "attempt-policy-r1",
@@ -134,7 +171,7 @@ const attemptPolicy = registry.admitAttemptPolicy({
   timeoutMs: 30_000,
   outputByteLimit: 10_000,
   fixedBeforeExecution: true,
-});
+}, admissionAuthority);
 const execution = registry.admitExecutionProfileRevision({
   schema: EXECUTION_PROFILE_REVISION_SCHEMA,
   executionProfileRevisionRef: "execution-profile-r1",
@@ -148,7 +185,7 @@ const execution = registry.admitExecutionProfileRevision({
   maximumOutputTokensPerAttempt: 1_000,
   maximumCostMicrounitsPerAttempt: 100,
   executionPolicyDigest: DIGEST_A,
-});
+}, admissionAuthority);
 
 const kernel = authorization.registerKernelRevision({
   schema: "semantic_kernel_revision@1",
@@ -175,6 +212,30 @@ const projection = authorization.registerProjectionRevision({
   projectionKind: "advisory-summary",
   admittedAt: NOW,
 });
+
+// Registry-owned identities cannot be introduced through the authorization
+// surface, so a local attacker record cannot shadow the immutable registry.
+assert.equal(authorization.registerCompilerPin, undefined);
+assert.equal(authorization.registerRecord, undefined);
+
+// Verification-required pins never become execution-eligible from a bare
+// declaration, and registry admission requires custody of a real opaque
+// administer_service capability rather than a matching reference string.
+expectCode("direct_semantic_registry_verification_observation_required", () => registry.admitCompilerBuildPin({
+  ...compilerInput,
+  compilerPinRef: "compiler-pin-unverified-r2",
+}, undefined, admissionAuthority));
+expectCode("direct_semantic_capability_untrusted", () => registry.admitProjectRegistryRevision({
+  ...JSON.parse(JSON.stringify(project)),
+  registryRevisionRef: "project-registry-forged-authority-r2",
+}, {
+  capability: JSON.parse(JSON.stringify(registryCapability)),
+  semanticPrincipal: registryPrincipal,
+}));
+expectCode("direct_semantic_target_snapshot_observation_missing", () => registry.admitTargetSnapshotReceipt({
+  ...targetInput,
+  targetSnapshotReceiptRef: "target-snapshot-no-capture-r2",
+}, { ...targetInput, targetSnapshotReceiptRef: "target-snapshot-no-capture-r2" }, admissionAuthority));
 
 const transport = principalAuthority.deriveTransportPrincipal({
   transport: "unix_socket",
@@ -243,6 +304,42 @@ const resourceEstimate = {
   reasoningEffort: "medium",
 };
 
+// Exhaustive compilation has no exact compiler-produced cell plan in DSS-0.1,
+// so it is rejected before authority or quota can be consumed. In supported
+// partial selection, the estimate must exactly match both cells and replicates.
+const quotaBeforeExhaustive = capabilityAuthority.quotaSnapshot(capability);
+expectCode("direct_semantic_exhaustive_submission_not_implemented", () => authorization.authorize({
+  operation: "submit_job",
+  transportPrincipal: transport,
+  semanticPrincipal: principal,
+  capability,
+  request: {
+    ...request,
+    requestId: "submit-request-exhaustive-r1",
+    selectionMode: "exhaustive_compilation",
+    idempotencyKey: "submit-exhaustive-r1",
+  },
+  resourceEstimate: {
+    ...resourceEstimate,
+    cells: 0,
+    replicatesPerCell: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    costMicrounits: 0,
+  },
+}));
+assert.deepEqual(capabilityAuthority.quotaSnapshot(capability), quotaBeforeExhaustive);
+expectCode("direct_semantic_resource_estimate_mismatch", () => authorization.authorize({
+  operation: "submit_job", transportPrincipal: transport, semanticPrincipal: principal, capability,
+  request: { ...request, requestId: "submit-request-undercounted-r1", idempotencyKey: "submit-undercounted-r1" },
+  resourceEstimate: { ...resourceEstimate, cells: 1 },
+}));
+expectCode("direct_semantic_replicates_estimate_mismatch", () => authorization.authorize({
+  operation: "submit_job", transportPrincipal: transport, semanticPrincipal: principal, capability,
+  request: { ...request, requestId: "submit-request-underreplicated-r1", idempotencyKey: "submit-underreplicated-r1" },
+  resourceEstimate: { ...resourceEstimate, replicatesPerCell: 1 },
+}));
+
 const receipt = authorization.authorize({
   operation: "submit_job",
   transportPrincipal: transport,
@@ -257,13 +354,15 @@ assert.deepEqual(receipt.exactRevisionRefs.kernelRevisionRefs, [kernel.kernelRef
 assert.equal(capabilityAuthority.quotaSnapshot(capability).usedJobs, 1);
 assert.equal(capabilityAuthority.quotaSnapshot(capability).usedReplicates, 4);
 assert.equal(registry.resolve(KIND.executionProfileRevision, execution.executionProfileRevisionRef), execution);
-assert.deepEqual(registry.bindJob({
+const registryBinding = registry.bindJob({
   jobRef: "job-r1",
   compilerPinRef: compiler.compilerPinRef,
   projectRegistryRevisionRef: project.registryRevisionRef,
   targetSnapshotReceiptRef: target.targetSnapshotReceiptRef,
   executionProfileRevisionRef: execution.executionProfileRevisionRef,
-}), {
+});
+const { verificationReceiptDigests, ...registryIdentityBinding } = registryBinding;
+assert.deepEqual(registryIdentityBinding, {
   schema: "direct_semantic_registry_job_binding@1",
   jobRef: "job-r1",
   compilerPinRef: compiler.compilerPinRef,
@@ -274,6 +373,13 @@ assert.deepEqual(registry.bindJob({
   executionProfileRevisionRef: execution.executionProfileRevisionRef,
   attemptPolicyRef: attemptPolicy.attemptPolicyRef,
 });
+assert.deepEqual(Object.keys(verificationReceiptDigests).sort(), [
+  "compilerBuildPin",
+  "projectEvidenceRuntimeRevision",
+  "targetSnapshotReceipt",
+  "workerExecutionRuntimeRevision",
+]);
+for (const digest of Object.values(verificationReceiptDigests)) assert.match(digest, /^sha256:[a-f0-9]{64}$/);
 
 // Idempotent replay returns the same authority-owned receipt without a second
 // reservation. A changed request under the same key cannot launder a retry.
@@ -319,7 +425,7 @@ expectCode("direct_semantic_execution_profile_shape_invalid", () => registry.adm
   ...JSON.parse(JSON.stringify(execution)),
   executionProfileRevisionRef: "execution-profile-illegal-r2",
   kernelRevisionRefs: [kernel.kernelRef],
-}));
+}, admissionAuthority));
 
 // Aggregate numeric bounds must remain exactly accountable in JavaScript's
 // safe-integer domain; individually valid but unsafe products are rejected.
@@ -335,11 +441,12 @@ expectCode("direct_semantic_capability_aggregate_bound_unsafe", () => capability
 }));
 
 // Later immutable revisions do not widen an already-issued capability.
-const runtime2 = registry.admitProjectEvidenceRuntimeRevision({
+const runtime2Input = {
   ...JSON.parse(JSON.stringify(projectRuntime)),
   projectEvidenceRuntimeRevisionRef: "project-runtime-r2",
   runtimePolicyDigest: DIGEST_B,
-});
+};
+const runtime2 = registry.admitProjectEvidenceRuntimeRevision(runtime2Input, { ...runtime2Input }, admissionAuthority);
 const project2 = registry.admitProjectRegistryRevision({
   ...JSON.parse(JSON.stringify(project)),
   registryRevisionRef: "project-registry-r2",
@@ -351,7 +458,7 @@ const project2 = registry.admitProjectRegistryRevision({
     cleanTreeRequired: true,
   },
   admittedAt: "2026-08-24T14:01:00.000Z",
-});
+}, admissionAuthority);
 expectCode("direct_semantic_scope_denied", () => authorization.authorize({
   operation: "submit_job",
   transportPrincipal: transport,
@@ -377,4 +484,9 @@ console.log(JSON.stringify({
   executionKernelSeparation: true,
   laterRevisionNoninheritance: true,
   copiedAuthorityRejected: true,
+  registryShadowingRejected: true,
+  unverifiedPinsRejected: true,
+  exhaustiveUnderreservationRejected: true,
+  targetCapturePairRequired: true,
+  opaqueRegistryAdmissionRequired: true,
 }, null, 2));

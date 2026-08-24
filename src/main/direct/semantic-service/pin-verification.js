@@ -398,31 +398,21 @@ function snapshotObservationValue(observed, field) {
   return nestedObservationValue(observed, field, aliases[field] || []);
 }
 
-function observationDigestOf(value) {
-  if (typeof value === "string") return value;
-  if (!isPlainObject(value)) return undefined;
-  if (own(value, "observationDigest")) return value.observationDigest;
-  if (own(value, "digest")) return value.digest;
-  return digestFor("direct_semantic_target_observation_component@1", value);
-}
-
-function assertCaptureAgreement(observed) {
+function assertCaptureAgreement(receipt, observed) {
   const pre = nestedObservationValue(observed, "preObservation", [["observations", "pre"]]);
   const post = nestedObservationValue(observed, "postObservation", [["observations", "post"]]);
-  const preDigest = observationValue(observed, "preObservationDigest", ["preCaptureDigest"]);
-  const postDigest = observationValue(observed, "postObservationDigest", ["postCaptureDigest"]);
-  if (preDigest !== undefined || postDigest !== undefined) {
-    if (preDigest === undefined || postDigest === undefined || preDigest !== postDigest) {
-      reject("direct_semantic_target_snapshot_observation_drift", "capture_digest");
-    }
+  if (!isPlainObject(pre) || !isPlainObject(post)) {
+    reject("direct_semantic_target_snapshot_observation_missing", "capture_pair");
   }
-  if (pre !== undefined || post !== undefined) {
-    if (pre === undefined || post === undefined) {
-      reject("direct_semantic_target_snapshot_observation_missing", "capture_pair");
-    }
-    const left = observationDigestOf(pre);
-    const right = observationDigestOf(post);
-    if (left !== right) reject("direct_semantic_target_snapshot_observation_drift", "capture_pair");
+  const preReceiptRef = requiredId(pre.receiptRef, "preObservation.receiptRef");
+  const postReceiptRef = requiredId(post.receiptRef, "postObservation.receiptRef");
+  if (preReceiptRef !== receipt.preObservationReceiptRef || postReceiptRef !== receipt.postObservationReceiptRef) {
+    reject("direct_semantic_target_snapshot_observation_receipt_mismatch", "capture_pair");
+  }
+  const preDigest = requiredDigest(pre.observationDigest, "preObservation.observationDigest");
+  const postDigest = requiredDigest(post.observationDigest, "postObservation.observationDigest");
+  if (preDigest !== postDigest) {
+    reject("direct_semantic_target_snapshot_observation_drift", "capture_pair");
   }
 }
 
@@ -431,8 +421,11 @@ function verifyTargetSnapshotReceipt(receipt, observed) {
   if (receipt.snapshotMaterializationMode !== "isolated_read_only_snapshot") {
     reject("direct_semantic_target_snapshot_materialization_mode_invalid");
   }
+  if (receipt.preObservationReceiptRef === receipt.postObservationReceiptRef) {
+    reject("direct_semantic_target_snapshot_observation_receipts_not_distinct");
+  }
   if (!isPlainObject(observed)) reject("direct_semantic_observation_invalid");
-  assertCaptureAgreement(observed);
+  assertCaptureAgreement(receipt, observed);
   const dimensions = [];
   for (const field of TARGET_FIELDS) {
     const value = snapshotObservationValue(observed, field);
@@ -443,24 +436,24 @@ function verifyTargetSnapshotReceipt(receipt, observed) {
     dimensions.push("targetSnapshotReceiptRef");
   }
 
-  // The immutable artifact must be represented by both a stable reference and
-  // its digest.  If an adapter supplies a richer artifact observation, check
-  // the same pair explicitly rather than trusting the receipt's text fields.
+  // Capture standing requires a concrete immutable artifact observation, not
+  // merely an echo of the receipt fields.
   const artifact = nestedObservationValue(observed, "immutableArtifact", [["artifact"]]);
-  if (artifact !== undefined) {
-    const artifactRef = artifact.ref || artifact.artifactRef;
-    const artifactDigest = artifact.digest || artifact.snapshotDigest;
-    if (artifactRef !== receipt.snapshotArtifactRef) {
-      reject("direct_semantic_target_snapshot_artifact_mismatch", "ref");
-    }
-    if (artifactDigest !== receipt.snapshotDigest) {
-      reject("direct_semantic_target_snapshot_artifact_mismatch", "digest");
-    }
-    if (artifact.materializationMode !== undefined &&
-        artifact.materializationMode !== receipt.snapshotMaterializationMode) {
-      reject("direct_semantic_target_snapshot_artifact_mismatch", "mode");
-    }
+  if (!isPlainObject(artifact)) {
+    reject("direct_semantic_target_snapshot_artifact_missing");
   }
+  const artifactRef = artifact.ref || artifact.artifactRef;
+  const artifactDigest = artifact.digest || artifact.snapshotDigest;
+  if (artifactRef !== receipt.snapshotArtifactRef) {
+    reject("direct_semantic_target_snapshot_artifact_mismatch", "ref");
+  }
+  if (artifactDigest !== receipt.snapshotDigest) {
+    reject("direct_semantic_target_snapshot_artifact_mismatch", "digest");
+  }
+  if (artifact.materializationMode !== receipt.snapshotMaterializationMode) {
+    reject("direct_semantic_target_snapshot_artifact_mismatch", "mode");
+  }
+  dimensions.push("capturePair", "immutableArtifact");
   return verificationReceipt(
     SNAPSHOT_VERIFICATION_RECEIPT_SCHEMA,
     receipt,

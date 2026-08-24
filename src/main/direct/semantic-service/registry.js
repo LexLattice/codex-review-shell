@@ -202,6 +202,13 @@ const SELECTION_RULES = new Set([
 const AUTHORITY_TOKEN = Symbol("direct-semantic-registry-authority");
 const AUTHORITY_STATE = new WeakMap();
 const RECORD_STATE = new WeakMap();
+const REGISTRY_ADMISSION_PURPOSE = "semantic_registry_admit";
+const VERIFICATION_REQUIRED_KINDS = new Set([
+  KIND.compilerBuildPin,
+  KIND.projectEvidenceRuntimeRevision,
+  KIND.targetSnapshotReceipt,
+  KIND.workerExecutionRuntimeRevision,
+]);
 
 function reject(code, detail = "") {
   return fail(code, detail);
@@ -479,11 +486,13 @@ function recordDigest(kind, record) {
 function createRegistryAuthority(options = {}) {
   if (!isPlainObject(options)) reject("direct_semantic_registry_options_invalid");
   const authorityRef = immutableId(options.authorityRef || "direct-semantic-registry-authority", "authorityRef");
+  const capabilityAuthority = options.capabilityAuthority;
+  if (!capabilityAuthority || typeof capabilityAuthority.assertBoundToPrincipal !== "function") {
+    reject("direct_semantic_registry_capability_authority_required");
+  }
   const state = {
     authorityRef,
-    admissionCapabilityRef: (options.admissionCapabilityRef ?? options.admittedCapabilityRef ?? options.admittedByCapabilityRef) === undefined
-      ? null
-      : immutableId(options.admissionCapabilityRef ?? options.admittedCapabilityRef ?? options.admittedByCapabilityRef, "admissionCapabilityRef"),
+    capabilityAuthority,
     records: new Map(Object.values(KIND).map((kind) => [kind, new Map()])),
     globalRefs: new Map(),
     sequence: 0,
@@ -491,38 +500,42 @@ function createRegistryAuthority(options = {}) {
   const authority = {
     schema: REGISTRY_AUTHORITY_SCHEMA,
     authorityRef,
-    admitCompilerBuildPin(input, observed) {
-      if (observed !== undefined) pinVerification.verifyCompilerBuildPin(input, observed);
-      return admit(state, KIND.compilerBuildPin, input);
+    admitCompilerBuildPin(input, observed, admissionAuthority) {
+      const admission = assertAdmissionAuthority(state, admissionAuthority);
+      if (observed === undefined) reject("direct_semantic_registry_verification_observation_required", KIND.compilerBuildPin);
+      const verificationReceipt = pinVerification.verifyCompilerBuildPin(input, observed);
+      return admit(state, KIND.compilerBuildPin, input, { admission, verificationReceipt });
     },
-    admitProjectEvidenceRuntimeRevision(input, observed) {
-      if (observed !== undefined) pinVerification.verifyProjectEvidenceRuntimeRevision(input, observed);
-      return admit(state, KIND.projectEvidenceRuntimeRevision, input);
+    admitProjectEvidenceRuntimeRevision(input, observed, admissionAuthority) {
+      const admission = assertAdmissionAuthority(state, admissionAuthority);
+      if (observed === undefined) reject("direct_semantic_registry_verification_observation_required", KIND.projectEvidenceRuntimeRevision);
+      const verificationReceipt = pinVerification.verifyProjectEvidenceRuntimeRevision(input, observed);
+      return admit(state, KIND.projectEvidenceRuntimeRevision, input, { admission, verificationReceipt });
     },
-    admitProjectRegistryRevision(input) { return admit(state, KIND.projectRegistryRevision, input); },
-    admitTargetSnapshotReceipt(input, observed) {
-      if (observed !== undefined) pinVerification.verifyTargetSnapshotReceipt(input, observed);
-      return admit(state, KIND.targetSnapshotReceipt, input);
+    admitProjectRegistryRevision(input, admissionAuthority) {
+      const admission = assertAdmissionAuthority(state, admissionAuthority);
+      return admit(state, KIND.projectRegistryRevision, input, { admission });
     },
-    admitWorkerExecutionRuntimeRevision(input, observed) {
-      if (observed !== undefined) pinVerification.verifyWorkerExecutionRuntimeRevision(input, observed);
-      return admit(state, KIND.workerExecutionRuntimeRevision, input);
+    admitTargetSnapshotReceipt(input, observed, admissionAuthority) {
+      const admission = assertAdmissionAuthority(state, admissionAuthority);
+      if (observed === undefined) reject("direct_semantic_registry_verification_observation_required", KIND.targetSnapshotReceipt);
+      const verificationReceipt = pinVerification.verifyTargetSnapshotReceipt(input, observed);
+      return admit(state, KIND.targetSnapshotReceipt, input, { admission, verificationReceipt });
     },
-    admitExecutionProfileRevision(input) { return admit(state, KIND.executionProfileRevision, input); },
-    admitAttemptPolicy(input) { return admit(state, KIND.attemptPolicy, input); },
-    admitCompilerPin(input) { return admit(state, KIND.compilerBuildPin, input); },
-    admitProjectRuntime(input) { return admit(state, KIND.projectEvidenceRuntimeRevision, input); },
-    admitWorkerRuntime(input) { return admit(state, KIND.workerExecutionRuntimeRevision, input); },
-    registerCompilerPin(input) { return admit(state, KIND.compilerBuildPin, input); },
-    registerProjectEvidenceRuntimeRevision(input) { return admit(state, KIND.projectEvidenceRuntimeRevision, input); },
-    registerProjectRegistryRevision(input) { return admit(state, KIND.projectRegistryRevision, input); },
-    registerTargetSnapshotReceipt(input) { return admit(state, KIND.targetSnapshotReceipt, input); },
-    registerWorkerExecutionRuntimeRevision(input) { return admit(state, KIND.workerExecutionRuntimeRevision, input); },
-    registerExecutionProfileRevision(input) { return admit(state, KIND.executionProfileRevision, input); },
-    registerAttemptPolicy(input) { return admit(state, KIND.attemptPolicy, input); },
-    admit(kind, input) { return admit(state, normalizeKind(kind), input); },
-    admitRevision(kind, input) { return admit(state, normalizeKind(kind), input); },
-    register(kind, input) { return admit(state, normalizeKind(kind), input); },
+    admitWorkerExecutionRuntimeRevision(input, observed, admissionAuthority) {
+      const admission = assertAdmissionAuthority(state, admissionAuthority);
+      if (observed === undefined) reject("direct_semantic_registry_verification_observation_required", KIND.workerExecutionRuntimeRevision);
+      const verificationReceipt = pinVerification.verifyWorkerExecutionRuntimeRevision(input, observed);
+      return admit(state, KIND.workerExecutionRuntimeRevision, input, { admission, verificationReceipt });
+    },
+    admitExecutionProfileRevision(input, admissionAuthority) {
+      const admission = assertAdmissionAuthority(state, admissionAuthority);
+      return admit(state, KIND.executionProfileRevision, input, { admission });
+    },
+    admitAttemptPolicy(input, admissionAuthority) {
+      const admission = assertAdmissionAuthority(state, admissionAuthority);
+      return admit(state, KIND.attemptPolicy, input, { admission });
+    },
     resolve(kind, ref) { return resolveRecord(state, normalizeKind(kind), ref); },
     get(kind, ref) { return resolveRecord(state, normalizeKind(kind), ref); },
     resolveRecord(kind, ref) { return resolveRecord(state, normalizeKind(kind), ref); },
@@ -567,6 +580,17 @@ function createRegistryAuthority(options = {}) {
     },
     assertAdmitted(kind, valueOrRef) {
       return assertRevision(state, normalizeKind(kind), valueOrRef);
+    },
+    assertExecutionEligible(kind, valueOrRef) {
+      const normalizedKind = normalizeKind(kind);
+      const record = assertRevision(state, normalizedKind, valueOrRef);
+      assertExecutionEligible(state, normalizedKind, record);
+      return record;
+    },
+    verificationReceipt(kind, valueOrRef) {
+      const normalizedKind = normalizeKind(kind);
+      const record = assertRevision(state, normalizedKind, valueOrRef);
+      return assertExecutionEligible(state, normalizedKind, record).verificationReceipt;
     },
     verifyCompilerBuildPin(pin, observed) {
       assertTrustedRecord(state, pin, KIND.compilerBuildPin);
@@ -647,12 +671,42 @@ function assertAuthority(authority) {
   return state;
 }
 
+function assertAdmissionAuthority(state, value) {
+  requireObject(value, "admissionAuthority");
+  exact(value, ["capability", "semanticPrincipal"], "direct_semantic_registry_admission_authority_shape_invalid");
+  const capabilityRecord = state.capabilityAuthority.assertBoundToPrincipal(value.capability, value.semanticPrincipal);
+  const capability = capabilityRecord.capability;
+  const principal = capabilityRecord.principal;
+  if (capability.operation !== "administer_service") {
+    reject("direct_semantic_registry_admission_operation_denied");
+  }
+  if (!capability.purposeScopes.includes(REGISTRY_ADMISSION_PURPOSE)) {
+    reject("direct_semantic_registry_admission_purpose_denied");
+  }
+  if (!principal || !["operator", "direct_service"].includes(principal.principalClass)) {
+    reject("direct_semantic_registry_admission_principal_denied");
+  }
+  return deepFreeze({
+    capabilityRef: capability.capabilityId,
+    principalRef: principal.principalId,
+    purpose: REGISTRY_ADMISSION_PURPOSE,
+  });
+}
+
 function assertTrustedRecord(state, record, expectedKind = undefined) {
   if (!isPlainObject(record)) reject("direct_semantic_registry_record_untrusted");
   const meta = RECORD_STATE.get(record);
   if (!meta || meta.state !== state) reject("direct_semantic_registry_record_untrusted");
   if (expectedKind !== undefined && meta.kind !== expectedKind) {
     reject("direct_semantic_registry_record_kind_mismatch", expectedKind);
+  }
+  return meta;
+}
+
+function assertExecutionEligible(state, kind, record) {
+  const meta = assertTrustedRecord(state, record, kind);
+  if (VERIFICATION_REQUIRED_KINDS.has(kind) && !meta.verificationReceipt?.verified) {
+    reject("direct_semantic_registry_record_unverified", `${kind}:${meta.ref}`);
   }
   return meta;
 }
@@ -716,16 +770,20 @@ function assertCrossReferences(state, kind, record) {
   }
 }
 
-function admit(state, kind, input) {
+function admit(state, kind, input, { admission, verificationReceipt = null } = {}) {
   if (!NORMALIZERS[kind]) reject("direct_semantic_registry_kind_invalid", kind);
+  if (!admission) reject("direct_semantic_registry_admission_authority_required", kind);
+  if (VERIFICATION_REQUIRED_KINDS.has(kind) && !verificationReceipt?.verified) {
+    reject("direct_semantic_registry_verification_receipt_required", kind);
+  }
   const existingMeta = isPlainObject(input) ? RECORD_STATE.get(input) : undefined;
   if (existingMeta) {
     if (existingMeta.state !== state || existingMeta.kind !== kind) reject("direct_semantic_registry_record_untrusted");
     return input;
   }
   const record = NORMALIZERS[kind](input);
-  if (kind === KIND.projectRegistryRevision && state.admissionCapabilityRef !== null &&
-      record.admittedByCapabilityRef !== state.admissionCapabilityRef) {
+  if (kind === KIND.projectRegistryRevision &&
+      record.admittedByCapabilityRef !== admission.capabilityRef) {
     reject("direct_semantic_registry_admission_capability_mismatch");
   }
   const refField = REF_FIELDS[kind];
@@ -734,7 +792,16 @@ function admit(state, kind, input) {
   ensureUniqueRef(state, kind, ref, digestValue);
   assertCrossReferences(state, kind, record);
   const admitted = deepFreeze({ ...record });
-  const meta = Object.freeze({ state, authorityRef: state.authorityRef, kind, ref, digest: digestValue, sequence: ++state.sequence });
+  const meta = Object.freeze({
+    state,
+    authorityRef: state.authorityRef,
+    kind,
+    ref,
+    digest: digestValue,
+    sequence: ++state.sequence,
+    admission,
+    verificationReceipt,
+  });
   RECORD_STATE.set(admitted, meta);
   state.records.get(kind).set(ref, admitted);
   state.globalRefs.set(ref, kind);
@@ -787,6 +854,10 @@ function bindJob(state, lineage) {
     KIND.attemptPolicy,
     lineage.attemptPolicyRef || profile.attemptPolicyRevisionRefs[0],
   );
+  const compilerVerification = assertExecutionEligible(state, KIND.compilerBuildPin, compilerPin);
+  const targetVerification = assertExecutionEligible(state, KIND.targetSnapshotReceipt, target);
+  const projectRuntimeVerification = assertExecutionEligible(state, KIND.projectEvidenceRuntimeRevision, projectRuntime);
+  const workerRuntimeVerification = assertExecutionEligible(state, KIND.workerExecutionRuntimeRevision, workerRuntime);
   if (target.projectRegistryRevisionRef !== project.registryRevisionRef) reject("direct_semantic_registry_job_target_project_mismatch");
   if (target.projectEvidenceRuntimeRevisionRef !== projectRuntime.projectEvidenceRuntimeRevisionRef) reject("direct_semantic_registry_job_target_runtime_mismatch");
   if (!profile.attemptPolicyRevisionRefs.includes(attemptPolicy.attemptPolicyRef)) reject("direct_semantic_registry_job_attempt_policy_not_allowed");
@@ -802,6 +873,12 @@ function bindJob(state, lineage) {
     workerExecutionRuntimeRevisionRef: workerRuntime.workerExecutionRuntimeRevisionRef,
     executionProfileRevisionRef: profile.executionProfileRevisionRef,
     attemptPolicyRef: attemptPolicy.attemptPolicyRef,
+    verificationReceiptDigests: {
+      compilerBuildPin: digestFor("direct-semantic-verification-receipt", compilerVerification.verificationReceipt),
+      targetSnapshotReceipt: digestFor("direct-semantic-verification-receipt", targetVerification.verificationReceipt),
+      projectEvidenceRuntimeRevision: digestFor("direct-semantic-verification-receipt", projectRuntimeVerification.verificationReceipt),
+      workerExecutionRuntimeRevision: digestFor("direct-semantic-verification-receipt", workerRuntimeVerification.verificationReceipt),
+    },
   };
   return deepFreeze(result);
 }
@@ -831,26 +908,26 @@ function DirectSemanticRegistry(options) {
   return createRegistryAuthority(options);
 }
 
-function admitCompilerBuildPin(authority, input, observed) {
-  return authorityFrom(authority) && authority.admitCompilerBuildPin(input, observed);
+function admitCompilerBuildPin(authority, input, observed, admissionAuthority) {
+  return authorityFrom(authority) && authority.admitCompilerBuildPin(input, observed, admissionAuthority);
 }
-function admitProjectEvidenceRuntimeRevision(authority, input, observed) {
-  return authorityFrom(authority) && authority.admitProjectEvidenceRuntimeRevision(input, observed);
+function admitProjectEvidenceRuntimeRevision(authority, input, observed, admissionAuthority) {
+  return authorityFrom(authority) && authority.admitProjectEvidenceRuntimeRevision(input, observed, admissionAuthority);
 }
-function admitProjectRegistryRevision(authority, input) {
-  return authorityFrom(authority) && authority.admitProjectRegistryRevision(input);
+function admitProjectRegistryRevision(authority, input, admissionAuthority) {
+  return authorityFrom(authority) && authority.admitProjectRegistryRevision(input, admissionAuthority);
 }
-function admitTargetSnapshotReceipt(authority, input, observed) {
-  return authorityFrom(authority) && authority.admitTargetSnapshotReceipt(input, observed);
+function admitTargetSnapshotReceipt(authority, input, observed, admissionAuthority) {
+  return authorityFrom(authority) && authority.admitTargetSnapshotReceipt(input, observed, admissionAuthority);
 }
-function admitWorkerExecutionRuntimeRevision(authority, input, observed) {
-  return authorityFrom(authority) && authority.admitWorkerExecutionRuntimeRevision(input, observed);
+function admitWorkerExecutionRuntimeRevision(authority, input, observed, admissionAuthority) {
+  return authorityFrom(authority) && authority.admitWorkerExecutionRuntimeRevision(input, observed, admissionAuthority);
 }
-function admitExecutionProfileRevision(authority, input) {
-  return authorityFrom(authority) && authority.admitExecutionProfileRevision(input);
+function admitExecutionProfileRevision(authority, input, admissionAuthority) {
+  return authorityFrom(authority) && authority.admitExecutionProfileRevision(input, admissionAuthority);
 }
-function admitAttemptPolicy(authority, input) {
-  return authorityFrom(authority) && authority.admitAttemptPolicy(input);
+function admitAttemptPolicy(authority, input, admissionAuthority) {
+  return authorityFrom(authority) && authority.admitAttemptPolicy(input, admissionAuthority);
 }
 
 function resolveRegistryRecord(authority, kind, ref) {
