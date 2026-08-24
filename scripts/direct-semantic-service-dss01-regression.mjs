@@ -533,6 +533,37 @@ const runtime2Input = {
   runtimePolicyDigest: DIGEST_B,
 };
 const runtime2 = registry.admitProjectEvidenceRuntimeRevision(runtime2Input, { ...runtime2Input }, admissionAuthority);
+const mismatchedRuntimeTargetInput = {
+  ...targetInput,
+  targetSnapshotReceiptRef: "target-snapshot-runtime-mismatch-r2",
+  projectEvidenceRuntimeRevisionRef: runtime2.projectEvidenceRuntimeRevisionRef,
+  preObservationReceiptRef: "pre-observation-runtime-mismatch-r2",
+  postObservationReceiptRef: "post-observation-runtime-mismatch-r2",
+};
+const mismatchedRuntimeSourceObservation = sourceObservationBodyFromTargetReceipt(mismatchedRuntimeTargetInput);
+const mismatchedRuntimeSourceDigest = sourceObservationDigest(mismatchedRuntimeSourceObservation);
+expectCode("direct_semantic_registry_target_runtime_revision_mismatch", () => registry.admitTargetSnapshotReceipt(
+  mismatchedRuntimeTargetInput,
+  {
+    ...mismatchedRuntimeTargetInput,
+    preObservation: {
+      ...targetObservation.preObservation,
+      receiptRef: mismatchedRuntimeTargetInput.preObservationReceiptRef,
+      targetSnapshotReceiptRef: mismatchedRuntimeTargetInput.targetSnapshotReceiptRef,
+      sourceObservation: mismatchedRuntimeSourceObservation,
+      sourceObservationDigest: mismatchedRuntimeSourceDigest,
+    },
+    postObservation: {
+      ...targetObservation.postObservation,
+      receiptRef: mismatchedRuntimeTargetInput.postObservationReceiptRef,
+      targetSnapshotReceiptRef: mismatchedRuntimeTargetInput.targetSnapshotReceiptRef,
+      sourceObservation: mismatchedRuntimeSourceObservation,
+      sourceObservationDigest: mismatchedRuntimeSourceDigest,
+    },
+    immutableArtifact: targetObservation.immutableArtifact,
+  },
+  admissionAuthority,
+));
 const project2 = registry.admitProjectRegistryRevision({
   ...JSON.parse(JSON.stringify(project)),
   registryRevisionRef: "project-registry-r2",
@@ -578,4 +609,5 @@ console.log(JSON.stringify({
   targetCaptureBodiesRecomputed: true,
   opaqueRegistryAdmissionRequired: true,
   registryPrincipalPurposeRequired: true,
+  exactProjectRuntimeBindingRequired: true,
 }, null, 2));

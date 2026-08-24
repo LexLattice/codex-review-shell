@@ -609,7 +609,6 @@ function createAuthorizationAuthority(options = {}) {
       contains(cap.allowedTargetORevisions, request.targetORevision, "targetORevision");
       project = records.resolve("projectRegistryRevision", request.projectRegistryRevisionRef);
       if (statusInvalid(project) || project.projectRef !== request.projectRef) fail("direct_semantic_project_registry_revision_invalid");
-      if (Array.isArray(project.targetRevisionPolicy?.allowedCommits) && project.targetRevisionPolicy.allowedCommits.length > 0 && !project.targetRevisionPolicy.allowedCommits.includes(request.targetORevision)) fail("direct_semantic_target_revision_not_allowed");
     } else if (operation === "submit_job") {
       ({ project, snapshot } = assertProjectAndSnapshot(request, cap));
       computation = assertCompilerExecutionAndAttempt(request, cap, estimate);

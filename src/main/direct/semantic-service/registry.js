@@ -756,6 +756,9 @@ function assertCrossReferences(state, kind, record) {
   }
   if (kind === KIND.targetSnapshotReceipt) {
     const project = resolveRecord(state, KIND.projectRegistryRevision, record.projectRegistryRevisionRef);
+    if (record.projectEvidenceRuntimeRevisionRef !== project.projectEvidenceRuntimeRevisionRef) {
+      reject("direct_semantic_registry_target_runtime_revision_mismatch");
+    }
     const runtime = resolveRecord(state, KIND.projectEvidenceRuntimeRevision, record.projectEvidenceRuntimeRevisionRef);
     assertProjectRuntimeMatches(project, runtime);
     if (record.repositoryIdentity !== project.repositoryIdentity) reject("direct_semantic_registry_target_repository_mismatch");

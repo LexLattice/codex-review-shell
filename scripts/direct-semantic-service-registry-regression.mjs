@@ -387,6 +387,21 @@ function main() {
     runtimePolicyDigest: DIGEST_B,
   });
   const runtime2 = registry.admitProjectEvidenceRuntimeRevision(runtime2Input, runtimeObservation(runtime2Input), admissionAuthority);
+  const mismatchedRuntimeTarget = targetSnapshot({
+    targetSnapshotReceiptRef: "target-snapshot-runtime-mismatch",
+    projectEvidenceRuntimeRevisionRef: runtime2.projectEvidenceRuntimeRevisionRef,
+    preObservationReceiptRef: "pre-observation-runtime-mismatch",
+    postObservationReceiptRef: "post-observation-runtime-mismatch",
+  });
+  assert.throws(
+    () => registry.admitTargetSnapshotReceipt(
+      mismatchedRuntimeTarget,
+      targetObservation(mismatchedRuntimeTarget),
+      admissionAuthority,
+    ),
+    (error) => error?.code === "direct_semantic_registry_target_runtime_revision_mismatch",
+    "a target cannot substitute another same-project runtime revision",
+  );
   const project2 = registry.admitProjectRegistryRevision(projectRegistry({
     registryRevisionRef: "project-registry-2",
     priorRevisionRef: admittedProject.registryRevisionRef,

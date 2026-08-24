@@ -70,7 +70,7 @@ const principal = principalAuthority.issueSemanticPrincipal({
   principalClass: "local_user_experimental",
   subjectRef: "workthread-1",
   projectScopes: ["project-1"],
-  purposeScopes: ["semantic_submit", "semantic_read"],
+  purposeScopes: ["semantic_snapshot_prepare", "semantic_submit", "semantic_read"],
   transportPrincipal: transport,
 });
 
@@ -99,7 +99,7 @@ const project = registry.admitProjectRegistryRevision({
   substrateBinding: "wsl",
   repositoryIdentity: "repo-1",
   privateRepositoryLocatorRef: "private-locator-1",
-  targetRevisionPolicy: { kind: "exact_git_commit_allowlist", allowedCommits: ["target-o-1"], cleanTreeRequired: true },
+  targetRevisionPolicy: { kind: "exact_git_commit_allowlist", allowedCommits: ["git-commit-1"], cleanTreeRequired: true },
   projectEvidenceRuntimeRevisionRef: projectRuntime.projectEvidenceRuntimeRevisionRef,
   evidenceCartographyRevisionRef: "cartography-1",
   authorityPolicyRef: "authority-policy-1",
@@ -112,7 +112,7 @@ const snapshotInput = {
   projectRegistryRevisionRef: project.registryRevisionRef,
   repositoryIdentity: "repo-1",
   targetORevision: "target-o-1",
-  gitCommit: "target-o-1",
+  gitCommit: "git-commit-1",
   gitTree: "tree-1",
   submoduleClosureDigest: DIGEST,
   lfsObjectClosureDigest: DIGEST,
@@ -308,6 +308,34 @@ function submitRequest(idempotencyKey = "submit-1", overrides = {}) {
   };
 }
 
+// Snapshot preparation binds an O-revision before a Git commit has been
+// materialized. Distinct O/commit identities are valid; the commit allowlist
+// is enforced later when the immutable TargetSnapshotReceipt is admitted.
+const prepareCapability = capabilityAuthority.issue({
+  capabilityId: "prepare-cap-1", principal, operation: "prepare_snapshot",
+  jobRefs: [], projectRegistryRevisionRefs: [project.registryRevisionRef],
+  allowedTargetORevisions: [snapshot.targetORevision], targetSnapshotReceiptRefs: [],
+  compilerPinRefs: [], kernelRevisionRefs: [], executionProfileRevisionRefs: [], providerProfileRevisionRefs: [],
+  allowedModels: [], allowedReasoningEfforts: [], attemptPolicyRevisionRefs: [],
+  purposeScopes: ["semantic_snapshot_prepare"], returnProjectionRefs: [], maximumJobs: 0,
+  maximumCellsPerJob: 0, maximumReplicatesPerCell: 0, maximumInputTokensPerJob: 0,
+  maximumOutputTokensPerJob: 0, maximumCostMicrounitsPerJob: null, issuedAt: NOW,
+  nonce: "prepare-capability-nonce-1",
+});
+const prepareReceipt = authorization.authorize({
+  operation: "prepare_snapshot", transportPrincipal: transport, semanticPrincipal: principal,
+  capability: prepareCapability,
+  request: {
+    schema: "direct_semantic_snapshot_prepare_request@1",
+    requestId: "prepare-request-1",
+    projectRef: project.projectRef,
+    projectRegistryRevisionRef: project.registryRevisionRef,
+    targetORevision: snapshot.targetORevision,
+    idempotencyKey: "prepare-idempotency-1",
+  },
+});
+assert.equal(prepareReceipt.decision, "authorized");
+
 const submit = submitCapability({ capabilityId: "submit-cap-1" });
 const accepted = authorization.authorize({
   operation: "submit_job",
@@ -404,5 +432,6 @@ console.log(JSON.stringify({
   status: "passed",
   acceptedAuthorizationRef: accepted.authorizationRef,
   readAuthorizationRef: readReceipt.authorizationRef,
+  prepareAuthorizationRef: prepareReceipt.authorizationRef,
   raced: raced.map((entry) => entry.status),
 }, null, 2));
