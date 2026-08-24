@@ -311,7 +311,12 @@ intersect canonical request values and computed resource estimate
 An empty intersection rejects the request. Budget counters are consumed under
 service-owned compare-and-swap; concurrent submissions cannot each spend the
 same remaining grant. The authorization receipt records every exact revision
-and numeric bound used in the decision.
+and numeric bound used in the decision. For a supported partial job, Direct
+derives the conservative reservation from the selected cell count, replicate
+count, maximum attempts per replicate slot, and execution-profile per-attempt
+input/output/cost maxima. Caller estimates must equal that derivation but never
+define it. An execution profile with no bounded per-attempt cost is not eligible
+for DSS-0.1 submission.
 
 ## 6. Immutable registries
 
@@ -430,6 +435,32 @@ type TargetSnapshotReceipt = {
   snapshotDigest: string;
   capturedAt: string;
 };
+
+type SourceObservationReceipt = {
+  schema: "direct_semantic_source_observation_receipt@1";
+  receiptRef: string;
+  targetSnapshotReceiptRef: string;
+  phase: "pre_capture" | "post_capture";
+  observedAt: string;
+  sourceObservation: {
+    projectRegistryRevisionRef: string;
+    repositoryIdentity: string;
+    targetORevision: string;
+    gitCommit: string;
+    gitTree: string;
+    submoduleClosureDigest: string;
+    lfsObjectClosureDigest: string;
+    admittedGeneratedInputDigest: string;
+    evidenceCartographyRevisionRef: string;
+    projectEvidenceRuntimeRevisionRef: string;
+    projectRuntimeInputDigest: string;
+    sourceStatusDigest: string;
+    snapshotArtifactRef: string;
+    snapshotMaterializationMode: "isolated_read_only_snapshot";
+    snapshotDigest: string;
+  };
+  sourceObservationDigest: string;
+};
 ```
 
 A Git commit alone is not the materialization target. The snapshot receipt binds
@@ -440,7 +471,11 @@ omitted detail.
 
 Snapshot preparation captures an isolated, read-only artifact and reproduces
 the complete source observation before and after capture. The receipt is
-admitted only when those observations agree and the artifact digest verifies.
+admitted only when both observation bodies are structurally closed, every
+source-closure field agrees with the target receipt, Direct recomputes each
+canonical observation digest, the pre/post bodies agree, their timestamps are
+ordered, and the artifact digest verifies. Equal caller-provided digest strings
+have no standing by themselves.
 All later materialization reads the immutable artifact, never the originating
 worktree. If Direct cannot freeze a project-specific source this way, v0 rejects
 snapshot preparation. An earlier clean-worktree observation never authorizes
@@ -1675,9 +1710,12 @@ target / runtime pin verification, and one composition root. Registry admission
 requires custody of an opaque `administer_service` capability; verification-
 required records cannot be admitted without a verification receipt, and job
 bindings preserve the receipt digests. Authorization resolves registry-owned
-records only through that authority. DSS-0.1 accepts exact partial selections
+records only through that authority. Registry admission purpose must be present
+in both the capability and its bound principal. DSS-0.1 accepts exact partial selections
 only: `exhaustive_compilation` fails closed until a compiler-produced complete
-occurrence set can be reconciled and reserved service-side. The focused gate is
+occurrence set can be reconciled and reserved service-side. Supported partial
+jobs conservatively reserve the exact topology-wide token and cost maxima from
+their frozen execution profile and attempt policy. The focused gate is
 `npm run direct:semantic-service-dss01`. This status does not claim daemon,
 durable storage, scheduling, model execution, or restart recovery; those begin
 at DSS-0.2.

@@ -66,6 +66,32 @@ const bool = { type: "boolean" };
 const positiveInteger = integer(1, Number.MAX_SAFE_INTEGER);
 const nonNegativeInteger = integer(0, Number.MAX_SAFE_INTEGER);
 const nullableNonNegativeInteger = { anyOf: [nonNegativeInteger, { type: "null" }] };
+const sourceObservationBodySchema = objectSchema(
+  `${DSS}source_observation_body@1`,
+  [
+    "projectRegistryRevisionRef", "repositoryIdentity", "targetORevision", "gitCommit", "gitTree",
+    "submoduleClosureDigest", "lfsObjectClosureDigest", "admittedGeneratedInputDigest",
+    "evidenceCartographyRevisionRef", "projectEvidenceRuntimeRevisionRef", "projectRuntimeInputDigest",
+    "sourceStatusDigest", "snapshotArtifactRef", "snapshotMaterializationMode", "snapshotDigest",
+  ],
+  {
+    projectRegistryRevisionRef: ref(),
+    repositoryIdentity: string("safe-token"),
+    targetORevision: ref(),
+    gitCommit: ref(),
+    gitTree: ref(),
+    submoduleClosureDigest: digest(),
+    lfsObjectClosureDigest: digest(),
+    admittedGeneratedInputDigest: digest(),
+    evidenceCartographyRevisionRef: ref(),
+    projectEvidenceRuntimeRevisionRef: ref(),
+    projectRuntimeInputDigest: digest(),
+    sourceStatusDigest: digest(),
+    snapshotArtifactRef: ref(),
+    snapshotMaterializationMode: { const: "isolated_read_only_snapshot" },
+    snapshotDigest: digest(),
+  },
+);
 
 const SCHEMAS = {
   TransportPrincipal: objectSchema(
@@ -263,6 +289,23 @@ const SCHEMAS = {
       postObservationReceiptRef: ref(),
       snapshotDigest: digest(),
       capturedAt: timestamp(),
+    },
+  ),
+
+  SourceObservationReceipt: objectSchema(
+    `${DSS}source_observation_receipt@1`,
+    [
+      "schema", "receiptRef", "targetSnapshotReceiptRef", "phase", "observedAt",
+      "sourceObservation", "sourceObservationDigest",
+    ],
+    {
+      schema: { const: `${DSS}source_observation_receipt@1` },
+      receiptRef: ref(),
+      targetSnapshotReceiptRef: ref(),
+      phase: enumOf(["pre_capture", "post_capture"]),
+      observedAt: timestamp(),
+      sourceObservation: sourceObservationBodySchema,
+      sourceObservationDigest: digest(),
     },
   ),
 
@@ -728,6 +771,7 @@ const SCHEMA_EXPORT_ALIASES = {
   PROJECT_EVIDENCE_RUNTIME_REVISION_SCHEMA: SCHEMAS.ProjectEvidenceRuntimeRevision,
   PROJECT_REGISTRY_REVISION_SCHEMA: SCHEMAS.ProjectRegistryRevision,
   TARGET_SNAPSHOT_RECEIPT_SCHEMA: SCHEMAS.TargetSnapshotReceipt,
+  SOURCE_OBSERVATION_RECEIPT_SCHEMA: SCHEMAS.SourceObservationReceipt,
   WORKER_EXECUTION_RUNTIME_REVISION_SCHEMA: SCHEMAS.WorkerExecutionRuntimeRevision,
   EXECUTION_PROFILE_REVISION_SCHEMA: SCHEMAS.ExecutionProfileRevision,
   ATTEMPT_POLICY_SCHEMA: SCHEMAS.AttemptPolicy,
@@ -740,6 +784,7 @@ const SCHEMA_EXPORT_ALIASES = {
   DIRECT_SEMANTIC_PROJECT_EVIDENCE_RUNTIME_REVISION_SCHEMA: SCHEMAS.ProjectEvidenceRuntimeRevision,
   DIRECT_SEMANTIC_PROJECT_REGISTRY_REVISION_SCHEMA: SCHEMAS.ProjectRegistryRevision,
   DIRECT_SEMANTIC_TARGET_SNAPSHOT_RECEIPT_SCHEMA: SCHEMAS.TargetSnapshotReceipt,
+  DIRECT_SEMANTIC_SOURCE_OBSERVATION_RECEIPT_SCHEMA: SCHEMAS.SourceObservationReceipt,
   DIRECT_SEMANTIC_WORKER_EXECUTION_RUNTIME_REVISION_SCHEMA: SCHEMAS.WorkerExecutionRuntimeRevision,
   DIRECT_SEMANTIC_EXECUTION_PROFILE_REVISION_SCHEMA: SCHEMAS.ExecutionProfileRevision,
   DIRECT_SEMANTIC_ATTEMPT_POLICY_SCHEMA: SCHEMAS.AttemptPolicy,

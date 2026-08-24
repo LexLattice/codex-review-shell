@@ -13,6 +13,9 @@ const {
   WORKER_EXECUTION_RUNTIME_REVISION_SCHEMA,
   EXECUTION_PROFILE_REVISION_SCHEMA,
   ATTEMPT_POLICY_SCHEMA,
+  SOURCE_OBSERVATION_RECEIPT_SCHEMA,
+  sourceObservationBodyFromTargetReceipt,
+  sourceObservationDigest,
 } = require("../src/main/direct/semantic-service");
 
 const NOW = "2026-08-24T10:00:00.000Z";
@@ -125,10 +128,28 @@ const snapshotInput = {
   snapshotDigest: DIGEST,
   capturedAt: NOW,
 };
+const snapshotSourceObservation = sourceObservationBodyFromTargetReceipt(snapshotInput);
+const snapshotSourceObservationDigest = sourceObservationDigest(snapshotSourceObservation);
 const snapshot = registry.admitTargetSnapshotReceipt(snapshotInput, {
   ...snapshotInput,
-  preObservation: { receiptRef: snapshotInput.preObservationReceiptRef, observationDigest: DIGEST },
-  postObservation: { receiptRef: snapshotInput.postObservationReceiptRef, observationDigest: DIGEST },
+  preObservation: {
+    schema: SOURCE_OBSERVATION_RECEIPT_SCHEMA,
+    receiptRef: snapshotInput.preObservationReceiptRef,
+    targetSnapshotReceiptRef: snapshotInput.targetSnapshotReceiptRef,
+    phase: "pre_capture",
+    observedAt: "2026-08-24T09:59:59.000Z",
+    sourceObservation: snapshotSourceObservation,
+    sourceObservationDigest: snapshotSourceObservationDigest,
+  },
+  postObservation: {
+    schema: SOURCE_OBSERVATION_RECEIPT_SCHEMA,
+    receiptRef: snapshotInput.postObservationReceiptRef,
+    targetSnapshotReceiptRef: snapshotInput.targetSnapshotReceiptRef,
+    phase: "post_capture",
+    observedAt: NOW,
+    sourceObservation: snapshotSourceObservation,
+    sourceObservationDigest: snapshotSourceObservationDigest,
+  },
   immutableArtifact: {
     artifactRef: snapshotInput.snapshotArtifactRef,
     digest: snapshotInput.snapshotDigest,
@@ -245,13 +266,26 @@ function submitCapability(overrides = {}) {
     maximumJobs: overrides.maximumJobs ?? 2,
     maximumCellsPerJob: overrides.maximumCellsPerJob ?? 2,
     maximumReplicatesPerCell: overrides.maximumReplicatesPerCell ?? 1,
-    maximumInputTokensPerJob: overrides.maximumInputTokensPerJob ?? 100,
-    maximumOutputTokensPerJob: overrides.maximumOutputTokensPerJob ?? 100,
-    maximumCostMicrounitsPerJob: overrides.maximumCostMicrounitsPerJob ?? 100,
+    maximumInputTokensPerJob: overrides.maximumInputTokensPerJob ?? 4_000,
+    maximumOutputTokensPerJob: overrides.maximumOutputTokensPerJob ?? 4_000,
+    maximumCostMicrounitsPerJob: overrides.maximumCostMicrounitsPerJob ?? 400,
     issuedAt: overrides.issuedAt || NOW,
     ...(overrides.expiresAt ? { expiresAt: overrides.expiresAt } : {}),
     nonce: overrides.nonce || `nonce-${Math.random().toString(36).slice(2)}`,
   });
+}
+
+function submissionEstimate(cells = 1, overrides = {}) {
+  return {
+    cells,
+    replicatesPerCell: 1,
+    inputTokens: cells * 2_000,
+    outputTokens: cells * 2_000,
+    costMicrounits: cells * 200,
+    model: "fake-model",
+    reasoningEffort: "minimal",
+    ...overrides,
+  };
 }
 
 function submitRequest(idempotencyKey = "submit-1", overrides = {}) {
@@ -281,13 +315,18 @@ const accepted = authorization.authorize({
   semanticPrincipal: principal,
   capability: submit,
   request: submitRequest("submit-1"),
-  resourceEstimate: { cells: 1, replicatesPerCell: 1, inputTokens: 10, outputTokens: 10, costMicrounits: 5, model: "fake-model", reasoningEffort: "minimal" },
+  resourceEstimate: submissionEstimate(),
 });
 assert.equal(accepted.decision, "authorized");
 assert.equal(authorization.authorize({
   operation: "submit_job", transportPrincipal: transport, semanticPrincipal: principal, capability: submit,
-  request: submitRequest("submit-1"), resourceEstimate: { cells: 1, replicatesPerCell: 1, inputTokens: 10, outputTokens: 10, costMicrounits: 5, model: "fake-model", reasoningEffort: "minimal" },
+  request: submitRequest("submit-1"), resourceEstimate: submissionEstimate(),
 }), accepted, "same idempotency key/request returns original receipt");
+expectCode("direct_semantic_resource_estimate_mismatch", () => authorization.authorize({
+  operation: "submit_job", transportPrincipal: transport, semanticPrincipal: principal, capability: submit,
+  request: submitRequest("zero-variable-budget"),
+  resourceEstimate: submissionEstimate(1, { inputTokens: 0, outputTokens: 0, costMicrounits: 0 }),
+}));
 
 // Copied requester metadata is not identity, and SO_PEERCRED-derived transport
 // alone is not a semantic capability.
@@ -331,15 +370,15 @@ expectCode("direct_semantic_capability_operation_mismatch", () => authorization.
 expectCode("direct_semantic_scope_denied", () => authorization.authorize({
   operation: "submit_job", transportPrincipal: transport, semanticPrincipal: principal, capability: submit,
   request: submitRequest("future-revision", { targetORevision: "target-o-2" }),
-  resourceEstimate: { cells: 1, replicatesPerCell: 1, inputTokens: 10, outputTokens: 10, costMicrounits: 5 },
+  resourceEstimate: submissionEstimate(),
 }));
 expectCode("direct_semantic_cells_quota_exceeded", () => authorization.authorize({
   operation: "submit_job", transportPrincipal: transport, semanticPrincipal: principal, capability: submit,
-  request: submitRequest("bounds-cells", { edgeOccurrenceRefs: ["edge-1", "edge-2", "edge-3"] }), resourceEstimate: { cells: 3, replicatesPerCell: 1, inputTokens: 10, outputTokens: 10, costMicrounits: 5 },
+  request: submitRequest("bounds-cells", { edgeOccurrenceRefs: ["edge-1", "edge-2", "edge-3"] }), resourceEstimate: submissionEstimate(3),
 }));
 expectCode("direct_semantic_scope_denied", () => authorization.authorize({
   operation: "submit_job", transportPrincipal: transport, semanticPrincipal: principal, capability: submit,
-  request: submitRequest("bounds-model"), resourceEstimate: { cells: 1, replicatesPerCell: 1, inputTokens: 10, outputTokens: 10, costMicrounits: 5, model: "not-allowed", reasoningEffort: "minimal" },
+  request: submitRequest("bounds-model"), resourceEstimate: submissionEstimate(1, { model: "not-allowed" }),
 }));
 
 const expiring = submitCapability({ capabilityId: "submit-expiring", issuedAt: "2026-08-24T08:00:00.000Z", expiresAt: "2026-08-24T09:00:00.000Z" });
@@ -355,7 +394,7 @@ expectCode("direct_semantic_capability_untrusted", () => authorization.authorize
 const oneShot = submitCapability({ capabilityId: "submit-one-shot", maximumJobs: 1 });
 const raced = await Promise.allSettled(["race-a", "race-b"].map((key) => Promise.resolve().then(() => authorization.authorize({
   operation: "submit_job", transportPrincipal: transport, semanticPrincipal: principal, capability: oneShot,
-  request: submitRequest(key), resourceEstimate: { cells: 1, replicatesPerCell: 1, inputTokens: 1, outputTokens: 1, costMicrounits: 1 },
+  request: submitRequest(key), resourceEstimate: submissionEstimate(),
 }))));
 assert.equal(raced.filter((entry) => entry.status === "fulfilled").length, 1, "one budget slot has one winner");
 assert.equal(raced.filter((entry) => entry.status === "rejected").length, 1, "second concurrent spend is rejected");

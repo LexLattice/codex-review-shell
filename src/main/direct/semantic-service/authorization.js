@@ -177,6 +177,17 @@ function clone(value) {
   return value;
 }
 
+function checkedProduct(values, code = "direct_semantic_resource_reservation_overflow") {
+  let product = 1;
+  for (const value of values) {
+    if (!Number.isSafeInteger(value) || value < 0) fail(code);
+    if (value === 0) return 0;
+    if (product > Math.floor(Number.MAX_SAFE_INTEGER / value)) fail(code);
+    product *= value;
+  }
+  return product;
+}
+
 function has(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
@@ -504,6 +515,30 @@ function createAuthorizationAuthority(options = {}) {
     return { compiler, execution, provider, attemptPolicy, kernelRefs, modelIntersection, effortIntersection };
   }
 
+  function authoritativeReservationFor(request, computation, suppliedEstimate) {
+    const cells = request.edgeOccurrenceRefs.length;
+    const replicatesPerCell = computation.attemptPolicy.replicateCountPerCell;
+    const maximumAttemptsPerReplicateSlot = computation.attemptPolicy.maximumAttemptsPerReplicateSlot;
+    const maximumCostPerAttempt = computation.execution.maximumCostMicrounitsPerAttempt;
+    if (maximumCostPerAttempt === null) fail("direct_semantic_cost_reservation_unbounded");
+    const maximumAttempts = checkedProduct([cells, replicatesPerCell, maximumAttemptsPerReplicateSlot]);
+    const authoritative = {
+      cells,
+      replicatesPerCell,
+      inputTokens: checkedProduct([maximumAttempts, computation.execution.maximumInputTokensPerAttempt]),
+      outputTokens: checkedProduct([maximumAttempts, computation.execution.maximumOutputTokensPerAttempt]),
+      costMicrounits: checkedProduct([maximumAttempts, maximumCostPerAttempt]),
+      ...(suppliedEstimate.model === undefined ? {} : { model: suppliedEstimate.model }),
+      ...(suppliedEstimate.reasoningEffort === undefined ? {} : { reasoningEffort: suppliedEstimate.reasoningEffort }),
+    };
+    for (const field of ["cells", "replicatesPerCell", "inputTokens", "outputTokens", "costMicrounits"]) {
+      if (suppliedEstimate[field] !== authoritative[field]) {
+        fail("direct_semantic_resource_estimate_mismatch", field);
+      }
+    }
+    return deepFreeze(authoritative);
+  }
+
   function assertProjection(request, cap) {
     const projectionRef = request.deliveryProjectionRef || request.returnProjectionRef;
     if (!projectionRef) return null;
@@ -558,7 +593,7 @@ function createAuthorizationAuthority(options = {}) {
       if (input.model !== undefined) estimateInput.model = input.model;
       if (input.reasoningEffort !== undefined) estimateInput.reasoningEffort = input.reasoningEffort;
     }
-    const estimate = normalizeEstimate(request, estimateInput);
+    let estimate = normalizeEstimate(request, estimateInput);
     const { transportRecord, semanticRecord, capabilityRecord, purpose } = assertTrustedCapabilityAndPrincipals(input);
     const cap = capabilityRecord.capability;
     if (request.projectRef !== undefined) assertProjectScope(semanticRecord, request.projectRef, operation);
@@ -578,8 +613,8 @@ function createAuthorizationAuthority(options = {}) {
     } else if (operation === "submit_job") {
       ({ project, snapshot } = assertProjectAndSnapshot(request, cap));
       computation = assertCompilerExecutionAndAttempt(request, cap, estimate);
+      estimate = authoritativeReservationFor(request, computation, estimate);
       projection = assertProjection(request, cap);
-      if (estimate.cells !== request.edgeOccurrenceRefs.length) fail("direct_semantic_resource_estimate_mismatch");
       if (estimate.cells === 0) fail("direct_semantic_selection_empty");
     } else if (["inspect_job", "read_results", "subscribe_results", "request_cancel"].includes(operation)) {
       job = assertJob(request, cap, semanticRecord, operation);

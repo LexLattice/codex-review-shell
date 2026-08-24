@@ -683,6 +683,9 @@ function assertAdmissionAuthority(state, value) {
   if (!capability.purposeScopes.includes(REGISTRY_ADMISSION_PURPOSE)) {
     reject("direct_semantic_registry_admission_purpose_denied");
   }
+  if (!principal?.purposeScopes?.includes(REGISTRY_ADMISSION_PURPOSE)) {
+    reject("direct_semantic_registry_admission_principal_purpose_denied");
+  }
   if (!principal || !["operator", "direct_service"].includes(principal.principalClass)) {
     reject("direct_semantic_registry_admission_principal_denied");
   }

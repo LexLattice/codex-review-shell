@@ -15,7 +15,10 @@ import {
 } from "../src/main/direct/semantic-service/registry.js";
 import {
   COMPILER_FIELDS,
+  SOURCE_OBSERVATION_RECEIPT_SCHEMA,
   TARGET_FIELDS,
+  sourceObservationBodyFromTargetReceipt,
+  sourceObservationDigest,
   verifyCompilerBuildPin,
   verifyTargetSnapshotReceipt,
 } from "../src/main/direct/semantic-service/pin-verification.js";
@@ -173,10 +176,28 @@ function compilerObservation(pin) {
 }
 
 function targetObservation(receipt) {
+  const sourceObservation = sourceObservationBodyFromTargetReceipt(receipt);
+  const sourceDigest = sourceObservationDigest(sourceObservation);
   return {
     ...Object.fromEntries(TARGET_FIELDS.map((field) => [field, receipt[field]])),
-    preObservation: { receiptRef: receipt.preObservationReceiptRef, observationDigest: DIGEST_A },
-    postObservation: { receiptRef: receipt.postObservationReceiptRef, observationDigest: DIGEST_A },
+    preObservation: {
+      schema: SOURCE_OBSERVATION_RECEIPT_SCHEMA,
+      receiptRef: receipt.preObservationReceiptRef,
+      targetSnapshotReceiptRef: receipt.targetSnapshotReceiptRef,
+      phase: "pre_capture",
+      observedAt: "2026-08-24T09:59:59.000Z",
+      sourceObservation,
+      sourceObservationDigest: sourceDigest,
+    },
+    postObservation: {
+      schema: SOURCE_OBSERVATION_RECEIPT_SCHEMA,
+      receiptRef: receipt.postObservationReceiptRef,
+      targetSnapshotReceiptRef: receipt.targetSnapshotReceiptRef,
+      phase: "post_capture",
+      observedAt: "2026-08-24T10:00:00.000Z",
+      sourceObservation,
+      sourceObservationDigest: sourceDigest,
+    },
     immutableArtifact: {
       artifactRef: receipt.snapshotArtifactRef,
       digest: receipt.snapshotDigest,
@@ -316,8 +337,27 @@ function main() {
     expectFailure(() => verifyTargetSnapshotReceipt(admittedTarget, observation), `target drift: ${field}`);
   }
   const captureDrift = targetObservation(admittedTarget);
-  captureDrift.postObservation.observationDigest = DIGEST_B;
+  captureDrift.postObservation.sourceObservation = {
+    ...captureDrift.postObservation.sourceObservation,
+    sourceStatusDigest: DIGEST_B,
+  };
+  captureDrift.postObservation.sourceObservationDigest = sourceObservationDigest(captureDrift.postObservation.sourceObservation);
   expectFailure(() => verifyTargetSnapshotReceipt(admittedTarget, captureDrift), "mutable capture drift");
+  const unrelatedCaptureDigest = targetObservation(admittedTarget);
+  unrelatedCaptureDigest.preObservation.sourceObservationDigest = DIGEST_C;
+  unrelatedCaptureDigest.postObservation.sourceObservationDigest = DIGEST_C;
+  expectFailure(() => verifyTargetSnapshotReceipt(admittedTarget, unrelatedCaptureDigest), "equal unrelated capture digests");
+  const unrelatedSourceBody = {
+    ...sourceObservationBodyFromTargetReceipt(admittedTarget),
+    sourceStatusDigest: DIGEST_C,
+  };
+  const unrelatedSourceDigest = sourceObservationDigest(unrelatedSourceBody);
+  const unrelatedSourceReceipts = targetObservation(admittedTarget);
+  unrelatedSourceReceipts.preObservation.sourceObservation = unrelatedSourceBody;
+  unrelatedSourceReceipts.preObservation.sourceObservationDigest = unrelatedSourceDigest;
+  unrelatedSourceReceipts.postObservation.sourceObservation = unrelatedSourceBody;
+  unrelatedSourceReceipts.postObservation.sourceObservationDigest = unrelatedSourceDigest;
+  expectFailure(() => verifyTargetSnapshotReceipt(admittedTarget, unrelatedSourceReceipts), "equal unrelated source observations");
 
   // JSON copies, unknown refs, and copied authority-shaped objects carry no
   // admission authority.
@@ -390,6 +430,24 @@ function main() {
   // registration aliases are intentionally absent.
   expectFailure(() => registry.admitCompilerBuildPin(compilerPin({ compilerPinRef: "compiler-pin-unverified" }), undefined, admissionAuthority), "unverified compiler cannot be admitted");
   expectFailure(() => registry.admitAttemptPolicy(attemptPolicy({ attemptPolicyRef: "policy-no-authority" })), "registry admission requires opaque authority");
+  const wrongPurposePrincipal = principalAuthority.issueSemanticPrincipal({
+    principalId: "registry-operator-wrong-purpose", issuerRevision: "registry-issuer-1", principalClass: "operator",
+    subjectRef: "registry-service", projectScopes: [], purposeScopes: ["unrelated-purpose"], transportPrincipal: transport,
+  });
+  const widenedPurposeCapability = capabilityAuthority.issue({
+    capabilityId: "registry-capability-widened-purpose", principal: wrongPurposePrincipal, operation: "administer_service",
+    jobRefs: [], projectRegistryRevisionRefs: [], allowedTargetORevisions: [], targetSnapshotReceiptRefs: [],
+    compilerPinRefs: [], kernelRevisionRefs: [], executionProfileRevisionRefs: [], providerProfileRevisionRefs: [],
+    allowedModels: [], allowedReasoningEfforts: [], attemptPolicyRevisionRefs: [],
+    purposeScopes: ["semantic_registry_admit"], returnProjectionRefs: [], maximumJobs: 0,
+    maximumCellsPerJob: 0, maximumReplicatesPerCell: 0, maximumInputTokensPerJob: 0,
+    maximumOutputTokensPerJob: 0, maximumCostMicrounitsPerJob: null,
+    issuedAt: "2026-08-24T10:00:00.000Z", nonce: "registry-capability-widened-purpose-nonce",
+  });
+  expectFailure(() => registry.admitAttemptPolicy(
+    attemptPolicy({ attemptPolicyRef: "policy-purpose-widening" }),
+    { capability: widenedPurposeCapability, semanticPrincipal: wrongPurposePrincipal },
+  ), "capability cannot widen principal purpose scope");
   assert.equal(typeof registry.register, "undefined");
   assert.equal(typeof registry.registerCompilerPin, "undefined");
 

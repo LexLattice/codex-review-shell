@@ -14,6 +14,9 @@ const {
   WORKER_EXECUTION_RUNTIME_REVISION_SCHEMA,
   EXECUTION_PROFILE_REVISION_SCHEMA,
   ATTEMPT_POLICY_SCHEMA,
+  SOURCE_OBSERVATION_RECEIPT_SCHEMA,
+  sourceObservationBodyFromTargetReceipt,
+  sourceObservationDigest,
 } = require("../src/main/direct/semantic-service");
 
 const NOW = "2026-08-24T14:00:00.000Z";
@@ -116,10 +119,28 @@ const targetInput = {
   snapshotDigest: DIGEST_A,
   capturedAt: NOW,
 };
+const targetSourceObservation = sourceObservationBodyFromTargetReceipt(targetInput);
+const targetSourceObservationDigest = sourceObservationDigest(targetSourceObservation);
 const targetObservation = {
   ...targetInput,
-  preObservation: { receiptRef: targetInput.preObservationReceiptRef, observationDigest: DIGEST_A },
-  postObservation: { receiptRef: targetInput.postObservationReceiptRef, observationDigest: DIGEST_A },
+  preObservation: {
+    schema: SOURCE_OBSERVATION_RECEIPT_SCHEMA,
+    receiptRef: targetInput.preObservationReceiptRef,
+    targetSnapshotReceiptRef: targetInput.targetSnapshotReceiptRef,
+    phase: "pre_capture",
+    observedAt: "2026-08-24T13:59:59.000Z",
+    sourceObservation: targetSourceObservation,
+    sourceObservationDigest: targetSourceObservationDigest,
+  },
+  postObservation: {
+    schema: SOURCE_OBSERVATION_RECEIPT_SCHEMA,
+    receiptRef: targetInput.postObservationReceiptRef,
+    targetSnapshotReceiptRef: targetInput.targetSnapshotReceiptRef,
+    phase: "post_capture",
+    observedAt: NOW,
+    sourceObservation: targetSourceObservation,
+    sourceObservationDigest: targetSourceObservationDigest,
+  },
   immutableArtifact: {
     artifactRef: targetInput.snapshotArtifactRef,
     digest: targetInput.snapshotDigest,
@@ -232,10 +253,52 @@ expectCode("direct_semantic_capability_untrusted", () => registry.admitProjectRe
   capability: JSON.parse(JSON.stringify(registryCapability)),
   semanticPrincipal: registryPrincipal,
 }));
+const wrongPurposeRegistryPrincipal = principalAuthority.issueSemanticPrincipal({
+  principalId: "dss01-registry-operator-wrong-purpose", issuerRevision: "dss01-registry-issuer-r1",
+  principalClass: "operator", subjectRef: "dss01-registry-service", projectScopes: [],
+  purposeScopes: ["unrelated-purpose"], transportPrincipal: registryTransport,
+});
+const widenedPurposeRegistryCapability = capabilityAuthority.issue({
+  capabilityId: "dss01-registry-widened-purpose", principal: wrongPurposeRegistryPrincipal, operation: "administer_service",
+  jobRefs: [], projectRegistryRevisionRefs: [], allowedTargetORevisions: [], targetSnapshotReceiptRefs: [],
+  compilerPinRefs: [], kernelRevisionRefs: [], executionProfileRevisionRefs: [], providerProfileRevisionRefs: [],
+  allowedModels: [], allowedReasoningEfforts: [], attemptPolicyRevisionRefs: [],
+  purposeScopes: ["semantic_registry_admit"], returnProjectionRefs: [], maximumJobs: 0,
+  maximumCellsPerJob: 0, maximumReplicatesPerCell: 0, maximumInputTokensPerJob: 0,
+  maximumOutputTokensPerJob: 0, maximumCostMicrounitsPerJob: null, issuedAt: NOW,
+  nonce: "dss01-registry-widened-purpose-nonce",
+});
+expectCode("direct_semantic_registry_admission_principal_purpose_denied", () => registry.admitAttemptPolicy({
+  ...JSON.parse(JSON.stringify(attemptPolicy)),
+  attemptPolicyRef: "attempt-policy-widened-purpose-r2",
+}, {
+  capability: widenedPurposeRegistryCapability,
+  semanticPrincipal: wrongPurposeRegistryPrincipal,
+}));
 expectCode("direct_semantic_target_snapshot_observation_missing", () => registry.admitTargetSnapshotReceipt({
   ...targetInput,
   targetSnapshotReceiptRef: "target-snapshot-no-capture-r2",
 }, { ...targetInput, targetSnapshotReceiptRef: "target-snapshot-no-capture-r2" }, admissionAuthority));
+expectCode("direct_semantic_source_observation_digest_mismatch", () => registry.verifyTargetSnapshotReceipt(target, {
+  ...targetObservation,
+  preObservation: { ...targetObservation.preObservation, sourceObservationDigest: DIGEST_B },
+  postObservation: { ...targetObservation.postObservation, sourceObservationDigest: DIGEST_B },
+}));
+const unrelatedSourceObservation = { ...targetSourceObservation, sourceStatusDigest: DIGEST_B };
+const unrelatedSourceObservationDigest = sourceObservationDigest(unrelatedSourceObservation);
+expectCode("direct_semantic_pin_dimension_mismatch", () => registry.verifyTargetSnapshotReceipt(target, {
+  ...targetObservation,
+  preObservation: {
+    ...targetObservation.preObservation,
+    sourceObservation: unrelatedSourceObservation,
+    sourceObservationDigest: unrelatedSourceObservationDigest,
+  },
+  postObservation: {
+    ...targetObservation.postObservation,
+    sourceObservation: unrelatedSourceObservation,
+    sourceObservationDigest: unrelatedSourceObservationDigest,
+  },
+}));
 
 const transport = principalAuthority.deriveTransportPrincipal({
   transport: "unix_socket",
@@ -271,9 +334,9 @@ const capability = capabilityAuthority.issue({
   maximumJobs: 1,
   maximumCellsPerJob: 2,
   maximumReplicatesPerCell: 2,
-  maximumInputTokensPerJob: 4_000,
-  maximumOutputTokensPerJob: 2_000,
-  maximumCostMicrounitsPerJob: 200,
+  maximumInputTokensPerJob: 16_000,
+  maximumOutputTokensPerJob: 8_000,
+  maximumCostMicrounitsPerJob: 800,
   issuedAt: NOW,
   nonce: "submit-capability-nonce-r1",
 });
@@ -297,9 +360,9 @@ const request = {
 const resourceEstimate = {
   cells: 2,
   replicatesPerCell: 2,
-  inputTokens: 2_000,
-  outputTokens: 500,
-  costMicrounits: 100,
+  inputTokens: 16_000,
+  outputTokens: 8_000,
+  costMicrounits: 800,
   model: "deterministic-fake",
   reasoningEffort: "medium",
 };
@@ -331,8 +394,25 @@ expectCode("direct_semantic_exhaustive_submission_not_implemented", () => author
 assert.deepEqual(capabilityAuthority.quotaSnapshot(capability), quotaBeforeExhaustive);
 expectCode("direct_semantic_resource_estimate_mismatch", () => authorization.authorize({
   operation: "submit_job", transportPrincipal: transport, semanticPrincipal: principal, capability,
+  request: { ...request, requestId: "submit-request-zero-variable-budget-r1", idempotencyKey: "submit-zero-variable-budget-r1" },
+  resourceEstimate: {
+    ...resourceEstimate,
+    inputTokens: 0,
+    outputTokens: 0,
+    costMicrounits: 0,
+  },
+}));
+assert.deepEqual(capabilityAuthority.quotaSnapshot(capability), quotaBeforeExhaustive);
+expectCode("direct_semantic_resource_estimate_mismatch", () => authorization.authorize({
+  operation: "submit_job", transportPrincipal: transport, semanticPrincipal: principal, capability,
   request: { ...request, requestId: "submit-request-undercounted-r1", idempotencyKey: "submit-undercounted-r1" },
-  resourceEstimate: { ...resourceEstimate, cells: 1 },
+  resourceEstimate: {
+    ...resourceEstimate,
+    cells: 1,
+    inputTokens: 8_000,
+    outputTokens: 4_000,
+    costMicrounits: 400,
+  },
 }));
 expectCode("direct_semantic_replicates_estimate_mismatch", () => authorization.authorize({
   operation: "submit_job", transportPrincipal: transport, semanticPrincipal: principal, capability,
@@ -398,7 +478,13 @@ expectCode("direct_semantic_idempotency_conflict", () => authorization.authorize
   semanticPrincipal: principal,
   capability,
   request: { ...request, edgeOccurrenceRefs: ["edge-occurrence-r1"] },
-  resourceEstimate: { ...resourceEstimate, cells: 1 },
+  resourceEstimate: {
+    ...resourceEstimate,
+    cells: 1,
+    inputTokens: 8_000,
+    outputTokens: 4_000,
+    costMicrounits: 400,
+  },
 }));
 
 // JSON-shaped copies preserve diagnostics but carry no authority.
@@ -487,6 +573,9 @@ console.log(JSON.stringify({
   registryShadowingRejected: true,
   unverifiedPinsRejected: true,
   exhaustiveUnderreservationRejected: true,
+  variableBudgetUnderreservationRejected: true,
   targetCapturePairRequired: true,
+  targetCaptureBodiesRecomputed: true,
   opaqueRegistryAdmissionRequired: true,
+  registryPrincipalPurposeRequired: true,
 }, null, 2));

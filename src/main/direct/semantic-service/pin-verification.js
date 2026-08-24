@@ -31,6 +31,8 @@ const TARGET_SNAPSHOT_RECEIPT_SCHEMA = "direct_semantic_target_snapshot_receipt@
 const WORKER_EXECUTION_RUNTIME_REVISION_SCHEMA = "direct_semantic_worker_execution_runtime_revision@1";
 const PIN_VERIFICATION_RECEIPT_SCHEMA = "direct_semantic_pin_verification_receipt@1";
 const SNAPSHOT_VERIFICATION_RECEIPT_SCHEMA = "direct_semantic_target_snapshot_verification_receipt@1";
+const SOURCE_OBSERVATION_RECEIPT_SCHEMA = "direct_semantic_source_observation_receipt@1";
+const SOURCE_OBSERVATION_DIGEST_DOMAIN = "direct_semantic_source_observation_body@1";
 
 const COMPILER_FIELDS = Object.freeze([
   "repositoryIdentity",
@@ -90,6 +92,24 @@ const TARGET_FIELDS = Object.freeze([
   "snapshotMaterializationMode",
   "preObservationReceiptRef",
   "postObservationReceiptRef",
+  "snapshotDigest",
+]);
+
+const SOURCE_OBSERVATION_BODY_FIELDS = Object.freeze([
+  "projectRegistryRevisionRef",
+  "repositoryIdentity",
+  "targetORevision",
+  "gitCommit",
+  "gitTree",
+  "submoduleClosureDigest",
+  "lfsObjectClosureDigest",
+  "admittedGeneratedInputDigest",
+  "evidenceCartographyRevisionRef",
+  "projectEvidenceRuntimeRevisionRef",
+  "projectRuntimeInputDigest",
+  "sourceStatusDigest",
+  "snapshotArtifactRef",
+  "snapshotMaterializationMode",
   "snapshotDigest",
 ]);
 
@@ -398,20 +418,64 @@ function snapshotObservationValue(observed, field) {
   return nestedObservationValue(observed, field, aliases[field] || []);
 }
 
+function sourceObservationBodyFromTargetReceipt(receipt) {
+  if (!isPlainObject(receipt)) reject("direct_semantic_target_snapshot_invalid");
+  const body = {};
+  for (const field of SOURCE_OBSERVATION_BODY_FIELDS) body[field] = receipt[field];
+  return deepFreeze(body);
+}
+
+function sourceObservationDigest(body) {
+  exact(body, SOURCE_OBSERVATION_BODY_FIELDS, "direct_semantic_source_observation_body_shape_invalid");
+  return digestFor(SOURCE_OBSERVATION_DIGEST_DOMAIN, body);
+}
+
+function assertSourceObservationReceipt(target, observation, phase, expectedReceiptRef) {
+  exact(observation, [
+    "schema",
+    "receiptRef",
+    "targetSnapshotReceiptRef",
+    "phase",
+    "observedAt",
+    "sourceObservation",
+    "sourceObservationDigest",
+  ], "direct_semantic_source_observation_receipt_shape_invalid");
+  if (observation.schema !== SOURCE_OBSERVATION_RECEIPT_SCHEMA) {
+    reject("direct_semantic_source_observation_receipt_schema_invalid");
+  }
+  validateContract(SOURCE_OBSERVATION_RECEIPT_SCHEMA, observation);
+  if (requiredId(observation.receiptRef, "sourceObservation.receiptRef") !== expectedReceiptRef) {
+    reject("direct_semantic_target_snapshot_observation_receipt_mismatch", phase);
+  }
+  if (requiredId(observation.targetSnapshotReceiptRef, "sourceObservation.targetSnapshotReceiptRef") !== target.targetSnapshotReceiptRef) {
+    reject("direct_semantic_target_snapshot_observation_target_mismatch", phase);
+  }
+  if (observation.phase !== phase) reject("direct_semantic_source_observation_phase_mismatch", phase);
+  const observedAtMs = Date.parse(requiredString(observation.observedAt, "sourceObservation.observedAt"));
+  if (!Number.isFinite(observedAtMs)) reject("direct_semantic_source_observation_timestamp_invalid", phase);
+  exact(observation.sourceObservation, SOURCE_OBSERVATION_BODY_FIELDS, "direct_semantic_source_observation_body_shape_invalid");
+  for (const field of SOURCE_OBSERVATION_BODY_FIELDS) {
+    compareDimension(target[field], observation.sourceObservation[field], field, { array: false });
+  }
+  const recomputedDigest = sourceObservationDigest(observation.sourceObservation);
+  if (requiredDigest(observation.sourceObservationDigest, "sourceObservationDigest") !== recomputedDigest) {
+    reject("direct_semantic_source_observation_digest_mismatch", phase);
+  }
+  return { digest: recomputedDigest, observedAtMs };
+}
+
 function assertCaptureAgreement(receipt, observed) {
   const pre = nestedObservationValue(observed, "preObservation", [["observations", "pre"]]);
   const post = nestedObservationValue(observed, "postObservation", [["observations", "post"]]);
   if (!isPlainObject(pre) || !isPlainObject(post)) {
     reject("direct_semantic_target_snapshot_observation_missing", "capture_pair");
   }
-  const preReceiptRef = requiredId(pre.receiptRef, "preObservation.receiptRef");
-  const postReceiptRef = requiredId(post.receiptRef, "postObservation.receiptRef");
-  if (preReceiptRef !== receipt.preObservationReceiptRef || postReceiptRef !== receipt.postObservationReceiptRef) {
-    reject("direct_semantic_target_snapshot_observation_receipt_mismatch", "capture_pair");
+  const preReceipt = assertSourceObservationReceipt(receipt, pre, "pre_capture", receipt.preObservationReceiptRef);
+  const postReceipt = assertSourceObservationReceipt(receipt, post, "post_capture", receipt.postObservationReceiptRef);
+  if (postReceipt.observedAtMs < preReceipt.observedAtMs) {
+    reject("direct_semantic_target_snapshot_observation_order_invalid");
   }
-  const preDigest = requiredDigest(pre.observationDigest, "preObservation.observationDigest");
-  const postDigest = requiredDigest(post.observationDigest, "postObservation.observationDigest");
-  if (preDigest !== postDigest) {
+  if (preReceipt.digest !== postReceipt.digest) {
     reject("direct_semantic_target_snapshot_observation_drift", "capture_pair");
   }
 }
@@ -500,10 +564,14 @@ module.exports = {
   WORKER_EXECUTION_RUNTIME_REVISION_SCHEMA,
   PIN_VERIFICATION_RECEIPT_SCHEMA,
   SNAPSHOT_VERIFICATION_RECEIPT_SCHEMA,
+  SOURCE_OBSERVATION_RECEIPT_SCHEMA,
+  SOURCE_OBSERVATION_BODY_FIELDS,
   COMPILER_FIELDS,
   PROJECT_RUNTIME_FIELDS,
   WORKER_RUNTIME_FIELDS,
   TARGET_FIELDS,
+  sourceObservationBodyFromTargetReceipt,
+  sourceObservationDigest,
   verifyCompilerBuildPin,
   verifyCompilerBuildPinAgainstObservation,
   verifyCompilerPin,
