@@ -539,6 +539,83 @@ const EXPECTED_EXECUTION_CELL_SCHEMA = {
 };
 
 Object.assign(ADDITIONAL_SCHEMAS, {
+  SnapshotPrepareRequest: objectSchema(`${DSS}snapshot_prepare_request@1`, [
+    "schema", "requestId", "projectRef", "projectRegistryRevisionRef", "targetORevision", "idempotencyKey",
+  ], {
+    schema: { const: `${DSS}snapshot_prepare_request@1` },
+    requestId: id(), requesterRef: id(), projectRef: ref(), projectRegistryRevisionRef: ref(),
+    targetORevision: ref(), idempotencyKey: id(),
+  }),
+  JobInspectRequest: objectSchema(`${DSS}job_inspect_request@1`, [
+    "schema", "requestId", "jobRef", "idempotencyKey",
+  ], {
+    schema: { const: `${DSS}job_inspect_request@1` },
+    requestId: id(), requesterRef: id(), jobRef: ref(), idempotencyKey: id(),
+  }),
+  ResultsRequest: objectSchema(`${DSS}results_request@1`, [
+    "schema", "requestId", "jobRef", "returnProjectionRef", "idempotencyKey",
+  ], {
+    schema: { const: `${DSS}results_request@1` },
+    requestId: id(), requesterRef: id(), jobRef: ref(), returnProjectionRef: ref(), idempotencyKey: id(),
+  }),
+  SubscribeRequest: objectSchema(`${DSS}subscribe_request@1`, [
+    "schema", "requestId", "jobRef", "returnProjectionRef", "idempotencyKey",
+  ], {
+    schema: { const: `${DSS}subscribe_request@1` },
+    requestId: id(), requesterRef: id(), jobRef: ref(), returnProjectionRef: ref(),
+    eventTypeFilter: setOf(string("safe-token")), startingCursor: nonNegativeInteger, idempotencyKey: id(),
+  }),
+  ServiceAdminRequest: objectSchema(`${DSS}service_admin_request@1`, [
+    "schema", "requestId", "idempotencyKey",
+  ], {
+    schema: { const: `${DSS}service_admin_request@1` },
+    requestId: id(), requesterRef: id(), idempotencyKey: id(),
+  }),
+  AuthorizationReceipt: objectSchema(`${DSS}authorization_receipt@1`, [
+    "schema", "operation", "admittedPrincipalRef", "capabilityRef", "transportPrincipalDigest",
+    "requestDigest", "resourceEstimateDigest", "exactRevisionRefs", "purposeScopes",
+    "numericBounds", "authorizedAt", "decision", "authorizationRef",
+  ], {
+    schema: { const: `${DSS}authorization_receipt@1` },
+    operation: enumOf([
+      "prepare_snapshot", "submit_job", "inspect_job", "read_results",
+      "subscribe_results", "request_cancel", "administer_service",
+    ]),
+    admittedPrincipalRef: ref(),
+    capabilityRef: ref(),
+    transportPrincipalDigest: digest(),
+    requestDigest: digest(),
+    resourceEstimateDigest: digest(),
+    exactRevisionRefs: objectSchema(`${DSS}authorization_exact_revision_refs@1`, [], {
+      projectRegistryRevisionRef: ref(),
+      targetSnapshotReceiptRef: ref(),
+      targetORevision: ref(),
+      compilerPinRef: ref(),
+      executionProfileRevisionRef: ref(),
+      attemptPolicyRef: ref(),
+      deliveryProjectionRef: ref(),
+      returnProjectionRef: ref(),
+      providerProfileRevisionRef: ref(),
+      kernelRevisionRefs: setOf(ref()),
+    }),
+    purposeScopes: nonEmptySetOf(id()),
+    numericBounds: objectSchema(`${DSS}authorization_numeric_bounds@1`, [
+      "maximumJobs", "maximumCellsPerJob", "maximumReplicatesPerCell",
+      "maximumInputTokensPerJob", "maximumOutputTokensPerJob", "maximumCostMicrounitsPerJob",
+    ], {
+      maximumJobs: nonNegativeInteger,
+      maximumCellsPerJob: nonNegativeInteger,
+      maximumReplicatesPerCell: nonNegativeInteger,
+      maximumInputTokensPerJob: nonNegativeInteger,
+      maximumOutputTokensPerJob: nonNegativeInteger,
+      maximumCostMicrounitsPerJob: nullableNonNegativeInteger,
+    }),
+    reservationId: ref(),
+    budgetOrdinal: positiveInteger,
+    authorizedAt: timestamp(),
+    decision: { const: "authorized" },
+    authorizationRef: digest(),
+  }),
   ExpectedExecutionCell: EXPECTED_EXECUTION_CELL_SCHEMA,
   EvidenceRoute: objectSchema("semantic_evidence_route@1", [
     "schema", "routeRef", "edgeOccurrenceRef", "targetORevision", "evidenceProfileRef", "requiredCells",

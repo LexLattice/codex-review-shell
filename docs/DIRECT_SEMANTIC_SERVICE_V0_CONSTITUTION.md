@@ -1667,6 +1667,15 @@ without allowing a worker to widen its own jurisdiction.
 
 Gate: no scheduler or worker exists; all identity and registry games pass.
 
+Implementation status (2026-08-24): complete as an in-process foundation.
+Direct now exposes the frozen contract/schema ABI, canonical digest rules,
+opaque transport and semantic principals, operation-specific capabilities,
+atomic bounded authorization, immutable registry admission, exact compiler /
+target / runtime pin verification, and one composition root. The focused gate
+is `npm run direct:semantic-service-dss01`. This status does not claim daemon,
+durable storage, scheduling, model execution, or restart recovery; those begin
+at DSS-0.2.
+
 ### DSS-0.2 — Durable job kernel
 
 - implement SQLite custody, append-only authenticated events, reducers, CAS,

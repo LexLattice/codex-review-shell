@@ -79,19 +79,8 @@ function rejectUnknownKeys(value, allowed, code) {
 }
 
 function validate(schema, value, code) {
-  // The shared contract validator is authoritative once all DSS contracts
-  // are integrated.  Local field checks below keep this module fail-closed in
-  // isolation as well, and also make the authority useful to early callers.
-  try {
-    const verdict = validateContract(schema, value);
-    if (verdict === false) fail(code);
-  } catch (error) {
-    // A staged checkout can briefly lack a schema while the contract worker is
-    // being integrated.  Do not turn an unknown-schema lookup into authority;
-    // local checks still run.  Any actual validation failure propagates.
-    const marker = `${error?.code || ""}:${error?.message || ""}`.toLowerCase();
-    if (!/(?:schema|contract)[^:]*?(?:unknown|missing|unsupported|not[_ -]?found)|(?:unknown|missing|unsupported|not[_ -]?found)[^:]*?(?:schema|contract)/.test(marker)) throw error;
-  }
+  const verdict = validateContract(schema, value);
+  if (verdict === false) fail(code);
 }
 
 function requiredNonEmptyString(value, label) {

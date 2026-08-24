@@ -149,13 +149,8 @@ function rejectUnknownKeys(value, allowed, code) {
 }
 
 function validate(schema, value, code) {
-  try {
-    const verdict = validateContract(schema, value);
-    if (verdict === false) fail(code);
-  } catch (error) {
-    const marker = `${error?.code || ""}:${error?.message || ""}`.toLowerCase();
-    if (!/(?:schema|contract)[^:]*?(?:unknown|missing|unsupported|not[_ -]?found)|(?:unknown|missing|unsupported|not[_ -]?found)[^:]*?(?:schema|contract)/.test(marker)) throw error;
-  }
+  const verdict = validateContract(schema, value);
+  if (verdict === false) fail(code);
 }
 
 function requiredNonEmptyString(value, label) {
@@ -211,6 +206,24 @@ function nowMs(clock) {
 
 function randomNonce() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function safeProduct(values, code = "direct_semantic_capability_aggregate_bound_unsafe") {
+  let product = 1;
+  for (const value of values) {
+    if (!Number.isSafeInteger(value) || value < 0) fail(code);
+    if (value === 0) return 0;
+    if (product > Math.floor(Number.MAX_SAFE_INTEGER / value)) fail(code);
+    product *= value;
+  }
+  return product;
+}
+
+function safeAdd(left, right, code = "direct_semantic_capability_accounting_overflow") {
+  if (!Number.isSafeInteger(left) || !Number.isSafeInteger(right) || left < 0 || right < 0 || left > Number.MAX_SAFE_INTEGER - right) {
+    fail(code);
+  }
+  return left + right;
 }
 
 function normalizeEstimate(estimate = {}) {
@@ -305,6 +318,15 @@ function createCapabilityAuthority(options = {}) {
     const maximumCostMicrounitsPerJob = input.maximumCostMicrounitsPerJob === null
       ? null
       : requiredBoundedInteger(input.maximumCostMicrounitsPerJob, "maximumCostMicrounitsPerJob", { minimum: operation === "submit_job" ? 0 : 0, maximum: Number.MAX_SAFE_INTEGER });
+    const maximumTotals = operation === "submit_job" ? deepFreeze({
+      cells: safeProduct([maximumJobs, maximumCellsPerJob]),
+      replicateSlots: safeProduct([maximumJobs, maximumCellsPerJob, maximumReplicatesPerCell]),
+      inputTokens: safeProduct([maximumJobs, maximumInputTokensPerJob]),
+      outputTokens: safeProduct([maximumJobs, maximumOutputTokensPerJob]),
+      costMicrounits: maximumCostMicrounitsPerJob === null
+        ? null
+        : safeProduct([maximumJobs, maximumCostMicrounitsPerJob]),
+    }) : deepFreeze({ cells: 0, replicateSlots: 0, inputTokens: 0, outputTokens: 0, costMicrounits: 0 });
     const issuedAt = timestamp(input.issuedAt, "issuedAt", new Date(currentMs()).toISOString());
     const expiresAt = input.expiresAt === undefined ? undefined : timestamp(input.expiresAt, "expiresAt", undefined);
     if (expiresAt !== undefined && Date.parse(expiresAt) <= Date.parse(issuedAt)) fail("direct_semantic_capability_expiry_invalid");
@@ -350,6 +372,7 @@ function createCapabilityAuthority(options = {}) {
       usedInputTokens: 0,
       usedOutputTokens: 0,
       usedCostMicrounits: 0,
+      maximumTotals,
       reservationSequence: 0,
     };
     Object.seal(record);
@@ -392,11 +415,12 @@ function createCapabilityAuthority(options = {}) {
     // Aggregate usage is checked with safe integer arithmetic.  This is the
     // compare-and-swap boundary: no await or callback occurs between checks
     // and the subsequent reservation in consumeBudget.
-    if (record.usedCells + estimate.cells > c.maximumJobs * c.maximumCellsPerJob) fail("direct_semantic_cells_budget_exhausted");
-    if (record.usedReplicates + estimate.replicatesPerCell > c.maximumJobs * c.maximumReplicatesPerCell) fail("direct_semantic_replicates_budget_exhausted");
-    if (record.usedInputTokens + estimate.inputTokens > c.maximumJobs * c.maximumInputTokensPerJob) fail("direct_semantic_input_budget_exhausted");
-    if (record.usedOutputTokens + estimate.outputTokens > c.maximumJobs * c.maximumOutputTokensPerJob) fail("direct_semantic_output_budget_exhausted");
-    if (c.maximumCostMicrounitsPerJob !== null && record.usedCostMicrounits + estimate.costMicrounits > c.maximumJobs * c.maximumCostMicrounitsPerJob) {
+    const replicateSlots = safeProduct([estimate.cells, estimate.replicatesPerCell], "direct_semantic_replicate_accounting_overflow");
+    if (safeAdd(record.usedCells, estimate.cells) > record.maximumTotals.cells) fail("direct_semantic_cells_budget_exhausted");
+    if (safeAdd(record.usedReplicates, replicateSlots) > record.maximumTotals.replicateSlots) fail("direct_semantic_replicates_budget_exhausted");
+    if (safeAdd(record.usedInputTokens, estimate.inputTokens) > record.maximumTotals.inputTokens) fail("direct_semantic_input_budget_exhausted");
+    if (safeAdd(record.usedOutputTokens, estimate.outputTokens) > record.maximumTotals.outputTokens) fail("direct_semantic_output_budget_exhausted");
+    if (c.maximumCostMicrounitsPerJob !== null && safeAdd(record.usedCostMicrounits, estimate.costMicrounits) > record.maximumTotals.costMicrounits) {
       fail("direct_semantic_cost_budget_exhausted");
     }
     return estimate;
@@ -409,11 +433,12 @@ function createCapabilityAuthority(options = {}) {
     const reservationId = requiredId(metadata.reservationId ?? `${record.capability.capabilityId}:reservation:${record.reservationSequence + 1}`, "reservationId");
     record.reservationSequence += 1;
     record.usedJobs += 1;
-    record.usedCells += estimate.cells;
-    record.usedReplicates += estimate.replicatesPerCell;
-    record.usedInputTokens += estimate.inputTokens;
-    record.usedOutputTokens += estimate.outputTokens;
-    record.usedCostMicrounits += estimate.costMicrounits;
+    const replicateSlots = safeProduct([estimate.cells, estimate.replicatesPerCell], "direct_semantic_replicate_accounting_overflow");
+    record.usedCells = safeAdd(record.usedCells, estimate.cells);
+    record.usedReplicates = safeAdd(record.usedReplicates, replicateSlots);
+    record.usedInputTokens = safeAdd(record.usedInputTokens, estimate.inputTokens);
+    record.usedOutputTokens = safeAdd(record.usedOutputTokens, estimate.outputTokens);
+    record.usedCostMicrounits = safeAdd(record.usedCostMicrounits, estimate.costMicrounits);
     return deepFreeze({
       schema: "direct_semantic_capability_budget_reservation@1",
       reservationId,

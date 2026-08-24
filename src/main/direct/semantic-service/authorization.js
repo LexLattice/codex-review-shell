@@ -111,6 +111,10 @@ const RECORD_REF_FIELDS = Object.freeze({
   job: Object.freeze(["jobRef", "recordRef"]),
 });
 
+const RECORD_CONTRACT_SCHEMAS = Object.freeze({
+  kernelRevision: "semantic_kernel_revision@1",
+});
+
 const authorizationReceipts = new WeakMap();
 
 function ensurePlain(value, code) {
@@ -125,13 +129,8 @@ function rejectUnknownKeys(value, allowed, code) {
 }
 
 function validate(schema, value, code) {
-  try {
-    const verdict = validateContract(schema, value);
-    if (verdict === false) fail(code);
-  } catch (error) {
-    const marker = `${error?.code || ""}:${error?.message || ""}`.toLowerCase();
-    if (!/(?:schema|contract)[^:]*?(?:unknown|missing|unsupported|not[_ -]?found)|(?:unknown|missing|unsupported|not[_ -]?found)[^:]*?(?:schema|contract)/.test(marker)) throw error;
-  }
+  const verdict = validateContract(schema, value);
+  if (verdict === false) fail(code);
 }
 
 function requiredNonEmptyString(value, label) {
@@ -211,6 +210,9 @@ function createRecordAuthority(externalRegistry) {
   function admit(kind, value) {
     if (!RECORD_KINDS.includes(kind)) fail("direct_semantic_record_kind_invalid", kind);
     const record = safeRecordCopy(value);
+    if (RECORD_CONTRACT_SCHEMAS[kind]) {
+      validate(RECORD_CONTRACT_SCHEMAS[kind], record, "direct_semantic_record_contract_invalid");
+    }
     const ref = refFor(kind, record);
     if (recordTokens[kind].has(record)) return record;
     if (recordByRef[kind].has(ref)) fail("direct_semantic_record_duplicate", `${kind}:${ref}`);
@@ -425,13 +427,13 @@ function createAuthorizationAuthority(options = {}) {
     const project = records.resolve("projectRegistryRevision", request.projectRegistryRevisionRef);
     if (statusInvalid(project)) fail("direct_semantic_project_registry_revision_invalid");
     if (project.projectRef !== request.projectRef) fail("direct_semantic_project_scope_mismatch");
-    if (Array.isArray(project.targetRevisionPolicy?.allowedCommits) && project.targetRevisionPolicy.allowedCommits.length > 0 && !project.targetRevisionPolicy.allowedCommits.includes(request.targetORevision)) {
-      fail("direct_semantic_target_revision_not_allowed");
-    }
     const snapshot = records.resolve("targetSnapshotReceipt", request.targetSnapshotReceiptRef);
     if (statusInvalid(snapshot)) fail("direct_semantic_snapshot_invalid");
     if (snapshot.projectRegistryRevisionRef !== request.projectRegistryRevisionRef || snapshot.targetORevision !== request.targetORevision) {
       fail("direct_semantic_snapshot_binding_mismatch");
+    }
+    if (Array.isArray(project.targetRevisionPolicy?.allowedCommits) && project.targetRevisionPolicy.allowedCommits.length > 0 && !project.targetRevisionPolicy.allowedCommits.includes(snapshot.gitCommit)) {
+      fail("direct_semantic_target_revision_not_allowed");
     }
     contains(cap.targetSnapshotReceiptRefs, request.targetSnapshotReceiptRef, "targetSnapshotReceiptRef");
     return { project, snapshot };
@@ -467,9 +469,10 @@ function createAuthorizationAuthority(options = {}) {
     if (typeof replicateCount !== "number" || !Number.isSafeInteger(replicateCount) || replicateCount < 1) fail("direct_semantic_attempt_policy_invalid");
     if (replicateCount > cap.maximumReplicatesPerCell) fail("direct_semantic_replicates_quota_exceeded");
     if (estimate.replicatesPerCell < replicateCount) fail("direct_semantic_replicates_underdeclared");
-    const kernelRefs = Array.isArray(execution.kernelRevisionRefs)
-      ? execution.kernelRevisionRefs
-      : execution.kernelRevisionRef ? [execution.kernelRevisionRef] : [];
+    // Kernels are compiler-owned semantic law, not provider/runtime policy.
+    // Submission freezes the capability's exact admissible kernel set; the
+    // later ExecutionPlan must intersect every selected cell with that set.
+    const kernelRefs = cap.kernelRevisionRefs.slice();
     if (kernelRefs.length === 0) fail("direct_semantic_kernel_binding_missing");
     for (const kernelRef of kernelRefs) {
       contains(cap.kernelRevisionRefs, kernelRef, "kernelRevisionRef");
@@ -556,9 +559,6 @@ function createAuthorizationAuthority(options = {}) {
       projection = assertProjection(request, cap);
       if (estimate.cells !== request.edgeOccurrenceRefs.length && request.selectionMode === "partial_selection") fail("direct_semantic_resource_estimate_mismatch");
       if (estimate.cells === 0 && request.selectionMode === "partial_selection") fail("direct_semantic_selection_empty");
-      // Resource limits are checked only after all identity and immutable
-      // record intersections pass, so a failed request cannot spend budget.
-      capabilityAuthority.checkQuota(input.capability, estimate);
     } else if (["inspect_job", "read_results", "subscribe_results", "request_cancel"].includes(operation)) {
       job = assertJob(request, cap, semanticRecord, operation);
       projection = assertProjection(request, cap);
@@ -576,6 +576,10 @@ function createAuthorizationAuthority(options = {}) {
 
     let reservation = null;
     if (operation === "submit_job") {
+      // Check only after immutable identity validation and idempotency replay.
+      // An exact replay returns its prior reservation instead of being rejected
+      // by counters that the original request itself consumed.
+      capabilityAuthority.checkQuota(input.capability, estimate);
       reservation = capabilityAuthority.consumeBudget(input.capability, estimate, {
         reservationId: digestFor("direct-semantic-budget-reservation", {
           capabilityId: cap.capabilityId,

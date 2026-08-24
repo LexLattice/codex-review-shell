@@ -9,6 +9,7 @@ const { createCapabilityAuthority } = require("../src/main/direct/semantic-servi
 const { createAuthorizationAuthority } = require("../src/main/direct/semantic-service/authorization.js");
 
 const NOW = "2026-08-24T10:00:00.000Z";
+const DIGEST = `sha256:${"a".repeat(64)}`;
 const ref = (prefix, value) => `${prefix}-${value}`;
 
 function expectCode(code, action) {
@@ -90,11 +91,12 @@ const kernel = authorization.registerKernelRevision({
   schema: "semantic_kernel_revision@1",
   kernelRef: "kernel-1",
   semanticIsaRevision: "isa-1",
-  transformationLawDigest: "law-1",
-  evidenceSemanticsDigest: "evidence-law-1",
-  remandLawDigest: "remand-law-1",
+  edgeFamily: "contract-conformance",
+  transformationLawDigest: DIGEST,
+  evidenceSemanticsDigest: DIGEST,
+  remandLawDigest: DIGEST,
   authorityPosture: "advisory_only",
-  outputSchemaDigest: "output-1",
+  outputSchemaDigest: DIGEST,
   ratificationEvidenceRefs: ["ratification-1"],
 });
 const provider = authorization.registerProviderProfileRevision({
@@ -126,7 +128,6 @@ const execution = authorization.registerExecutionProfileRevision({
   maximumInputTokensPerAttempt: 1000,
   maximumOutputTokensPerAttempt: 1000,
   maximumCostMicrounitsPerAttempt: 100,
-  kernelRevisionRefs: [kernel.kernelRef],
   executionPolicyDigest: "execution-policy-1",
 });
 const projection = authorization.registerProjectionRevision({
