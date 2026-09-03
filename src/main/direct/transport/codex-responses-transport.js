@@ -170,6 +170,7 @@ function buildTextOnlyProbeRequest(options = {}) {
   const instructions = normalizeString(options.instructions, DEFAULT_TEXT_PROBE_INSTRUCTIONS);
   const model = normalizeString(options.model, modelFromProfile(options.profileDoc));
   const reasoningEffort = normalizeString(options.reasoningEffort || options.reasoning_effort || options.effort, "");
+  const serviceTier = normalizeString(options.serviceTier || options.service_tier, "");
   const requestBody = {
     model,
     stream: true,
@@ -188,6 +189,7 @@ function buildTextOnlyProbeRequest(options = {}) {
     ],
   };
   if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
+  if (serviceTier) requestBody.service_tier = serviceTier;
   const outputSchema =
     isPlainObject(options.outputSchema)
       ? options.outputSchema
@@ -257,8 +259,51 @@ function directImplementationToolSchemas(toolNames = []) {
         additionalProperties: false,
       },
     },
+    exec_command: {
+      type: "function",
+      name: "exec_command",
+      description: "Start one bounded plain-pipe process session in the exact selected local environment. Use cmd for the ordinary shell command-string interface, or command plus args for structured execution.",
+      parameters: {
+        type: "object",
+        properties: {
+          cmd: { type: "string", description: "Bounded ordinary command string executed with local shell semantics under the exact full-access task grant." },
+          command: { type: "string", description: "Structured executable name; retained for compatibility." },
+          args: { type: "array", items: { type: "string" } },
+          cwd: { type: "string", description: "Working directory in the selected local environment; relative, parent, and absolute paths are accepted only for the exact full-access task grant." },
+          env: { type: "object", additionalProperties: { type: "string" } },
+          stdinPolicy: { type: "string", enum: ["disabled", "line_input", "eof_only", "blocked_until_policy"] },
+          idleTimeoutMs: { type: "number" },
+          hardTimeoutMs: { type: "number" },
+        },
+        anyOf: [
+          { required: ["cmd"] },
+          { required: ["command", "args"] },
+        ],
+        additionalProperties: false,
+      },
+    },
+    write_stdin: {
+      type: "function",
+      name: "write_stdin",
+      description: "Write bounded input or EOF to one exact live exec_command session.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionId: { type: "string" },
+          session_id: { type: "string", description: "Vanilla app-server alias for sessionId." },
+          input: { type: "string" },
+          chars: { type: "string", description: "Vanilla app-server alias for input." },
+          eof: { type: "boolean" },
+        },
+        anyOf: [
+          { required: ["session_id"] },
+          { required: ["sessionId"] },
+        ],
+        additionalProperties: false,
+      },
+    },
   };
-  const ordered = ["read_file", "apply_patch", "run_command"].filter((name) => requested.has(name));
+  const ordered = ["read_file", "apply_patch", "run_command", "exec_command", "write_stdin"].filter((name) => requested.has(name));
   return ordered.map((name) => schemas[name]).filter(Boolean);
 }
 
@@ -267,6 +312,7 @@ function buildImplementationToolInitialRequest(options = {}) {
   const instructions = normalizeString(options.instructions, DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS);
   const model = normalizeString(options.model, modelFromProfile(options.profileDoc));
   const reasoningEffort = normalizeString(options.reasoningEffort || options.reasoning_effort || options.effort, "");
+  const serviceTier = normalizeString(options.serviceTier || options.service_tier, "");
   const tools = Array.isArray(options.tools)
     ? options.tools.filter(Boolean)
     : directImplementationToolSchemas(options.toolNames || ["read_file", "apply_patch", "run_command"]);
@@ -293,6 +339,7 @@ function buildImplementationToolInitialRequest(options = {}) {
     requestBody.tool_choice = normalizeString(options.toolChoicePolicy, "auto") === "required" ? "required" : "auto";
   }
   if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
+  if (serviceTier) requestBody.service_tier = serviceTier;
   return requestBody;
 }
 
@@ -419,6 +466,7 @@ function requestShapeForDiagnostic(requestBody = {}) {
     toolCount: Array.isArray(requestBody.tools) ? requestBody.tools.length : 0,
     parallelToolCalls: requestBody.parallel_tool_calls === true,
     reasoningEffort: normalizeString(requestBody.reasoning?.effort || requestBody.reasoning_effort, ""),
+    serviceTier: normalizeString(requestBody.service_tier || requestBody.serviceTier, ""),
     ...(isPlainObject(requestBody.text?.format)
       ? {
           textFormatType: normalizeString(
@@ -1018,7 +1066,10 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
 }
 
 async function runTextOnlyDirectProbe(options = {}) {
-  return runDirectCodexStreamingRequest(options, buildTextOnlyProbeRequest(options), {
+  const requestBody = isPlainObject(options.requestBody)
+    ? options.requestBody
+    : buildTextOnlyProbeRequest(options);
+  return runDirectCodexStreamingRequest(options, requestBody, {
     schema: DIRECT_TEXT_PROBE_RESULT_SCHEMA,
     kind: "text_probe",
   });

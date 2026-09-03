@@ -1,0 +1,68 @@
+{
+  "schema": "direct.ck-evidence-vault-pointer.v1",
+  "projectId": "direct-harness",
+  "intakeId": "direct-harness-20260903-00c38bcc",
+  "sourceSubject": {
+    "commit": "00c38bccd0cd771789f65d3db55086798721ffce",
+    "tree": "af71b02af2a1ba6179084f466e63f857c29acdca",
+    "remoteBase": "8d5a45bb7a8534d1b801975c49ea32015f2a9c0a",
+    "archaeologyTag": "ck-archaeology/direct-pilot-2026-09-03",
+    "archaeologyTagObject": "260f6213099c78a060440b6fe7fca3e3fb7d675f"
+  },
+  "export": {
+    "manifestDigest": "sha256:89f9a458eda03e08e84800691add72b95ee0bc14fb5325ec873855816eb23ded",
+    "manifestFileSha256": "4abcdd50020ac6bdc866d142b226b0b0d1d4ad76ce0840321fad3334e8f1d8f5",
+    "receiptDigest": "sha256:7bf0badc5c3859cbb1831f5f8825c8b138ea9c2ab4c1b4e4e06ed8a551dd8ee4",
+    "receiptFileSha256": "0dfd5a07addc4ad56b258fd844f1425f145af13dc6fc4a6e176680c8a7dc4192",
+    "offloadPathCount": 704,
+    "uniqueObjectCount": 679,
+    "uniqueObjectBytes": 959107962
+  },
+  "rawCustody": {
+    "status": "RAW_CUSTODY_ACCEPTED",
+    "receiptLocator": "ck://raw/direct-harness/direct-harness-20260903-00c38bcc/custody_receipt.v1.json",
+    "receiptDigest": "sha256:746213e02ea9520388fbd76fee63a34a2ef99b54722e929226ba5e711c3225f7",
+    "receiptFileSha256": "0de5485116a93ce8ef94dc7b52efb8d02db065bff72fb6de911788e177d94e4f",
+    "immutableManifestLocator": "ck://raw/direct-harness/direct-harness-20260903-00c38bcc/immutable_raw_manifest.v1.json",
+    "immutableManifestSha256": "e9d9cb72f2e115fa6ee46d8a392690fe7c23ea269ba4a5a37be343fef8bbb74b",
+    "bundleLocator": "ck://raw/direct-harness/direct-harness-20260903-00c38bcc/archaeology.bundle",
+    "bundleSha256": "d0e7a06994b895b39dd19f9385c9a97e7b3b7c552a80edc7a7b7676ec2075b5e",
+    "sensitivityMode": "OWNER_DECLARED_NONE",
+    "structuralQuarantine": "PASS"
+  },
+  "archaeologicalBindings": {
+    "dss04OwnerContractAuthorityAnchor": {
+      "commit": "619031aa763c5de5ea67338467f7c628b9a389b5",
+      "path": "docs/audits/direct-semantic-service-dss04-owner-contract-anchor-v3/contract_authority_anchor.v3.json",
+      "gitBlobId": "639808c1349c25c7135c3841eed4efd484cd5743",
+      "byteLength": 209013,
+      "sha256": "63d1948d8616b64e5636ba2d65d4cd3e2dd406676fd77c95a36775e2e74230d8",
+      "ancestryRelation": "ANCESTOR_OF_SOURCE_SUBJECT",
+      "reconstruction": "VERIFY_IN_ACCEPTED_ARCHAEOLOGY_BUNDLE"
+    }
+  },
+  "recomposition": {
+    "retainedPathCount": 369,
+    "retainedByteCount": 31548398,
+    "retainedProjectionDigest": "sha256:ed3dc18e17e78e6b12e7877e3c41b925dde3470b1f81941e7ddd379507741597",
+    "excludedPathCount": 704,
+    "excludedByteCount": 961153279,
+    "excludedProjectionDigest": "sha256:a6a8799774cec0796d33a66051ab7e82c4e3fe4bd4f63965ae842550f42ebe44",
+    "projectionManifests": {
+      "localExchangePath": "/home/rose/work/ck-evidence-exchange/direct-harness/direct-harness-20260903-00c38bcc/recomposition",
+      "standing": "PROJECT_RECOMPOSITION_EVIDENCE_NOT_CK_RAW"
+    }
+  },
+  "retrieval": {
+    "localVaultRoot": "/home/rose/work/ck-evidence-vault",
+    "intakePath": "/home/rose/work/ck-evidence-vault/raw/direct-harness/direct-harness-20260903-00c38bcc",
+    "instructions": "Resolve the ck:// locator beneath the configured CK evidence-vault root. Verify the custody receipt, immutable manifest, requested object digest, and reconstructed path digest before use. Clone archaeology.bundle and run git fsck when Git ancestry rather than individual path bytes is required."
+  },
+  "authority": {
+    "rawIsNotAdmittedKnowledge": true,
+    "rawIsNotCompilerLaw": true,
+    "doesNotAuthorizeDeletion": true,
+    "doesNotAuthorizeHistoryAttachment": true,
+    "doesNotAuthorizePush": true
+  }
+}

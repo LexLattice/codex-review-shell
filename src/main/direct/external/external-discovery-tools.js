@@ -545,7 +545,15 @@ function buildExternalDiscoveryResultEnvelope(input = {}) {
   let degraded = false;
   let serverSelector = null;
   if (toolName === "tool_search" && !blockerCodes.length) {
-    descriptors = unavailable ? [] : profileDescriptorsForSearch(profile, searchInput);
+    descriptors = unavailable
+      ? []
+      : arrayOrEmpty(source.discoveryDescriptors).length
+        ? arrayOrEmpty(source.discoveryDescriptors).map((entry) => descriptorFromMcpListEntry(
+          entry,
+          normalizeString(entry?.serverIdentityId || entry?.serverId, ""),
+          normalizeString(entry?.sourceKind, "mcp_resource"),
+        ))
+        : profileDescriptorsForSearch(profile, searchInput);
   } else if (toolName === "list_mcp_resources" || toolName === "list_mcp_resource_templates") {
     const serverIdentityId = normalizeString(parsed.serverIdentityId || source.serverIdentityId, "");
     const server = serverById(profile, serverIdentityId);

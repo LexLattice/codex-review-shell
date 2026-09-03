@@ -6204,6 +6204,10 @@ function isDirectLiveTextSurface() {
   return connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT;
 }
 
+function isDirectFullAccessSurface() {
+  return isDirectLiveTextSurface() && connection?.directTier === "implementation-lane";
+}
+
 function isDirectRuntimeSurface() {
   return DIRECT_TRANSPORTS.has(connection?.transport);
 }
@@ -6673,7 +6677,14 @@ async function openDirectThread(threadId) {
   if (requestedThreadId === String(state.threadId || "") && state.liveAttached) return;
   const openRequestId = state.directThreadOpenRequestId + 1;
   state.directThreadOpenRequestId = openRequestId;
-  const result = await readThreadById(requestedThreadId);
+  let result = await readThreadById(requestedThreadId);
+  if (isDirectFullAccessSurface() && result?.taskBinding?.current !== true) {
+    await rpc("thread/selectAccessProfile", {
+      sessionId: requestedThreadId,
+      accessProfile: "full_access",
+    });
+    result = await readThreadById(requestedThreadId);
+  }
   if (state.directThreadOpenRequestId !== openRequestId) return;
   clearRenderedThreadState();
   state.sourceHome = "";
@@ -9305,6 +9316,12 @@ async function startNewThread() {
       state.sourceHome = "";
       state.sessionFilePath = "";
       bindThread(result.thread, result.thread.model || activeModelId() || null);
+      if (isDirectFullAccessSurface()) {
+        await rpc("thread/selectAccessProfile", {
+          sessionId: result.thread.id || result.thread.threadId,
+          accessProfile: "full_access",
+        });
+      }
       addSystemMessage(`Created WorkThread-backed direct session${result.workThread?.workThreadId ? ` (${result.workThread.workThreadId})` : ""}.`);
       await persistRuntimePreferences("thread-model");
       await refreshDirectSurfaceProjection({ render: false });
@@ -9342,6 +9359,7 @@ async function startNewThread() {
   if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
   if (state.runtimeOverrides.sandboxMode) params.sandbox = state.runtimeOverrides.sandboxMode;
   if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
+  if (isDirectFullAccessSurface()) params.accessProfile = "full_access";
   const result = await rpc("thread/start", params);
   clearRenderedThreadState();
   state.sourceHome = "";
@@ -10133,8 +10151,9 @@ async function refreshAppEvidence(options = {}) {
 
 async function login() {
   const response = await rpc("account/login/start", { type: "chatgpt" });
-  if (response?.authUrl) {
-    window.open(response.authUrl, "_blank");
+  const loginUrl = response?.authorizationUrl || response?.authUrl;
+  if (loginUrl) {
+    window.open(loginUrl, "_blank");
     addSystemMessage("Complete the Codex login flow in your external browser.");
   }
 }

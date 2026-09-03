@@ -1,0 +1,6297 @@
+{
+  "schema": "semantic-contract-module.v0",
+  "module_id": "direct.semantic-service.dss06.direct-electron-handoff.generation-1",
+  "ontology": {
+    "o_declarations": [
+      "WorkThread-originated canonical AuditPackage",
+      "service-owned AuditJob and bounded advisory disposition",
+      "durable delivery subscription, offer, contiguous acknowledgment, cursor, and task wakeup"
+    ],
+    "e_observation_bridges": [
+      "DSS-0.5 advisory disposition and complete artifact lineage to canonical AuditPackage",
+      "daemon event ledger to optional safe observation surfaces",
+      "durable disposition outbox to replaceable CLI/Electron/task-wakeup adapters"
+    ],
+    "forbidden_grants": [
+      "caller metadata, owner/root objects, labels, or peer credentials never establish identity",
+      "submit/read/subscribe-ack/wakeup capabilities are non-substitutable",
+      "advisory disposition never mutates project or WorldManager truth",
+      "Electron/CLI presence never owns execution or delivery custody",
+      "no provider, runtime, repository, filesystem, tool, network, credential, production, or post-v0 authority"
+    ]
+  },
+  "project_surface": [
+    {
+      "id": "source.dss05-advisory-disposition",
+      "kind": "SOURCE",
+      "provenance": "exact frozen DSS-0.5 advisory disposition"
+    },
+    {
+      "id": "source.dss05-artifact-lineage",
+      "kind": "SOURCE",
+      "provenance": "exact DSS-0.5 page/response/evaluation/artifact custody lineage"
+    },
+    {
+      "id": "source.workthread-envelope",
+      "kind": "SOURCE",
+      "provenance": "service-observed WorkThread envelope"
+    },
+    {
+      "id": "source.semantic-principal-registry",
+      "kind": "SOURCE",
+      "provenance": "owner-issued semantic principal registry"
+    },
+    {
+      "id": "source.capability-verifier",
+      "kind": "SOURCE",
+      "provenance": "owner-issued capability verifier/currentness store"
+    },
+    {
+      "id": "source.daemon-event-ledger",
+      "kind": "SOURCE",
+      "provenance": "authenticated append-only daemon event ledger"
+    },
+    {
+      "id": "source.restart-custody",
+      "kind": "SOURCE",
+      "provenance": "durable restart/recovery custody"
+    },
+    {
+      "id": "source.cli-client",
+      "kind": "SOURCE",
+      "provenance": "replaceable CLI transport adapter"
+    },
+    {
+      "id": "source.electron-client",
+      "kind": "SOURCE",
+      "provenance": "replaceable Electron transport adapter"
+    },
+    {
+      "id": "policy.dss-v0-constitution",
+      "kind": "POLICY",
+      "provenance": "Direct Semantic Service v0 constitution"
+    },
+    {
+      "id": "policy.dss05-advisory-contract",
+      "kind": "POLICY",
+      "provenance": "frozen DSS-0.5 advisory contract"
+    },
+    {
+      "id": "policy.dss02-delivery-law",
+      "kind": "POLICY",
+      "provenance": "ratified durable delivery/cursor law"
+    },
+    {
+      "id": "policy.dss06-semantic-contract",
+      "kind": "POLICY",
+      "provenance": "this DSS-0.6 contract"
+    },
+    {
+      "id": "policy.capability-separation",
+      "kind": "POLICY",
+      "provenance": "operation-specific capability separation"
+    },
+    {
+      "id": "policy.currentness-reauthorization",
+      "kind": "POLICY",
+      "provenance": "exact revision/scope/time/budget reauthorization"
+    },
+    {
+      "id": "policy.outbox-cursor",
+      "kind": "POLICY",
+      "provenance": "offered/acknowledged/replay cursor law"
+    },
+    {
+      "id": "policy.wakeup-contract",
+      "kind": "POLICY",
+      "provenance": "registered bounded task wakeup law"
+    },
+    {
+      "id": "policy.client-replaceability",
+      "kind": "POLICY",
+      "provenance": "Electron/CLI replaceability law"
+    },
+    {
+      "id": "policy.authority-exclusion",
+      "kind": "POLICY",
+      "provenance": "advisory-only and no-widening boundary"
+    },
+    {
+      "id": "object.daemon-health-observation",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "optional safe daemon-health observation"
+    },
+    {
+      "id": "object.audit-package",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "canonical WorkThread-originated AuditPackage"
+    },
+    {
+      "id": "object.audit-job",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "durable service-owned AuditJob"
+    },
+    {
+      "id": "object.audit-attempt",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "bounded job attempt lineage"
+    },
+    {
+      "id": "object.audit-decision",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "advisory decision observation"
+    },
+    {
+      "id": "object.audit-disposition",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "durable bounded AuditDisposition"
+    },
+    {
+      "id": "object.audit-lineage",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "DSS-0.5/package/artifact lineage binding"
+    },
+    {
+      "id": "object.submit-capability-binding",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "submit verifier/currentness binding"
+    },
+    {
+      "id": "object.read-capability-binding",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "read verifier/currentness binding"
+    },
+    {
+      "id": "object.subscribe-ack-capability-binding",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "subscribe/ack verifier binding"
+    },
+    {
+      "id": "object.wakeup-capability-binding",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "wakeup verifier/currentness binding"
+    },
+    {
+      "id": "object.delivery-subscription",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "durable disposition subscription"
+    },
+    {
+      "id": "object.delivery-offer",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "immutable outbox delivery offer"
+    },
+    {
+      "id": "object.delivery-acknowledgment",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "exact contiguous acknowledgment"
+    },
+    {
+      "id": "object.delivery-cursor",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "durable offered/acknowledged cursor"
+    },
+    {
+      "id": "object.task-wakeup",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "bounded task wakeup continuation"
+    },
+    {
+      "id": "object.recovery-disposition",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "restart recovery equality disposition"
+    },
+    {
+      "id": "grant.submit-audit-package",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "submit-only operation capability"
+    },
+    {
+      "id": "grant.read-audit-disposition",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "read-only disposition projection capability"
+    },
+    {
+      "id": "grant.subscribe-ack-disposition",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "subscription and acknowledgment capability"
+    },
+    {
+      "id": "grant.wake-audit-task",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "wake-only registered continuation capability"
+    },
+    {
+      "id": "interface.workthread-audit-submit",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "WorkThread to service package submission"
+    },
+    {
+      "id": "interface.daemon-observation",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "optional daemon/job/attempt/decision/subscription view"
+    },
+    {
+      "id": "interface.audit-disposition-read",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "bounded advisory disposition read"
+    },
+    {
+      "id": "interface.disposition-subscription",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "outbox subscription/delivery"
+    },
+    {
+      "id": "interface.disposition-wakeup",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "task wakeup delivery"
+    },
+    {
+      "id": "interface.cli-adapter",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "replaceable CLI adapter"
+    },
+    {
+      "id": "interface.electron-adapter",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "replaceable Electron adapter"
+    },
+    {
+      "id": "interface.restart-recovery",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "daemon/client restart recovery"
+    },
+    {
+      "id": "consumer.workthread",
+      "kind": "CONSUMER",
+      "provenance": "submitting or later resumed WorkThread"
+    },
+    {
+      "id": "consumer.cli",
+      "kind": "CONSUMER",
+      "provenance": "optional CLI observer/subscriber"
+    },
+    {
+      "id": "consumer.electron",
+      "kind": "CONSUMER",
+      "provenance": "optional Electron observer/subscriber"
+    },
+    {
+      "id": "consumer.dss05-advisory",
+      "kind": "CONSUMER",
+      "provenance": "frozen DSS-0.5 advisory producer"
+    },
+    {
+      "id": "consumer.future-authority-bridge",
+      "kind": "CONSUMER",
+      "provenance": "excluded later authority bridge"
+    },
+    {
+      "id": "consumer.future-dss07",
+      "kind": "CONSUMER",
+      "provenance": "excluded post-v0 semantic tranche"
+    },
+    {
+      "id": "source.future-provider-network-credentials",
+      "kind": "SOURCE",
+      "provenance": "excluded provider/network/credential jurisdiction"
+    },
+    {
+      "id": "source.future-project-worldmanager-mutation",
+      "kind": "SOURCE",
+      "provenance": "excluded project/WorldManager mutation jurisdiction"
+    },
+    {
+      "id": "mutation.package-job-cas",
+      "kind": "MUTATION_PATH",
+      "provenance": "package/job publish-before-reference transaction"
+    },
+    {
+      "id": "mutation.attempt-decision-event",
+      "kind": "MUTATION_PATH",
+      "provenance": "bounded attempt/decision event transaction"
+    },
+    {
+      "id": "mutation.disposition-seal",
+      "kind": "MUTATION_PATH",
+      "provenance": "advisory disposition seal transaction"
+    },
+    {
+      "id": "mutation.subscription-cas",
+      "kind": "MUTATION_PATH",
+      "provenance": "subscription and cursor initialization transaction"
+    },
+    {
+      "id": "mutation.offer-outbox",
+      "kind": "MUTATION_PATH",
+      "provenance": "offer/replay outbox transaction"
+    },
+    {
+      "id": "mutation.ack-cursor-cas",
+      "kind": "MUTATION_PATH",
+      "provenance": "exact acknowledgment/cursor CAS transaction"
+    },
+    {
+      "id": "mutation.wakeup-outbox",
+      "kind": "MUTATION_PATH",
+      "provenance": "wakeup publication transaction"
+    },
+    {
+      "id": "mutation.recovery-reconcile",
+      "kind": "MUTATION_PATH",
+      "provenance": "restart reconstruction comparison"
+    },
+    {
+      "id": "clock.daemon-wall",
+      "kind": "CLOCK",
+      "provenance": "daemon recorded-at boundary"
+    },
+    {
+      "id": "clock.daemon-monotonic",
+      "kind": "CLOCK",
+      "provenance": "daemon monotonic timeout boundary"
+    },
+    {
+      "id": "clock.delivery-deadline",
+      "kind": "CLOCK",
+      "provenance": "delivery offer acknowledgment deadline"
+    },
+    {
+      "id": "clock.current-revision-head",
+      "kind": "CLOCK",
+      "provenance": "current service/revision head"
+    }
+  ],
+  "exclusions": [
+    {
+      "id": "x.dss06-provider-network-credentials",
+      "surface_id": "source.future-provider-network-credentials",
+      "owner": "dss06-owner",
+      "theorem": "DSS-0.6 consumes only exact frozen DSS-0.5 advisory/artifact digests and never executes or widens provider, runtime, network, or credential jurisdiction."
+    },
+    {
+      "id": "x.dss06-project-worldmanager-mutation",
+      "surface_id": "source.future-project-worldmanager-mutation",
+      "owner": "dss06-owner",
+      "theorem": "AuditDisposition and wakeup are advisory projections only and cannot mutate project or WorldManager truth."
+    },
+    {
+      "id": "x.dss06-authority-bridge",
+      "surface_id": "consumer.future-authority-bridge",
+      "owner": "dss06-owner",
+      "theorem": "No capability or disposition in this tranche bridges into institutional, promotion, commissioning, or activation authority."
+    },
+    {
+      "id": "x.dss07-successor",
+      "surface_id": "consumer.future-dss07",
+      "owner": "dss06-owner",
+      "theorem": "DSS-0.6 is the final v0 product tranche; no later semantic-service product is constructed here."
+    }
+  ],
+  "carriers": [
+    {
+      "id": "e.daemon-health-observation",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "optional daemon health is observed at an exact current service head",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-observation-owner",
+        "root": "dss06-observation-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "healthRef",
+          "serviceGeneration",
+          "daemonHeadDigest",
+          "healthState",
+          "observedAt"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "health_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact e.daemon-health-observation record in the current DSS-0.6 population",
+        "population_owner": "dss06-observation-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "UNOBSERVED",
+          "HEALTHY",
+          "DEGRADED",
+          "UNAVAILABLE",
+          "STALE"
+        ],
+        "initial_state": "UNOBSERVED",
+        "events": [
+          "OBSERVE",
+          "DEGRADE",
+          "RESTORE",
+          "EXPIRE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          {
+            "carrierId": "d.read-capability",
+            "relation": "CURRENT_READ_VERIFIER_REQUIRED",
+            "capabilityFamily": "read_audit_disposition",
+            "fields": [
+              "principalRef",
+              "projectRef",
+              "taskRef",
+              "jobRef",
+              "projectionDigest",
+              "scopeDigest",
+              "currentRevisionRef",
+              "expiresAt",
+              "revocationEpoch",
+              "timeFence",
+              "budgetRef"
+            ],
+            "failure": "OBSERVATION_AUTHORITY_INVALID",
+            "disclosure": "NONE"
+          }
+        ],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "d.read-capability"
+        ],
+        "join_relations": [
+          "exact current owner-issued read verifier joins observation identity and projection"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "UNOBSERVED",
+          "HEALTHY",
+          "DEGRADED",
+          "UNAVAILABLE",
+          "STALE"
+        ]
+      },
+      "surface_refs": [
+        "source.daemon-event-ledger",
+        "source.semantic-principal-registry",
+        "policy.dss-v0-constitution",
+        "policy.dss06-semantic-contract",
+        "object.daemon-health-observation",
+        "interface.daemon-observation",
+        "clock.daemon-wall"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "OBSERVE": "observe-daemon-health",
+        "DEGRADE": "observe-daemon-health",
+        "RESTORE": "observe-daemon-health",
+        "EXPIRE": "observe-daemon-health"
+      },
+      "outcomes": {
+        "OBSERVE": "HEALTHY",
+        "DEGRADE": "DEGRADED",
+        "RESTORE": "HEALTHY",
+        "EXPIRE": "STALE"
+      },
+      "fromStates": {
+        "OBSERVE": [
+          "UNOBSERVED"
+        ],
+        "DEGRADE": [
+          "HEALTHY"
+        ],
+        "RESTORE": [
+          "DEGRADED",
+          "UNAVAILABLE"
+        ],
+        "EXPIRE": [
+          "HEALTHY",
+          "DEGRADED"
+        ]
+      }
+    },
+    {
+      "id": "d.audit-package",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "one canonical WorkThread-originated AuditPackage binds exact project/task/principal/capabilities and predecessor lineage",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-package-owner",
+        "root": "dss06-package-custody-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "packageRef",
+          "packageDigest",
+          "projectRef",
+          "projectRegistryRevisionRef",
+          "taskRef",
+          "workThreadRef",
+          "principalRef",
+          "submitCapabilityRef",
+          "readCapabilityRef",
+          "subscribeAckCapabilityRef",
+          "wakeupCapabilityRef",
+          "dss05DispositionRef",
+          "dss05DispositionDigest",
+          "dss05ArtifactLineageRefsDigest",
+          "idempotencyKey"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "package_schema_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact d.audit-package record in the current DSS-0.6 population",
+        "population_owner": "dss06-package-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "UNSUBMITTED",
+          "SUBMITTED",
+          "BOUND",
+          "REJECTED",
+          "EXPIRED"
+        ],
+        "initial_state": "UNSUBMITTED",
+        "events": [
+          "SUBMIT",
+          "BIND",
+          "REJECT",
+          "EXPIRE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "UNSUBMITTED",
+          "SUBMITTED",
+          "BOUND",
+          "REJECTED",
+          "EXPIRED"
+        ]
+      },
+      "surface_refs": [
+        "source.workthread-envelope",
+        "source.dss05-advisory-disposition",
+        "source.dss05-artifact-lineage",
+        "policy.dss05-advisory-contract",
+        "policy.dss06-semantic-contract",
+        "object.audit-package",
+        "interface.workthread-audit-submit",
+        "consumer.workthread",
+        "consumer.dss05-advisory",
+        "mutation.package-job-cas",
+        "clock.current-revision-head"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "SUBMIT": "submit-audit-package",
+        "BIND": "submit-audit-package",
+        "REJECT": "submit-audit-package",
+        "EXPIRE": "expire-revoke-authority"
+      },
+      "outcomes": {
+        "SUBMIT": "SUBMITTED",
+        "BIND": "BOUND",
+        "REJECT": "REJECTED",
+        "EXPIRE": "EXPIRED"
+      },
+      "fromStates": {
+        "SUBMIT": [
+          "UNSUBMITTED"
+        ],
+        "BIND": [
+          "SUBMITTED"
+        ],
+        "REJECT": [
+          "UNSUBMITTED",
+          "SUBMITTED"
+        ],
+        "EXPIRE": [
+          "SUBMITTED",
+          "BOUND"
+        ]
+      }
+    },
+    {
+      "id": "d.audit-job",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "service-owned AuditJob preserves package identity and execution custody after requester rest/termination",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-job-owner",
+        "root": "dss06-job-custody-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "jobRef",
+          "packageRef",
+          "packageDigest",
+          "projectRef",
+          "taskRef",
+          "workThreadRef",
+          "principalRef",
+          "jobIdempotencyDigest",
+          "serviceGenerationRef"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "job_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact d.audit-job record in the current DSS-0.6 population",
+        "population_owner": "dss06-job-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "UNSEEN",
+          "ADMITTED",
+          "RUNNING",
+          "TERMINAL",
+          "CANCELLED",
+          "RECOVERY_BLOCKED"
+        ],
+        "initial_state": "UNSEEN",
+        "events": [
+          "ADMIT",
+          "START",
+          "COMPLETE",
+          "CANCEL",
+          "BLOCK"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          {
+            "carrierId": "d.read-capability",
+            "relation": "CURRENT_READ_VERIFIER_REQUIRED",
+            "capabilityFamily": "read_audit_disposition",
+            "fields": [
+              "principalRef",
+              "projectRef",
+              "taskRef",
+              "jobRef",
+              "projectionDigest",
+              "scopeDigest",
+              "currentRevisionRef",
+              "expiresAt",
+              "revocationEpoch",
+              "timeFence",
+              "budgetRef"
+            ],
+            "failure": "OBSERVATION_AUTHORITY_INVALID",
+            "disclosure": "NONE"
+          }
+        ],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "d.read-capability"
+        ],
+        "join_relations": [
+          "exact current owner-issued read verifier joins observation identity and projection"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "UNSEEN",
+          "ADMITTED",
+          "RUNNING",
+          "TERMINAL",
+          "CANCELLED",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "surface_refs": [
+        "source.daemon-event-ledger",
+        "policy.dss06-semantic-contract",
+        "object.audit-job",
+        "interface.daemon-observation",
+        "consumer.workthread",
+        "mutation.package-job-cas",
+        "mutation.recovery-reconcile"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "ADMIT": "submit-audit-package",
+        "START": "start-audit-attempt",
+        "COMPLETE": "seal-audit-disposition",
+        "CANCEL": "cancel-audit-job",
+        "BLOCK": "recover-dss06-lineage"
+      },
+      "outcomes": {
+        "ADMIT": "ADMITTED",
+        "START": "RUNNING",
+        "COMPLETE": "TERMINAL",
+        "CANCEL": "CANCELLED",
+        "BLOCK": "RECOVERY_BLOCKED"
+      },
+      "fromStates": {
+        "ADMIT": [
+          "UNSEEN"
+        ],
+        "START": [
+          "ADMITTED"
+        ],
+        "COMPLETE": [
+          "RUNNING"
+        ],
+        "CANCEL": [
+          "ADMITTED",
+          "RUNNING"
+        ],
+        "BLOCK": [
+          "UNSEEN",
+          "ADMITTED",
+          "RUNNING"
+        ]
+      }
+    },
+    {
+      "id": "d.audit-attempt",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "bounded attempt preserves exact job/package lineage and terminal custody without provider execution authority",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-attempt-owner",
+        "root": "dss06-attempt-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "attemptRef",
+          "jobRef",
+          "packageRef",
+          "attemptOrdinal",
+          "attemptLineageDigest",
+          "allocatedAt",
+          "terminalAt"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "attempt_policy_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact d.audit-attempt record in the current DSS-0.6 population",
+        "population_owner": "dss06-attempt-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "UNALLOCATED",
+          "ALLOCATED",
+          "STARTED",
+          "TERMINAL",
+          "UNKNOWN",
+          "CANCELLED"
+        ],
+        "initial_state": "UNALLOCATED",
+        "events": [
+          "ALLOCATE",
+          "START",
+          "COMPLETE",
+          "UNKNOWN_TERMINAL",
+          "CANCEL"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          {
+            "carrierId": "d.read-capability",
+            "relation": "CURRENT_READ_VERIFIER_REQUIRED",
+            "capabilityFamily": "read_audit_disposition",
+            "fields": [
+              "principalRef",
+              "projectRef",
+              "taskRef",
+              "jobRef",
+              "projectionDigest",
+              "scopeDigest",
+              "currentRevisionRef",
+              "expiresAt",
+              "revocationEpoch",
+              "timeFence",
+              "budgetRef"
+            ],
+            "failure": "OBSERVATION_AUTHORITY_INVALID",
+            "disclosure": "NONE"
+          }
+        ],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "d.read-capability"
+        ],
+        "join_relations": [
+          "exact current owner-issued read verifier joins observation identity and projection"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "UNALLOCATED",
+          "ALLOCATED",
+          "STARTED",
+          "TERMINAL",
+          "UNKNOWN",
+          "CANCELLED"
+        ]
+      },
+      "surface_refs": [
+        "source.daemon-event-ledger",
+        "policy.dss06-semantic-contract",
+        "object.audit-attempt",
+        "interface.daemon-observation",
+        "mutation.attempt-decision-event",
+        "clock.daemon-monotonic"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "ALLOCATE": "start-audit-attempt",
+        "START": "start-audit-attempt",
+        "COMPLETE": "record-audit-decision",
+        "UNKNOWN_TERMINAL": "record-audit-decision",
+        "CANCEL": "cancel-audit-job"
+      },
+      "outcomes": {
+        "ALLOCATE": "ALLOCATED",
+        "START": "STARTED",
+        "COMPLETE": "TERMINAL",
+        "UNKNOWN_TERMINAL": "UNKNOWN",
+        "CANCEL": "CANCELLED"
+      },
+      "fromStates": {
+        "ALLOCATE": [
+          "UNALLOCATED"
+        ],
+        "START": [
+          "ALLOCATED"
+        ],
+        "COMPLETE": [
+          "STARTED"
+        ],
+        "UNKNOWN_TERMINAL": [
+          "STARTED"
+        ],
+        "CANCEL": [
+          "ALLOCATED"
+        ]
+      }
+    },
+    {
+      "id": "d.audit-decision",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "bounded decision records advisory observation over the exact predecessor package/job population",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-decision-owner",
+        "root": "dss06-decision-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "decisionRef",
+          "jobRef",
+          "packageRef",
+          "dss05DispositionRef",
+          "dss05DispositionDigest",
+          "decisionKind",
+          "sourceLineageDigest",
+          "authorityEffect"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "decision_policy_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact d.audit-decision record in the current DSS-0.6 population",
+        "population_owner": "dss06-decision-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "RECORDED",
+          "REMANDED",
+          "REJECTED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "RECORD",
+          "REMAND",
+          "REJECT"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          {
+            "carrierId": "d.read-capability",
+            "relation": "CURRENT_READ_VERIFIER_REQUIRED",
+            "capabilityFamily": "read_audit_disposition",
+            "fields": [
+              "principalRef",
+              "projectRef",
+              "taskRef",
+              "jobRef",
+              "projectionDigest",
+              "scopeDigest",
+              "currentRevisionRef",
+              "expiresAt",
+              "revocationEpoch",
+              "timeFence",
+              "budgetRef"
+            ],
+            "failure": "OBSERVATION_AUTHORITY_INVALID",
+            "disclosure": "NONE"
+          }
+        ],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "d.read-capability"
+        ],
+        "join_relations": [
+          "exact current owner-issued read verifier joins observation identity and projection"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "ABSENT",
+          "RECORDED",
+          "REMANDED",
+          "REJECTED"
+        ]
+      },
+      "surface_refs": [
+        "source.dss05-advisory-disposition",
+        "source.dss05-artifact-lineage",
+        "policy.dss05-advisory-contract",
+        "object.audit-decision",
+        "interface.daemon-observation",
+        "mutation.attempt-decision-event"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "RECORD": "record-audit-decision",
+        "REMAND": "record-audit-decision",
+        "REJECT": "record-audit-decision"
+      },
+      "outcomes": {
+        "RECORD": "RECORDED",
+        "REMAND": "REMANDED",
+        "REJECT": "REJECTED"
+      },
+      "fromStates": {
+        "RECORD": [
+          "ABSENT"
+        ],
+        "REMAND": [
+          "ABSENT",
+          "RECORDED"
+        ],
+        "REJECT": [
+          "ABSENT",
+          "RECORDED"
+        ]
+      }
+    },
+    {
+      "id": "d.audit-disposition",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "advisory AuditDisposition closes the exact package/job/decision population with no authority effect",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-disposition-owner",
+        "root": "dss06-disposition-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "dispositionRef",
+          "jobRef",
+          "packageRef",
+          "dss05DispositionRef",
+          "decisionRefsDigest",
+          "artifactLineageDigest",
+          "status",
+          "authorityEffect"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "disposition_policy_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact d.audit-disposition record in the current DSS-0.6 population",
+        "population_owner": "dss06-disposition-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "SEALED",
+          "REMANDED",
+          "FAILED",
+          "CANCELLED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "SEAL",
+          "REMAND",
+          "FAIL",
+          "CANCEL"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          {
+            "carrierId": "d.read-capability",
+            "relation": "CURRENT_READ_VERIFIER_REQUIRED",
+            "capabilityFamily": "read_audit_disposition",
+            "fields": [
+              "principalRef",
+              "projectRef",
+              "taskRef",
+              "jobRef",
+              "projectionDigest",
+              "scopeDigest",
+              "currentRevisionRef",
+              "expiresAt",
+              "revocationEpoch",
+              "timeFence",
+              "budgetRef"
+            ],
+            "failure": "OBSERVATION_AUTHORITY_INVALID",
+            "disclosure": "NONE"
+          }
+        ],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "d.read-capability"
+        ],
+        "join_relations": [
+          "exact current owner-issued read verifier joins observation identity and projection"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "ABSENT",
+          "SEALED",
+          "REMANDED",
+          "FAILED",
+          "CANCELLED"
+        ]
+      },
+      "surface_refs": [
+        "source.dss05-advisory-disposition",
+        "source.dss05-artifact-lineage",
+        "policy.dss05-advisory-contract",
+        "policy.authority-exclusion",
+        "object.audit-disposition",
+        "interface.audit-disposition-read",
+        "consumer.workthread",
+        "mutation.disposition-seal"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "SEAL": "seal-audit-disposition",
+        "REMAND": "seal-audit-disposition",
+        "FAIL": "seal-audit-disposition",
+        "CANCEL": "seal-audit-disposition"
+      },
+      "outcomes": {
+        "SEAL": "SEALED",
+        "REMAND": "REMANDED",
+        "FAIL": "FAILED",
+        "CANCEL": "CANCELLED"
+      },
+      "fromStates": {
+        "SEAL": [
+          "ABSENT"
+        ],
+        "REMAND": [
+          "ABSENT"
+        ],
+        "FAIL": [
+          "ABSENT"
+        ],
+        "CANCEL": [
+          "ABSENT"
+        ]
+      }
+    },
+    {
+      "id": "e.audit-lineage",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "DSS-0.5 advisory and complete artifact lineage is bound without relabeling or mutation",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-lineage-owner",
+        "root": "dss06-lineage-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "lineageRef",
+          "packageRef",
+          "jobRef",
+          "dss05ModuleId",
+          "dss05ModuleDigest",
+          "dss05DispositionRef",
+          "dss05DispositionDigest",
+          "artifactRefsDigest",
+          "sourceCustodyDigest"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "lineage_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact e.audit-lineage record in the current DSS-0.6 population",
+        "population_owner": "dss06-lineage-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "BOUND",
+          "INVALID",
+          "REVOKED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "BIND",
+          "INVALIDATE",
+          "REVOKE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "ABSENT",
+          "BOUND",
+          "INVALID",
+          "REVOKED"
+        ]
+      },
+      "surface_refs": [
+        "source.dss05-advisory-disposition",
+        "source.dss05-artifact-lineage",
+        "policy.dss05-advisory-contract",
+        "object.audit-lineage",
+        "interface.workthread-audit-submit",
+        "consumer.dss05-advisory",
+        "mutation.package-job-cas"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "BIND": "submit-audit-package",
+        "INVALIDATE": "expire-revoke-authority",
+        "REVOKE": "expire-revoke-authority"
+      },
+      "outcomes": {
+        "BIND": "BOUND",
+        "INVALIDATE": "INVALID",
+        "REVOKE": "REVOKED"
+      },
+      "fromStates": {
+        "BIND": [
+          "ABSENT"
+        ],
+        "INVALIDATE": [
+          "BOUND"
+        ],
+        "REVOKE": [
+          "BOUND"
+        ]
+      }
+    },
+    {
+      "id": "d.submit-capability",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "submit-audit-package capability is an owner-issued verifier at the exact current revision, scope, time fence, and budget",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-submit-capability-owner",
+        "root": "dss06-submit-capability-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "capabilityRef",
+          "principalRef",
+          "projectRef",
+          "taskRef",
+          "jobRef",
+          "scopeDigest",
+          "currentRevisionRef",
+          "issuedAt",
+          "expiresAt",
+          "revocationEpoch",
+          "budgetRef"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "capability_revision",
+          "revocation_epoch"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact d.submit-capability record in the current DSS-0.6 population",
+        "population_owner": "dss06-submit-capability-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "CURRENT",
+          "EXPIRED",
+          "REVOKED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "VERIFY",
+          "EXPIRE",
+          "REVOKE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "ABSENT",
+          "CURRENT",
+          "EXPIRED",
+          "REVOKED"
+        ]
+      },
+      "surface_refs": [
+        "source.capability-verifier",
+        "policy.capability-separation",
+        "policy.currentness-reauthorization",
+        "grant.submit-audit-package",
+        "object.submit-capability-binding",
+        "grant.submit-audit-package"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "VERIFY": "bind-submit-capability",
+        "EXPIRE": "expire-revoke-authority",
+        "REVOKE": "expire-revoke-authority"
+      },
+      "outcomes": {
+        "VERIFY": "CURRENT",
+        "EXPIRE": "EXPIRED",
+        "REVOKE": "REVOKED"
+      },
+      "fromStates": {
+        "VERIFY": [
+          "ABSENT"
+        ],
+        "EXPIRE": [
+          "CURRENT"
+        ],
+        "REVOKE": [
+          "CURRENT"
+        ]
+      }
+    },
+    {
+      "id": "d.read-capability",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "read-audit-disposition capability is an owner-issued verifier at the exact current revision, scope, time fence, and budget",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-read-capability-owner",
+        "root": "dss06-read-capability-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "capabilityRef",
+          "principalRef",
+          "projectRef",
+          "taskRef",
+          "jobRef",
+          "scopeDigest",
+          "currentRevisionRef",
+          "issuedAt",
+          "expiresAt",
+          "revocationEpoch",
+          "budgetRef"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "capability_revision",
+          "revocation_epoch"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact d.read-capability record in the current DSS-0.6 population",
+        "population_owner": "dss06-read-capability-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "CURRENT",
+          "EXPIRED",
+          "REVOKED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "VERIFY",
+          "EXPIRE",
+          "REVOKE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "ABSENT",
+          "CURRENT",
+          "EXPIRED",
+          "REVOKED"
+        ]
+      },
+      "surface_refs": [
+        "source.capability-verifier",
+        "policy.capability-separation",
+        "policy.currentness-reauthorization",
+        "grant.read-audit-disposition",
+        "object.read-capability-binding",
+        "grant.read-audit-disposition"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "VERIFY": "bind-read-capability",
+        "EXPIRE": "expire-revoke-authority",
+        "REVOKE": "expire-revoke-authority"
+      },
+      "outcomes": {
+        "VERIFY": "CURRENT",
+        "EXPIRE": "EXPIRED",
+        "REVOKE": "REVOKED"
+      },
+      "fromStates": {
+        "VERIFY": [
+          "ABSENT"
+        ],
+        "EXPIRE": [
+          "CURRENT"
+        ],
+        "REVOKE": [
+          "CURRENT"
+        ]
+      }
+    },
+    {
+      "id": "d.subscribe-ack-capability",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "subscribe-and-acknowledge-disposition capability is an owner-issued verifier at the exact current revision, scope, time fence, and budget",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-subscribe-ack-owner",
+        "root": "dss06-subscribe-ack-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "capabilityRef",
+          "principalRef",
+          "projectRef",
+          "taskRef",
+          "jobRef",
+          "scopeDigest",
+          "currentRevisionRef",
+          "issuedAt",
+          "expiresAt",
+          "revocationEpoch",
+          "budgetRef"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "capability_revision",
+          "revocation_epoch"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact d.subscribe-ack-capability record in the current DSS-0.6 population",
+        "population_owner": "dss06-subscribe-ack-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "CURRENT",
+          "EXPIRED",
+          "REVOKED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "VERIFY",
+          "EXPIRE",
+          "REVOKE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "ABSENT",
+          "CURRENT",
+          "EXPIRED",
+          "REVOKED"
+        ]
+      },
+      "surface_refs": [
+        "source.capability-verifier",
+        "policy.capability-separation",
+        "policy.currentness-reauthorization",
+        "grant.subscribe-ack-disposition",
+        "object.subscribe-ack-capability-binding",
+        "grant.subscribe-ack-disposition"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "VERIFY": "bind-subscribe-ack-capability",
+        "EXPIRE": "expire-revoke-authority",
+        "REVOKE": "expire-revoke-authority"
+      },
+      "outcomes": {
+        "VERIFY": "CURRENT",
+        "EXPIRE": "EXPIRED",
+        "REVOKE": "REVOKED"
+      },
+      "fromStates": {
+        "VERIFY": [
+          "ABSENT"
+        ],
+        "EXPIRE": [
+          "CURRENT"
+        ],
+        "REVOKE": [
+          "CURRENT"
+        ]
+      }
+    },
+    {
+      "id": "d.wakeup-capability",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "wake-audit-task capability is an owner-issued verifier at the exact current revision, scope, time fence, and budget",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-wakeup-capability-owner",
+        "root": "dss06-wakeup-capability-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "capabilityRef",
+          "principalRef",
+          "projectRef",
+          "taskRef",
+          "jobRef",
+          "scopeDigest",
+          "currentRevisionRef",
+          "issuedAt",
+          "expiresAt",
+          "revocationEpoch",
+          "budgetRef"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "capability_revision",
+          "revocation_epoch"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact d.wakeup-capability record in the current DSS-0.6 population",
+        "population_owner": "dss06-wakeup-capability-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "CURRENT",
+          "EXPIRED",
+          "REVOKED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "VERIFY",
+          "EXPIRE",
+          "REVOKE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "ABSENT",
+          "CURRENT",
+          "EXPIRED",
+          "REVOKED"
+        ]
+      },
+      "surface_refs": [
+        "source.capability-verifier",
+        "policy.capability-separation",
+        "policy.currentness-reauthorization",
+        "grant.wake-audit-task",
+        "object.wakeup-capability-binding",
+        "grant.wake-audit-task"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "VERIFY": "bind-wakeup-capability",
+        "EXPIRE": "expire-revoke-authority",
+        "REVOKE": "expire-revoke-authority"
+      },
+      "outcomes": {
+        "VERIFY": "CURRENT",
+        "EXPIRE": "EXPIRED",
+        "REVOKE": "REVOKED"
+      },
+      "fromStates": {
+        "VERIFY": [
+          "ABSENT"
+        ],
+        "EXPIRE": [
+          "CURRENT"
+        ],
+        "REVOKE": [
+          "CURRENT"
+        ]
+      }
+    },
+    {
+      "id": "e.delivery-subscription",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "one durable subscription binds exact job, principal, projection, current capability revisions, cursor, adapter, time, and revocation epoch",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-delivery-owner",
+        "root": "dss06-delivery-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "subscriptionRef",
+          "jobRef",
+          "packageRef",
+          "subscriberPrincipalRef",
+          "readCapabilityRevisionRef",
+          "subscribeAckCapabilityRevisionRef",
+          "eventFilterDigest",
+          "returnProjectionDigest",
+          "deliveryAdapter",
+          "startingCursor",
+          "revocationEpoch"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "subscription_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact e.delivery-subscription record in the current DSS-0.6 population",
+        "population_owner": "dss06-delivery-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "UNCREATED",
+          "ACTIVE",
+          "PAUSED",
+          "SUPERSEDED",
+          "EXPIRED"
+        ],
+        "initial_state": "UNCREATED",
+        "events": [
+          "CREATE",
+          "PAUSE",
+          "SUPERSEDE",
+          "EXPIRE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          {
+            "carrierId": "d.read-capability",
+            "relation": "CURRENT_READ_VERIFIER_REQUIRED",
+            "capabilityFamily": "read_audit_disposition",
+            "fields": [
+              "principalRef",
+              "projectRef",
+              "taskRef",
+              "jobRef",
+              "projectionDigest",
+              "scopeDigest",
+              "currentRevisionRef",
+              "expiresAt",
+              "revocationEpoch",
+              "timeFence",
+              "budgetRef"
+            ],
+            "failure": "OBSERVATION_AUTHORITY_INVALID",
+            "disclosure": "NONE"
+          }
+        ],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "d.read-capability"
+        ],
+        "join_relations": [
+          "exact current owner-issued read verifier joins observation identity and projection"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "UNCREATED",
+          "ACTIVE",
+          "PAUSED",
+          "SUPERSEDED",
+          "EXPIRED"
+        ]
+      },
+      "surface_refs": [
+        "source.capability-verifier",
+        "source.cli-client",
+        "source.electron-client",
+        "policy.dss02-delivery-law",
+        "policy.currentness-reauthorization",
+        "policy.outbox-cursor",
+        "policy.client-replaceability",
+        "object.delivery-subscription",
+        "interface.disposition-subscription",
+        "interface.cli-adapter",
+        "interface.electron-adapter",
+        "consumer.cli",
+        "consumer.electron",
+        "mutation.subscription-cas"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "CREATE": "create-disposition-subscription",
+        "PAUSE": "offer-disposition-delivery",
+        "SUPERSEDE": "expire-revoke-authority",
+        "EXPIRE": "expire-revoke-authority"
+      },
+      "outcomes": {
+        "CREATE": "ACTIVE",
+        "PAUSE": "PAUSED",
+        "SUPERSEDE": "SUPERSEDED",
+        "EXPIRE": "EXPIRED"
+      },
+      "fromStates": {
+        "CREATE": [
+          "UNCREATED"
+        ],
+        "PAUSE": [
+          "ACTIVE"
+        ],
+        "SUPERSEDE": [
+          "ACTIVE",
+          "PAUSED"
+        ],
+        "EXPIRE": [
+          "ACTIVE",
+          "PAUSED"
+        ]
+      }
+    },
+    {
+      "id": "e.delivery-offer",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "immutable offer binds a contiguous disposition projection and fresh reauthorization receipt without advancing acknowledged cursor",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-delivery-owner",
+        "root": "dss06-delivery-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "deliveryAttemptRef",
+          "subscriptionRef",
+          "jobRef",
+          "firstSequence",
+          "lastSequence",
+          "projectionDigest",
+          "authorizationReceiptDigest",
+          "offeredAt",
+          "acknowledgmentDeadline"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "offer_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact e.delivery-offer record in the current DSS-0.6 population",
+        "population_owner": "dss06-delivery-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "UNPREPARED",
+          "OFFERED",
+          "EXPIRED_UNACKNOWLEDGED",
+          "ACKNOWLEDGED",
+          "AUTHORITY_INVALIDATED"
+        ],
+        "initial_state": "UNPREPARED",
+        "events": [
+          "OFFER",
+          "REPLAY",
+          "EXPIRE",
+          "ACKNOWLEDGE",
+          "INVALIDATE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "UNPREPARED",
+          "OFFERED",
+          "EXPIRED_UNACKNOWLEDGED",
+          "ACKNOWLEDGED",
+          "AUTHORITY_INVALIDATED"
+        ]
+      },
+      "surface_refs": [
+        "source.daemon-event-ledger",
+        "policy.dss02-delivery-law",
+        "policy.outbox-cursor",
+        "policy.currentness-reauthorization",
+        "object.delivery-offer",
+        "interface.disposition-subscription",
+        "mutation.offer-outbox",
+        "clock.delivery-deadline"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "OFFER": "offer-disposition-delivery",
+        "REPLAY": "offer-disposition-delivery",
+        "EXPIRE": "offer-disposition-delivery",
+        "ACKNOWLEDGE": "acknowledge-disposition-delivery",
+        "INVALIDATE": "expire-revoke-authority"
+      },
+      "outcomes": {
+        "OFFER": "OFFERED",
+        "REPLAY": "OFFERED",
+        "EXPIRE": "EXPIRED_UNACKNOWLEDGED",
+        "ACKNOWLEDGE": "ACKNOWLEDGED",
+        "INVALIDATE": "AUTHORITY_INVALIDATED"
+      },
+      "fromStates": {
+        "OFFER": [
+          "UNPREPARED",
+          "EXPIRED_UNACKNOWLEDGED"
+        ],
+        "REPLAY": [
+          "EXPIRED_UNACKNOWLEDGED",
+          "AUTHORITY_INVALIDATED"
+        ],
+        "EXPIRE": [
+          "OFFERED"
+        ],
+        "ACKNOWLEDGE": [
+          "OFFERED"
+        ],
+        "INVALIDATE": [
+          "OFFERED"
+        ]
+      }
+    },
+    {
+      "id": "e.delivery-acknowledgment",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "exact bound subscriber acknowledgment proves contiguous delivery acceptance and changes no underlying advisory standing",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-delivery-owner",
+        "root": "dss06-delivery-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "acknowledgmentRef",
+          "deliveryAttemptRef",
+          "subscriptionRef",
+          "subscriberPrincipalRef",
+          "projectionDigest",
+          "acknowledgedAt",
+          "priorAcknowledgedCursor"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "ack_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact e.delivery-acknowledgment record in the current DSS-0.6 population",
+        "population_owner": "dss06-delivery-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "ACKNOWLEDGED",
+          "AUTHORITY_INVALIDATED",
+          "REJECTED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "ACKNOWLEDGE",
+          "INVALIDATE",
+          "REJECT"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "ABSENT",
+          "ACKNOWLEDGED",
+          "AUTHORITY_INVALIDATED",
+          "REJECTED"
+        ]
+      },
+      "surface_refs": [
+        "source.capability-verifier",
+        "policy.dss02-delivery-law",
+        "policy.outbox-cursor",
+        "policy.currentness-reauthorization",
+        "object.delivery-acknowledgment",
+        "interface.disposition-subscription",
+        "mutation.ack-cursor-cas"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "ACKNOWLEDGE": "acknowledge-disposition-delivery",
+        "INVALIDATE": "expire-revoke-authority",
+        "REJECT": "acknowledge-disposition-delivery"
+      },
+      "outcomes": {
+        "ACKNOWLEDGE": "ACKNOWLEDGED",
+        "INVALIDATE": "AUTHORITY_INVALIDATED",
+        "REJECT": "REJECTED"
+      },
+      "fromStates": {
+        "ACKNOWLEDGE": [
+          "ABSENT"
+        ],
+        "INVALIDATE": [
+          "ABSENT",
+          "ACKNOWLEDGED"
+        ],
+        "REJECT": [
+          "ABSENT"
+        ]
+      }
+    },
+    {
+      "id": "e.delivery-cursor",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "durable cursor distinguishes derived offered position from contiguous acknowledged position and replays gaps",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-delivery-owner",
+        "root": "dss06-delivery-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "cursorRef",
+          "subscriptionRef",
+          "subscriptionRevisionRef",
+          "acknowledgedSequence",
+          "acknowledgmentDigest",
+          "offeredSequence",
+          "globalEventHeadDigest"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "cursor_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact e.delivery-cursor record in the current DSS-0.6 population",
+        "population_owner": "dss06-delivery-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "AT_START",
+          "CURRENT",
+          "GAPPED",
+          "RECOVERY_BLOCKED"
+        ],
+        "initial_state": "AT_START",
+        "events": [
+          "INITIALIZE",
+          "ADVANCE",
+          "REPLAY",
+          "BLOCK"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "AT_START",
+          "CURRENT",
+          "GAPPED",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "surface_refs": [
+        "source.daemon-event-ledger",
+        "policy.dss02-delivery-law",
+        "policy.outbox-cursor",
+        "object.delivery-cursor",
+        "interface.disposition-subscription",
+        "mutation.subscription-cas",
+        "mutation.ack-cursor-cas",
+        "mutation.recovery-reconcile"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "INITIALIZE": "create-disposition-subscription",
+        "ADVANCE": "acknowledge-disposition-delivery",
+        "REPLAY": "offer-disposition-delivery",
+        "BLOCK": "recover-dss06-lineage"
+      },
+      "outcomes": {
+        "INITIALIZE": "AT_START",
+        "ADVANCE": "CURRENT",
+        "REPLAY": "CURRENT",
+        "BLOCK": "RECOVERY_BLOCKED"
+      },
+      "fromStates": {
+        "INITIALIZE": [
+          "AT_START"
+        ],
+        "ADVANCE": [
+          "AT_START",
+          "CURRENT"
+        ],
+        "REPLAY": [
+          "CURRENT",
+          "GAPPED"
+        ],
+        "BLOCK": [
+          "AT_START",
+          "CURRENT",
+          "GAPPED"
+        ]
+      }
+    },
+    {
+      "id": "e.task-wakeup",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "registered wakeup is a bounded at-least-once continuation carrying only exact disposition lineage",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-wakeup-owner",
+        "root": "dss06-wakeup-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "wakeupRef",
+          "taskRef",
+          "jobRef",
+          "packageRef",
+          "dispositionRef",
+          "deliveryAttemptRef",
+          "projectionDigest",
+          "wakeupCapabilityRevisionRef",
+          "continuationContractDigest"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "wakeup_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact e.task-wakeup record in the current DSS-0.6 population",
+        "population_owner": "dss06-wakeup-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "UNPREPARED",
+          "OFFERED",
+          "DELIVERED",
+          "ACKNOWLEDGED",
+          "EXPIRED"
+        ],
+        "initial_state": "UNPREPARED",
+        "events": [
+          "OFFER",
+          "DELIVER",
+          "ACKNOWLEDGE",
+          "EXPIRE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "UNPREPARED",
+          "OFFERED",
+          "DELIVERED",
+          "ACKNOWLEDGED",
+          "EXPIRED"
+        ]
+      },
+      "surface_refs": [
+        "source.capability-verifier",
+        "policy.wakeup-contract",
+        "policy.currentness-reauthorization",
+        "object.task-wakeup",
+        "interface.disposition-wakeup",
+        "consumer.workthread",
+        "mutation.wakeup-outbox",
+        "clock.daemon-monotonic"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "OFFER": "wake-audit-task",
+        "DELIVER": "wake-audit-task",
+        "ACKNOWLEDGE": "wake-audit-task",
+        "EXPIRE": "wake-audit-task"
+      },
+      "outcomes": {
+        "OFFER": "OFFERED",
+        "DELIVER": "DELIVERED",
+        "ACKNOWLEDGE": "ACKNOWLEDGED",
+        "EXPIRE": "EXPIRED"
+      },
+      "fromStates": {
+        "OFFER": [
+          "UNPREPARED"
+        ],
+        "DELIVER": [
+          "OFFERED"
+        ],
+        "ACKNOWLEDGE": [
+          "DELIVERED"
+        ],
+        "EXPIRE": [
+          "OFFERED",
+          "DELIVERED"
+        ]
+      }
+    },
+    {
+      "id": "e.recovery-disposition",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "restart recovery equals durable status, reason, source digest, authority effect, revisions, and full package/disposition/delivery populations",
+        "non_claims": [
+          "project truth",
+          "WorldManager truth",
+          "provider authority",
+          "credential authority",
+          "production activation"
+        ]
+      },
+      "authority": {
+        "owner": "dss06-recovery-owner",
+        "root": "dss06-recovery-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "recoveryRef",
+          "serviceGeneration",
+          "eventLedgerHeadDigest",
+          "reconstructedPopulationDigest",
+          "status",
+          "reason",
+          "sourceDigest",
+          "authorityEffect",
+          "packageDispositionDeliveryPopulationDigest"
+        ],
+        "generation_fields": [
+          "dss06_service_generation",
+          "recovery_revision"
+        ],
+        "alias_law": "Only complete service-owned canonical identity aliases this carrier; labels, paths, UI state, peer credentials, owner/root objects, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact e.recovery-disposition record in the current DSS-0.6 population",
+        "population_owner": "dss06-recovery-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current",
+          "expires"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or future-generation replay",
+          "expires is checked before disclosure"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "ENUMERATING",
+          "VERIFYING",
+          "READY",
+          "BLOCKED",
+          "BROKEN"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "START",
+          "ENUMERATE",
+          "VERIFY",
+          "READY",
+          "BLOCK",
+          "BROKEN"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "ABSENT",
+          "ENUMERATING",
+          "VERIFYING",
+          "READY",
+          "BLOCKED",
+          "BROKEN"
+        ]
+      },
+      "surface_refs": [
+        "source.daemon-event-ledger",
+        "source.restart-custody",
+        "policy.currentness-reauthorization",
+        "object.recovery-disposition",
+        "interface.restart-recovery",
+        "mutation.recovery-reconcile"
+      ],
+      "canonical_construct": false,
+      "eventOwners": {
+        "START": "recover-dss06-lineage",
+        "ENUMERATE": "recover-dss06-lineage",
+        "VERIFY": "recover-dss06-lineage",
+        "READY": "recover-dss06-lineage",
+        "BLOCK": "recover-dss06-lineage",
+        "BROKEN": "recover-dss06-lineage"
+      },
+      "outcomes": {
+        "START": "ENUMERATING",
+        "ENUMERATE": "VERIFYING",
+        "VERIFY": "VERIFYING",
+        "READY": "READY",
+        "BLOCK": "BLOCKED",
+        "BROKEN": "BROKEN"
+      },
+      "fromStates": {
+        "START": [
+          "ABSENT"
+        ],
+        "ENUMERATE": [
+          "ENUMERATING"
+        ],
+        "VERIFY": [
+          "ENUMERATING",
+          "VERIFYING"
+        ],
+        "READY": [
+          "VERIFYING"
+        ],
+        "BLOCK": [
+          "ENUMERATING",
+          "VERIFYING"
+        ],
+        "BROKEN": [
+          "ENUMERATING",
+          "VERIFYING",
+          "BLOCKED"
+        ]
+      }
+    }
+  ],
+  "operations": [
+    {
+      "id": "observe-daemon-health",
+      "owner": "dss06-observation-owner",
+      "inputs": [
+        "d.read-capability"
+      ],
+      "outputs": [
+        "e.daemon-health-observation"
+      ],
+      "output_cases": [
+        "DEGRADED",
+        "HEALTHY",
+        "IDEMPOTENCY_CONFLICT",
+        "OBSERVE",
+        "REPLAYED",
+        "STALE",
+        "UNAUTHORIZED",
+        "UNAVAILABLE"
+      ],
+      "atomicity": "safe observation reads a bounded current-head projection only after resolving the exact current owner-issued read verifier and never mutates service custody",
+      "replay": "same head and observation receipt replay; changed head, expired, revoked, foreign, or cross-family read authority returns no disclosure",
+      "events": [
+        "DEGRADE",
+        "EXPIRE",
+        "OBSERVE",
+        "RESTORE"
+      ],
+      "surface_refs": [
+        "interface.daemon-observation",
+        "object.daemon-health-observation"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "DEGRADED",
+        "HEALTHY",
+        "STALE"
+      ],
+      "authorization": {
+        "requiredCarrier": "d.read-capability",
+        "capabilityFamily": "read_audit_disposition",
+        "currentnessFields": [
+          "principalRef",
+          "projectRef",
+          "taskRef",
+          "jobRef",
+          "projectionDigest",
+          "scopeDigest",
+          "currentRevisionRef",
+          "expiresAt",
+          "revocationEpoch",
+          "timeFence",
+          "budgetRef"
+        ],
+        "reauthorizeBeforeObservation": true,
+        "callerCapabilityObjectsAreData": true,
+        "deniedOutcome": "OBSERVATION_AUTHORITY_INVALID",
+        "noDisclosureOnFailure": true
+      }
+    },
+    {
+      "id": "submit-audit-package",
+      "owner": "dss06-package-owner",
+      "inputs": [
+        "d.submit-capability",
+        "d.audit-package",
+        "e.audit-lineage"
+      ],
+      "outputs": [
+        "d.audit-package",
+        "d.audit-job",
+        "e.audit-lineage"
+      ],
+      "output_cases": [
+        "ADMITTED",
+        "BOUND",
+        "CAPABILITY_SCOPE_MISMATCH",
+        "EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "PREDECESSOR_MISMATCH",
+        "REJECTED",
+        "REPLAYED",
+        "STALE_CURRENTNESS",
+        "SUBMITTED",
+        "UNAUTHORIZED"
+      ],
+      "atomicity": "canonical package, exact predecessor lineage, capability intersection, job identity, and event append commit atomically",
+      "replay": "exact principal/project/task/package replay returns the original job receipt; changed bytes or any capability/lineage revision conflicts with no write",
+      "events": [
+        "ADMIT",
+        "BIND",
+        "REJECT",
+        "SUBMIT"
+      ],
+      "surface_refs": [
+        "interface.workthread-audit-submit",
+        "grant.submit-audit-package",
+        "mutation.package-job-cas"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "ADMITTED",
+        "BOUND",
+        "REJECTED",
+        "SUBMITTED"
+      ]
+    },
+    {
+      "id": "inspect-audit-surfaces",
+      "owner": "dss06-observation-owner",
+      "inputs": [
+        "d.read-capability",
+        "d.audit-job",
+        "d.audit-attempt",
+        "d.audit-decision",
+        "d.audit-disposition",
+        "e.delivery-subscription"
+      ],
+      "outputs": [
+        "d.audit-job",
+        "d.audit-attempt",
+        "d.audit-decision",
+        "d.audit-disposition",
+        "e.delivery-subscription"
+      ],
+      "output_cases": [
+        "AUTHORIZED",
+        "DENIED",
+        "IDEMPOTENCY_CONFLICT",
+        "NO_NEW_EVENTS",
+        "REPLAYED",
+        "STALE_HEAD"
+      ],
+      "atomicity": "read-only safe projection returns optional job, attempt, decision, disposition, and subscription observations only after resolving the exact current owner-issued read verifier",
+      "replay": "same current projection replays; changed head, expired, revoked, foreign, or cross-family read authority denies without disclosure",
+      "events": [],
+      "surface_refs": [
+        "interface.daemon-observation",
+        "object.audit-job",
+        "object.audit-attempt",
+        "object.audit-decision",
+        "object.audit-disposition",
+        "object.delivery-subscription"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [],
+      "authorization": {
+        "requiredCarrier": "d.read-capability",
+        "capabilityFamily": "read_audit_disposition",
+        "currentnessFields": [
+          "principalRef",
+          "projectRef",
+          "taskRef",
+          "jobRef",
+          "projectionDigest",
+          "scopeDigest",
+          "currentRevisionRef",
+          "expiresAt",
+          "revocationEpoch",
+          "timeFence",
+          "budgetRef"
+        ],
+        "reauthorizeBeforeObservation": true,
+        "callerCapabilityObjectsAreData": true,
+        "deniedOutcome": "OBSERVATION_AUTHORITY_INVALID",
+        "noDisclosureOnFailure": true
+      }
+    },
+    {
+      "id": "start-audit-attempt",
+      "owner": "dss06-attempt-owner",
+      "inputs": [
+        "d.audit-package",
+        "d.audit-job"
+      ],
+      "outputs": [
+        "d.audit-job",
+        "d.audit-attempt"
+      ],
+      "output_cases": [
+        "ADMITTED",
+        "ALLOCATED",
+        "IDEMPOTENCY_CONFLICT",
+        "JOB_NOT_READY",
+        "OVER_BUDGET",
+        "REPLAYED",
+        "RUNNING",
+        "STALE_CURRENTNESS",
+        "STARTED"
+      ],
+      "atomicity": "one bounded service-owned attempt allocation/start follows the admitted package and job without provider dispatch authority",
+      "replay": "same job/attempt ordinal replay returns existing custody; changed package, policy, or terminality rejects",
+      "events": [
+        "ALLOCATE",
+        "START"
+      ],
+      "surface_refs": [
+        "object.audit-attempt",
+        "mutation.attempt-decision-event"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "ALLOCATED",
+        "RUNNING",
+        "STARTED"
+      ]
+    },
+    {
+      "id": "record-audit-decision",
+      "owner": "dss06-decision-owner",
+      "inputs": [
+        "d.audit-job",
+        "d.audit-attempt",
+        "e.audit-lineage"
+      ],
+      "outputs": [
+        "d.audit-attempt",
+        "d.audit-decision"
+      ],
+      "output_cases": [
+        "IDEMPOTENCY_CONFLICT",
+        "LINEAGE_MISMATCH",
+        "RECORDED",
+        "REJECTED",
+        "REMANDED",
+        "REPLAYED",
+        "TERMINAL",
+        "UNKNOWN"
+      ],
+      "atomicity": "decision records only the exact predecessor advisory lineage and visible attempt outcome",
+      "replay": "same attempt and predecessor digest replay; changed source or terminal winner conflicts",
+      "events": [
+        "COMPLETE",
+        "RECORD",
+        "REJECT",
+        "REMAND",
+        "UNKNOWN_TERMINAL"
+      ],
+      "surface_refs": [
+        "object.audit-decision",
+        "mutation.attempt-decision-event"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "RECORDED",
+        "REJECTED",
+        "REMANDED",
+        "TERMINAL",
+        "UNKNOWN"
+      ]
+    },
+    {
+      "id": "seal-audit-disposition",
+      "owner": "dss06-disposition-owner",
+      "inputs": [
+        "d.audit-job",
+        "d.audit-package",
+        "d.audit-attempt",
+        "d.audit-decision",
+        "e.audit-lineage"
+      ],
+      "outputs": [
+        "d.audit-job",
+        "d.audit-disposition"
+      ],
+      "output_cases": [
+        "CANCELLED",
+        "FAILED",
+        "IDEMPOTENCY_CONFLICT",
+        "LINEAGE_MISMATCH",
+        "POPULATION_MISMATCH",
+        "REMANDED",
+        "REPLAYED",
+        "SEALED",
+        "TERMINAL"
+      ],
+      "atomicity": "complete package/job/attempt/decision and predecessor lineage population seals one advisory disposition",
+      "replay": "same complete population replay returns original disposition; omitted/extra/changed member blocks sealing",
+      "events": [
+        "CANCEL",
+        "COMPLETE",
+        "FAIL",
+        "REMAND",
+        "SEAL"
+      ],
+      "surface_refs": [
+        "object.audit-disposition",
+        "interface.audit-disposition-read",
+        "mutation.disposition-seal"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "CANCELLED",
+        "FAILED",
+        "REMANDED",
+        "SEALED",
+        "TERMINAL"
+      ]
+    },
+    {
+      "id": "bind-submit-capability",
+      "owner": "dss06-submit-capability-owner",
+      "inputs": [
+        "d.submit-capability"
+      ],
+      "outputs": [
+        "d.submit-capability"
+      ],
+      "output_cases": [
+        "CURRENT",
+        "EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "REVOKED",
+        "STALE_CURRENTNESS",
+        "UNAUTHORIZED"
+      ],
+      "atomicity": "owner-issued submit verifier is checked for exact project/task/principal/scope/time/budget",
+      "replay": "same verifier revision replays; changed operation or scope cannot be rebound",
+      "events": [
+        "VERIFY"
+      ],
+      "surface_refs": [
+        "grant.submit-audit-package"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "CURRENT"
+      ]
+    },
+    {
+      "id": "bind-read-capability",
+      "owner": "dss06-read-capability-owner",
+      "inputs": [
+        "d.read-capability"
+      ],
+      "outputs": [
+        "d.read-capability"
+      ],
+      "output_cases": [
+        "CURRENT",
+        "EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "REVOKED",
+        "STALE_CURRENTNESS",
+        "UNAUTHORIZED"
+      ],
+      "atomicity": "owner-issued read verifier is checked for exact job/projection/principal/scope/time/budget",
+      "replay": "same verifier revision replays; submit, subscribe, acknowledge, or wake use is rejected",
+      "events": [
+        "VERIFY"
+      ],
+      "surface_refs": [
+        "grant.read-audit-disposition"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "CURRENT"
+      ]
+    },
+    {
+      "id": "bind-subscribe-ack-capability",
+      "owner": "dss06-subscribe-ack-owner",
+      "inputs": [
+        "d.subscribe-ack-capability"
+      ],
+      "outputs": [
+        "d.subscribe-ack-capability"
+      ],
+      "output_cases": [
+        "CURRENT",
+        "EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "REVOKED",
+        "STALE_CURRENTNESS",
+        "UNAUTHORIZED"
+      ],
+      "atomicity": "owner-issued subscribe/ack verifier is checked for exact subscription/job/projection/principal/scope/time/budget",
+      "replay": "same verifier revision replays; read, submit, or wake use is rejected",
+      "events": [
+        "VERIFY"
+      ],
+      "surface_refs": [
+        "grant.subscribe-ack-disposition"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "CURRENT"
+      ]
+    },
+    {
+      "id": "bind-wakeup-capability",
+      "owner": "dss06-wakeup-capability-owner",
+      "inputs": [
+        "d.wakeup-capability"
+      ],
+      "outputs": [
+        "d.wakeup-capability"
+      ],
+      "output_cases": [
+        "CURRENT",
+        "EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "REVOKED",
+        "STALE_CURRENTNESS",
+        "UNAUTHORIZED"
+      ],
+      "atomicity": "owner-issued wake verifier is checked for exact task/job/contract/principal/scope/time/budget",
+      "replay": "same verifier revision replays; submit, read, subscribe, or acknowledge use is rejected",
+      "events": [
+        "VERIFY"
+      ],
+      "surface_refs": [
+        "grant.wake-audit-task"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "CURRENT"
+      ]
+    },
+    {
+      "id": "create-disposition-subscription",
+      "owner": "dss06-delivery-owner",
+      "inputs": [
+        "d.audit-job",
+        "d.audit-disposition",
+        "d.read-capability",
+        "d.subscribe-ack-capability"
+      ],
+      "outputs": [
+        "e.delivery-subscription",
+        "e.delivery-cursor"
+      ],
+      "output_cases": [
+        "ACTIVE",
+        "AT_START",
+        "BACKPRESSURED",
+        "DENIED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "STALE_CURRENTNESS"
+      ],
+      "atomicity": "subscription, initial acknowledged cursor, exact filter/projection, adapter, and capability revisions publish atomically",
+      "replay": "same exact subscription tuple replays; changed scope, projection, adapter, or capability conflicts",
+      "events": [
+        "CREATE",
+        "INITIALIZE"
+      ],
+      "surface_refs": [
+        "object.delivery-subscription",
+        "object.delivery-cursor",
+        "mutation.subscription-cas"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "ACTIVE",
+        "AT_START"
+      ]
+    },
+    {
+      "id": "offer-disposition-delivery",
+      "owner": "dss06-delivery-owner",
+      "inputs": [
+        "e.delivery-subscription",
+        "e.delivery-cursor",
+        "d.audit-disposition",
+        "d.read-capability"
+      ],
+      "outputs": [
+        "e.delivery-subscription",
+        "e.delivery-offer",
+        "e.delivery-cursor"
+      ],
+      "output_cases": [
+        "AUTHORITY_INVALIDATED",
+        "BACKPRESSURED",
+        "CURRENT",
+        "DENIED",
+        "EXPIRED_UNACKNOWLEDGED",
+        "NO_NEW_EVENTS",
+        "OFFERED",
+        "PAUSED",
+        "REPLAYED",
+        "STALE_CURRENTNESS",
+        "SUBSCRIPTION_PAUSED"
+      ],
+      "atomicity": "each offer/replay reauthorizes the exact subscription and emits an immutable contiguous outbox offer",
+      "replay": "unacknowledged or expired offer replays from acknowledged cursor; historical offer and acknowledged cursor are not rewritten",
+      "events": [
+        "EXPIRE",
+        "OFFER",
+        "PAUSE",
+        "REPLAY"
+      ],
+      "surface_refs": [
+        "object.delivery-offer",
+        "object.delivery-cursor",
+        "mutation.offer-outbox"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "CURRENT",
+        "EXPIRED_UNACKNOWLEDGED",
+        "OFFERED",
+        "PAUSED"
+      ]
+    },
+    {
+      "id": "acknowledge-disposition-delivery",
+      "owner": "dss06-delivery-owner",
+      "inputs": [
+        "e.delivery-offer",
+        "e.delivery-cursor",
+        "d.subscribe-ack-capability"
+      ],
+      "outputs": [
+        "e.delivery-offer",
+        "e.delivery-acknowledgment",
+        "e.delivery-cursor"
+      ],
+      "output_cases": [
+        "ACKNOWLEDGED",
+        "AUTHORITY_INVALIDATED",
+        "CURRENT",
+        "DIGEST_MISMATCH",
+        "EXACT_REPLAY",
+        "NONCONTIGUOUS",
+        "REJECTED",
+        "STALE_CURRENTNESS"
+      ],
+      "atomicity": "exact bound acknowledgment and contiguous cursor CAS commit together after capability reauthorization",
+      "replay": "exact acknowledgment replay is idempotent; changed digest/sequence/principal or gap has no cursor effect",
+      "events": [
+        "ACKNOWLEDGE",
+        "ADVANCE",
+        "REJECT"
+      ],
+      "surface_refs": [
+        "object.delivery-acknowledgment",
+        "object.delivery-cursor",
+        "mutation.ack-cursor-cas"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "ACKNOWLEDGED",
+        "CURRENT",
+        "REJECTED"
+      ]
+    },
+    {
+      "id": "wake-audit-task",
+      "owner": "dss06-wakeup-owner",
+      "inputs": [
+        "e.delivery-offer",
+        "e.delivery-subscription",
+        "d.audit-disposition",
+        "d.wakeup-capability"
+      ],
+      "outputs": [
+        "e.task-wakeup"
+      ],
+      "output_cases": [
+        "ACKNOWLEDGED",
+        "AUTHORITY_INVALIDATED",
+        "DELIVERED",
+        "DENIED",
+        "EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "OFFERED",
+        "REPLAYED"
+      ],
+      "atomicity": "registered wakeup carries bounded package/disposition/artifact lineage and fresh wake capability receipt",
+      "replay": "same task/job/attempt/projection replay is idempotent; wake cannot acknowledge or advance delivery cursor",
+      "events": [
+        "ACKNOWLEDGE",
+        "DELIVER",
+        "EXPIRE",
+        "OFFER"
+      ],
+      "surface_refs": [
+        "object.task-wakeup",
+        "interface.disposition-wakeup",
+        "mutation.wakeup-outbox"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "ACKNOWLEDGED",
+        "DELIVERED",
+        "EXPIRED",
+        "OFFERED"
+      ]
+    },
+    {
+      "id": "cancel-audit-job",
+      "owner": "dss06-job-owner",
+      "inputs": [
+        "d.audit-job",
+        "d.audit-attempt"
+      ],
+      "outputs": [
+        "d.audit-job",
+        "d.audit-attempt"
+      ],
+      "output_cases": [
+        "CANCELLATION_LOST_RACE",
+        "CANCELLED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "STALE_CURRENTNESS",
+        "UNKNOWN"
+      ],
+      "atomicity": "cancellation is prospective and exact-CAS fenced; unknown/running terminality is never guessed",
+      "replay": "same prestart cancellation replays; acknowledged running or terminal attempt cannot be relabeled",
+      "events": [
+        "CANCEL"
+      ],
+      "surface_refs": [
+        "object.audit-job",
+        "object.audit-attempt",
+        "mutation.attempt-decision-event"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "CANCELLED"
+      ]
+    },
+    {
+      "id": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "inputs": [
+        "d.submit-capability",
+        "d.read-capability",
+        "d.subscribe-ack-capability",
+        "d.wakeup-capability",
+        "e.audit-lineage",
+        "e.delivery-subscription",
+        "e.delivery-offer",
+        "e.delivery-acknowledgment"
+      ],
+      "outputs": [
+        "d.submit-capability",
+        "d.read-capability",
+        "d.subscribe-ack-capability",
+        "d.wakeup-capability",
+        "e.audit-lineage",
+        "e.delivery-subscription",
+        "e.delivery-offer",
+        "e.delivery-acknowledgment"
+      ],
+      "output_cases": [
+        "AUTHORITY_INVALIDATED",
+        "EXACT_REPLAY",
+        "EXPIRED",
+        "INVALID",
+        "PAUSED",
+        "REVOKED",
+        "STALE_CURRENTNESS",
+        "SUPERSEDED"
+      ],
+      "atomicity": "expiry/revocation records a typed pause or invalidation and never swaps authority into an existing subscription",
+      "replay": "same authority transition replays; a new revision is required before disclosure resumes",
+      "events": [
+        "EXPIRE",
+        "INVALIDATE",
+        "REVOKE",
+        "SUPERSEDE"
+      ],
+      "surface_refs": [
+        "policy.currentness-reauthorization",
+        "mutation.recovery-reconcile"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "AUTHORITY_INVALIDATED",
+        "EXPIRED",
+        "INVALID",
+        "REVOKED",
+        "SUPERSEDED"
+      ]
+    },
+    {
+      "id": "recover-dss06-lineage",
+      "owner": "dss06-recovery-owner",
+      "inputs": [
+        "e.daemon-health-observation",
+        "d.audit-package",
+        "d.audit-job",
+        "d.audit-attempt",
+        "d.audit-decision",
+        "d.audit-disposition",
+        "e.audit-lineage",
+        "d.submit-capability",
+        "d.read-capability",
+        "d.subscribe-ack-capability",
+        "d.wakeup-capability",
+        "e.delivery-subscription",
+        "e.delivery-offer",
+        "e.delivery-acknowledgment",
+        "e.delivery-cursor",
+        "e.task-wakeup",
+        "e.recovery-disposition"
+      ],
+      "outputs": [
+        "e.recovery-disposition"
+      ],
+      "output_cases": [
+        "BLOCKED",
+        "BROKEN",
+        "ENUMERATING",
+        "IDEMPOTENCY_CONFLICT",
+        "READY",
+        "RECOVERY_BLOCKED",
+        "RECOVERY_EVENTS_APPENDED",
+        "REPLAYED",
+        "VERIFYING"
+      ],
+      "atomicity": "authenticated event/custody verification and complete population equality precede recovery readiness",
+      "replay": "same ledger head/source population replays; relabel, gap, orphan, fork, stale, or digest mismatch blocks with no new attempt/disclosure",
+      "events": [
+        "BLOCK",
+        "BROKEN",
+        "ENUMERATE",
+        "READY",
+        "START",
+        "VERIFY"
+      ],
+      "surface_refs": [
+        "object.recovery-disposition",
+        "interface.restart-recovery",
+        "mutation.recovery-reconcile"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "BLOCKED",
+        "BROKEN",
+        "ENUMERATING",
+        "READY",
+        "RECOVERY_BLOCKED",
+        "VERIFYING"
+      ]
+    }
+  ],
+  "qualified_transitions": [
+    {
+      "transitionId": "observe-daemon-health:e.daemon-health-observation:OBSERVE:1",
+      "carrierId": "e.daemon-health-observation",
+      "outputCarrierId": "e.daemon-health-observation",
+      "operationId": "observe-daemon-health",
+      "owner": "dss06-observation-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "UNOBSERVED"
+      ],
+      "fromStates": [
+        "UNOBSERVED"
+      ],
+      "event": "OBSERVE",
+      "destinationState": "HEALTHY",
+      "toState": "HEALTHY",
+      "outcomeCases": [
+        "HEALTHY"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "observe-daemon-health:e.daemon-health-observation:DEGRADE:1",
+      "carrierId": "e.daemon-health-observation",
+      "outputCarrierId": "e.daemon-health-observation",
+      "operationId": "observe-daemon-health",
+      "owner": "dss06-observation-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "HEALTHY"
+      ],
+      "fromStates": [
+        "HEALTHY"
+      ],
+      "event": "DEGRADE",
+      "destinationState": "DEGRADED",
+      "toState": "DEGRADED",
+      "outcomeCases": [
+        "DEGRADED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "observe-daemon-health:e.daemon-health-observation:RESTORE:1",
+      "carrierId": "e.daemon-health-observation",
+      "outputCarrierId": "e.daemon-health-observation",
+      "operationId": "observe-daemon-health",
+      "owner": "dss06-observation-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "DEGRADED",
+        "UNAVAILABLE"
+      ],
+      "fromStates": [
+        "DEGRADED",
+        "UNAVAILABLE"
+      ],
+      "event": "RESTORE",
+      "destinationState": "HEALTHY",
+      "toState": "HEALTHY",
+      "outcomeCases": [
+        "HEALTHY"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "observe-daemon-health:e.daemon-health-observation:EXPIRE:1",
+      "carrierId": "e.daemon-health-observation",
+      "outputCarrierId": "e.daemon-health-observation",
+      "operationId": "observe-daemon-health",
+      "owner": "dss06-observation-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "HEALTHY",
+        "DEGRADED"
+      ],
+      "fromStates": [
+        "HEALTHY",
+        "DEGRADED"
+      ],
+      "event": "EXPIRE",
+      "destinationState": "STALE",
+      "toState": "STALE",
+      "outcomeCases": [
+        "STALE"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "submit-audit-package:d.audit-package:SUBMIT:1",
+      "carrierId": "d.audit-package",
+      "outputCarrierId": "d.audit-package",
+      "operationId": "submit-audit-package",
+      "owner": "dss06-package-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "UNSUBMITTED"
+      ],
+      "fromStates": [
+        "UNSUBMITTED"
+      ],
+      "event": "SUBMIT",
+      "destinationState": "SUBMITTED",
+      "toState": "SUBMITTED",
+      "outcomeCases": [
+        "SUBMITTED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "submit-audit-package:d.audit-package:BIND:1",
+      "carrierId": "d.audit-package",
+      "outputCarrierId": "d.audit-package",
+      "operationId": "submit-audit-package",
+      "owner": "dss06-package-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "SUBMITTED"
+      ],
+      "fromStates": [
+        "SUBMITTED"
+      ],
+      "event": "BIND",
+      "destinationState": "BOUND",
+      "toState": "BOUND",
+      "outcomeCases": [
+        "BOUND"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "submit-audit-package:d.audit-package:REJECT:1",
+      "carrierId": "d.audit-package",
+      "outputCarrierId": "d.audit-package",
+      "operationId": "submit-audit-package",
+      "owner": "dss06-package-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "UNSUBMITTED",
+        "SUBMITTED"
+      ],
+      "fromStates": [
+        "UNSUBMITTED",
+        "SUBMITTED"
+      ],
+      "event": "REJECT",
+      "destinationState": "REJECTED",
+      "toState": "REJECTED",
+      "outcomeCases": [
+        "REJECTED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:d.audit-package:EXPIRE:1",
+      "carrierId": "d.audit-package",
+      "outputCarrierId": "d.audit-package",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "SUBMITTED",
+        "BOUND"
+      ],
+      "fromStates": [
+        "SUBMITTED",
+        "BOUND"
+      ],
+      "event": "EXPIRE",
+      "destinationState": "EXPIRED",
+      "toState": "EXPIRED",
+      "outcomeCases": [
+        "EXPIRED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "submit-audit-package:d.audit-job:ADMIT:1",
+      "carrierId": "d.audit-job",
+      "outputCarrierId": "d.audit-job",
+      "operationId": "submit-audit-package",
+      "owner": "dss06-package-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "UNSEEN"
+      ],
+      "fromStates": [
+        "UNSEEN"
+      ],
+      "event": "ADMIT",
+      "destinationState": "ADMITTED",
+      "toState": "ADMITTED",
+      "outcomeCases": [
+        "ADMITTED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "start-audit-attempt:d.audit-job:START:1",
+      "carrierId": "d.audit-job",
+      "outputCarrierId": "d.audit-job",
+      "operationId": "start-audit-attempt",
+      "owner": "dss06-attempt-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "ADMITTED"
+      ],
+      "fromStates": [
+        "ADMITTED"
+      ],
+      "event": "START",
+      "destinationState": "RUNNING",
+      "toState": "RUNNING",
+      "outcomeCases": [
+        "RUNNING"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "seal-audit-disposition:d.audit-job:COMPLETE:1",
+      "carrierId": "d.audit-job",
+      "outputCarrierId": "d.audit-job",
+      "operationId": "seal-audit-disposition",
+      "owner": "dss06-disposition-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "RUNNING"
+      ],
+      "fromStates": [
+        "RUNNING"
+      ],
+      "event": "COMPLETE",
+      "destinationState": "TERMINAL",
+      "toState": "TERMINAL",
+      "outcomeCases": [
+        "TERMINAL"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "cancel-audit-job:d.audit-job:CANCEL:1",
+      "carrierId": "d.audit-job",
+      "outputCarrierId": "d.audit-job",
+      "operationId": "cancel-audit-job",
+      "owner": "dss06-job-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "ADMITTED",
+        "RUNNING"
+      ],
+      "fromStates": [
+        "ADMITTED",
+        "RUNNING"
+      ],
+      "event": "CANCEL",
+      "destinationState": "CANCELLED",
+      "toState": "CANCELLED",
+      "outcomeCases": [
+        "CANCELLED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "recover-dss06-lineage:d.audit-job:BLOCK:1",
+      "carrierId": "d.audit-job",
+      "outputCarrierId": "d.audit-job",
+      "operationId": "recover-dss06-lineage",
+      "owner": "dss06-recovery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "UNSEEN",
+        "ADMITTED",
+        "RUNNING"
+      ],
+      "fromStates": [
+        "UNSEEN",
+        "ADMITTED",
+        "RUNNING"
+      ],
+      "event": "BLOCK",
+      "destinationState": "RECOVERY_BLOCKED",
+      "toState": "RECOVERY_BLOCKED",
+      "outcomeCases": [
+        "RECOVERY_BLOCKED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "start-audit-attempt:d.audit-attempt:ALLOCATE:1",
+      "carrierId": "d.audit-attempt",
+      "outputCarrierId": "d.audit-attempt",
+      "operationId": "start-audit-attempt",
+      "owner": "dss06-attempt-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "UNALLOCATED"
+      ],
+      "fromStates": [
+        "UNALLOCATED"
+      ],
+      "event": "ALLOCATE",
+      "destinationState": "ALLOCATED",
+      "toState": "ALLOCATED",
+      "outcomeCases": [
+        "ALLOCATED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "start-audit-attempt:d.audit-attempt:START:1",
+      "carrierId": "d.audit-attempt",
+      "outputCarrierId": "d.audit-attempt",
+      "operationId": "start-audit-attempt",
+      "owner": "dss06-attempt-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "ALLOCATED"
+      ],
+      "fromStates": [
+        "ALLOCATED"
+      ],
+      "event": "START",
+      "destinationState": "STARTED",
+      "toState": "STARTED",
+      "outcomeCases": [
+        "STARTED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "record-audit-decision:d.audit-attempt:COMPLETE:1",
+      "carrierId": "d.audit-attempt",
+      "outputCarrierId": "d.audit-attempt",
+      "operationId": "record-audit-decision",
+      "owner": "dss06-decision-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "STARTED"
+      ],
+      "fromStates": [
+        "STARTED"
+      ],
+      "event": "COMPLETE",
+      "destinationState": "TERMINAL",
+      "toState": "TERMINAL",
+      "outcomeCases": [
+        "TERMINAL"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "record-audit-decision:d.audit-attempt:UNKNOWN_TERMINAL:1",
+      "carrierId": "d.audit-attempt",
+      "outputCarrierId": "d.audit-attempt",
+      "operationId": "record-audit-decision",
+      "owner": "dss06-decision-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "STARTED"
+      ],
+      "fromStates": [
+        "STARTED"
+      ],
+      "event": "UNKNOWN_TERMINAL",
+      "destinationState": "UNKNOWN",
+      "toState": "UNKNOWN",
+      "outcomeCases": [
+        "UNKNOWN"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "cancel-audit-job:d.audit-attempt:CANCEL:1",
+      "carrierId": "d.audit-attempt",
+      "outputCarrierId": "d.audit-attempt",
+      "operationId": "cancel-audit-job",
+      "owner": "dss06-job-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "ALLOCATED"
+      ],
+      "fromStates": [
+        "ALLOCATED"
+      ],
+      "event": "CANCEL",
+      "destinationState": "CANCELLED",
+      "toState": "CANCELLED",
+      "outcomeCases": [
+        "CANCELLED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "record-audit-decision:d.audit-decision:RECORD:1",
+      "carrierId": "d.audit-decision",
+      "outputCarrierId": "d.audit-decision",
+      "operationId": "record-audit-decision",
+      "owner": "dss06-decision-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "RECORD",
+      "destinationState": "RECORDED",
+      "toState": "RECORDED",
+      "outcomeCases": [
+        "RECORDED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "record-audit-decision:d.audit-decision:REMAND:1",
+      "carrierId": "d.audit-decision",
+      "outputCarrierId": "d.audit-decision",
+      "operationId": "record-audit-decision",
+      "owner": "dss06-decision-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT",
+        "RECORDED"
+      ],
+      "fromStates": [
+        "ABSENT",
+        "RECORDED"
+      ],
+      "event": "REMAND",
+      "destinationState": "REMANDED",
+      "toState": "REMANDED",
+      "outcomeCases": [
+        "REMANDED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "record-audit-decision:d.audit-decision:REJECT:1",
+      "carrierId": "d.audit-decision",
+      "outputCarrierId": "d.audit-decision",
+      "operationId": "record-audit-decision",
+      "owner": "dss06-decision-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT",
+        "RECORDED"
+      ],
+      "fromStates": [
+        "ABSENT",
+        "RECORDED"
+      ],
+      "event": "REJECT",
+      "destinationState": "REJECTED",
+      "toState": "REJECTED",
+      "outcomeCases": [
+        "REJECTED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "seal-audit-disposition:d.audit-disposition:SEAL:1",
+      "carrierId": "d.audit-disposition",
+      "outputCarrierId": "d.audit-disposition",
+      "operationId": "seal-audit-disposition",
+      "owner": "dss06-disposition-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "SEAL",
+      "destinationState": "SEALED",
+      "toState": "SEALED",
+      "outcomeCases": [
+        "SEALED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "seal-audit-disposition:d.audit-disposition:REMAND:1",
+      "carrierId": "d.audit-disposition",
+      "outputCarrierId": "d.audit-disposition",
+      "operationId": "seal-audit-disposition",
+      "owner": "dss06-disposition-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "REMAND",
+      "destinationState": "REMANDED",
+      "toState": "REMANDED",
+      "outcomeCases": [
+        "REMANDED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "seal-audit-disposition:d.audit-disposition:FAIL:1",
+      "carrierId": "d.audit-disposition",
+      "outputCarrierId": "d.audit-disposition",
+      "operationId": "seal-audit-disposition",
+      "owner": "dss06-disposition-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "FAIL",
+      "destinationState": "FAILED",
+      "toState": "FAILED",
+      "outcomeCases": [
+        "FAILED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "seal-audit-disposition:d.audit-disposition:CANCEL:1",
+      "carrierId": "d.audit-disposition",
+      "outputCarrierId": "d.audit-disposition",
+      "operationId": "seal-audit-disposition",
+      "owner": "dss06-disposition-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "CANCEL",
+      "destinationState": "CANCELLED",
+      "toState": "CANCELLED",
+      "outcomeCases": [
+        "CANCELLED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "submit-audit-package:e.audit-lineage:BIND:1",
+      "carrierId": "e.audit-lineage",
+      "outputCarrierId": "e.audit-lineage",
+      "operationId": "submit-audit-package",
+      "owner": "dss06-package-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "BIND",
+      "destinationState": "BOUND",
+      "toState": "BOUND",
+      "outcomeCases": [
+        "BOUND"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:e.audit-lineage:INVALIDATE:1",
+      "carrierId": "e.audit-lineage",
+      "outputCarrierId": "e.audit-lineage",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "BOUND"
+      ],
+      "fromStates": [
+        "BOUND"
+      ],
+      "event": "INVALIDATE",
+      "destinationState": "INVALID",
+      "toState": "INVALID",
+      "outcomeCases": [
+        "INVALID"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:e.audit-lineage:REVOKE:1",
+      "carrierId": "e.audit-lineage",
+      "outputCarrierId": "e.audit-lineage",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "BOUND"
+      ],
+      "fromStates": [
+        "BOUND"
+      ],
+      "event": "REVOKE",
+      "destinationState": "REVOKED",
+      "toState": "REVOKED",
+      "outcomeCases": [
+        "REVOKED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "bind-submit-capability:d.submit-capability:VERIFY:1",
+      "carrierId": "d.submit-capability",
+      "outputCarrierId": "d.submit-capability",
+      "operationId": "bind-submit-capability",
+      "owner": "dss06-submit-capability-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "VERIFY",
+      "destinationState": "CURRENT",
+      "toState": "CURRENT",
+      "outcomeCases": [
+        "CURRENT"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:d.submit-capability:EXPIRE:1",
+      "carrierId": "d.submit-capability",
+      "outputCarrierId": "d.submit-capability",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "CURRENT"
+      ],
+      "fromStates": [
+        "CURRENT"
+      ],
+      "event": "EXPIRE",
+      "destinationState": "EXPIRED",
+      "toState": "EXPIRED",
+      "outcomeCases": [
+        "EXPIRED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:d.submit-capability:REVOKE:1",
+      "carrierId": "d.submit-capability",
+      "outputCarrierId": "d.submit-capability",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "CURRENT"
+      ],
+      "fromStates": [
+        "CURRENT"
+      ],
+      "event": "REVOKE",
+      "destinationState": "REVOKED",
+      "toState": "REVOKED",
+      "outcomeCases": [
+        "REVOKED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "bind-read-capability:d.read-capability:VERIFY:1",
+      "carrierId": "d.read-capability",
+      "outputCarrierId": "d.read-capability",
+      "operationId": "bind-read-capability",
+      "owner": "dss06-read-capability-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "VERIFY",
+      "destinationState": "CURRENT",
+      "toState": "CURRENT",
+      "outcomeCases": [
+        "CURRENT"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:d.read-capability:EXPIRE:1",
+      "carrierId": "d.read-capability",
+      "outputCarrierId": "d.read-capability",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "CURRENT"
+      ],
+      "fromStates": [
+        "CURRENT"
+      ],
+      "event": "EXPIRE",
+      "destinationState": "EXPIRED",
+      "toState": "EXPIRED",
+      "outcomeCases": [
+        "EXPIRED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:d.read-capability:REVOKE:1",
+      "carrierId": "d.read-capability",
+      "outputCarrierId": "d.read-capability",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "CURRENT"
+      ],
+      "fromStates": [
+        "CURRENT"
+      ],
+      "event": "REVOKE",
+      "destinationState": "REVOKED",
+      "toState": "REVOKED",
+      "outcomeCases": [
+        "REVOKED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "bind-subscribe-ack-capability:d.subscribe-ack-capability:VERIFY:1",
+      "carrierId": "d.subscribe-ack-capability",
+      "outputCarrierId": "d.subscribe-ack-capability",
+      "operationId": "bind-subscribe-ack-capability",
+      "owner": "dss06-subscribe-ack-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "VERIFY",
+      "destinationState": "CURRENT",
+      "toState": "CURRENT",
+      "outcomeCases": [
+        "CURRENT"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:d.subscribe-ack-capability:EXPIRE:1",
+      "carrierId": "d.subscribe-ack-capability",
+      "outputCarrierId": "d.subscribe-ack-capability",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "CURRENT"
+      ],
+      "fromStates": [
+        "CURRENT"
+      ],
+      "event": "EXPIRE",
+      "destinationState": "EXPIRED",
+      "toState": "EXPIRED",
+      "outcomeCases": [
+        "EXPIRED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:d.subscribe-ack-capability:REVOKE:1",
+      "carrierId": "d.subscribe-ack-capability",
+      "outputCarrierId": "d.subscribe-ack-capability",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "CURRENT"
+      ],
+      "fromStates": [
+        "CURRENT"
+      ],
+      "event": "REVOKE",
+      "destinationState": "REVOKED",
+      "toState": "REVOKED",
+      "outcomeCases": [
+        "REVOKED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "bind-wakeup-capability:d.wakeup-capability:VERIFY:1",
+      "carrierId": "d.wakeup-capability",
+      "outputCarrierId": "d.wakeup-capability",
+      "operationId": "bind-wakeup-capability",
+      "owner": "dss06-wakeup-capability-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "VERIFY",
+      "destinationState": "CURRENT",
+      "toState": "CURRENT",
+      "outcomeCases": [
+        "CURRENT"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:d.wakeup-capability:EXPIRE:1",
+      "carrierId": "d.wakeup-capability",
+      "outputCarrierId": "d.wakeup-capability",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "CURRENT"
+      ],
+      "fromStates": [
+        "CURRENT"
+      ],
+      "event": "EXPIRE",
+      "destinationState": "EXPIRED",
+      "toState": "EXPIRED",
+      "outcomeCases": [
+        "EXPIRED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:d.wakeup-capability:REVOKE:1",
+      "carrierId": "d.wakeup-capability",
+      "outputCarrierId": "d.wakeup-capability",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "CURRENT"
+      ],
+      "fromStates": [
+        "CURRENT"
+      ],
+      "event": "REVOKE",
+      "destinationState": "REVOKED",
+      "toState": "REVOKED",
+      "outcomeCases": [
+        "REVOKED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "create-disposition-subscription:e.delivery-subscription:CREATE:1",
+      "carrierId": "e.delivery-subscription",
+      "outputCarrierId": "e.delivery-subscription",
+      "operationId": "create-disposition-subscription",
+      "owner": "dss06-delivery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "UNCREATED"
+      ],
+      "fromStates": [
+        "UNCREATED"
+      ],
+      "event": "CREATE",
+      "destinationState": "ACTIVE",
+      "toState": "ACTIVE",
+      "outcomeCases": [
+        "ACTIVE"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "offer-disposition-delivery:e.delivery-subscription:PAUSE:1",
+      "carrierId": "e.delivery-subscription",
+      "outputCarrierId": "e.delivery-subscription",
+      "operationId": "offer-disposition-delivery",
+      "owner": "dss06-delivery-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "ACTIVE"
+      ],
+      "fromStates": [
+        "ACTIVE"
+      ],
+      "event": "PAUSE",
+      "destinationState": "PAUSED",
+      "toState": "PAUSED",
+      "outcomeCases": [
+        "PAUSED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:e.delivery-subscription:SUPERSEDE:1",
+      "carrierId": "e.delivery-subscription",
+      "outputCarrierId": "e.delivery-subscription",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "ACTIVE",
+        "PAUSED"
+      ],
+      "fromStates": [
+        "ACTIVE",
+        "PAUSED"
+      ],
+      "event": "SUPERSEDE",
+      "destinationState": "SUPERSEDED",
+      "toState": "SUPERSEDED",
+      "outcomeCases": [
+        "SUPERSEDED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:e.delivery-subscription:EXPIRE:1",
+      "carrierId": "e.delivery-subscription",
+      "outputCarrierId": "e.delivery-subscription",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "ACTIVE",
+        "PAUSED"
+      ],
+      "fromStates": [
+        "ACTIVE",
+        "PAUSED"
+      ],
+      "event": "EXPIRE",
+      "destinationState": "EXPIRED",
+      "toState": "EXPIRED",
+      "outcomeCases": [
+        "EXPIRED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "offer-disposition-delivery:e.delivery-offer:OFFER:1",
+      "carrierId": "e.delivery-offer",
+      "outputCarrierId": "e.delivery-offer",
+      "operationId": "offer-disposition-delivery",
+      "owner": "dss06-delivery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "UNPREPARED",
+        "EXPIRED_UNACKNOWLEDGED"
+      ],
+      "fromStates": [
+        "UNPREPARED",
+        "EXPIRED_UNACKNOWLEDGED"
+      ],
+      "event": "OFFER",
+      "destinationState": "OFFERED",
+      "toState": "OFFERED",
+      "outcomeCases": [
+        "OFFERED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "offer-disposition-delivery:e.delivery-offer:REPLAY:1",
+      "carrierId": "e.delivery-offer",
+      "outputCarrierId": "e.delivery-offer",
+      "operationId": "offer-disposition-delivery",
+      "owner": "dss06-delivery-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "EXPIRED_UNACKNOWLEDGED",
+        "AUTHORITY_INVALIDATED"
+      ],
+      "fromStates": [
+        "EXPIRED_UNACKNOWLEDGED",
+        "AUTHORITY_INVALIDATED"
+      ],
+      "event": "REPLAY",
+      "destinationState": "OFFERED",
+      "toState": "OFFERED",
+      "outcomeCases": [
+        "OFFERED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "offer-disposition-delivery:e.delivery-offer:EXPIRE:1",
+      "carrierId": "e.delivery-offer",
+      "outputCarrierId": "e.delivery-offer",
+      "operationId": "offer-disposition-delivery",
+      "owner": "dss06-delivery-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "OFFERED"
+      ],
+      "fromStates": [
+        "OFFERED"
+      ],
+      "event": "EXPIRE",
+      "destinationState": "EXPIRED_UNACKNOWLEDGED",
+      "toState": "EXPIRED_UNACKNOWLEDGED",
+      "outcomeCases": [
+        "EXPIRED_UNACKNOWLEDGED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "acknowledge-disposition-delivery:e.delivery-offer:ACKNOWLEDGE:1",
+      "carrierId": "e.delivery-offer",
+      "outputCarrierId": "e.delivery-offer",
+      "operationId": "acknowledge-disposition-delivery",
+      "owner": "dss06-delivery-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "OFFERED"
+      ],
+      "fromStates": [
+        "OFFERED"
+      ],
+      "event": "ACKNOWLEDGE",
+      "destinationState": "ACKNOWLEDGED",
+      "toState": "ACKNOWLEDGED",
+      "outcomeCases": [
+        "ACKNOWLEDGED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:e.delivery-offer:INVALIDATE:1",
+      "carrierId": "e.delivery-offer",
+      "outputCarrierId": "e.delivery-offer",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "OFFERED"
+      ],
+      "fromStates": [
+        "OFFERED"
+      ],
+      "event": "INVALIDATE",
+      "destinationState": "AUTHORITY_INVALIDATED",
+      "toState": "AUTHORITY_INVALIDATED",
+      "outcomeCases": [
+        "AUTHORITY_INVALIDATED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "acknowledge-disposition-delivery:e.delivery-acknowledgment:ACKNOWLEDGE:1",
+      "carrierId": "e.delivery-acknowledgment",
+      "outputCarrierId": "e.delivery-acknowledgment",
+      "operationId": "acknowledge-disposition-delivery",
+      "owner": "dss06-delivery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "ACKNOWLEDGE",
+      "destinationState": "ACKNOWLEDGED",
+      "toState": "ACKNOWLEDGED",
+      "outcomeCases": [
+        "ACKNOWLEDGED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "expire-revoke-authority:e.delivery-acknowledgment:INVALIDATE:1",
+      "carrierId": "e.delivery-acknowledgment",
+      "outputCarrierId": "e.delivery-acknowledgment",
+      "operationId": "expire-revoke-authority",
+      "owner": "dss06-authority-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT",
+        "ACKNOWLEDGED"
+      ],
+      "fromStates": [
+        "ABSENT",
+        "ACKNOWLEDGED"
+      ],
+      "event": "INVALIDATE",
+      "destinationState": "AUTHORITY_INVALIDATED",
+      "toState": "AUTHORITY_INVALIDATED",
+      "outcomeCases": [
+        "AUTHORITY_INVALIDATED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "acknowledge-disposition-delivery:e.delivery-acknowledgment:REJECT:1",
+      "carrierId": "e.delivery-acknowledgment",
+      "outputCarrierId": "e.delivery-acknowledgment",
+      "operationId": "acknowledge-disposition-delivery",
+      "owner": "dss06-delivery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "REJECT",
+      "destinationState": "REJECTED",
+      "toState": "REJECTED",
+      "outcomeCases": [
+        "REJECTED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "create-disposition-subscription:e.delivery-cursor:INITIALIZE:1",
+      "carrierId": "e.delivery-cursor",
+      "outputCarrierId": "e.delivery-cursor",
+      "operationId": "create-disposition-subscription",
+      "owner": "dss06-delivery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "AT_START"
+      ],
+      "fromStates": [
+        "AT_START"
+      ],
+      "event": "INITIALIZE",
+      "destinationState": "AT_START",
+      "toState": "AT_START",
+      "outcomeCases": [
+        "AT_START"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "acknowledge-disposition-delivery:e.delivery-cursor:ADVANCE:1",
+      "carrierId": "e.delivery-cursor",
+      "outputCarrierId": "e.delivery-cursor",
+      "operationId": "acknowledge-disposition-delivery",
+      "owner": "dss06-delivery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "AT_START",
+        "CURRENT"
+      ],
+      "fromStates": [
+        "AT_START",
+        "CURRENT"
+      ],
+      "event": "ADVANCE",
+      "destinationState": "CURRENT",
+      "toState": "CURRENT",
+      "outcomeCases": [
+        "CURRENT"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "offer-disposition-delivery:e.delivery-cursor:REPLAY:1",
+      "carrierId": "e.delivery-cursor",
+      "outputCarrierId": "e.delivery-cursor",
+      "operationId": "offer-disposition-delivery",
+      "owner": "dss06-delivery-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "CURRENT",
+        "GAPPED"
+      ],
+      "fromStates": [
+        "CURRENT",
+        "GAPPED"
+      ],
+      "event": "REPLAY",
+      "destinationState": "CURRENT",
+      "toState": "CURRENT",
+      "outcomeCases": [
+        "CURRENT"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "recover-dss06-lineage:e.delivery-cursor:BLOCK:1",
+      "carrierId": "e.delivery-cursor",
+      "outputCarrierId": "e.delivery-cursor",
+      "operationId": "recover-dss06-lineage",
+      "owner": "dss06-recovery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "AT_START",
+        "CURRENT",
+        "GAPPED"
+      ],
+      "fromStates": [
+        "AT_START",
+        "CURRENT",
+        "GAPPED"
+      ],
+      "event": "BLOCK",
+      "destinationState": "RECOVERY_BLOCKED",
+      "toState": "RECOVERY_BLOCKED",
+      "outcomeCases": [
+        "RECOVERY_BLOCKED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "wake-audit-task:e.task-wakeup:OFFER:1",
+      "carrierId": "e.task-wakeup",
+      "outputCarrierId": "e.task-wakeup",
+      "operationId": "wake-audit-task",
+      "owner": "dss06-wakeup-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "UNPREPARED"
+      ],
+      "fromStates": [
+        "UNPREPARED"
+      ],
+      "event": "OFFER",
+      "destinationState": "OFFERED",
+      "toState": "OFFERED",
+      "outcomeCases": [
+        "OFFERED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "wake-audit-task:e.task-wakeup:DELIVER:1",
+      "carrierId": "e.task-wakeup",
+      "outputCarrierId": "e.task-wakeup",
+      "operationId": "wake-audit-task",
+      "owner": "dss06-wakeup-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "OFFERED"
+      ],
+      "fromStates": [
+        "OFFERED"
+      ],
+      "event": "DELIVER",
+      "destinationState": "DELIVERED",
+      "toState": "DELIVERED",
+      "outcomeCases": [
+        "DELIVERED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "wake-audit-task:e.task-wakeup:ACKNOWLEDGE:1",
+      "carrierId": "e.task-wakeup",
+      "outputCarrierId": "e.task-wakeup",
+      "operationId": "wake-audit-task",
+      "owner": "dss06-wakeup-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "DELIVERED"
+      ],
+      "fromStates": [
+        "DELIVERED"
+      ],
+      "event": "ACKNOWLEDGE",
+      "destinationState": "ACKNOWLEDGED",
+      "toState": "ACKNOWLEDGED",
+      "outcomeCases": [
+        "ACKNOWLEDGED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "wake-audit-task:e.task-wakeup:EXPIRE:1",
+      "carrierId": "e.task-wakeup",
+      "outputCarrierId": "e.task-wakeup",
+      "operationId": "wake-audit-task",
+      "owner": "dss06-wakeup-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "OFFERED",
+        "DELIVERED"
+      ],
+      "fromStates": [
+        "OFFERED",
+        "DELIVERED"
+      ],
+      "event": "EXPIRE",
+      "destinationState": "EXPIRED",
+      "toState": "EXPIRED",
+      "outcomeCases": [
+        "EXPIRED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "recover-dss06-lineage:e.recovery-disposition:START:1",
+      "carrierId": "e.recovery-disposition",
+      "outputCarrierId": "e.recovery-disposition",
+      "operationId": "recover-dss06-lineage",
+      "owner": "dss06-recovery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "sourceStates": [
+        "ABSENT"
+      ],
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "START",
+      "destinationState": "ENUMERATING",
+      "toState": "ENUMERATING",
+      "outcomeCases": [
+        "ENUMERATING"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "recover-dss06-lineage:e.recovery-disposition:ENUMERATE:1",
+      "carrierId": "e.recovery-disposition",
+      "outputCarrierId": "e.recovery-disposition",
+      "operationId": "recover-dss06-lineage",
+      "owner": "dss06-recovery-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "ENUMERATING"
+      ],
+      "fromStates": [
+        "ENUMERATING"
+      ],
+      "event": "ENUMERATE",
+      "destinationState": "VERIFYING",
+      "toState": "VERIFYING",
+      "outcomeCases": [
+        "VERIFYING"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "recover-dss06-lineage:e.recovery-disposition:VERIFY:1",
+      "carrierId": "e.recovery-disposition",
+      "outputCarrierId": "e.recovery-disposition",
+      "operationId": "recover-dss06-lineage",
+      "owner": "dss06-recovery-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "ENUMERATING",
+        "VERIFYING"
+      ],
+      "fromStates": [
+        "ENUMERATING",
+        "VERIFYING"
+      ],
+      "event": "VERIFY",
+      "destinationState": "VERIFYING",
+      "toState": "VERIFYING",
+      "outcomeCases": [
+        "VERIFYING"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "recover-dss06-lineage:e.recovery-disposition:READY:1",
+      "carrierId": "e.recovery-disposition",
+      "outputCarrierId": "e.recovery-disposition",
+      "operationId": "recover-dss06-lineage",
+      "owner": "dss06-recovery-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "VERIFYING"
+      ],
+      "fromStates": [
+        "VERIFYING"
+      ],
+      "event": "READY",
+      "destinationState": "READY",
+      "toState": "READY",
+      "outcomeCases": [
+        "READY"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "recover-dss06-lineage:e.recovery-disposition:BLOCK:1",
+      "carrierId": "e.recovery-disposition",
+      "outputCarrierId": "e.recovery-disposition",
+      "operationId": "recover-dss06-lineage",
+      "owner": "dss06-recovery-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "ENUMERATING",
+        "VERIFYING"
+      ],
+      "fromStates": [
+        "ENUMERATING",
+        "VERIFYING"
+      ],
+      "event": "BLOCK",
+      "destinationState": "BLOCKED",
+      "toState": "BLOCKED",
+      "outcomeCases": [
+        "BLOCKED"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    },
+    {
+      "transitionId": "recover-dss06-lineage:e.recovery-disposition:BROKEN:1",
+      "carrierId": "e.recovery-disposition",
+      "outputCarrierId": "e.recovery-disposition",
+      "operationId": "recover-dss06-lineage",
+      "owner": "dss06-recovery-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "sourceStates": [
+        "ENUMERATING",
+        "VERIFYING",
+        "BLOCKED"
+      ],
+      "fromStates": [
+        "ENUMERATING",
+        "VERIFYING",
+        "BLOCKED"
+      ],
+      "event": "BROKEN",
+      "destinationState": "BROKEN",
+      "toState": "BROKEN",
+      "outcomeCases": [
+        "BROKEN"
+      ],
+      "atomicCommitBoundary": "one authenticated service event transaction with row-owned output and destination state",
+      "replayBehavior": "exact identity, current revision, source digest, and idempotency tuple replay; any conflict has no write"
+    }
+  ],
+  "authority_owner_registry": [
+    "dss06-attempt-owner",
+    "dss06-decision-owner",
+    "dss06-delivery-owner",
+    "dss06-disposition-owner",
+    "dss06-job-owner",
+    "dss06-lineage-owner",
+    "dss06-observation-owner",
+    "dss06-package-owner",
+    "dss06-read-capability-owner",
+    "dss06-recovery-owner",
+    "dss06-submit-capability-owner",
+    "dss06-subscribe-ack-owner",
+    "dss06-wakeup-capability-owner",
+    "dss06-wakeup-owner"
+  ],
+  "authority_root_registry": [
+    "dss06-attempt-root",
+    "dss06-decision-root",
+    "dss06-delivery-root",
+    "dss06-disposition-root",
+    "dss06-job-custody-root",
+    "dss06-lineage-root",
+    "dss06-observation-root",
+    "dss06-package-custody-root",
+    "dss06-read-capability-root",
+    "dss06-recovery-root",
+    "dss06-submit-capability-root",
+    "dss06-subscribe-ack-root",
+    "dss06-wakeup-capability-root",
+    "dss06-wakeup-root"
+  ],
+  "store_populations": [
+    {
+      "carrierId": "e.daemon-health-observation",
+      "owner": "dss06-observation-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.audit-package",
+      "owner": "dss06-package-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.audit-job",
+      "owner": "dss06-job-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.audit-attempt",
+      "owner": "dss06-attempt-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.audit-decision",
+      "owner": "dss06-decision-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.audit-disposition",
+      "owner": "dss06-disposition-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "e.audit-lineage",
+      "owner": "dss06-lineage-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.submit-capability",
+      "owner": "dss06-submit-capability-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.read-capability",
+      "owner": "dss06-read-capability-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.subscribe-ack-capability",
+      "owner": "dss06-subscribe-ack-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.wakeup-capability",
+      "owner": "dss06-wakeup-capability-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "e.delivery-subscription",
+      "owner": "dss06-delivery-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "e.delivery-offer",
+      "owner": "dss06-delivery-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "e.delivery-acknowledgment",
+      "owner": "dss06-delivery-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "e.delivery-cursor",
+      "owner": "dss06-delivery-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "e.task-wakeup",
+      "owner": "dss06-wakeup-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "e.recovery-disposition",
+      "owner": "dss06-recovery-owner",
+      "storage": "sqlite-plus-cas"
+    }
+  ],
+  "persistence_proofs": [
+    {
+      "carrierId": "e.daemon-health-observation",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "d.audit-package",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "d.audit-job",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "d.audit-attempt",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "d.audit-decision",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "d.audit-disposition",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "e.audit-lineage",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "d.submit-capability",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "d.read-capability",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "d.subscribe-ack-capability",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "d.wakeup-capability",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "e.delivery-subscription",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "e.delivery-offer",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "e.delivery-acknowledgment",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "e.delivery-cursor",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "e.task-wakeup",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    },
+    {
+      "carrierId": "e.recovery-disposition",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger, owner-issued currentness records, and exact source custody"
+    }
+  ],
+  "effect_declarations": {
+    "observe-daemon-health": {
+      "mutatingOutcomes": [
+        "DEGRADED",
+        "HEALTHY",
+        "STALE"
+      ],
+      "readOnlyOutcomes": [
+        "IDEMPOTENCY_CONFLICT",
+        "OBSERVE",
+        "REPLAYED",
+        "UNAUTHORIZED",
+        "UNAVAILABLE"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "OBSERVE",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "UNAUTHORIZED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "UNAVAILABLE",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "submit-audit-package": {
+      "mutatingOutcomes": [
+        "ADMITTED",
+        "BOUND",
+        "REJECTED",
+        "SUBMITTED"
+      ],
+      "readOnlyOutcomes": [
+        "CAPABILITY_SCOPE_MISMATCH",
+        "EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "PREDECESSOR_MISMATCH",
+        "REPLAYED",
+        "STALE_CURRENTNESS",
+        "UNAUTHORIZED"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "CAPABILITY_SCOPE_MISMATCH",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "EXPIRED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "PREDECESSOR_MISMATCH",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_CURRENTNESS",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "UNAUTHORIZED",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "inspect-audit-surfaces": {
+      "mutatingOutcomes": [],
+      "readOnlyOutcomes": [
+        "AUTHORIZED",
+        "DENIED",
+        "IDEMPOTENCY_CONFLICT",
+        "NO_NEW_EVENTS",
+        "REPLAYED",
+        "STALE_HEAD"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "AUTHORIZED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "DENIED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "NO_NEW_EVENTS",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_HEAD",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "start-audit-attempt": {
+      "mutatingOutcomes": [
+        "ALLOCATED",
+        "RUNNING",
+        "STARTED"
+      ],
+      "readOnlyOutcomes": [
+        "ADMITTED",
+        "IDEMPOTENCY_CONFLICT",
+        "JOB_NOT_READY",
+        "OVER_BUDGET",
+        "REPLAYED",
+        "STALE_CURRENTNESS"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "ADMITTED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "JOB_NOT_READY",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "OVER_BUDGET",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_CURRENTNESS",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "record-audit-decision": {
+      "mutatingOutcomes": [
+        "RECORDED",
+        "REJECTED",
+        "REMANDED",
+        "TERMINAL",
+        "UNKNOWN"
+      ],
+      "readOnlyOutcomes": [
+        "IDEMPOTENCY_CONFLICT",
+        "LINEAGE_MISMATCH",
+        "REPLAYED"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "LINEAGE_MISMATCH",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "seal-audit-disposition": {
+      "mutatingOutcomes": [
+        "CANCELLED",
+        "FAILED",
+        "REMANDED",
+        "SEALED",
+        "TERMINAL"
+      ],
+      "readOnlyOutcomes": [
+        "IDEMPOTENCY_CONFLICT",
+        "LINEAGE_MISMATCH",
+        "POPULATION_MISMATCH",
+        "REPLAYED"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "LINEAGE_MISMATCH",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "POPULATION_MISMATCH",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "bind-submit-capability": {
+      "mutatingOutcomes": [
+        "CURRENT"
+      ],
+      "readOnlyOutcomes": [
+        "EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "REVOKED",
+        "STALE_CURRENTNESS",
+        "UNAUTHORIZED"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "EXPIRED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REVOKED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_CURRENTNESS",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "UNAUTHORIZED",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "bind-read-capability": {
+      "mutatingOutcomes": [
+        "CURRENT"
+      ],
+      "readOnlyOutcomes": [
+        "EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "REVOKED",
+        "STALE_CURRENTNESS",
+        "UNAUTHORIZED"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "EXPIRED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REVOKED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_CURRENTNESS",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "UNAUTHORIZED",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "bind-subscribe-ack-capability": {
+      "mutatingOutcomes": [
+        "CURRENT"
+      ],
+      "readOnlyOutcomes": [
+        "EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "REVOKED",
+        "STALE_CURRENTNESS",
+        "UNAUTHORIZED"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "EXPIRED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REVOKED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_CURRENTNESS",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "UNAUTHORIZED",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "bind-wakeup-capability": {
+      "mutatingOutcomes": [
+        "CURRENT"
+      ],
+      "readOnlyOutcomes": [
+        "EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "REVOKED",
+        "STALE_CURRENTNESS",
+        "UNAUTHORIZED"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "EXPIRED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REVOKED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_CURRENTNESS",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "UNAUTHORIZED",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "create-disposition-subscription": {
+      "mutatingOutcomes": [
+        "ACTIVE",
+        "AT_START"
+      ],
+      "readOnlyOutcomes": [
+        "BACKPRESSURED",
+        "DENIED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "STALE_CURRENTNESS"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "BACKPRESSURED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "DENIED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_CURRENTNESS",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "offer-disposition-delivery": {
+      "mutatingOutcomes": [
+        "CURRENT",
+        "EXPIRED_UNACKNOWLEDGED",
+        "OFFERED",
+        "PAUSED"
+      ],
+      "readOnlyOutcomes": [
+        "AUTHORITY_INVALIDATED",
+        "BACKPRESSURED",
+        "DENIED",
+        "NO_NEW_EVENTS",
+        "REPLAYED",
+        "STALE_CURRENTNESS",
+        "SUBSCRIPTION_PAUSED"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "AUTHORITY_INVALIDATED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "BACKPRESSURED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "DENIED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "NO_NEW_EVENTS",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_CURRENTNESS",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "SUBSCRIPTION_PAUSED",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "acknowledge-disposition-delivery": {
+      "mutatingOutcomes": [
+        "ACKNOWLEDGED",
+        "CURRENT",
+        "REJECTED"
+      ],
+      "readOnlyOutcomes": [
+        "AUTHORITY_INVALIDATED",
+        "DIGEST_MISMATCH",
+        "EXACT_REPLAY",
+        "NONCONTIGUOUS",
+        "STALE_CURRENTNESS"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "AUTHORITY_INVALIDATED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "DIGEST_MISMATCH",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "EXACT_REPLAY",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "NONCONTIGUOUS",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_CURRENTNESS",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "wake-audit-task": {
+      "mutatingOutcomes": [
+        "ACKNOWLEDGED",
+        "DELIVERED",
+        "EXPIRED",
+        "OFFERED"
+      ],
+      "readOnlyOutcomes": [
+        "AUTHORITY_INVALIDATED",
+        "DENIED",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "AUTHORITY_INVALIDATED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "DENIED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "cancel-audit-job": {
+      "mutatingOutcomes": [
+        "CANCELLED"
+      ],
+      "readOnlyOutcomes": [
+        "CANCELLATION_LOST_RACE",
+        "IDEMPOTENCY_CONFLICT",
+        "REPLAYED",
+        "STALE_CURRENTNESS",
+        "UNKNOWN"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "CANCELLATION_LOST_RACE",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_CURRENTNESS",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "UNKNOWN",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "expire-revoke-authority": {
+      "mutatingOutcomes": [
+        "AUTHORITY_INVALIDATED",
+        "EXPIRED",
+        "INVALID",
+        "REVOKED",
+        "SUPERSEDED"
+      ],
+      "readOnlyOutcomes": [
+        "EXACT_REPLAY",
+        "PAUSED",
+        "STALE_CURRENTNESS"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "EXACT_REPLAY",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "PAUSED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_CURRENTNESS",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "recover-dss06-lineage": {
+      "mutatingOutcomes": [
+        "BLOCKED",
+        "BROKEN",
+        "ENUMERATING",
+        "READY",
+        "RECOVERY_BLOCKED",
+        "VERIFYING"
+      ],
+      "readOnlyOutcomes": [
+        "IDEMPOTENCY_CONFLICT",
+        "RECOVERY_EVENTS_APPENDED",
+        "REPLAYED"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "RECOVERY_EVENTS_APPENDED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    }
+  },
+  "semantic_laws": {
+    "slice": "optional daemon observation -> WorkThread canonical AuditPackage -> exact DSS-0.5 advisory/artifact lineage -> durable AuditJob/attempt/decision/disposition -> separately authorized delivery offer/acknowledgment/cursor -> bounded task wakeup",
+    "identity": "service-owned external identity is the intersection of exact project/task/workThread/principal/capability/revision and canonical package digest; caller-self-constituted owner/root/authorized objects, labels, paths, UI state, and peer identity never prove it",
+    "predecessor": "DSS-0.5 exact module direct.semantic-service.dss05.real-closed-page.generation-1, module sha256:70f1b66394f19d3de5fc32925c858f8dcfcf2bc28e5d7c00f307744ec9f7350a, combined sha256:0d29f80d9c66f9f1c5aae0e39139fb4c6add536b3468099070894664454b82ac, manifest docs/audits/direct-semantic-service-dss05-generation-1/candidate_manifest.v1.json, source edb589ec248fcec1f116944ffa84ed6feec5b8a3, closure 0889369",
+    "custody": "package, job, attempt, decision, disposition, subscription, offer, acknowledgment, cursor, wakeup, and recovery records are durable publish-before-reference records with exact source/revision/custody digests",
+    "currentness": "every mutation and every disclosure checks exact current revision, project/task/job scope, principal, capability family, expiry, revocation epoch, time fence, and budget; reauthorization occurs before each offer/replay/acknowledgment/wakeup",
+    "capabilitySeparation": "submit_audit_package, read_audit_disposition, subscribe_disposition_ack, and wake_task are distinct operation capabilities with no cross-use",
+    "package": "canonical AuditPackage binds exact WorkThread-origin identity and full DSS-0.5 advisory/artifact lineage; submitting task may terminate without execution custody",
+    "observation": "daemon health, jobs, attempts, decisions, and subscriptions are optional bounded safe projections; every observation operation consumes the exact current owner-issued d.read-capability for principal/project/task/job/projection/revision/expiry/revocation/time/budget, and invalid authority yields no disclosure or effect",
+    "delivery": "offers advance derived offered position only; exact contiguous acknowledgment advances durable acknowledged cursor; unacknowledged/expired offers replay from acknowledged cursor with a fresh authorization receipt",
+    "wakeup": "task wakeup consumes the durable outbox with a separate capability and registered continuation contract; it is at-least-once/idempotent and cannot acknowledge or advance the delivery cursor",
+    "replaceability": "Electron and CLI are replaceable adapters; absence, closure, restart, or delayed subscriber recovery cannot change job/package/disposition/artifact identity or delivery standing",
+    "recovery": "recovery recomputes status, reason, source digest, authority effect, revisions, and complete package/disposition/delivery/wakeup populations; unequal or missing source blocks with no new attempt, disclosure, cursor advance, or authority effect",
+    "effects": "advisory only; no project/WorldManager/provider/runtime/credential/repository/filesystem/tool/network/UI/institutional mutation or authority grant",
+    "exclusions": "no provider/network/credentials, repository/filesystem/tool access, project/WorldManager mutation, authority bridge, production commissioning/activation, or DSS-0.7 tranche",
+    "invalidEvidence": "generic PASS, self-attestation, fabricated receipts, labels-as-tests, unreachable fixtures, regex polarity, cross-carrier laundering, inline capability/evidence bypass, and incomplete population accounting are not proof"
+  },
+  "delivery_policy": {
+    "schema": "direct_semantic_dss06_delivery_policy@1",
+    "atLeastOnce": true,
+    "acknowledgeContiguousOnly": true,
+    "offeredCursorDerivedOnly": true,
+    "replayFromAcknowledgedCursor": true,
+    "reauthorizeBeforeDisclosure": true,
+    "pauseOnRevocationOrExpiry": true,
+    "clients": [
+      "cli_poll",
+      "electron",
+      "direct_task_wakeup"
+    ]
+  },
+  "capability_policy": {
+    "schema": "direct_semantic_dss06_capability_policy@1",
+    "families": [
+      "submit_audit_package",
+      "read_audit_disposition",
+      "subscribe_disposition_ack",
+      "wake_task"
+    ],
+    "nonSubstitutable": true,
+    "exactFields": [
+      "capabilityRef",
+      "principalRef",
+      "projectRef",
+      "taskRef",
+      "jobRef",
+      "scopeDigest",
+      "currentRevisionRef",
+      "issuedAt",
+      "expiresAt",
+      "revocationEpoch",
+      "budgetRef"
+    ],
+    "callerObjectsAreData": true
+  },
+  "observation_policy": {
+    "requiredCapabilityCarrier": "d.read-capability",
+    "requiredCapabilityFamily": "read_audit_disposition",
+    "observationOperations": [
+      "observe-daemon-health",
+      "inspect-audit-surfaces"
+    ],
+    "currentnessFields": [
+      "principalRef",
+      "projectRef",
+      "taskRef",
+      "jobRef",
+      "projectionDigest",
+      "scopeDigest",
+      "currentRevisionRef",
+      "expiresAt",
+      "revocationEpoch",
+      "timeFence",
+      "budgetRef"
+    ],
+    "deniedOutcome": "OBSERVATION_AUTHORITY_INVALID",
+    "disclosureOnFailure": "NONE",
+    "callerCapabilityObjectsAreData": true
+  },
+  "predecessor": {
+    "exactDss05": {
+      "moduleId": "direct.semantic-service.dss05.real-closed-page.generation-1",
+      "moduleDigest": "sha256:70f1b66394f19d3de5fc32925c858f8dcfcf2bc28e5d7c00f307744ec9f7350a",
+      "combinedFreezeDigest": "sha256:0d29f80d9c66f9f1c5aae0e39139fb4c6add536b3468099070894664454b82ac",
+      "manifest": "docs/audits/direct-semantic-service-dss05-generation-1/candidate_manifest.v1.json",
+      "implementationSource": "edb589ec248fcec1f116944ffa84ed6feec5b8a3",
+      "implementationClosure": "0889369",
+      "focusedAcceptanceReceipt": "sha256:54f3210e94458149ba8275ff57d270cad94d7dd435e07830f28fefcf6b7bfde2"
+    },
+    "acceptance": "field-for-field package binding to exact DSS-0.5 advisory/artifact lineage; mismatch is PREDECESSOR_MISMATCH with no effect"
+  },
+  "transition_population": {
+    "carrierEventCount": 66,
+    "qualifiedTransitionCount": 66,
+    "carrierEventPopulation": [
+      "d.audit-attempt:ALLOCATE",
+      "d.audit-attempt:CANCEL",
+      "d.audit-attempt:COMPLETE",
+      "d.audit-attempt:START",
+      "d.audit-attempt:UNKNOWN_TERMINAL",
+      "d.audit-decision:RECORD",
+      "d.audit-decision:REJECT",
+      "d.audit-decision:REMAND",
+      "d.audit-disposition:CANCEL",
+      "d.audit-disposition:FAIL",
+      "d.audit-disposition:REMAND",
+      "d.audit-disposition:SEAL",
+      "d.audit-job:ADMIT",
+      "d.audit-job:BLOCK",
+      "d.audit-job:CANCEL",
+      "d.audit-job:COMPLETE",
+      "d.audit-job:START",
+      "d.audit-package:BIND",
+      "d.audit-package:EXPIRE",
+      "d.audit-package:REJECT",
+      "d.audit-package:SUBMIT",
+      "d.read-capability:EXPIRE",
+      "d.read-capability:REVOKE",
+      "d.read-capability:VERIFY",
+      "d.submit-capability:EXPIRE",
+      "d.submit-capability:REVOKE",
+      "d.submit-capability:VERIFY",
+      "d.subscribe-ack-capability:EXPIRE",
+      "d.subscribe-ack-capability:REVOKE",
+      "d.subscribe-ack-capability:VERIFY",
+      "d.wakeup-capability:EXPIRE",
+      "d.wakeup-capability:REVOKE",
+      "d.wakeup-capability:VERIFY",
+      "e.audit-lineage:BIND",
+      "e.audit-lineage:INVALIDATE",
+      "e.audit-lineage:REVOKE",
+      "e.daemon-health-observation:DEGRADE",
+      "e.daemon-health-observation:EXPIRE",
+      "e.daemon-health-observation:OBSERVE",
+      "e.daemon-health-observation:RESTORE",
+      "e.delivery-acknowledgment:ACKNOWLEDGE",
+      "e.delivery-acknowledgment:INVALIDATE",
+      "e.delivery-acknowledgment:REJECT",
+      "e.delivery-cursor:ADVANCE",
+      "e.delivery-cursor:BLOCK",
+      "e.delivery-cursor:INITIALIZE",
+      "e.delivery-cursor:REPLAY",
+      "e.delivery-offer:ACKNOWLEDGE",
+      "e.delivery-offer:EXPIRE",
+      "e.delivery-offer:INVALIDATE",
+      "e.delivery-offer:OFFER",
+      "e.delivery-offer:REPLAY",
+      "e.delivery-subscription:CREATE",
+      "e.delivery-subscription:EXPIRE",
+      "e.delivery-subscription:PAUSE",
+      "e.delivery-subscription:SUPERSEDE",
+      "e.recovery-disposition:BLOCK",
+      "e.recovery-disposition:BROKEN",
+      "e.recovery-disposition:ENUMERATE",
+      "e.recovery-disposition:READY",
+      "e.recovery-disposition:START",
+      "e.recovery-disposition:VERIFY",
+      "e.task-wakeup:ACKNOWLEDGE",
+      "e.task-wakeup:DELIVER",
+      "e.task-wakeup:EXPIRE",
+      "e.task-wakeup:OFFER"
+    ],
+    "qualifiedTransitionPopulation": [
+      "acknowledge-disposition-delivery:e.delivery-acknowledgment:ACKNOWLEDGE:1",
+      "acknowledge-disposition-delivery:e.delivery-acknowledgment:REJECT:1",
+      "acknowledge-disposition-delivery:e.delivery-cursor:ADVANCE:1",
+      "acknowledge-disposition-delivery:e.delivery-offer:ACKNOWLEDGE:1",
+      "bind-read-capability:d.read-capability:VERIFY:1",
+      "bind-submit-capability:d.submit-capability:VERIFY:1",
+      "bind-subscribe-ack-capability:d.subscribe-ack-capability:VERIFY:1",
+      "bind-wakeup-capability:d.wakeup-capability:VERIFY:1",
+      "cancel-audit-job:d.audit-attempt:CANCEL:1",
+      "cancel-audit-job:d.audit-job:CANCEL:1",
+      "create-disposition-subscription:e.delivery-cursor:INITIALIZE:1",
+      "create-disposition-subscription:e.delivery-subscription:CREATE:1",
+      "expire-revoke-authority:d.audit-package:EXPIRE:1",
+      "expire-revoke-authority:d.read-capability:EXPIRE:1",
+      "expire-revoke-authority:d.read-capability:REVOKE:1",
+      "expire-revoke-authority:d.submit-capability:EXPIRE:1",
+      "expire-revoke-authority:d.submit-capability:REVOKE:1",
+      "expire-revoke-authority:d.subscribe-ack-capability:EXPIRE:1",
+      "expire-revoke-authority:d.subscribe-ack-capability:REVOKE:1",
+      "expire-revoke-authority:d.wakeup-capability:EXPIRE:1",
+      "expire-revoke-authority:d.wakeup-capability:REVOKE:1",
+      "expire-revoke-authority:e.audit-lineage:INVALIDATE:1",
+      "expire-revoke-authority:e.audit-lineage:REVOKE:1",
+      "expire-revoke-authority:e.delivery-acknowledgment:INVALIDATE:1",
+      "expire-revoke-authority:e.delivery-offer:INVALIDATE:1",
+      "expire-revoke-authority:e.delivery-subscription:EXPIRE:1",
+      "expire-revoke-authority:e.delivery-subscription:SUPERSEDE:1",
+      "observe-daemon-health:e.daemon-health-observation:DEGRADE:1",
+      "observe-daemon-health:e.daemon-health-observation:EXPIRE:1",
+      "observe-daemon-health:e.daemon-health-observation:OBSERVE:1",
+      "observe-daemon-health:e.daemon-health-observation:RESTORE:1",
+      "offer-disposition-delivery:e.delivery-cursor:REPLAY:1",
+      "offer-disposition-delivery:e.delivery-offer:EXPIRE:1",
+      "offer-disposition-delivery:e.delivery-offer:OFFER:1",
+      "offer-disposition-delivery:e.delivery-offer:REPLAY:1",
+      "offer-disposition-delivery:e.delivery-subscription:PAUSE:1",
+      "record-audit-decision:d.audit-attempt:COMPLETE:1",
+      "record-audit-decision:d.audit-attempt:UNKNOWN_TERMINAL:1",
+      "record-audit-decision:d.audit-decision:RECORD:1",
+      "record-audit-decision:d.audit-decision:REJECT:1",
+      "record-audit-decision:d.audit-decision:REMAND:1",
+      "recover-dss06-lineage:d.audit-job:BLOCK:1",
+      "recover-dss06-lineage:e.delivery-cursor:BLOCK:1",
+      "recover-dss06-lineage:e.recovery-disposition:BLOCK:1",
+      "recover-dss06-lineage:e.recovery-disposition:BROKEN:1",
+      "recover-dss06-lineage:e.recovery-disposition:ENUMERATE:1",
+      "recover-dss06-lineage:e.recovery-disposition:READY:1",
+      "recover-dss06-lineage:e.recovery-disposition:START:1",
+      "recover-dss06-lineage:e.recovery-disposition:VERIFY:1",
+      "seal-audit-disposition:d.audit-disposition:CANCEL:1",
+      "seal-audit-disposition:d.audit-disposition:FAIL:1",
+      "seal-audit-disposition:d.audit-disposition:REMAND:1",
+      "seal-audit-disposition:d.audit-disposition:SEAL:1",
+      "seal-audit-disposition:d.audit-job:COMPLETE:1",
+      "start-audit-attempt:d.audit-attempt:ALLOCATE:1",
+      "start-audit-attempt:d.audit-attempt:START:1",
+      "start-audit-attempt:d.audit-job:START:1",
+      "submit-audit-package:d.audit-job:ADMIT:1",
+      "submit-audit-package:d.audit-package:BIND:1",
+      "submit-audit-package:d.audit-package:REJECT:1",
+      "submit-audit-package:d.audit-package:SUBMIT:1",
+      "submit-audit-package:e.audit-lineage:BIND:1",
+      "wake-audit-task:e.task-wakeup:ACKNOWLEDGE:1",
+      "wake-audit-task:e.task-wakeup:DELIVER:1",
+      "wake-audit-task:e.task-wakeup:EXPIRE:1",
+      "wake-audit-task:e.task-wakeup:OFFER:1"
+    ],
+    "transitionEventPopulation": [
+      "d.audit-attempt:ALLOCATE",
+      "d.audit-attempt:CANCEL",
+      "d.audit-attempt:COMPLETE",
+      "d.audit-attempt:START",
+      "d.audit-attempt:UNKNOWN_TERMINAL",
+      "d.audit-decision:RECORD",
+      "d.audit-decision:REJECT",
+      "d.audit-decision:REMAND",
+      "d.audit-disposition:CANCEL",
+      "d.audit-disposition:FAIL",
+      "d.audit-disposition:REMAND",
+      "d.audit-disposition:SEAL",
+      "d.audit-job:ADMIT",
+      "d.audit-job:BLOCK",
+      "d.audit-job:CANCEL",
+      "d.audit-job:COMPLETE",
+      "d.audit-job:START",
+      "d.audit-package:BIND",
+      "d.audit-package:EXPIRE",
+      "d.audit-package:REJECT",
+      "d.audit-package:SUBMIT",
+      "d.read-capability:EXPIRE",
+      "d.read-capability:REVOKE",
+      "d.read-capability:VERIFY",
+      "d.submit-capability:EXPIRE",
+      "d.submit-capability:REVOKE",
+      "d.submit-capability:VERIFY",
+      "d.subscribe-ack-capability:EXPIRE",
+      "d.subscribe-ack-capability:REVOKE",
+      "d.subscribe-ack-capability:VERIFY",
+      "d.wakeup-capability:EXPIRE",
+      "d.wakeup-capability:REVOKE",
+      "d.wakeup-capability:VERIFY",
+      "e.audit-lineage:BIND",
+      "e.audit-lineage:INVALIDATE",
+      "e.audit-lineage:REVOKE",
+      "e.daemon-health-observation:DEGRADE",
+      "e.daemon-health-observation:EXPIRE",
+      "e.daemon-health-observation:OBSERVE",
+      "e.daemon-health-observation:RESTORE",
+      "e.delivery-acknowledgment:ACKNOWLEDGE",
+      "e.delivery-acknowledgment:INVALIDATE",
+      "e.delivery-acknowledgment:REJECT",
+      "e.delivery-cursor:ADVANCE",
+      "e.delivery-cursor:BLOCK",
+      "e.delivery-cursor:INITIALIZE",
+      "e.delivery-cursor:REPLAY",
+      "e.delivery-offer:ACKNOWLEDGE",
+      "e.delivery-offer:EXPIRE",
+      "e.delivery-offer:INVALIDATE",
+      "e.delivery-offer:OFFER",
+      "e.delivery-offer:REPLAY",
+      "e.delivery-subscription:CREATE",
+      "e.delivery-subscription:EXPIRE",
+      "e.delivery-subscription:PAUSE",
+      "e.delivery-subscription:SUPERSEDE",
+      "e.recovery-disposition:BLOCK",
+      "e.recovery-disposition:BROKEN",
+      "e.recovery-disposition:ENUMERATE",
+      "e.recovery-disposition:READY",
+      "e.recovery-disposition:START",
+      "e.recovery-disposition:VERIFY",
+      "e.task-wakeup:ACKNOWLEDGE",
+      "e.task-wakeup:DELIVER",
+      "e.task-wakeup:EXPIRE",
+      "e.task-wakeup:OFFER"
+    ],
+    "relation": "EXACT_CARRIER_EVENT_TO_QUALIFIED_TRANSITION_BIJECTION"
+  }
+}

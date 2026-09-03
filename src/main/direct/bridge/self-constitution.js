@@ -1,6 +1,10 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const {
+  authorizeDirectThreadHarnessCapability,
+  capabilityNames: harnessGrantCapabilityNames,
+} = require("../authority/direct-thread-harness-grant");
 
 const DIRECT_SELF_CONSTITUTION_SNAPSHOT_SCHEMA =
   "direct_self_constitution_snapshot@1";
@@ -94,6 +98,13 @@ function laneFromComposition(composition = {}) {
 function potentialToolNames(input = {}) {
   const explicit = normalizeStringList(input.potentialToolNames);
   if (explicit.length) return explicit;
+  const grant = isPlainObject(input.harnessGrant)
+    ? input.harnessGrant
+    : isPlainObject(input.toolComposition?.composerInput?.harnessGrant)
+      ? input.toolComposition.composerInput.harnessGrant
+      : null;
+  const granted = harnessGrantCapabilityNames(grant || {});
+  if (granted.length) return granted;
   const { lane } = laneFromComposition(input.toolComposition);
   return normalizeStringList(lane.defaultToolNames);
 }
@@ -111,7 +122,27 @@ function unavailableRows(input = {}) {
   return Array.isArray(rows) ? rows : [];
 }
 
-function authorityProjection(toolName) {
+function authorityProjection(toolName, harnessGrant = null, input = {}) {
+  if (harnessGrant) {
+    const authorization = authorizeDirectThreadHarnessCapability(harnessGrant, toolName, {
+      taskId: input.threadId,
+      threadId: input.threadId,
+      projectId: input.projectId,
+      runtimeAdmittedCapabilityNames: input.runtimeAdmittedCapabilityNames,
+    });
+    if (authorization.authorized) {
+      return {
+        requirement: "durable_task_grant",
+        state: "authorized",
+        authorityMode: "durable_task_grant",
+        grantId: authorization.grantId,
+        grantRevision: authorization.grantRevision,
+        approvalPolicy: authorization.approvalPolicy,
+        sandboxMode: authorization.sandboxMode,
+        authorizationDoesNotImplyExecution: true,
+      };
+    }
+  }
   if (["apply_patch", "run_command"].includes(toolName)) {
     return {
       requirement: "per_action_human_approval",
@@ -157,6 +188,12 @@ function authorityProjection(toolName) {
 function capabilityRows(input = {}) {
   const potential = potentialToolNames(input);
   const declared = declaredToolNames(input);
+  const harnessGrant = isPlainObject(input.harnessGrant)
+    ? input.harnessGrant
+    : isPlainObject(input.toolComposition?.composerInput?.harnessGrant)
+      ? input.toolComposition.composerInput.harnessGrant
+      : null;
+  const granted = harnessGrantCapabilityNames(harnessGrant || {});
   const declaredSet = new Set(declared);
   const unavailableByName = new Map(unavailableRows(input).map((row) => [
     normalizeString(row?.toolName, ""),
@@ -165,7 +202,7 @@ function capabilityRows(input = {}) {
   const enactmentUpdates = isPlainObject(input.enactmentUpdates)
     ? input.enactmentUpdates
     : {};
-  return normalizeStringList([...potential, ...declared, ...unavailableByName.keys()])
+  return normalizeStringList([...potential, ...declared, ...granted, ...unavailableByName.keys()])
     .map((toolName) => {
       const unavailable = unavailableByName.get(toolName);
       const selected = declaredSet.has(toolName);
@@ -183,9 +220,18 @@ function capabilityRows(input = {}) {
           ? ""
           : normalizeString(unavailable?.reason, ""),
         authority: {
-          ...authorityProjection(toolName),
+          ...authorityProjection(toolName, harnessGrant, {
+            projectId: normalizeString(input.project?.id || input.project?.projectId || input.session?.projectId, ""),
+            threadId: normalizeString(input.session?.sessionId || input.sessionId, ""),
+            runtimeAdmittedCapabilityNames: declared,
+          }),
           ...(isPlainObject(enactment.authority) ? enactment.authority : {}),
         },
+        cataloguedState: "catalogued",
+        declaredState: selected ? "declared" : "not_declared",
+        grantedState: granted.includes(toolName) ? "granted" : "not_granted",
+        callableState: selected && (!harnessGrant || granted.includes(toolName)) ? "callable" : "not_callable",
+        enactedState: normalizeString(enactment.state, "unrequested") === "executed" ? "enacted" : "not_enacted",
         enactment: {
           state: normalizeString(enactment.state, "unrequested"),
           evidenceRef: normalizeString(enactment.evidenceRef, ""),
@@ -338,6 +384,28 @@ function compileDirectSelfConstitutionSnapshot(input = {}) {
     capabilities: {
       potentialToolNames: potentialToolNames(input),
       declaredThisTurn: declaredToolNames(input),
+      grantedThisTurn: harnessGrantCapabilityNames(
+        isPlainObject(input.harnessGrant)
+          ? input.harnessGrant
+          : isPlainObject(composition.composerInput?.harnessGrant)
+            ? composition.composerInput.harnessGrant
+            : {},
+      ),
+      grantId: normalizeString(
+        input.harnessGrant?.grantId || composition.composerInput?.harnessGrant?.grantId,
+        "",
+      ),
+      grantRevision: Number(
+        input.harnessGrant?.grantRevision || composition.composerInput?.harnessGrant?.grantRevision || 0,
+      ),
+      grantApprovalPolicy: normalizeString(
+        input.harnessGrant?.approvalPolicy || composition.composerInput?.harnessGrant?.approvalPolicy,
+        "",
+      ),
+      grantSandboxMode: normalizeString(
+        input.harnessGrant?.sandboxMode || composition.composerInput?.harnessGrant?.sandboxMode,
+        "",
+      ),
       rows,
       potentialDoesNotImplySelected: true,
       selectedDoesNotImplyAuthorized: true,
@@ -465,6 +533,9 @@ function renderDirectSelfConstitutionInstructions(snapshot = {}) {
     .map((provider) => `${provider.providerId}=${provider.status}${provider.blockerCode ? `(${provider.blockerCode})` : ""}`);
   const binding = snapshot.projectBinding;
   const subAgentPolicy = snapshot.activeSubAgentPolicy;
+  const grantSentence = snapshot.capabilities.grantId
+    ? `The current task grant ${snapshot.capabilities.grantId} revision ${snapshot.capabilities.grantRevision} authorizes the runtime-admitted subset under approval policy ${snapshot.capabilities.grantApprovalPolicy || "unknown"} and sandbox ${snapshot.capabilities.grantSandboxMode || "unknown"}; authorization still does not prove execution.`
+    : "No durable full-access task grant is active for this projection.";
   const policyBindings = subAgentPolicy.roleBindings.map((entry) => {
     const dimensions = [
       entry.providerId && `provider=${entry.providerId}`,
@@ -485,6 +556,7 @@ function renderDirectSelfConstitutionInstructions(snapshot = {}) {
     workspaceSentence,
     "Treat that workspace statement as authoritative: never describe a persistent project checkout as disposable, temporary, or isolated unless this snapshot says so.",
     `Tools declared for this turn: ${declared}.`,
+    grantSentence,
     gated.length
       ? `Declared calls still governed by per-call authority: ${gated.join(", ")}.`
       : "No declared call is currently waiting for a separate authority grant.",

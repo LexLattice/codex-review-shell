@@ -41,8 +41,8 @@ function normalizeCodexBinding(raw = {}) {
   const defaultProvider = runtimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex";
   const rawProvider = binding.bindingProvider || (typeof binding.provider === "string" ? binding.provider : "");
   const directTransport = normalizeString(binding.directTransport, "fixture").toLowerCase() === "live-text" ? "live-text" : "fixture";
-  const tierFallback = runtimeMode === "direct-experimental" && directTransport === "live-text" ? "implementation-lane" : "none";
-  const directTier = runtimeMode === "direct-experimental"
+  const tierFallback = (runtimeMode === "direct-experimental" || runtimeMode === "direct") && directTransport === "live-text" ? "implementation-lane" : "none";
+  const directTier = (runtimeMode === "direct-experimental" || runtimeMode === "direct")
     ? normalizeDirectExperimentalRuntimeTier(binding.directTier || binding.activationTier || binding.runtimeTier, tierFallback)
     : "none";
   return {
@@ -266,6 +266,82 @@ function directImplementationLaneReadiness({ activation = {}, sessionStore = {},
   };
 }
 
+function directOrdinaryRuntimeReadiness({ sessionStore = {}, liveTextStatus = {} } = {}) {
+  const ready = liveTextStatus.status === "ready" && liveTextStatus.turnRunnable === true;
+  const hasRead = liveTextStatus.readOnlyToolContinuation?.status === "ready";
+  const hasPatch = liveTextStatus.patchApplyContinuation?.status === "ready";
+  const hasCommand = liveTextStatus.commandExecutionContinuation?.status === "ready";
+  const blockers = [];
+  if (liveTextStatus.auth?.status !== "authenticated") blockers.push("direct_auth_missing");
+  if (!ready) blockers.push(normalizeString(liveTextStatus.reason, "direct_live_text_not_ready"));
+  const uniqueBlockers = [...new Set(blockers.filter(Boolean))];
+  const selected = true;
+  const canStart = ready;
+  return {
+    tier: "implementation-lane",
+    status: ready ? "enabled" : "degraded",
+    selected,
+    canEnable: true,
+    canSelect: true,
+    canStartFirstTurn: canStart,
+    canStartFollowupTurn: canStart,
+    canStartTextTurn: canStart,
+    canShowObligations: true,
+    canApproveReadFile: hasRead && ready,
+    canApprovePatch: hasPatch && ready,
+    canApprovePatchApply: hasPatch && ready,
+    canApproveCommand: hasCommand && ready,
+    canApproveRunCommand: hasCommand && ready,
+    canBuildContinuationContext: hasRead && ready,
+    canSendContinuation: (hasRead || hasPatch || hasCommand) && ready,
+    blockers: uniqueBlockers,
+    warnings: [],
+    missingImplementationOnlyGates: [],
+    readOnlyToolLoop: {
+      obligationProjectionHealthy: true,
+      toolContextProjectionHealthy: true,
+      workspaceReadHealthy: true,
+      continuationEvidenceState: hasRead ? "accepted" : "missing",
+      loopEvidenceState: hasRead ? "accepted" : "missing",
+      activeLoopCount: Number(sessionStore.unresolvedObligationCount || 0) > 0 ? 1 : 0,
+      activeStepOrdinal: Number(sessionStore.activeToolStepOrdinal || 0) || undefined,
+      maxStepCount: MAX_READONLY_TOOL_LOOP_STEPS,
+      activeObligationCount: Number(sessionStore.unresolvedObligationCount || 0),
+      pendingDecisionCount: Number(sessionStore.unresolvedObligationCount || 0),
+      streamingContinuationCount: normalizeString(sessionStore.lastTurnState, "") === "streaming_continuation" ? 1 : 0,
+      canContinueSequentialReadOnlyLoop: hasRead && ready,
+      blockerCodes: uniqueBlockers,
+    },
+    implementationProof: {
+      status: "ordinary_runtime",
+      evidenceState: ready ? "accepted" : "missing",
+      canSelectImplementationLane: ready,
+      missingCapabilityIds: [],
+      rawProviderPayloadIncluded: false,
+      rawToolArgsIncluded: false,
+      rawWorkspacePathIncluded: false,
+      rawAccountIncluded: false,
+    },
+    commandExecution: {
+      canApprove: hasCommand && ready,
+      canExecute: hasCommand && ready,
+      continuationEvidenceState: hasCommand ? "accepted" : "missing",
+      workspaceEffectScanRequired: true,
+      shellFalseRequired: true,
+      networkIsolationProven: false,
+      blockerCodes: hasCommand && ready ? [] : uniqueBlockers,
+    },
+    patchApply: {
+      canApprove: hasPatch && ready,
+      canApply: hasPatch && ready,
+      continuationEvidenceState: hasPatch ? "accepted" : "missing",
+      deleteDeferred: true,
+      workspaceEffectScanRequired: true,
+      blockerCodes: hasPatch && ready ? [] : uniqueBlockers,
+    },
+  };
+}
+
 function buildDirectRuntimeStatus(options = {}) {
   const generatedAt = normalizeString(options.generatedAt, "") || new Date().toISOString();
   const project = isPlainObject(options.project) ? options.project : {};
@@ -290,7 +366,7 @@ function buildDirectRuntimeStatus(options = {}) {
   const liveProbeEvidence = isPlainObject(liveTextStatus.liveProbeEvidence) ? liveTextStatus.liveProbeEvidence : null;
   const directTurnBlockedReason =
     binding.runtimeMode === "direct"
-      ? "direct_runtime_validation_gates_not_passed"
+      ? (liveTextStatus.status === "ready" && liveTextStatus.turnRunnable === true ? "" : normalizeString(liveTextStatus.reason, "direct_live_text_not_ready"))
       : liveTextSelected
         ? (liveTextStatus.status === "ready" ? "" : normalizeString(liveTextStatus.reason, "direct_live_text_not_ready"))
         : "direct_session_engine_not_implemented";
@@ -300,11 +376,13 @@ function buildDirectRuntimeStatus(options = {}) {
     liveTextStatus,
     sessionStore: sessionStore || {},
   });
-  const directImplementationLane = directImplementationLaneReadiness({
-    activation,
-    sessionStore: sessionStore || {},
-    liveTextStatus,
-  });
+  const directImplementationLane = binding.runtimeMode === "direct"
+    ? directOrdinaryRuntimeReadiness({ sessionStore: sessionStore || {}, liveTextStatus })
+    : directImplementationLaneReadiness({
+        activation,
+        sessionStore: sessionStore || {},
+        liveTextStatus,
+      });
   const directToolsAvailable = directImplementationLane.selected && liveTextStatus.toolsEnabled === true;
 
   return {
@@ -437,7 +515,7 @@ function buildDirectRuntimeStatus(options = {}) {
       textOnlyFallbackAvailable: directTextOnly.canEnable,
       blockers: directImplementationLane.canSelect || directImplementationLane.canEnable ? [] : directImplementationLane.blockers,
       fallbackBlockers: directTextOnly.blockers,
-      userFacingLabel: "Direct",
+      userFacingLabel: binding.runtimeMode === "direct" ? "Direct full access" : "Direct",
     },
     directTextOnly,
     directImplementationLane,
@@ -448,16 +526,18 @@ function buildDirectRuntimeStatus(options = {}) {
       runnable: liveTextRuntimeAvailable && liveTextStatus.turnRunnable === true,
     },
     activation: {
-      state: normalizeString(activation.state, "blocked"),
-      eligible: activation.eligible === true,
-      enabled: activation.enabled === true,
+      state: binding.runtimeMode === "direct" ? "ordinary" : normalizeString(activation.state, "blocked"),
+      eligible: binding.runtimeMode === "direct" || activation.eligible === true,
+      enabled: binding.runtimeMode === "direct" || activation.enabled === true,
       degraded: activation.degraded === true,
       activationTier: normalizeString(activation.activationTier, "implementation-lane"),
       rollbackAvailable: activation.rollbackAvailable === true,
       activationId: normalizeString(activation.activationId, ""),
       gateId: normalizeString(activation.gateId, ""),
       gateDigest: normalizeString(activation.gateDigest, ""),
-      target: isPlainObject(activation.target)
+      target: binding.runtimeMode === "direct"
+        ? { runtimeMode: "direct", directTier: "implementation-lane", directTransport: "live-text" }
+        : isPlainObject(activation.target)
         ? activation.target
         : { runtimeMode: "direct-experimental", directTier: "implementation-lane", directTransport: "live-text" },
       gateSummary: isPlainObject(activation.gateSummary)
@@ -466,7 +546,9 @@ function buildDirectRuntimeStatus(options = {}) {
       currentBinding: isPlainObject(activation.currentBinding)
         ? activation.currentBinding
         : { runtimeMode: binding.runtimeMode, directTier: binding.directTier, directTransport: binding.directTransport },
-      labels: isPlainObject(activation.labels)
+      labels: binding.runtimeMode === "direct"
+        ? { headline: "Direct full access", detail: "Ordinary Direct task profile; authority is granted per exact task." }
+        : isPlainObject(activation.labels)
         ? activation.labels
         : { headline: "Direct experimental blocked", detail: "Activation status unavailable." },
       degradedCapabilities: isPlainObject(activation.degradedCapabilities) ? activation.degradedCapabilities : null,
@@ -607,6 +689,7 @@ module.exports = {
   buildDirectRuntimeStatus,
   directRuntimeLaneLabel,
   directRuntimeModeLabel,
+  directOrdinaryRuntimeReadiness,
   normalizeCodexBinding,
   normalizeCodexBindingProvider,
   normalizeCodexRuntimeMode,

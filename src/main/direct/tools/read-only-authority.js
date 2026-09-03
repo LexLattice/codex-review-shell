@@ -159,8 +159,10 @@ function normalizeRelativePath(value) {
   return text.replace(/^\.\/+/, "");
 }
 
-function sensitiveReadFileReason(relPath) {
-  const normalized = normalizeRelativePath(relPath);
+function sensitiveReadFileReason(relPath, options = {}) {
+  const normalized = options.fullAccess
+    ? normalizeString(relPath, "").replace(/\\/g, "/")
+    : normalizeRelativePath(relPath);
   return SENSITIVE_READ_FILE_PATTERNS.some((pattern) => pattern.test(normalized)) ? "sensitive_path" : "";
 }
 
@@ -223,15 +225,22 @@ function assertToolCallId(obligation = {}) {
   throw error;
 }
 
-function assertReadFileObligation(obligation = {}) {
+function assertReadFileObligation(obligation = {}, options = {}) {
   assertToolCallCompleted(obligation);
   assertReadFileToolName(obligation);
   assertAcceptedNamespace(obligation);
   const continuationKind = supportedContinuationOutputType(obligation);
   const callId = assertToolCallId(obligation);
   const args = parseArgumentsJson(obligation);
-  const relPath = normalizeRelativePath(args.path || args.relPath || args.relativePath);
-  const sensitiveReason = sensitiveReadFileReason(relPath);
+  const relPath = options.fullAccess
+    ? normalizeString(args.path || args.relPath || args.relativePath, "")
+    : normalizeRelativePath(args.path || args.relPath || args.relativePath);
+  if (!relPath || relPath.length > 4096 || /[\0-\x1f\x7f]/.test(relPath)) {
+    const error = new Error("read_file tool requires a bounded path.");
+    error.code = "invalid_read_file_path";
+    throw error;
+  }
+  const sensitiveReason = options.fullAccess ? "" : sensitiveReadFileReason(relPath);
   if (sensitiveReason) {
     const error = new Error("read_file requested a sensitive path that is denied by default.");
     error.code = "sensitive_read_file_path";
@@ -255,7 +264,15 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs, tr
   const providerTextPreview = binary ? "" : boundedText(text, MAX_PROVIDER_OUTPUT_CHARS);
   const toolResultRedaction = binary
     ? { scanned: true, scanVersion: "direct_tool_result_redaction@1", status: "passed", categories: [] }
-    : scanToolResultTextForSecrets(providerTextPreview);
+    : transitionOptions.fullAccess === true
+      ? {
+          scanned: false,
+          scanVersion: "direct_full_access_no_result_redaction@1",
+          status: "bypassed",
+          categories: [],
+          policy: "danger-full-access_current_task_grant",
+        }
+      : scanToolResultTextForSecrets(providerTextPreview);
   if (toolResultRedaction.status === "blocked") {
     const error = new Error("read_file result contains auth-like material and cannot be sent to the provider.");
     error.code = "tool_result_redaction_failed";
@@ -281,7 +298,7 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs, tr
     encoding: binary ? "" : "utf-8",
     resultClass,
     redaction: {
-      scanned: true,
+      scanned: toolResultRedaction.scanned === true,
       scanVersion: toolResultRedaction.scanVersion,
       status: toolResultRedaction.status,
     },
@@ -367,7 +384,7 @@ function loopSummaryFromTurn(turn = {}, nextObligation = null) {
   };
 }
 
-function assertLoopCapsBeforeExecution(turn = {}, obligation = {}) {
+function assertLoopCapsBeforeExecution(turn = {}, obligation = {}, options = {}) {
   const stepOrdinal = Number(obligation.stepOrdinal || 1) || 1;
   if (stepOrdinal > MAX_READONLY_TOOL_LOOP_STEPS) {
     const error = new Error("Direct read-only tool loop step cap exceeded.");
@@ -380,7 +397,7 @@ function assertLoopCapsBeforeExecution(turn = {}, obligation = {}) {
     error.code = "tool_loop_cap_exceeded";
     throw error;
   }
-  const parsed = assertReadFileObligation(obligation);
+  const parsed = assertReadFileObligation(obligation, { fullAccess: options.fullAccess === true });
   const currentCount = Number(summary.repeatedPathReads[parsed.relPath] || 0);
   if (currentCount > MAX_READONLY_TOOL_LOOP_REPEATED_PATH_READS) {
     const error = new Error("Direct read-only tool loop repeated-path cap exceeded.");
@@ -451,7 +468,7 @@ function approveReadOnlyToolObligation(options = {}) {
   if (READONLY_TERMINAL_STATUSES.has(normalizeString(obligation.status, ""))) {
     return { turn, obligation };
   }
-  const parsed = assertReadFileObligation(obligation);
+  const parsed = assertReadFileObligation(obligation, { fullAccess: options.fullAccess === true });
   const approvedAt = nowIso(options.nowMs);
   return sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "approved",
@@ -541,8 +558,8 @@ async function executeApprovedReadOnlyToolObligation(options = {}) {
     throw error;
   }
   const turn = sessionStore.readTurn(options.sessionId, options.turnId) || {};
-  assertLoopCapsBeforeExecution(turn, obligation);
-  const parsed = assertReadFileObligation(obligation);
+  assertLoopCapsBeforeExecution(turn, obligation, options);
+  const parsed = assertReadFileObligation(obligation, { fullAccess: options.fullAccess === true });
   const workspaceResult = await options.workspaceRequest("readFile", {
     relPath: parsed.relPath,
     maxBytes: MAX_READ_FILE_BYTES,
@@ -577,7 +594,7 @@ function buildReadOnlyToolContinuationRequest(options = {}) {
   if (!sessionStore) throw new Error("Read-only tool continuation requires a direct session store.");
   const { obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
   const result = assertRecordedReadOnlyResult(obligation);
-  const parsed = assertReadFileObligation(obligation);
+  const parsed = assertReadFileObligation(obligation, { fullAccess: options.fullAccess === true });
   const toolCallId = parsed.callId;
   const outputType = normalizeString(obligation.approvedRead?.outputType || parsed.outputType, parsed.outputType);
   const outputText = normalizeString(result.providerOutputText, "") || normalizeString(result.textPreview, "");
@@ -749,4 +766,5 @@ module.exports = {
   projectReadOnlyAuthorityDecision,
   recordReadOnlyToolContinuationRequest,
   scanToolResultTextForSecrets,
+  sensitiveReadFileReason,
 };

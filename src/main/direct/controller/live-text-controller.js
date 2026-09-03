@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 const { EventEmitter } = require("node:events");
 const {
   buildImplementationToolInitialRequest,
@@ -100,10 +101,32 @@ const {
   buildExternalToolResidentDeclaration,
 } = require("../external/external-discovery-tools");
 const {
+  buildExternalCapabilityProfile,
+  validateExternalCapabilityProfile,
+} = require("../external/external-capability-profile");
+const {
+  PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA,
+  PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA,
+} = require("../provider/hosted-tools");
+const {
   buildMcpResourceReadEnvelope,
 } = require("../external/mcp-resource-read-envelope");
+const {
+  DIRECT_PROVIDER_METADATA_PROFILE_SCHEMA,
+  validateDirectProviderMetadataProfile,
+} = require("../provider/metadata-adapter");
+const {
+  authorizeDirectThreadHarnessCapability,
+  capabilityNames: harnessGrantCapabilityNames,
+  inheritDirectThreadHarnessGrant,
+  validateDirectThreadHarnessGrant,
+} = require("../authority/direct-thread-harness-grant");
+const {
+  STATEFUL_EXEC_CAPABILITY_NAMES,
+} = require("../tools/stateful-exec-session");
 
 const DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text";
+const DIRECT_SERVICE_TIERS = new Set(["fast", "flex"]);
 const DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE = "direct_fork_preview_start_live_text@1";
 const DIRECT_MERGE_PREVIEW_START_REQUEST_SHAPE = "direct_merge_preview_start_live_text@1";
 const DIRECT_PRUNE_PREVIEW_START_REQUEST_SHAPE = "direct_prune_preview_start_live_text@1";
@@ -162,6 +185,30 @@ const NATIVE_AGENT_RUNTIME_CONTINUATION_INSTRUCTIONS = [
   "Never invent child output, terminal state, continuation counts, transport counts, or epistemic-capture status.",
   "Do not request workspace, shell, patch, browser, network, MCP, or unrelated tools in this continuation lane.",
 ].join(" ");
+function statefulExecContinuationInstructions(capabilityNames = [], sessionId = "") {
+  const allowed = [...new Set((Array.isArray(capabilityNames) ? capabilityNames : [])
+    .map((name) => normalizeString(name, ""))
+    .filter((name) => STATEFUL_EXEC_CAPABILITY_NAMES.includes(name)))];
+  const declared = allowed.length ? allowed.join(", ") : "no further stateful-exec tool";
+  const session = normalizeString(sessionId, "");
+  return [
+    "You are Codex continuing after an owner-authorized stateful exec result.",
+    `Only the currently declared and granted stateful-exec family is available: ${declared}.`,
+    session
+      ? `If requesting write_stdin, use exactly the returned live session ID ${session}; never invent, substitute, or omit the session ID.`
+      : "If requesting write_stdin, use exactly the returned live session ID from the quoted stateful result; never invent or substitute a session ID.",
+    "Use the quoted stateful result as evidence and preserve its terminal or live state.",
+    "If no further stateful call is needed, answer final.",
+    allowed.includes("exec_command")
+      ? "exec_command is permitted, including its shell-backed command execution."
+      : "exec_command is not declared and must not be requested.",
+    allowed.includes("write_stdin")
+      ? "write_stdin is permitted only with the exact returned live session ID."
+      : "write_stdin is not declared and must not be requested.",
+    "Do not request read_file, workspace, patch, browser, network, MCP, or any undeclared or unrelated tool.",
+    "Never invent process, session, output, completion, or continuation state.",
+  ].join(" ");
+}
 const SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS = [
   "You are Codex continuing after an owner-issued inspect_self_constitution result.",
   "Use the returned snapshot as the authoritative account of your current role, project/workspace binding, persistence, declared versus potential capabilities, authority state, provider readiness, context binding, and delegation capacity.",
@@ -456,6 +503,31 @@ function firstTextInput(input) {
   return "";
 }
 
+function directHistoryHeadDigest(session = {}) {
+  const turns = Array.isArray(session.turns) ? session.turns : [];
+  return sha256(stableStringify({
+    threadId: normalizeString(session.sessionId, ""),
+    turns: turns.map((turn) => ({
+      turnId: normalizeString(turn?.turnId, ""),
+      state: normalizeString(turn?.state, ""),
+      updatedAt: normalizeString(turn?.updatedAt, ""),
+      normalizedEventCount: Number(turn?.normalizedEventCount || 0),
+    })).filter((turn) => turn.turnId),
+    lastTurnId: normalizeString(turns.at(-1)?.turnId, ""),
+  }));
+}
+
+function directTurnControlInput(params = {}) {
+  const input = Array.isArray(params.input) ? params.input : [];
+  const text = normalizeString(params.promptText || params.text, "") || firstTextInput(input);
+  if (!text) {
+    const error = new Error("Direct turn control requires a non-empty text input.");
+    error.code = "direct_turn_control_input_missing";
+    throw error;
+  }
+  return [{ role: "user", text }];
+}
+
 function workspaceDisplayPath(project = {}) {
   const workspace = isPlainObject(project.workspace) ? project.workspace : {};
   if (workspace.kind === "wsl") return normalizeString(workspace.linuxPath, "");
@@ -632,21 +704,53 @@ function sanitizeStatus(status = {}) {
   };
 }
 
-function buildDirectLiveTextCapabilities(status = {}) {
+function buildDirectLiveTextCapabilities(status = {}, options = {}) {
   const ready = status.status === "ready";
+  const harnessGrant = isPlainObject(options.harnessGrant) ? options.harnessGrant : null;
+  const fullAccess = ready && Boolean(harnessGrant && validateDirectThreadHarnessGrant(harnessGrant, { requireCurrent: true }).length === 0);
+  const taskId = normalizeString(options.taskId, "");
   const readOnlyToolReady = ready && status.readOnlyToolContinuation?.status === "ready";
   const patchApplyReady = ready && status.patchApplyContinuation?.status === "ready";
   const commandExecutionReady = ready && status.commandExecutionContinuation?.status === "ready";
   const patchApplyApprovalReady = ready && scopedProofApprovalReady(status.patchApplyContinuation);
   const commandExecutionApprovalReady = ready && scopedProofApprovalReady(status.commandExecutionContinuation);
+  const statefulExecGranted = fullAccess &&
+    harnessGrantCapabilityNames(harnessGrant).includes("exec_command");
+  const stdinGranted = statefulExecGranted &&
+    harnessGrantCapabilityNames(harnessGrant).includes("write_stdin");
   const toolMethods = [];
-  if (readOnlyToolReady) toolMethods.push("direct/tool/readOnly/requestApproval");
-  if (patchApplyReady) toolMethods.push("direct/tool/patchApply/requestApproval");
-  if (commandExecutionReady) toolMethods.push("direct/tool/command/requestApproval");
+  if (readOnlyToolReady && !fullAccess) toolMethods.push("direct/tool/readOnly/requestApproval");
+  if (patchApplyReady && !fullAccess) toolMethods.push("direct/tool/patchApply/requestApproval");
+  if (commandExecutionReady && !fullAccess) toolMethods.push("direct/tool/command/requestApproval");
   const attachmentCapability = buildDirectAttachmentCapabilityProjection({
     runtimeKind: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+    workspaceKind: normalizeString(status.workspaceKind || status.workspace?.kind, ""),
     status: ready ? "ready" : "blocked",
+    providerMetadataProfile: status.providerMetadataProfile,
+    providerAttachmentCapability: status.providerAttachmentCapability,
   });
+  const metadata = isPlainObject(status.providerMetadataProfile) ? status.providerMetadataProfile : null;
+  const metadataFresh = !["stale", "missing", "failed", "invalid"].includes(normalizeString(status.providerMetadataCacheState, ""));
+  const modelCatalogAvailable = ready && metadataFresh && metadata?.modelCatalog?.status === "available" &&
+    Array.isArray(metadata.modelCatalog.items) && metadata.modelCatalog.items.length > 0;
+  const hostedToolNames = providerHostedToolNames(status);
+  const externalToolNames = externalPromotedToolNames(status);
+  const runtimeCapabilityProjection = {
+    schema: "direct_runtime_capability_projection@1",
+    source: "direct-live-text-task-capability-projection",
+    authoritative: true,
+    scope: taskId ? "task" : "project",
+    taskId,
+    projectId: normalizeString(options.projectId, ""),
+    grantId: normalizeString(harnessGrant?.grantId, ""),
+    grantRevision: Number(harnessGrant?.grantRevision || 0),
+    current: fullAccess,
+    declaredToolNames: fullAccess ? harnessGrantCapabilityNames(harnessGrant) : [],
+    rawGrantIncluded: false,
+    rawProviderPayloadIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
   return {
     version: 1,
     status: ready ? "ready" : "blocked",
@@ -660,43 +764,106 @@ function buildDirectLiveTextCapabilities(status = {}) {
     },
     account: {
       canRead: true,
-      canStartLogin: false,
+      canStartLogin: status.accountLoginAvailable === true,
     },
     configRequirements: {
       canRead: true,
     },
     threads: {
       canStart: ready,
+      canSelectAccessProfile: ready,
       canRead: true,
-      canResume: false,
+      canResume: ready,
       canList: true,
-      canFork: false,
+      canFork: ready,
+      canRollback: ready,
       canPersistExtendedHistory: true,
     },
     turns: {
       canStart: ready,
-      canSteer: false,
+      canSteer: ready,
       canInterrupt: true,
-      canOverrideModel: false,
-      canOverrideReasoning: false,
+      canOverrideModel: ready,
+      canOverrideReasoning: ready,
       canUseOutputSchema: false,
     },
+    model: {
+      canList: modelCatalogAvailable,
+      canSetNextTurn: ready,
+      canSetSessionDefault: false,
+      canSetProjectDefault: false,
+      canLiveUpdate: false,
+    },
+    reasoning: {
+      canSetNextTurn: ready,
+      canSetSessionDefault: false,
+      canSetProjectDefault: false,
+      canLiveUpdate: false,
+    },
+    serviceTier: {
+      canSetNextTurn: ready,
+      availableTiers: [...DIRECT_SERVICE_TIERS],
+    },
+    usage: {
+      canReadRateLimits: modelCatalogAvailable && metadataFresh && Boolean(metadata?.usage?.quota),
+      canReadTokenUsage: modelCatalogAvailable && metadataFresh && Boolean(metadata?.usage?.tokenUsage || metadata?.usage?.accountTokenProfile),
+    },
+    environment: {
+      canReadStatus: ready && status.environmentStatusAvailable === true,
+    },
     authority: {
-      commandApproval: commandExecutionApprovalReady,
-      fileChangeApproval: patchApplyApprovalReady,
+      commandApproval: fullAccess ? false : commandExecutionApprovalReady,
+      fileChangeApproval: fullAccess ? false : patchApplyApprovalReady,
       permissionsApproval: false,
       approvalPolicies: [
+        ...(fullAccess ? ["never"] : []),
         ...(readOnlyToolReady ? ["explicit-read-only-tool"] : []),
         ...(patchApplyApprovalReady ? ["explicit-patch-apply"] : []),
         ...(commandExecutionApprovalReady ? ["explicit-command-execution"] : []),
       ],
-      sandboxModes: [],
-      readOnlyToolApproval: readOnlyToolReady,
-      patchApplyApproval: patchApplyApprovalReady,
-      commandExecutionApproval: commandExecutionApprovalReady,
+      sandboxModes: fullAccess ? ["danger-full-access"] : [],
+      readOnlyToolApproval: fullAccess ? false : readOnlyToolReady,
+      patchApplyApproval: fullAccess ? false : patchApplyApprovalReady,
+      commandExecutionApproval: fullAccess ? false : commandExecutionApprovalReady,
+      fullAccessTaskProfile: fullAccess,
+      fullAccessGrantId: normalizeString(harnessGrant?.grantId, ""),
+      fullAccessGrantRevision: Number(harnessGrant?.grantRevision || 0),
+      statefulExecApproval: statefulExecGranted ? false : null,
+      statefulStdinApproval: stdinGranted ? false : null,
     },
+    statefulExec: {
+      canStart: statefulExecGranted,
+      canWriteStdin: stdinGranted,
+      transportMode: "plain_pipe",
+      ptyModeEnabled: false,
+      approvalPolicy: statefulExecGranted ? "never" : "per_session",
+      exactTaskBindingRequired: true,
+      restrictedWithoutGrant: true,
+    },
+    taskBinding: taskId
+      ? {
+          taskId,
+          projectId: normalizeString(options.projectId, ""),
+          grantId: normalizeString(harnessGrant?.grantId, ""),
+          grantRevision: Number(harnessGrant?.grantRevision || 0),
+          current: fullAccess,
+          rawGrantIncluded: false,
+        }
+      : null,
+    runtimeCapabilityProjection,
     requests: {
-      supportedServerMethods: toolMethods,
+      supportedServerMethods: [
+        ...(ready ? ["thread/resume", "thread/fork", "thread/rollback", "turn/steer"] : []),
+        ...(modelCatalogAvailable ? ["model/list"] : []),
+        ...(metadataFresh && metadata?.usage?.quota ? ["account/rateLimits/read"] : []),
+        ...(metadataFresh && (metadata?.usage?.tokenUsage || metadata?.usage?.accountTokenProfile) ? ["account/usage/read"] : []),
+        ...(status.environmentStatusAvailable === true ? ["environment/status"] : []),
+        ...(status.accountLoginAvailable === true ? ["account/login/start"] : []),
+        ...toolMethods,
+        ...(statefulExecGranted ? ["exec_command", ...(stdinGranted ? ["write_stdin"] : [])] : []),
+        ...hostedToolNames,
+        ...externalToolNames,
+      ],
       unsupportedButHandledMethods: [],
       unknownRequestPolicy: "error-visible",
     },
@@ -704,7 +871,7 @@ function buildDirectLiveTextCapabilities(status = {}) {
       runtime: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       source: "direct-live-text-controller",
       appServerRequired: false,
-      toolsEnabled: readOnlyToolReady || patchApplyReady || commandExecutionReady,
+      toolsEnabled: readOnlyToolReady || patchApplyReady || commandExecutionReady || statefulExecGranted,
       rawBackendFramesExposed: false,
     },
     attachments: attachmentCapability,
@@ -791,7 +958,21 @@ function appendExternalPromotedTools(toolNames = [], status = {}) {
 
 function providerHostedToolNames(status = {}) {
   const runtimeReady = status && normalizeString(status.status, "") === "ready";
-  return runtimeReady ? ["web_search", "image_generation"] : [];
+  if (!runtimeReady || ["stale", "missing", "failed", "invalid"].includes(normalizeString(status.providerMetadataCacheState, ""))) return [];
+  const metadata = status.providerMetadataProfile;
+  const hostedStatus = status.providerHostedToolsStatus;
+  const snapshot = status.providerHostedToolsStatus?.activationSnapshot;
+  const profileDigest = normalizeString(metadata?.profileDigest, "");
+  const projectId = normalizeString(metadata?.projectId, "");
+  if (hostedStatus?.schema !== PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA ||
+      snapshot?.schema !== PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA ||
+      !profileDigest || !projectId || snapshot.providerProfileDigest !== profileDigest || snapshot.projectId !== projectId) return [];
+  const readyTools = snapshot?.activationReadyTools;
+  if (!Array.isArray(readyTools)) return [];
+  return [...new Set(readyTools
+    .filter((tool) => tool?.invocationMode === "model_mediated_provider_tool")
+    .map((tool) => normalizeString(tool?.toolKind, ""))
+    .filter((tool) => tool === "web_search" || tool === "image_generation"))];
 }
 
 function appendProviderHostedTools(toolNames = [], status = {}) {
@@ -801,7 +982,17 @@ function appendProviderHostedTools(toolNames = [], status = {}) {
   ].map((name) => normalizeString(name, "")).filter(Boolean))];
 }
 
-function implementationInitialPolicyCandidateToolNames(status = {}, prompt = "") {
+function implementationInitialPolicyCandidateToolNames(status = {}, prompt = "", options = {}) {
+  const harnessGrant = isPlainObject(options.harnessGrant) ? options.harnessGrant : null;
+  if (harnessGrant) {
+    const currentHosted = new Set(providerHostedToolNames(status));
+    const currentExternal = new Set(externalPromotedToolNames(status));
+    return harnessGrantCapabilityNames(harnessGrant).filter((name) => {
+      if (["web_search", "image_generation"].includes(name)) return currentHosted.has(name);
+      if (EXTERNAL_PROMOTED_TOOL_SET.has(name)) return currentExternal.has(name);
+      return true;
+    });
+  }
   return appendProviderHostedTools(
     appendExternalPromotedTools(
       appendNativeSubAgentRuntimeTools(
@@ -1311,6 +1502,14 @@ function directToolCompositionRequestShapeFields(composition = {}) {
     residentCapabilityCatalogueDigest: normalizeString(catalogue.catalogueDigest, ""),
     toolBundleCompositionWitnessDigest: normalizeString(witness.witnessDigest, ""),
     toolBundleCompositionWitnessAttached: true,
+    ...(composition.composerInput?.harnessGrant ? {
+      directThreadHarnessGrantId: normalizeString(composition.composerInput.harnessGrant.grantId, ""),
+      directThreadHarnessGrantRevision: Number(composition.composerInput.harnessGrant.grantRevision || 0),
+      directThreadHarnessGrantApprovalPolicy: normalizeString(composition.composerInput.harnessGrant.approvalPolicy, ""),
+      directThreadHarnessGrantSandboxMode: normalizeString(composition.composerInput.harnessGrant.sandboxMode, ""),
+      directThreadHarnessGrantExecutionEnvironmentDigest: normalizeString(composition.composerInput.harnessGrant.executionEnvironmentDigest, ""),
+      directThreadHarnessGrantAuthorityMode: "durable_task_grant",
+    } : {}),
     ...(roleLedgerToolBundle ? {
       roleLedgerToolBundleId: normalizeString(
         roleLedgerToolBundle.bundleId,
@@ -1367,6 +1566,8 @@ function composeImplementationToolBundleForRequest(input = {}) {
     externalCapabilityProfile: input.externalCapabilityProfile,
     providerHostedToolsStatus: input.providerHostedToolsStatus,
     providerHostedActivationSnapshot: input.providerHostedToolsStatus?.activationSnapshot,
+    executionEnvironmentDigest: input.executionEnvironmentDigest || input.workThreadBindingDigest || controlledRoutingResult?.workThreadBinding?.bindingDigest || contextResult?.workThreadBinding?.bindingDigest,
+    harnessGrant: input.harnessGrant,
     sourceMessageRef: directToolEvidenceRef("source_message", input.sourceMessageId || `${turnId}_user`, "Direct user message"),
     normalizedLaneRequestRef: directToolEvidenceRef("normalized_lane_request", input.normalizedLaneRequestId || `normalized_lane_request_${turnId}`, "Implementation lane request"),
     controlledRouteRef: controlledRoutingResult?.route?.routeId
@@ -1504,6 +1705,7 @@ function threadSnapshotFromSession(session = {}) {
     runtimeMode: normalizeString(session.runtimeMode, ""),
     directTransport: normalizeString(session.directTransport, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT),
     reasoningEffort: normalizeString(session.reasoningEffort, ""),
+    serviceTier: normalizeString(session.serviceTier, ""),
     agentId: normalizeString(session.agentId, ""),
     agentRunId: normalizeString(session.agentRunId, ""),
     parentAgentId: normalizeString(session.parentAgentId, ""),
@@ -1512,6 +1714,9 @@ function threadSnapshotFromSession(session = {}) {
     agentKind,
     agentThreadId: normalizeString(session.agentThreadId, ""),
     parentThreadId: normalizeString(session.parentThreadId, ""),
+    parentForkLineage: isPlainObject(session.parentForkLineage) ? session.parentForkLineage : null,
+    historyHeadTurnId: normalizeString(session.historyHeadTurnId || turns.at(-1)?.turnId, ""),
+    historyHeadDigest: normalizeString(session.historyHeadDigest, directHistoryHeadDigest(session)),
     primaryThreadId: normalizeString(session.primaryThreadId, ""),
     agentLabel: normalizeString(session.agentLabel, ""),
     agentRole: normalizeString(session.agentRole, ""),
@@ -1546,9 +1751,12 @@ function threadListEntryFromIndexEntry(entry = {}) {
     status: normalizeString(entry.status, "created"),
     model: normalizeString(entry.model, ""),
     reasoningEffort: normalizeString(entry.reasoningEffort, ""),
+    serviceTier: normalizeString(entry.serviceTier, ""),
     agentKind,
     agentThreadId: normalizeString(entry.agentThreadId, ""),
     parentThreadId: normalizeString(entry.parentThreadId, ""),
+    historyHeadTurnId: normalizeString(entry.historyHeadTurnId, ""),
+    historyHeadDigest: normalizeString(entry.historyHeadDigest, ""),
     primaryThreadId: normalizeString(entry.primaryThreadId, ""),
     agentLabel: normalizeString(entry.agentLabel, ""),
     agentRole: normalizeString(entry.agentRole, ""),
@@ -1652,7 +1860,17 @@ function turnSnapshot(turn = {}) {
     startedAt: turn.streamStartedAt ? Date.parse(turn.streamStartedAt) / 1000 : Date.parse(turn.createdAt || nowIso()) / 1000,
     completedAt: turn.completedAt ? Date.parse(turn.completedAt) / 1000 : 0,
     error: turn.error || null,
+    model: normalizeString(turn.model, ""),
+    reasoningEffort: normalizeString(turn.reasoningEffort, ""),
+    serviceTier: normalizeString(turn.serviceTier, ""),
     clientTurnRequestId: normalizeString(turn.clientTurnRequestId, ""),
+    requestBinding: {
+      model: normalizeString(turn.model, ""),
+      reasoningEffort: normalizeString(turn.reasoningEffort, ""),
+      serviceTier: normalizeString(turn.serviceTier, ""),
+      requestShapeClass: normalizeString(turn.requestShape?.requestShapeClass, ""),
+      ownerControlledSurface: turn.requestShape?.directTurnOwnerControlled === true,
+    },
     usageAttribution: attribution ? {
       schema: attribution.schema,
       attributionId: normalizeString(attribution.attributionId, ""),
@@ -1702,6 +1920,25 @@ class DirectLiveTextController {
         : null;
     this.externalCapabilityProfileResolver = typeof options.externalCapabilityProfileResolver === "function" ? options.externalCapabilityProfileResolver : null;
     this.providerHostedToolsStatusResolver = typeof options.providerHostedToolsStatusResolver === "function" ? options.providerHostedToolsStatusResolver : null;
+    this.providerMetadataResolver = typeof options.providerMetadataResolver === "function" ? options.providerMetadataResolver : null;
+    this.accountLoginResolver = typeof options.accountLoginResolver === "function" ? options.accountLoginResolver : null;
+    this.configRequirementsResolver = typeof options.configRequirementsResolver === "function" ? options.configRequirementsResolver : null;
+    this.environmentStatusResolver = typeof options.environmentStatusResolver === "function" ? options.environmentStatusResolver : null;
+    this.attachmentPayloadResolver = typeof options.attachmentPayloadResolver === "function" ? options.attachmentPayloadResolver : null;
+    this.externalDiscoveryResolver = typeof options.externalDiscoveryResolver === "function" ? options.externalDiscoveryResolver : null;
+    this.mcpResourceReadResolver = typeof options.mcpResourceReadResolver === "function" ? options.mcpResourceReadResolver : null;
+    this.harnessGrantStore = options.harnessGrantStore || null;
+    this.statefulExecSessionManager = options.statefulExecSessionManager &&
+      typeof options.statefulExecSessionManager.start === "function"
+      ? options.statefulExecSessionManager
+      : null;
+    this.fullAccessLocalEnvironmentExecutor = options.fullAccessLocalEnvironmentExecutor &&
+      typeof options.fullAccessLocalEnvironmentExecutor.request === "function"
+      ? options.fullAccessLocalEnvironmentExecutor
+      : null;
+    this.harnessGrantResolver = typeof options.harnessGrantResolver === "function"
+      ? options.harnessGrantResolver
+      : null;
     this.compiledAgentContextResolver = typeof options.compiledAgentContextResolver === "function"
       ? options.compiledAgentContextResolver
       : null;
@@ -1720,6 +1957,10 @@ class DirectLiveTextController {
     this.epistemicContextDeliveryRecorder =
       typeof options.epistemicContextDeliveryRecorder === "function"
         ? options.epistemicContextDeliveryRecorder
+        : null;
+    this.threadControlFaultInjector =
+      typeof options.threadControlFaultInjector === "function"
+        ? options.threadControlFaultInjector
         : null;
     this.fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
     this.workspaceRequest = typeof options.workspaceRequest === "function" ? options.workspaceRequest : null;
@@ -1741,6 +1982,289 @@ class DirectLiveTextController {
     this.turnStartAdmissions = new Map();
     this.epistemicLedgerTurnBindings = new Map();
     this.closed = false;
+    this.statefulExecDisposePromise = null;
+  }
+
+  resolveHarnessGrant(project = {}, session = {}) {
+    const projectId = normalizeString(project.id || project.projectId || session.projectId, "");
+    const threadId = normalizeString(session.sessionId || session.threadId, "");
+    const expected = {
+      taskId: threadId,
+      threadId,
+      projectId,
+      executionEnvironmentDigest: normalizeString(
+        session.executionEnvironmentDigest || session.workThreadBindingDigest || project.executionEnvironmentDigest,
+        "",
+      ),
+      grantId: normalizeString(session.harnessGrantId, ""),
+    };
+    let grant = null;
+    if (this.harnessGrantResolver) {
+      grant = this.harnessGrantResolver({ project, session, ...expected });
+    } else if (this.harnessGrantStore) {
+      if (expected.grantId && typeof this.harnessGrantStore.reconstruct === "function") {
+        try {
+          grant = this.harnessGrantStore.reconstruct(expected.grantId, expected);
+        } catch {
+          grant = null;
+        }
+      }
+      if (!grant && typeof this.harnessGrantStore.currentForScope === "function") {
+        grant = this.harnessGrantStore.currentForScope(expected);
+      }
+    }
+    if (!isPlainObject(grant)) return null;
+    const errors = validateDirectThreadHarnessGrant(grant, { ...expected, requireCurrent: true });
+    if (errors.length) return null;
+    return grant;
+  }
+
+  harnessGrantForTurn(sessionId, turnId, project = {}) {
+    const session = this.sessionStore.readSession(sessionId) || {};
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const grantId = normalizeString(turn.requestShape?.directThreadHarnessGrantId || session.harnessGrantId, "");
+    const grant = this.resolveHarnessGrant(project, { ...session, harnessGrantId: grantId });
+    if (!grant) return null;
+    return grant;
+  }
+
+  harnessGrantAuthorizationFor(sessionId, turnId, project = {}, toolName = "") {
+    const grant = this.harnessGrantForTurn(sessionId, turnId, project);
+    if (!grant) return { authorized: false, reason: "no_current_task_grant" };
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const runtimeNames = Array.isArray(turn.requestShape?.declaredToolNames)
+      ? turn.requestShape.declaredToolNames
+      : [];
+    return authorizeDirectThreadHarnessCapability(grant, toolName, {
+      taskId: sessionId,
+      threadId: sessionId,
+      projectId: normalizeString(project.id || project.projectId, ""),
+      runtimeAdmittedCapabilityNames: runtimeNames,
+    });
+  }
+
+  fullAccessLocalBinding(sessionId, turnId, project = {}, capabilityName = "") {
+    if (!this.fullAccessLocalEnvironmentExecutor) return null;
+    const session = this.sessionStore.readSession(sessionId) || {};
+    const grant = this.harnessGrantForTurn(sessionId, turnId, project);
+    if (!grant || grant.sandboxMode !== "danger-full-access" || grant.executionEnvironment?.kind !== "local") return null;
+    const authorization = this.harnessGrantAuthorizationFor(sessionId, turnId, project, capabilityName);
+    if (!authorization.authorized) return null;
+    return {
+      taskId: sessionId,
+      threadId: sessionId,
+      projectId: normalizeString(project.id || project.projectId || session.projectId, ""),
+      executionEnvironmentDigest: grant.executionEnvironmentDigest,
+      grantId: grant.grantId,
+      harnessGrant: grant,
+      project,
+    };
+  }
+
+  capabilitiesForTask(project = {}, sessionId = "") {
+    const taskId = normalizeString(sessionId, "");
+    const session = taskId ? this.sessionStore.readSession(taskId) : null;
+    const projectId = normalizeString(project.id || project.projectId || session?.projectId, "");
+    if (!session || !sessionMatchesProject(session, projectId)) {
+      const directLiveText = this.statusForProject(project || {});
+      return {
+        capabilities: buildDirectLiveTextCapabilities(directLiveText),
+        directLiveText,
+        taskBinding: null,
+      };
+    }
+    const status = this.statusForProject(project || {}, { model: session.model });
+    const harnessGrant = this.resolveHarnessGrant(project, session);
+    const capabilities = buildDirectLiveTextCapabilities(status, {
+      harnessGrant,
+      taskId: session.sessionId,
+      projectId: session.projectId,
+    });
+    return {
+      capabilities,
+      directLiveText: status,
+      taskBinding: {
+        taskId: session.sessionId,
+        projectId: session.projectId,
+        grantId: normalizeString(harnessGrant?.grantId, ""),
+        grantRevision: Number(harnessGrant?.grantRevision || 0),
+        current: capabilities.authority?.fullAccessTaskProfile === true,
+        rawGrantIncluded: false,
+      },
+    };
+  }
+
+  executionEnvironmentForSession(project = {}, session = {}) {
+    const workspace = isPlainObject(session.workspace) && Object.keys(session.workspace).length
+      ? session.workspace
+      : isPlainObject(project.workspace) ? project.workspace : {};
+    const bindingDigest = normalizeString(
+      session.workThreadBindingDigest || workspace.bindingDigest || project.executionEnvironmentBindingDigest,
+      "",
+    );
+    const environment = {
+      environmentId: normalizeString(
+        session.workThreadId || session.sessionId,
+        "direct_execution_environment",
+      ),
+      kind: normalizeString(workspace.kind, "local"),
+    };
+    if (bindingDigest) {
+      environment.bindingDigest = bindingDigest;
+    } else {
+      // The raw checkout path is never placed in the grant.  It only
+      // contributes to a stable workspace binding digest used for exact
+      // restart and scope matching.
+      environment.workspaceDigest = sha256(stableStringify({
+        kind: environment.kind,
+        workspaceDisplayPath: workspaceDisplayPath(project),
+      }));
+    }
+    return environment;
+  }
+
+  selectFullAccessTaskProfile(params = {}, context = {}) {
+    const project = context.project || {};
+    if (!this.harnessGrantStore || typeof this.harnessGrantStore.issueFullAccess !== "function") {
+      const error = new Error("Direct full-access task profile selection is unavailable.");
+      error.code = "direct_thread_harness_grant_store_unavailable";
+      throw error;
+    }
+    const requestedProfile = normalizeString(
+      params.accessProfile || params.profile || params.taskProfile,
+      "",
+    );
+    if (requestedProfile !== "full_access") {
+      const error = new Error("Direct task profile selection requires the owner-selected full_access profile.");
+      error.code = "direct_thread_harness_profile_not_full_access";
+      throw error;
+    }
+    const sessionId = normalizeString(params.sessionId || params.threadId, "");
+    const session = sessionId ? this.sessionStore.readSession(sessionId) : null;
+    if (!session || !sessionMatchesProject(session, normalizeString(project.id, ""))) {
+      const error = new Error("Direct full-access task profile selection requires an exact project-bound session.");
+      error.code = "direct_thread_harness_profile_scope_mismatch";
+      throw error;
+    }
+    const status = this.assertReady(project, { model: session.model });
+    const environment = this.executionEnvironmentForSession(project, session);
+    const grant = this.harnessGrantStore.issueFullAccess({
+      taskId: session.sessionId,
+      threadId: session.sessionId,
+      projectId: session.projectId,
+      executionEnvironment: environment,
+      capabilities: [
+        ...new Set([
+          ...implementationInitialPolicyCandidateToolNames(status, ""),
+          ...STATEFUL_EXEC_CAPABILITY_NAMES,
+        ]),
+      ],
+    });
+    this.sessionStore.writeSession({
+      ...session,
+      harnessAccessProfile: "full_access",
+      harnessGrantId: grant.grantId,
+      executionEnvironmentDigest: grant.executionEnvironmentDigest,
+    });
+    const projection = this.capabilitiesForTask(project, session.sessionId);
+    return {
+      profile: "full_access",
+      grantId: grant.grantId,
+      grantRevision: grant.grantRevision,
+      approvalPolicy: grant.approvalPolicy,
+      sandboxMode: grant.sandboxMode,
+      capabilityCount: grant.capabilityPopulation.capabilities.length,
+      executionEnvironmentDigest: grant.executionEnvironmentDigest,
+      rawGrantIncluded: false,
+      capabilities: projection.capabilities,
+      taskBinding: projection.taskBinding,
+    };
+  }
+
+  statefulExecSessionContext(params = {}, context = {}, options = {}) {
+    const project = context.project || {};
+    const sessionId = normalizeString(
+      options.stdin
+        ? params.taskId || params.threadId || context.surfaceSession?.activeThreadId
+        : params.taskId || params.threadId || params.sessionId || context.surfaceSession?.activeThreadId,
+      "",
+    );
+    const session = sessionId ? this.sessionStore.readSession(sessionId) : null;
+    const projectId = normalizeString(project.id || project.projectId, "");
+    if (!session || !projectId || !sessionMatchesProject(session, projectId)) {
+      throw new Error("Stateful exec requires an exact project-bound Direct task.");
+    }
+    if (!this.statefulExecSessionManager) {
+      throw new Error("Stateful exec is unavailable in this Direct runtime.");
+    }
+    const grant = this.resolveHarnessGrant(project, session);
+    if (!grant) {
+      const error = new Error("Stateful exec requires the current owner-issued full-access task grant.");
+      error.code = "direct_stateful_exec_grant_missing";
+      throw error;
+    }
+    return {
+      project,
+      session,
+      grant,
+      taskId: session.sessionId,
+      threadId: session.sessionId,
+      projectId: session.projectId,
+      executionEnvironmentDigest: grant.executionEnvironmentDigest,
+    };
+  }
+
+  startStatefulExec(params = {}, context = {}) {
+    const bound = this.statefulExecSessionContext(params, context);
+    return this.statefulExecSessionManager.start({
+      ...params,
+      project: bound.project,
+      harnessGrant: bound.grant,
+      grantId: bound.grant.grantId,
+      taskId: bound.taskId,
+      threadId: bound.threadId,
+      projectId: bound.projectId,
+      executionEnvironmentDigest: bound.executionEnvironmentDigest,
+    });
+  }
+
+  writeStatefulExecStdin(params = {}, context = {}) {
+    const bound = this.statefulExecSessionContext(params, context, { stdin: true });
+    return this.statefulExecSessionManager.writeStdin({
+      ...params,
+      harnessGrant: bound.grant,
+      grantId: bound.grant.grantId,
+      taskId: bound.taskId,
+      threadId: bound.threadId,
+      projectId: bound.projectId,
+      executionEnvironmentDigest: bound.executionEnvironmentDigest,
+    });
+  }
+
+  cancelStatefulExec(params = {}, context = {}) {
+    const bound = this.statefulExecSessionContext(params, context);
+    return this.statefulExecSessionManager.cancel({
+      ...params,
+      harnessGrant: bound.grant,
+      grantId: bound.grant.grantId,
+      taskId: bound.taskId,
+      threadId: bound.threadId,
+      projectId: bound.projectId,
+      executionEnvironmentDigest: bound.executionEnvironmentDigest,
+    });
+  }
+
+  waitStatefulExec(params = {}, context = {}) {
+    const bound = this.statefulExecSessionContext(params, context);
+    return this.statefulExecSessionManager.wait({
+      ...params,
+      harnessGrant: bound.grant,
+      grantId: bound.grant.grantId,
+      taskId: bound.taskId,
+      threadId: bound.threadId,
+      projectId: bound.projectId,
+      executionEnvironmentDigest: bound.executionEnvironmentDigest,
+    });
   }
 
   close(reason = "Direct live text runtime closed.") {
@@ -1748,6 +2272,12 @@ class DirectLiveTextController {
     this.closed = true;
     this.epistemicContextDeliveryResolver = null;
     this.epistemicContextDeliveryRecorder = null;
+    if (this.statefulExecSessionManager?.dispose) {
+      this.statefulExecDisposePromise = Promise.resolve(this.statefulExecSessionManager.dispose(reason)).catch((error) => {
+        this.emit?.("stateful-exec-disposal-error", { code: error?.code || "direct_stateful_exec_disposal_failed" });
+        return { status: "unresolved_cleanup", disposed: true, activeSessionCount: null, cleanupFailure: error?.code || "direct_stateful_exec_disposal_failed" };
+      });
+    }
     let abortedRunCount = 0;
     for (const active of this.activeRuns.values()) {
       if (!active?.abortController?.signal?.aborted) {
@@ -1756,6 +2286,16 @@ class DirectLiveTextController {
       }
     }
     return { closed: true, abortedRunCount };
+  }
+
+  async disposeStatefulExec(reason = "Direct live text runtime closed.") {
+    if (this.statefulExecDisposePromise) return this.statefulExecDisposePromise;
+    if (!this.statefulExecSessionManager?.dispose) return { status: "completed", disposed: false, activeSessionCount: 0 };
+    this.statefulExecDisposePromise = Promise.resolve(this.statefulExecSessionManager.dispose(reason)).catch((error) => {
+      this.emit?.("stateful-exec-disposal-error", { code: error?.code || "direct_stateful_exec_disposal_failed" });
+      return { status: "unresolved_cleanup", disposed: true, activeSessionCount: null, cleanupFailure: error?.code || "direct_stateful_exec_disposal_failed" };
+    });
+    return this.statefulExecDisposePromise;
   }
 
   assertOpen() {
@@ -1912,6 +2452,65 @@ class DirectLiveTextController {
     }
   }
 
+  resolveProviderMetadataStatus(project = {}) {
+    const projectId = normalizeString(project.id || project.projectId || project.name, "");
+    let resolved = null;
+    if (this.providerMetadataResolver) {
+      try {
+        resolved = this.providerMetadataResolver({
+          project,
+          projectId,
+          authStatus: this.authStatus(),
+        });
+      } catch (error) {
+        return { profile: null, driftReport: null, cacheState: "failed", error };
+      }
+    }
+    if (!resolved) {
+      resolved = project.directProviderMetadata || project.providerMetadataStatus || null;
+    }
+    const profile = resolved?.profile || (resolved?.schema === DIRECT_PROVIDER_METADATA_PROFILE_SCHEMA ? resolved : null);
+    if (!isPlainObject(profile)) {
+      return {
+        profile: null,
+        driftReport: resolved?.driftReport || null,
+        cacheState: normalizeString(resolved?.cacheState, "missing"),
+      };
+    }
+    if (normalizeString(resolved?.projectId, "") && normalizeString(resolved.projectId, "") !== projectId) {
+      return {
+        profile: null,
+        driftReport: resolved?.driftReport || null,
+        cacheState: "invalid",
+        reason: "provider_metadata_project_scope_mismatch",
+      };
+    }
+    if (normalizeString(profile.projectId, "") && normalizeString(profile.projectId, "") !== projectId) {
+      return {
+        profile: null,
+        driftReport: resolved?.driftReport || null,
+        cacheState: "invalid",
+        reason: "provider_metadata_project_scope_mismatch",
+      };
+    }
+    const findings = validateDirectProviderMetadataProfile(profile);
+    if (findings.length) {
+      return {
+        profile: null,
+        driftReport: resolved?.driftReport || null,
+        cacheState: "invalid",
+        reason: "provider_metadata_profile_invalid",
+        validationFindings: findings,
+      };
+    }
+    return {
+      profile,
+      driftReport: resolved?.driftReport || null,
+      cacheState: normalizeString(resolved?.cacheState, "provided"),
+      fetched: resolved?.fetched === true,
+    };
+  }
+
   requestedModelForProject(project = {}, options = {}) {
     return normalizeString(
       options.model || options.requestedModel ||
@@ -1998,7 +2597,17 @@ class DirectLiveTextController {
           endpoint: this.endpoint,
           authStatus: this.authStatus(),
         });
-        if (isPlainObject(resolved)) return resolved;
+        if (isPlainObject(resolved)) {
+          const projectId = normalizeString(project?.id || project?.projectId || project?.name, "");
+          if (normalizeString(resolved.projectId, "") && projectId && normalizeString(resolved.projectId, "") !== projectId) {
+            return {
+              status: "blocked",
+              reason: "external_capability_profile_project_scope_mismatch",
+              serverIdentities: [],
+            };
+          }
+          return resolved;
+        }
       } catch (error) {
         return {
           status: "unavailable",
@@ -2015,7 +2624,7 @@ class DirectLiveTextController {
     };
   }
 
-  resolveProviderHostedToolsStatus(project = {}) {
+  resolveProviderHostedToolsStatus(project = {}, directProviderMetadata = null) {
     if (!this.providerHostedToolsStatusResolver) {
       return {
         status: "unavailable",
@@ -2029,6 +2638,7 @@ class DirectLiveTextController {
         workThreadId: normalizeString(directWorkThreadContextCarrier(project)?.workThreadId, ""),
         endpoint: this.endpoint,
         authStatus: this.authStatus(),
+        directProviderMetadata,
       });
       if (isPlainObject(resolved)) return resolved;
       return {
@@ -2042,6 +2652,36 @@ class DirectLiveTextController {
         resolverError: true,
       };
     }
+  }
+
+  providerAttachmentCapabilityFor(project = {}, metadataProfile = null) {
+    // Direct has no workspace-backend reader for WSL staged bytes yet.  Keep
+    // WSL attachment custody reference-only even when a provider resolver or
+    // metadata profile happens to advertise file/image payload support.
+    if (normalizeString(project.workspace?.kind, "").toLowerCase() === "wsl") return null;
+    if (isPlainObject(project.providerAttachmentCapability)) return project.providerAttachmentCapability;
+    if (!this.attachmentPayloadResolver || !isPlainObject(metadataProfile)) return null;
+    const requestedModel = this.requestedModelForProject(project);
+    const model = (Array.isArray(metadataProfile.modelCatalog?.items) ? metadataProfile.modelCatalog.items : [])
+      .find((item) => !requestedModel || item.model === requestedModel || item.id === requestedModel) ||
+      metadataProfile.modelCatalog?.items?.[0];
+    const modalities = Array.isArray(model?.inputModalities) ? model.inputModalities.map((value) => normalizeString(value, "").toLowerCase()) : [];
+    const supports = (names) => modalities.some((value) => names.includes(value));
+    const sourceDigest = normalizeString(metadataProfile.profileDigest, "");
+    return {
+      file: {
+        supported: supports(["file", "input_file", "document"]),
+        evidenceState: "profile_declared",
+        payloadCustody: "exact",
+        sourceDigest,
+      },
+      image: {
+        supported: supports(["image", "input_image", "vision"]),
+        evidenceState: "profile_declared",
+        payloadCustody: "exact",
+        sourceDigest,
+      },
+    };
   }
 
   modelEvidenceForProject(project = {}, options = {}) {
@@ -2097,7 +2737,8 @@ class DirectLiveTextController {
     const evidence = this.modelEvidenceForProject(project, options);
     const implementationLaneProof = this.resolveImplementationProofEvidence(project, evidence.model);
     const externalCapabilityProfile = this.resolveExternalCapabilityProfile(project);
-    const providerHostedToolsStatus = this.resolveProviderHostedToolsStatus(project);
+    const providerMetadataStatus = this.resolveProviderMetadataStatus(project);
+    const providerHostedToolsStatus = this.resolveProviderHostedToolsStatus(project, providerMetadataStatus);
     const readOnlyToolContinuation = mergeScopedProofWithProfileEvidence(
       readOnlyContinuationEvidenceFor(this.profileDoc),
       implementationLaneProof,
@@ -2132,6 +2773,7 @@ class DirectLiveTextController {
       modelSource: evidence.modelSource,
       modelEvidenceState: evidence.modelEvidenceState,
       transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+      workspaceKind: normalizeString(project.workspace?.kind, ""),
       appServerRequired: false,
       toolsEnabled: status === "ready" && (
         readOnlyToolContinuation.status === "ready" ||
@@ -2147,6 +2789,20 @@ class DirectLiveTextController {
       commandExecutionContinuation,
       externalCapabilityProfile,
       providerHostedToolsStatus,
+      providerMetadataProfile: providerMetadataStatus.profile,
+      providerMetadataDriftReport: providerMetadataStatus.driftReport,
+      providerMetadataCacheState: providerMetadataStatus.cacheState,
+      providerMetadataReason: normalizeString(providerMetadataStatus.reason, ""),
+      accountLoginAvailable: Boolean(this.accountLoginResolver),
+      environmentStatusAvailable: Boolean(
+        this.environmentStatusResolver ||
+        project.workspace ||
+        project.environmentId ||
+        project.executionEnvironmentId,
+      ),
+      providerAttachmentCapability: ["stale", "missing", "failed", "invalid"].includes(providerMetadataStatus.cacheState)
+        ? null
+        : this.providerAttachmentCapabilityFor(project, providerMetadataStatus.profile),
       externalDiscovery: {
         status: externalSourceIdentityReady(externalCapabilityProfile) ? "ready" : "blocked",
         tools: externalPromotedToolNames({ status, externalCapabilityProfile }),
@@ -2177,6 +2833,9 @@ class DirectLiveTextController {
     }
     if (this.activationStatusResolver) {
       const binding = normalizeCodexBinding(project.surfaceBinding?.codex || {});
+      if (binding.runtimeMode === "direct") {
+        return status;
+      }
       if (
         binding.runtimeMode === "direct-experimental" &&
         binding.directTransport === "live-text" &&
@@ -2202,23 +2861,32 @@ class DirectLiveTextController {
   }
 
   initialize(_params = {}, context = {}) {
-    const status = this.statusForProject(context.project || {});
+    const taskId = normalizeString(_params.sessionId || _params.threadId || context.sessionId, "");
+    const projection = taskId ? this.capabilitiesForTask(context.project || {}, taskId) : null;
+    const status = projection?.directLiveText || this.statusForProject(context.project || {});
     return {
       runtime: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
-      capabilities: buildDirectLiveTextCapabilities(status),
+      capabilities: projection?.capabilities || buildDirectLiveTextCapabilities(status),
       directLiveText: status,
+      taskBinding: projection?.taskBinding || null,
     };
   }
 
-  accountRead() {
+  accountRead(_params = {}, _context = {}) {
     const status = this.authStatus();
+    const metadataStatus = this.resolveProviderMetadataStatus(_context.project || {});
+    const metadata = metadataStatus.profile;
     if (status.status === "authenticated") {
       return {
         account: {
           type: "chatgpt",
-          planType: "direct-live-text",
+          planType: normalizeString(metadata?.account?.planType, "direct-live-text"),
           accountId: status.accountId,
         },
+        source: metadata ? "direct_provider_metadata" : "direct_auth_store",
+        metadataProfileDigest: normalizeString(metadata?.profileDigest, ""),
+        metadataCacheState: normalizeString(metadataStatus.cacheState, "missing"),
+        metadataStale: metadataStatus.cacheState === "stale",
         requiresOpenaiAuth: false,
         rawTokensExposed: false,
       };
@@ -2231,13 +2899,188 @@ class DirectLiveTextController {
     };
   }
 
-  configRequirementsRead() {
+  async modelList(params = {}, context = {}) {
+    const status = this.statusForProject(context.project || {});
+    const profile = status.providerMetadataProfile;
+    const items = Array.isArray(profile?.modelCatalog?.items) ? profile.modelCatalog.items : [];
+    const includeHidden = params.includeHidden === true;
+    const limit = boundedPositiveInteger(params.limit, 100, 1, 1000);
+    const offset = Math.max(0, Number.parseInt(String(params.cursor || "0"), 10) || 0);
+    const visible = items.filter((item) => includeHidden || item.hidden !== true);
+    const page = visible.slice(offset, offset + limit).map((item) => ({
+      id: normalizeString(item.id || item.model, ""),
+      model: normalizeString(item.model || item.id, ""),
+      displayName: normalizeString(item.displayName, item.model || item.id || "model"),
+      description: normalizeString(item.description, ""),
+      availabilityState: normalizeString(item.availabilityState, "available"),
+      unavailableReason: normalizeString(item.unavailableReason, ""),
+      supportedReasoningEfforts: Array.isArray(item.supportedReasoningEfforts) ? item.supportedReasoningEfforts : [],
+      defaultReasoningEffort: normalizeString(item.defaultReasoningEffort, ""),
+      serviceTiers: Array.isArray(item.serviceTiers) ? item.serviceTiers : [],
+      defaultServiceTier: normalizeString(item.defaultServiceTier, ""),
+      inputModalities: Array.isArray(item.inputModalities) ? item.inputModalities : [],
+      contextWindow: item.contextWindow,
+      maxContextWindow: item.maxContextWindow,
+      isDefault: item.isDefault === true,
+      evidenceState: normalizeString(profile?.modelCatalog?.status, "unknown"),
+      rawProviderPayloadIncluded: false,
+      rawEndpointIncluded: false,
+    }));
+    const nextOffset = offset + page.length;
+    return {
+      data: page,
+      nextCursor: nextOffset < visible.length ? String(nextOffset) : null,
+      source: normalizeString(profile?.modelCatalog?.source, "unavailable"),
+      cacheState: normalizeString(status.providerMetadataCacheState, "missing"),
+      stale: status.providerMetadataCacheState === "stale",
+      profileDigest: normalizeString(profile?.profileDigest, ""),
+      rawProviderPayloadIncluded: false,
+    };
+  }
+
+  async rateLimitsRead(_params = {}, context = {}) {
+    const status = this.statusForProject(context.project || {});
+    const quota = status.providerMetadataProfile?.usage?.quota;
+    const windows = Array.isArray(quota?.windows) ? quota.windows : [];
+    const rateLimitsByLimitId = {};
+    for (const window of windows) {
+      const id = normalizeString(window.windowId, "direct");
+      rateLimitsByLimitId[id] = {
+        usedPercent: Number.isFinite(Number(window.usedPercent)) ? Number(window.usedPercent) : undefined,
+        resetsAt: normalizeString(window.resetsAt, ""),
+        windowDurationMins: Number.isFinite(Number(window.windowDurationMins)) ? Number(window.windowDurationMins) : undefined,
+        windowKind: normalizeString(window.windowKind, "other"),
+      };
+    }
+    return {
+      rateLimitsByLimitId,
+      planType: normalizeString(quota?.planType || status.providerMetadataProfile?.account?.planType, ""),
+      status: normalizeString(quota?.status, "unknown"),
+      source: "direct_provider_metadata",
+      cacheState: normalizeString(status.providerMetadataCacheState, "missing"),
+      stale: status.providerMetadataCacheState === "stale",
+      evidenceRefs: Array.isArray(quota?.evidenceRefs) ? quota.evidenceRefs : [],
+      rawProviderPayloadIncluded: false,
+    };
+  }
+
+  async usageRead(_params = {}, context = {}) {
+    const status = this.statusForProject(context.project || {});
+    const usage = status.providerMetadataProfile?.usage || {};
+    const tokenUsage = isPlainObject(usage.tokenUsage) ? {
+      inputTokens: usage.tokenUsage.inputTokens ?? usage.tokenUsage.input_tokens,
+      outputTokens: usage.tokenUsage.outputTokens ?? usage.tokenUsage.output_tokens,
+      totalTokens: usage.tokenUsage.totalTokens ?? usage.tokenUsage.total_tokens,
+      reasoningTokens: usage.tokenUsage.reasoningTokens ?? usage.tokenUsage.reasoning_tokens,
+    } : null;
+    const accountTokenProfile = isPlainObject(usage.accountTokenProfile) ? {
+      status: normalizeString(usage.accountTokenProfile.status, "unknown"),
+      lifetimeTokens: usage.accountTokenProfile.lifetimeTokens,
+      peakDailyTokens: usage.accountTokenProfile.peakDailyTokens,
+      longestRunningTurnSec: usage.accountTokenProfile.longestRunningTurnSec,
+      currentStreakDays: usage.accountTokenProfile.currentStreakDays,
+      longestStreakDays: usage.accountTokenProfile.longestStreakDays,
+      dailyBuckets: Array.isArray(usage.accountTokenProfile.dailyBuckets) ? usage.accountTokenProfile.dailyBuckets : [],
+    } : null;
+    return {
+      tokenUsage,
+      accountTokenProfile,
+      context: isPlainObject(usage.context) ? usage.context : { status: "unknown" },
+      source: "direct_provider_metadata",
+      cacheState: normalizeString(status.providerMetadataCacheState, "missing"),
+      stale: status.providerMetadataCacheState === "stale",
+      rawProviderPayloadIncluded: false,
+    };
+  }
+
+  async configRequirementsRead(params = {}, context = {}) {
+    if (this.configRequirementsResolver) {
+      const resolved = await this.configRequirementsResolver({
+        params,
+        context,
+        project: context.project || {},
+      });
+      if (isPlainObject(resolved)) {
+        return {
+          requirements: resolved.requirements ?? null,
+          status: normalizeString(resolved.status, resolved.requirements ? "available" : "none"),
+          source: normalizeString(resolved.source, "direct-provider-config"),
+          evidenceRefs: Array.isArray(resolved.evidenceRefs) ? resolved.evidenceRefs : [],
+          rawTokensExposed: false,
+          rawBackendFramesExposed: false,
+        };
+      }
+    }
     return {
       requirements: null,
       status: "none",
       source: "direct-live-text-controller",
       rawTokensExposed: false,
       rawBackendFramesExposed: false,
+    };
+  }
+
+  async environmentStatus(params = {}, context = {}) {
+    const project = context.project || {};
+    const expectedEnvironmentId = normalizeString(
+      params.environmentId,
+      normalizeString(project.environmentId || project.executionEnvironmentId, "direct_execution_environment"),
+    );
+    if (this.environmentStatusResolver) {
+      const resolved = await this.environmentStatusResolver({
+        params,
+        project,
+        environmentId: expectedEnvironmentId,
+        ownerControlled: context.ownerControlled === true,
+      });
+      if (isPlainObject(resolved)) {
+        if (resolved.environmentId && normalizeString(resolved.environmentId, "") !== expectedEnvironmentId) {
+          throw new Error("Direct environment status source returned a different environment.");
+        }
+        return {
+          environmentId: expectedEnvironmentId,
+          status: normalizeString(resolved.status, "unknown"),
+          kind: normalizeString(resolved.kind || resolved.workspaceKind, "local"),
+          platform: normalizeString(resolved.platform || resolved.nativePlatform, "unknown"),
+          adapterKind: normalizeString(resolved.adapterKind, "direct"),
+          probeState: normalizeString(resolved.probeState, "unknown"),
+          workspaceIdentityMatched: resolved.workspaceIdentityMatched === true,
+          processContinuityObserved: resolved.processContinuityObserved === true,
+          capabilityClasses: Array.isArray(resolved.capabilityClasses) ? resolved.capabilityClasses.map((value) => normalizeString(value, "")).filter(Boolean) : [],
+          blockerCodes: Array.isArray(resolved.blockerCodes) ? resolved.blockerCodes.map((value) => normalizeString(value, "")).filter(Boolean) : [],
+          observedAt: normalizeString(resolved.observedAt, nowIso()),
+          bindingDigest: normalizeString(resolved.bindingDigest, ""),
+          rawPathIncluded: false,
+          rawSecretIncluded: false,
+        };
+      }
+    }
+    return {
+      environmentId: expectedEnvironmentId,
+      status: project.workspace ? "ready" : "unavailable",
+      kind: normalizeString(project.workspace?.kind, "local"),
+      source: "direct-project-environment",
+      bindingDigest: normalizeString(project.executionEnvironmentBindingDigest || project.workspace?.bindingDigest, ""),
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    };
+  }
+
+  async accountLoginStart(params = {}, context = {}) {
+    if (context.ownerControlled !== true) {
+      const error = new Error("Direct account login requires an owner-controlled request.");
+      error.code = "direct_account_login_owner_control_required";
+      throw error;
+    }
+    if (!this.accountLoginResolver) {
+      return { ok: false, status: "unavailable", reason: "direct_account_login_resolver_missing", rawTokensExposed: false };
+    }
+    const result = await this.accountLoginResolver({ params, project: context.project || {}, ownerControlled: true });
+    return isPlainObject(result) ? { ...result, rawTokensExposed: false } : {
+      ok: false,
+      status: "unavailable",
+      reason: "direct_account_login_invalid_result",
+      rawTokensExposed: false,
     };
   }
 
@@ -2254,11 +3097,31 @@ class DirectLiveTextController {
         if (!sessionMatchesProject(existing, projectId)) {
           throw new Error("Direct live text session does not belong to the active project.");
         }
-        return { thread: threadSnapshotFromSession(existing), model: existing.model };
+        const accessProfile = normalizeString(params.accessProfile || params.profile || params.taskProfile, "");
+        const selected = accessProfile === "full_access"
+          ? this.selectFullAccessTaskProfile({ sessionId: existing.sessionId, accessProfile }, context)
+          : null;
+        const refreshed = this.sessionStore.readSession(existing.sessionId) || existing;
+        const projection = this.capabilitiesForTask(project, refreshed.sessionId);
+        return {
+          thread: threadSnapshotFromSession(refreshed),
+          model: refreshed.model,
+          reasoningEffort: refreshed.reasoningEffort,
+          serviceTier: refreshed.serviceTier,
+          accessProfile: selected,
+          capabilities: projection.capabilities,
+          taskBinding: projection.taskBinding,
+        };
       }
     }
     const model = normalizeString(params.model, "") || status.model;
     const reasoningEffort = normalizeString(params.reasoningEffort || params.reasoning_effort, "");
+    const serviceTier = normalizeString(params.serviceTier || params.service_tier, "");
+    if (serviceTier && !DIRECT_SERVICE_TIERS.has(serviceTier)) {
+      const error = new Error(`Direct service tier is not supported: ${serviceTier}`);
+      error.code = "direct_service_tier_unsupported";
+      throw error;
+    }
     const session = this.sessionStore.createSession({
       sessionId: requestedSessionId,
       projectId,
@@ -2267,7 +3130,8 @@ class DirectLiveTextController {
       title: normalizeString(params.title, `${normalizeString(project.name, "Direct")} live text session`),
       model,
       reasoningEffort,
-      runtimeMode: "direct-experimental",
+      serviceTier,
+      runtimeMode: normalizeCodexBinding(project.surfaceBinding?.codex || {}).runtimeMode,
       directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       modelSource: status.modelSource,
       modelEvidenceState: status.modelEvidenceState,
@@ -2306,9 +3170,19 @@ class DirectLiveTextController {
       workThreadId: workThreadCarrier.workThreadId,
       workThreadBindingDigest: normalizeString(workThreadCarrier.workThreadBinding?.bindingDigest, ""),
     });
+    const accessProfile = normalizeString(params.accessProfile || params.profile || params.taskProfile, "") === "full_access"
+      ? this.selectFullAccessTaskProfile({ sessionId: session.sessionId, accessProfile: "full_access" }, context)
+      : null;
+    const refreshedSession = this.sessionStore.readSession(session.sessionId) || session;
+    const projection = this.capabilitiesForTask(project, refreshedSession.sessionId);
     return {
-      thread: threadSnapshotFromSession(session),
-      model: session.model,
+      thread: threadSnapshotFromSession(refreshedSession),
+      model: refreshedSession.model,
+      reasoningEffort: refreshedSession.reasoningEffort,
+      serviceTier: refreshedSession.serviceTier,
+      accessProfile,
+      capabilities: projection.capabilities,
+      taskBinding: projection.taskBinding,
     };
   }
 
@@ -2345,6 +3219,7 @@ class DirectLiveTextController {
             updatedAt: normalizeString(turn?.updatedAt || summary?.updatedAt, ""),
             model: normalizeString(turn?.model || summary?.model, ""),
             reasoningEffort: normalizeString(turn?.reasoningEffort || summary?.reasoningEffort, ""),
+            serviceTier: normalizeString(turn?.serviceTier || summary?.serviceTier, ""),
             error: isPlainObject(turn?.error)
               ? {
                   code: normalizeString(turn.error.code, ""),
@@ -2383,6 +3258,931 @@ class DirectLiveTextController {
       storeStatus,
       deck,
       rawPathsExposed: false,
+    };
+  }
+
+  threadControlOperation(operationType, input = {}, result = {}, options = {}) {
+    const store = this.directThreadStore;
+    if (!store || typeof store.planOperation !== "function" || typeof store.commitOperation !== "function") return null;
+    const projectId = normalizeString(input.projectId, "");
+    const target = isPlainObject(input.target) ? input.target : { threadIds: [normalizeString(input.threadId, "")] };
+    const plan = this.planThreadControlOperation(operationType, input, {
+      target,
+      intent: isPlainObject(input.intent) ? input.intent : {},
+    }, options);
+    if (plan.existingResult?.status === "committed") return plan.existingResult;
+    return this.commitThreadControlOperation(plan, result, options);
+  }
+
+  planThreadControlOperation(operationType, input = {}, options = {}, storeOptions = {}) {
+    const store = this.directThreadStore;
+    if (!store || typeof store.planOperation !== "function" || typeof store.commitOperation !== "function") return null;
+    const projectId = normalizeString(input.projectId, "");
+    const target = isPlainObject(options.target)
+      ? options.target
+      : (isPlainObject(input.target) ? input.target : { threadIds: [normalizeString(input.threadId, "")] });
+    const intent = isPlainObject(options.intent) ? options.intent : {};
+    const identity = {
+      schema: "direct_thread_control_operation_input@2",
+      operationType,
+      projectId,
+      target,
+      expectedHistoryHeadDigest: normalizeString(input.expectedHistoryHeadDigest, ""),
+      expectedTurnId: normalizeString(input.expectedTurnId, ""),
+      requestDigest: normalizeString(input.requestDigest, ""),
+      intent,
+    };
+    const operationInputDigest = sha256(stableStringify(identity));
+    const suppliedClientOperationId = normalizeString(input.clientOperationId, "");
+    const clientOperationId = suppliedClientOperationId || `direct_${operationType}_${sha256(stableStringify({
+      projectId,
+      operationInputDigest,
+    })).slice(0, 28)}`;
+    const existing = typeof store.operationByClient === "function"
+      ? store.operationByClient(projectId, clientOperationId)
+      : null;
+    if (existing && typeof store.returnExistingOperationOrThrowConflict === "function") {
+      const existingResult = store.returnExistingOperationOrThrowConflict(existing, {
+        operationType,
+        operationInputDigest,
+        target,
+      });
+      if (!["planned", "committed"].includes(normalizeString(existing.status, ""))) {
+        const error = new Error("Direct thread control operation is not recoverable from its durable status.");
+        error.code = "direct_thread_control_operation_not_recoverable";
+        throw error;
+      }
+      return {
+        operationType,
+        projectId,
+        clientOperationId,
+        operationInputDigest,
+        target,
+        intent,
+        operationId: existing.operation_id,
+        existing,
+        existingResult,
+      };
+    }
+    const planned = store.planOperation({
+      operationType,
+      projectId,
+      clientOperationId,
+      actor: "direct_owner_surface",
+      target,
+      parameters: {
+        operationInputDigest,
+        expectedHistoryHeadDigest: normalizeString(input.expectedHistoryHeadDigest, ""),
+        expectedTurnId: normalizeString(input.expectedTurnId, ""),
+        intent,
+      },
+      result: {
+        status: "planned",
+        operationInputDigest,
+        intent,
+      },
+      safety: { requiresConfirmation: false },
+    }, storeOptions);
+    return {
+      operationType,
+      projectId,
+      clientOperationId,
+      operationInputDigest,
+      target,
+      intent,
+      operationId: planned.operationId,
+      planned,
+      existing: null,
+      existingResult: null,
+    };
+  }
+
+  maybeInjectThreadControlFault(operationType, plan, details = {}) {
+    const injector = this.threadControlFaultInjector;
+    if (typeof injector !== "function") return;
+    const result = injector({
+      phase: "after_side_effect_before_commit",
+      operationType,
+      operationId: normalizeString(plan?.operationId, ""),
+      clientOperationId: normalizeString(plan?.clientOperationId, ""),
+      ...details,
+    });
+    if (result instanceof Error) throw result;
+  }
+
+  commitThreadControlOperation(plan, result = {}, options = {}) {
+    if (!plan) return null;
+    if (plan.existingResult?.status === "committed") return plan.existingResult;
+    const store = this.directThreadStore;
+    this.maybeInjectThreadControlFault(plan.operationType, plan, { intent: plan.intent });
+    const committed = store.commitOperation(plan.operationId, {
+      operationType: plan.operationType,
+      projectId: plan.projectId,
+      clientOperationId: plan.clientOperationId,
+      actor: "direct_owner_surface",
+      target: plan.target,
+      result: {
+        ...result,
+        status: "committed",
+        operationInputDigest: plan.operationInputDigest,
+        intent: plan.intent,
+      },
+      safety: { requiresConfirmation: false },
+    }, options);
+    return typeof store.operationResult === "function"
+      ? store.operationResult(store.operationById(committed.operationId))
+      : committed;
+  }
+
+  existingThreadControlOperation(operationType, projectId, clientOperationId) {
+    const store = this.directThreadStore;
+    const clientId = normalizeString(clientOperationId, "");
+    if (!store || !clientId || typeof store.operationByClient !== "function") return null;
+    const existing = store.operationByClient(normalizeString(projectId, ""), clientId);
+    if (!existing) return null;
+    if (normalizeString(existing.operation_type, "") !== operationType) {
+      const error = new Error("Direct thread control client operation id was reused for another operation.");
+      error.code = "client_operation_id_conflict";
+      throw error;
+    }
+    return typeof store.operationResult === "function" ? store.operationResult(existing) : existing;
+  }
+
+  resumeThread(params = {}, context = {}) {
+    const project = context.project || {};
+    const projectId = normalizeString(project.id, "");
+    const sessionId = normalizeString(params.sessionId || params.threadId, "");
+    const session = this.sessionStore.readSession(sessionId);
+    if (!session) throw new Error(`Direct live text session not found: ${sessionId}`);
+    if (!sessionMatchesProject(session, projectId)) {
+      const error = new Error("Direct live text session does not belong to the active project.");
+      error.code = "direct_session_project_scope_mismatch";
+      throw error;
+    }
+    this.assertReady(project, { model: session.model });
+    const currentHeadDigest = directHistoryHeadDigest(session);
+    const expectedHeadDigest = normalizeString(params.expectedHistoryHeadDigest || params.expectedHeadDigest, "");
+    if (expectedHeadDigest && expectedHeadDigest !== currentHeadDigest) {
+      const error = new Error("Direct thread resume rejected a stale history head.");
+      error.code = "direct_thread_history_head_stale";
+      throw error;
+    }
+    const operation = this.threadControlOperation("resume_thread", {
+      projectId,
+      threadId: session.sessionId,
+      clientOperationId: params.clientOperationId || params.clientResumeId,
+      expectedHistoryHeadDigest: currentHeadDigest,
+      target: { threadIds: [session.sessionId] },
+    }, {
+      resumed: true,
+      historyHeadTurnId: normalizeString(session.turns?.at(-1)?.turnId, ""),
+      historyHeadDigest: currentHeadDigest,
+      readOnly: session.importedSessionReadOnly === true,
+    });
+    const projection = this.capabilitiesForTask(project, session.sessionId);
+    return {
+      thread: threadSnapshotFromSession(session),
+      model: session.model,
+      reasoningEffort: session.reasoningEffort,
+      serviceTier: session.serviceTier,
+      resumed: true,
+      continuityState: normalizeString(session.continuityState, "local_context_followup"),
+      readOnly: session.importedSessionReadOnly === true,
+      operation,
+      capabilities: projection.capabilities,
+      taskBinding: projection.taskBinding,
+    };
+  }
+
+  forkThread(params = {}, context = {}) {
+    const project = context.project || {};
+    const projectId = normalizeString(project.id, "");
+    const sourceThreadId = normalizeString(params.sourceThreadId || params.sessionId || params.threadId, "");
+    const source = this.sessionStore.readSession(sourceThreadId);
+    if (!source) throw new Error(`Direct live text session not found: ${sourceThreadId}`);
+    if (!sessionMatchesProject(source, projectId)) {
+      const error = new Error("Direct fork source does not belong to the active project.");
+      error.code = "direct_session_project_scope_mismatch";
+      throw error;
+    }
+    this.assertReady(project, { model: source.model });
+    const activeTurn = this.activeTurnForSession(source);
+    if (activeTurn) {
+      const error = new Error("Direct fork requires a non-active source turn.");
+      error.code = "active_direct_turn_exists";
+      throw error;
+    }
+    const sourceHistoryHeadDigest = directHistoryHeadDigest(source);
+    const expectedHeadDigest = normalizeString(params.expectedHistoryHeadDigest || params.expectedHeadDigest, "");
+    if (expectedHeadDigest && expectedHeadDigest !== sourceHistoryHeadDigest) {
+      const error = new Error("Direct fork rejected a stale source history head.");
+      error.code = "direct_thread_history_head_stale";
+      throw error;
+    }
+    const sourceGrant = this.resolveHarnessGrant(project, source);
+    if (source.harnessAccessProfile === "full_access" && !sourceGrant) {
+      const error = new Error("Direct fork cannot inherit a missing or stale full-access source grant.");
+      error.code = "direct_fork_source_grant_invalid";
+      throw error;
+    }
+    const sourceTurnIds = (Array.isArray(source.turns) ? source.turns : [])
+      .map((turn) => normalizeString(turn?.turnId, ""))
+      .filter(Boolean);
+    const suppliedClientOperationId = normalizeString(params.clientOperationId || params.clientForkId, "");
+    const operationKey = suppliedClientOperationId || `direct_fork_${sha256(stableStringify({
+      projectId,
+      sourceThreadId: source.sessionId,
+      sourceHistoryHeadDigest,
+    })).slice(0, 28)}`;
+    const requestedChildId = normalizeString(params.newThreadId || params.newSessionId || params.forkThreadId, "");
+    const childId = requestedChildId || `direct_fork_${sha256(stableStringify({
+      projectId,
+      sourceThreadId: source.sessionId,
+      sourceHistoryHeadDigest,
+      operationKey,
+    })).slice(0, 28)}`;
+    const childCapabilityNames = sourceGrant
+      ? (Array.isArray(params.capabilities) ? params.capabilities : harnessGrantCapabilityNames(sourceGrant))
+        .map((entry) => normalizeString(isPlainObject(entry) ? entry.name || entry.toolName : entry, ""))
+        .filter(Boolean)
+      : [];
+    const childGrantId = sourceGrant
+      ? `direct_harness_grant_${sha256(stableStringify({ projectId, childId, sourceGrantId: sourceGrant.grantId })).slice(0, 28)}`
+      : "";
+    const intent = {
+      schema: "direct_thread_control_intent@1",
+      sourceThreadId: source.sessionId,
+      sourceProjectId: projectId,
+      sourceHistoryHeadDigest,
+      sourceHistoryHeadTurnId: normalizeString(source.turns?.at(-1)?.turnId, ""),
+      sourceTurnIds,
+      childThreadId: childId,
+      childGrantId,
+      sourceGrantId: normalizeString(sourceGrant?.grantId, ""),
+      sourceGrantRevision: Number(sourceGrant?.grantRevision || 0),
+      childCapabilityNames,
+      title: normalizeString(params.title, ""),
+    };
+    const plan = this.planThreadControlOperation("fork_thread", {
+      projectId,
+      threadId: childId,
+      clientOperationId: suppliedClientOperationId || operationKey,
+      expectedHistoryHeadDigest: sourceHistoryHeadDigest,
+      target: { threadIds: [childId, source.sessionId] },
+      intent,
+    }, { target: { threadIds: [childId, source.sessionId] }, intent });
+    if (plan.existingResult?.status === "committed") {
+      const existingChildId = normalizeString(plan.existingResult.result?.forkThreadId, childId);
+      const existingChild = this.sessionStore.readSession(existingChildId);
+      if (!existingChild || !sessionMatchesProject(existingChild, projectId) || existingChild.parentThreadId !== source.sessionId) {
+        const error = new Error("Direct fork operation exists but its child session is unavailable.");
+        error.code = "direct_fork_operation_recovery_failed";
+        throw error;
+      }
+      const projection = this.capabilitiesForTask(project, existingChild.sessionId);
+      return {
+        thread: threadSnapshotFromSession(existingChild),
+        model: existingChild.model,
+        reasoningEffort: existingChild.reasoningEffort,
+        serviceTier: existingChild.serviceTier,
+        sourceThreadId: source.sessionId,
+        forked: true,
+        reused: true,
+        authorityInheritance: plan.existingResult.result.authorityInheritance || { mode: "restricted_source_no_grant", capabilities: [] },
+        operation: plan.existingResult,
+        capabilities: projection.capabilities,
+        taskBinding: projection.taskBinding,
+      };
+    }
+    const persistedIntent = isPlainObject(plan.existingResult?.result?.intent)
+      ? plan.existingResult.result.intent
+      : intent;
+    if (persistedIntent.childThreadId !== childId || persistedIntent.sourceThreadId !== source.sessionId) {
+      const error = new Error("Direct fork recovery intent does not match the requested source or child.");
+      error.code = "direct_fork_operation_recovery_ambiguous";
+      throw error;
+    }
+    let child = this.sessionStore.readSession(childId);
+    if (child) {
+      const lineage = child.parentForkLineage;
+      const lineageMatches = isPlainObject(lineage)
+        && lineage.sourceThreadId === source.sessionId
+        && lineage.sourceProjectId === projectId
+        && lineage.sourceHistoryHeadDigest === sourceHistoryHeadDigest
+        && stableStringify(lineage.sourceTurnIds || []) === stableStringify(sourceTurnIds)
+        && lineage.exactHistoryCopied === true;
+      if (!lineageMatches || !sessionMatchesProject(child, projectId)) {
+        const error = new Error("Direct fork recovery found an ambiguous child lineage.");
+        error.code = "direct_fork_operation_recovery_ambiguous";
+        throw error;
+      }
+    } else {
+      child = this.sessionStore.forkSession(source.sessionId, {
+        sessionId: childId,
+        title: persistedIntent.title,
+        sourceHistoryHeadDigest,
+        parentForkLineage: {
+          schema: "direct_thread_fork_lineage@1",
+          sourceThreadId: source.sessionId,
+          sourceProjectId: source.projectId,
+          sourceTurnIds,
+          sourceHistoryHeadTurnId: normalizeString(source.turns?.at(-1)?.turnId, ""),
+          sourceHistoryHeadDigest,
+          exactHistoryCopied: true,
+          providerContinuityHandleUsed: false,
+          rawPathExposed: false,
+        },
+      });
+    }
+    let childGrant = null;
+    if (sourceGrant) {
+      if (!this.harnessGrantStore || typeof this.harnessGrantStore.write !== "function") {
+        const error = new Error("Direct fork cannot recover a full-access child grant without a durable grant store.");
+        error.code = "direct_fork_source_grant_invalid";
+        throw error;
+      }
+      if (sourceGrant.grantId !== persistedIntent.sourceGrantId || Number(sourceGrant.grantRevision) !== Number(persistedIntent.sourceGrantRevision)) {
+        const error = new Error("Direct fork recovery source grant is stale or changed.");
+        error.code = "direct_fork_source_grant_stale";
+        throw error;
+      }
+      let existingChildGrant = null;
+      if (persistedIntent.childGrantId) {
+        try {
+          existingChildGrant = this.harnessGrantStore.read(persistedIntent.childGrantId);
+        } catch (error) {
+          const recoveryError = new Error("Direct fork recovery found an unreadable child grant.");
+          recoveryError.code = "direct_fork_operation_recovery_ambiguous";
+          recoveryError.cause = error;
+          throw recoveryError;
+        }
+        if (!existingChildGrant && typeof this.harnessGrantStore.pathFor === "function"
+          && fs.existsSync(this.harnessGrantStore.pathFor(persistedIntent.childGrantId))) {
+          const error = new Error("Direct fork recovery found a corrupt child grant record.");
+          error.code = "direct_fork_operation_recovery_ambiguous";
+          throw error;
+        }
+      }
+      if (existingChildGrant) {
+        const grantErrors = validateDirectThreadHarnessGrant(existingChildGrant, {
+          taskId: childId,
+          threadId: childId,
+          projectId,
+          grantId: persistedIntent.childGrantId,
+          executionEnvironmentDigest: sourceGrant.executionEnvironmentDigest,
+          grantRevision: 1,
+          requireCurrent: true,
+        });
+        if (grantErrors.length || existingChildGrant.parentGrantId !== sourceGrant.grantId
+          || stableStringify(harnessGrantCapabilityNames(existingChildGrant)) !== stableStringify(persistedIntent.childCapabilityNames || [])) {
+          const error = new Error("Direct fork recovery found a mismatched child grant.");
+          error.code = "direct_fork_operation_recovery_ambiguous";
+          throw error;
+        }
+        childGrant = existingChildGrant;
+      } else {
+        childGrant = inheritDirectThreadHarnessGrant(sourceGrant, {
+          grantId: persistedIntent.childGrantId,
+          taskId: childId,
+          threadId: childId,
+          projectId,
+          executionEnvironment: sourceGrant.executionEnvironment,
+          capabilities: persistedIntent.childCapabilityNames,
+        });
+        this.harnessGrantStore.write(childGrant);
+      }
+      const refreshed = this.sessionStore.readSession(childId) || child;
+      if (refreshed.harnessGrantId && refreshed.harnessGrantId !== childGrant.grantId) {
+        const error = new Error("Direct fork recovery found a mismatched child grant binding.");
+        error.code = "direct_fork_operation_recovery_ambiguous";
+        throw error;
+      }
+      if (refreshed.harnessAccessProfile !== "full_access" || refreshed.harnessGrantId !== childGrant.grantId) {
+        this.sessionStore.writeSession({
+          ...refreshed,
+          harnessAccessProfile: "full_access",
+          harnessGrantId: childGrant.grantId,
+          executionEnvironmentDigest: childGrant.executionEnvironmentDigest,
+        });
+      }
+    } else if (child.harnessAccessProfile === "full_access" || child.harnessGrantId) {
+      const error = new Error("Direct fork recovery found unexpected full-access child authority.");
+      error.code = "direct_fork_operation_recovery_ambiguous";
+      throw error;
+    }
+    if (this.directThreadStore) this.indexDirectThreadStoreSession(childId);
+    const authorityInheritance = childGrant
+      ? {
+          mode: "bounded_parent_inheritance",
+          parentGrantId: childGrant.parentGrantId,
+          childGrantId: childGrant.grantId,
+          childCapabilityNames: harnessGrantCapabilityNames(childGrant),
+          childMayWiden: false,
+          childMayRetarget: false,
+        }
+      : { mode: "restricted_source_no_grant", childMayWiden: false };
+    if (this.directThreadStore && typeof this.directThreadStore.createForkLineageEdges === "function") {
+      try {
+        this.directThreadStore.createForkLineageEdges({
+          projectId,
+          operationId: plan.operationId,
+          forkThreadId: childId,
+          sourceThreadIds: [source.sessionId],
+          sourcePreviewId: childId,
+        });
+      } catch {
+        // A rebuildable thread projection must not widen or block the canonical fork session.
+      }
+    }
+    const refreshedChild = this.sessionStore.readSession(childId) || child;
+    const operation = this.commitThreadControlOperation(plan, {
+      sourceThreadId: source.sessionId,
+      forkThreadId: childId,
+      sourceHistoryHeadDigest,
+      childHistoryHeadDigest: directHistoryHeadDigest(refreshedChild),
+      authorityInheritance,
+    });
+    const projection = this.capabilitiesForTask(project, refreshedChild.sessionId);
+    return {
+      thread: threadSnapshotFromSession(refreshedChild),
+      model: refreshedChild.model,
+      reasoningEffort: refreshedChild.reasoningEffort,
+      serviceTier: refreshedChild.serviceTier,
+      sourceThreadId: source.sessionId,
+      forked: true,
+      reused: Boolean(plan.existing),
+      authorityInheritance: childGrant
+        ? { mode: "bounded_parent_inheritance", parentGrantId: childGrant.parentGrantId, grantId: childGrant.grantId, grantRevision: childGrant.grantRevision, capabilities: harnessGrantCapabilityNames(childGrant) }
+        : { mode: "restricted_source_no_grant", capabilities: [] },
+      operation,
+      capabilities: projection.capabilities,
+      taskBinding: projection.taskBinding,
+    };
+  }
+
+  rollbackThread(params = {}, context = {}) {
+    const project = context.project || {};
+    const projectId = normalizeString(project.id, "");
+    const sessionId = normalizeString(params.sessionId || params.threadId, "");
+    const session = this.sessionStore.readSession(sessionId);
+    if (!session) throw new Error(`Direct live text session not found: ${sessionId}`);
+    if (!sessionMatchesProject(session, projectId)) {
+      const error = new Error("Direct rollback target does not belong to the active project.");
+      error.code = "direct_session_project_scope_mismatch";
+      throw error;
+    }
+    this.assertReady(project, { model: session.model });
+    const requestedClientOperationId = normalizeString(params.clientOperationId || params.clientRollbackId, "");
+    const preexisting = requestedClientOperationId && this.directThreadStore?.operationByClient
+      ? this.directThreadStore.operationByClient(projectId, requestedClientOperationId)
+      : null;
+    if (preexisting && normalizeString(preexisting.operation_type, "") === "rollback_thread" && preexisting.status === "committed") {
+      const existingOperation = this.directThreadStore.operationResult(preexisting);
+      const current = this.sessionStore.readSession(sessionId) || session;
+      if (existingOperation.result?.intent?.threadId && existingOperation.result.intent.threadId !== sessionId) {
+        const error = new Error("Direct rollback client operation id is bound to another thread.");
+        error.code = "client_operation_id_conflict";
+        throw error;
+      }
+      const expectedExistingHead = normalizeString(params.expectedHistoryHeadDigest || params.expectedHeadDigest, "");
+      if (expectedExistingHead && expectedExistingHead !== existingOperation.result?.beforeHistoryHeadDigest) {
+        const error = new Error("Direct rollback client operation id was reused with a different history head.");
+        error.code = "client_operation_id_conflict";
+        throw error;
+      }
+      if (params.rollbackId && params.rollbackId !== existingOperation.result?.rollbackId) {
+        const error = new Error("Direct rollback client operation id was reused with a different rollback identity.");
+        error.code = "client_operation_id_conflict";
+        throw error;
+      }
+      const requestedCount = params.numTurns === undefined && params.turnCount === undefined
+        ? null
+        : Number(params.numTurns || params.turnCount);
+      const existingCount = Array.isArray(existingOperation.result?.removedTurnIds)
+        ? existingOperation.result.removedTurnIds.length
+        : null;
+      if (requestedCount !== null && requestedCount !== existingCount) {
+        const error = new Error("Direct rollback client operation id was reused with a different turn count.");
+        error.code = "client_operation_id_conflict";
+        throw error;
+      }
+      const projection = this.capabilitiesForTask(project, sessionId);
+      return {
+        thread: threadSnapshotFromSession(current),
+        rollback: {
+          rollbackId: normalizeString(existingOperation.result?.rollbackId, requestedClientOperationId),
+          removedTurnIds: Array.isArray(existingOperation.result?.removedTurnIds) ? existingOperation.result.removedTurnIds : [],
+          beforeHistoryHeadDigest: normalizeString(existingOperation.result?.beforeHistoryHeadDigest, ""),
+          afterHistoryHeadDigest: normalizeString(existingOperation.result?.afterHistoryHeadDigest, directHistoryHeadDigest(current)),
+        },
+        operation: existingOperation,
+        reused: true,
+        capabilities: projection.capabilities,
+        taskBinding: projection.taskBinding,
+      };
+    }
+    if (session.importedSessionReadOnly === true) {
+      const error = new Error("Imported Direct sessions are read-only and cannot be rolled back.");
+      error.code = "direct_imported_session_read_only";
+      throw error;
+    }
+    if (this.activeTurnForSession(session)) {
+      const error = new Error("Direct rollback requires a non-active thread.");
+      error.code = "active_direct_turn_exists";
+      throw error;
+    }
+    let recoveryIntent = null;
+    if (preexisting && normalizeString(preexisting.operation_type, "") === "rollback_thread") {
+      try {
+        const plannedResult = JSON.parse(preexisting.result_json || "{}");
+        if (preexisting.status === "planned" && isPlainObject(plannedResult.intent)) recoveryIntent = plannedResult.intent;
+      } catch {}
+    }
+    const recoveringPlanned = isPlainObject(recoveryIntent);
+    if (recoveringPlanned && (params.numTurns !== undefined || params.turnCount !== undefined)) {
+      const requestedRecoveryCount = Number(params.numTurns || params.turnCount);
+      const plannedRecoveryCount = Array.isArray(recoveryIntent.removedTurnIds) ? recoveryIntent.removedTurnIds.length : 0;
+      if (requestedRecoveryCount !== plannedRecoveryCount) {
+        const error = new Error("Direct rollback client operation id was reused with a different turn count.");
+        error.code = "client_operation_id_conflict";
+        throw error;
+      }
+    }
+    if (recoveringPlanned && (!Array.isArray(recoveryIntent.removedTurnIds) || !Array.isArray(recoveryIntent.retainedTurnIds))) {
+      const error = new Error("Direct rollback recovery intent has invalid turn identity.");
+      error.code = "direct_thread_control_recovery_ambiguous";
+      throw error;
+    }
+    const beforeDigest = normalizeString(recoveryIntent?.beforeHistoryHeadDigest, directHistoryHeadDigest(session));
+    const expectedHeadDigest = normalizeString(params.expectedHistoryHeadDigest || params.expectedHeadDigest, "");
+    if (!recoveringPlanned && expectedHeadDigest && expectedHeadDigest !== beforeDigest) {
+      const error = new Error("Direct rollback rejected a stale history head.");
+      error.code = "direct_thread_history_head_stale";
+      throw error;
+    }
+    const turns = Array.isArray(session.turns) ? session.turns : [];
+    const requestedCount = Number(params.numTurns || params.turnCount || 1);
+    const count = Number.isInteger(requestedCount) ? requestedCount : 1;
+    if (!recoveringPlanned && (count < 1 || count > turns.length)) {
+      const error = new Error("Direct rollback turn count is outside the current history.");
+      error.code = "direct_thread_rollback_count_invalid";
+      throw error;
+    }
+    const removedIds = new Set((recoveryIntent?.removedTurnIds || turns.slice(-count).map((turn) => turn?.turnId))
+      .map((turnId) => normalizeString(turnId, "")).filter(Boolean));
+    const retainedIds = recoveryIntent?.retainedTurnIds || turns.slice(0, -count)
+      .map((turn) => normalizeString(turn?.turnId, "")).filter(Boolean);
+    const rollbackId = normalizeString(recoveryIntent?.rollbackId || params.rollbackId || params.clientRollbackId, `direct_rollback_${sha256(stableStringify({ projectId, sessionId, beforeDigest, removedTurnIds: [...removedIds] })).slice(0, 28)}`);
+    const intent = {
+      schema: "direct_thread_control_intent@1",
+      threadId: sessionId,
+      beforeHistoryHeadDigest: beforeDigest,
+      removedTurnIds: [...removedIds],
+      retainedTurnIds: retainedIds,
+      rollbackId,
+    };
+    const plan = this.planThreadControlOperation("rollback_thread", {
+      projectId,
+      threadId: sessionId,
+      clientOperationId: params.clientOperationId || rollbackId,
+      expectedHistoryHeadDigest: beforeDigest,
+      target: { threadIds: [sessionId], turnIds: [...removedIds] },
+      intent,
+    }, { target: { threadIds: [sessionId], turnIds: [...removedIds] }, intent });
+    if (plan.existingResult?.status === "committed") {
+      const current = this.sessionStore.readSession(sessionId) || session;
+      const projection = this.capabilitiesForTask(project, sessionId);
+      return {
+        thread: threadSnapshotFromSession(current),
+        rollback: {
+          rollbackId: normalizeString(plan.existingResult.result?.rollbackId, rollbackId),
+          removedTurnIds: Array.isArray(plan.existingResult.result?.removedTurnIds) ? plan.existingResult.result.removedTurnIds : [],
+          beforeHistoryHeadDigest: normalizeString(plan.existingResult.result?.beforeHistoryHeadDigest, beforeDigest),
+          afterHistoryHeadDigest: normalizeString(plan.existingResult.result?.afterHistoryHeadDigest, directHistoryHeadDigest(current)),
+        },
+        operation: plan.existingResult,
+        reused: true,
+        capabilities: projection.capabilities,
+        taskBinding: projection.taskBinding,
+      };
+    }
+    const persistedIntent = isPlainObject(plan.existingResult?.result?.intent)
+      ? plan.existingResult.result.intent
+      : intent;
+    if (persistedIntent.threadId !== sessionId
+      || persistedIntent.beforeHistoryHeadDigest !== beforeDigest
+      || stableStringify(persistedIntent.removedTurnIds || []) !== stableStringify([...removedIds])
+      || stableStringify(persistedIntent.retainedTurnIds || []) !== stableStringify(retainedIds)) {
+      const error = new Error("Direct rollback recovery intent does not match the current history head.");
+      error.code = "direct_thread_control_recovery_ambiguous";
+      throw error;
+    }
+    let currentSession = this.sessionStore.readSession(sessionId) || session;
+    let rollbackRecord = (Array.isArray(currentSession.rollbackHistory) ? currentSession.rollbackHistory : [])
+      .find((record) => record?.rollbackId === rollbackId);
+    if (rollbackRecord) {
+      if (rollbackRecord.beforeHistoryHeadDigest !== beforeDigest
+        || stableStringify(rollbackRecord.removedTurnIds || []) !== stableStringify([...removedIds])) {
+        const error = new Error("Direct rollback recovery found an ambiguous rollback record.");
+        error.code = "direct_thread_control_recovery_ambiguous";
+        throw error;
+      }
+    } else if (recoveringPlanned && directHistoryHeadDigest(currentSession) !== beforeDigest) {
+      const error = new Error("Direct rollback recovery rejected a stale history head before session mutation.");
+      error.code = "direct_thread_control_recovery_ambiguous";
+      throw error;
+    } else {
+      const now = nowIso();
+      for (const turnId of removedIds) {
+        const turn = this.sessionStore.readTurn(sessionId, turnId);
+        if (turn && turn.rolledBack !== true) {
+          this.sessionStore.writeTurn({ ...turn, rolledBack: true, rollbackId, rolledBackAt: now });
+        }
+      }
+      currentSession = this.sessionStore.readSession(sessionId) || currentSession;
+      const currentTurnIds = new Set((Array.isArray(currentSession.turns) ? currentSession.turns : [])
+        .map((turn) => normalizeString(turn?.turnId, "")));
+      const missingTurn = [...removedIds].find((turnId) => !currentTurnIds.has(turnId));
+      if (missingTurn) {
+        const removedTurn = this.sessionStore.readTurn(sessionId, missingTurn);
+        if (!removedTurn || removedTurn.rolledBack !== true) {
+          const error = new Error("Direct rollback recovery found a partially applied turn mutation.");
+          error.code = "direct_thread_control_recovery_ambiguous";
+          throw error;
+        }
+      }
+      const nowSession = nowIso();
+      const retainedIds = new Set((persistedIntent.retainedTurnIds || []).map((id) => normalizeString(id, "")).filter(Boolean));
+      const retainedNow = (Array.isArray(currentSession.turns) ? currentSession.turns : []).filter((turn) => retainedIds.has(normalizeString(turn?.turnId, "")));
+      const nextSession = {
+        ...currentSession,
+        updatedAt: nowSession,
+        status: normalizeString(retainedNow.at(-1)?.state, "created"),
+        turns: retainedNow,
+        messages: (Array.isArray(currentSession.messages) ? currentSession.messages : []).filter((message) => !removedIds.has(normalizeString(message?.id, ""))),
+        clientTurnRequests: Object.fromEntries(Object.entries(isPlainObject(currentSession.clientTurnRequests) ? currentSession.clientTurnRequests : {}).filter(([, turnId]) => !removedIds.has(normalizeString(turnId, "")))),
+        rollbackHistory: [
+          ...(Array.isArray(currentSession.rollbackHistory) ? currentSession.rollbackHistory : []),
+          {
+            schema: "direct_thread_rollback_record@1",
+            rollbackId,
+            removedTurnIds: [...removedIds],
+            beforeHistoryHeadDigest: beforeDigest,
+            exactCurrentHistoryRetained: true,
+            rawPathExposed: false,
+            createdAt: nowSession,
+          },
+        ],
+        historyHeadTurnId: normalizeString(retainedNow.at(-1)?.turnId, ""),
+      };
+      nextSession.historyHeadDigest = directHistoryHeadDigest(nextSession);
+      this.sessionStore.writeSession(nextSession);
+      currentSession = nextSession;
+      rollbackRecord = nextSession.rollbackHistory.at(-1);
+    }
+    if (this.directThreadStore) {
+      this.indexDirectThreadStoreSession(sessionId);
+      try {
+        this.directThreadStore.buildRendererTranscriptProjection(sessionId, { sessionStore: this.sessionStore, force: true });
+      } catch {}
+    }
+    const afterHistoryHeadDigest = directHistoryHeadDigest(currentSession);
+    const operation = this.commitThreadControlOperation(plan, {
+      rollbackId,
+      removedTurnIds: [...removedIds],
+      beforeHistoryHeadDigest: beforeDigest,
+      afterHistoryHeadDigest,
+    });
+    const projection = this.capabilitiesForTask(project, sessionId);
+    return {
+      thread: threadSnapshotFromSession(currentSession),
+      rollback: { rollbackId, removedTurnIds: [...removedIds], beforeHistoryHeadDigest: beforeDigest, afterHistoryHeadDigest },
+      operation,
+      reused: Boolean(plan.existing),
+      capabilities: projection.capabilities,
+      taskBinding: projection.taskBinding,
+    };
+  }
+
+  steerTurn(params = {}, context = {}) {
+    const project = context.project || {};
+    const projectId = normalizeString(project.id, "");
+    const sessionId = normalizeString(params.sessionId || params.threadId, "");
+    const turnId = normalizeString(params.turnId || params.expectedTurnId, "");
+    const session = this.sessionStore.readSession(sessionId);
+    const turn = session ? this.sessionStore.readTurn(sessionId, turnId) : null;
+    if (!session || !turn) throw new Error(`Direct live text turn not found: ${turnId || "missing"}.`);
+    if (!sessionMatchesProject(session, projectId)) {
+      const error = new Error("Direct steer target does not belong to the active project.");
+      error.code = "direct_session_project_scope_mismatch";
+      throw error;
+    }
+    this.assertReady(project, { model: turn.model || session.model });
+    const requestedSteerRequestId = normalizeString(params.clientSteerRequestId || params.steerRequestId, "");
+    const preexisting = requestedSteerRequestId && this.directThreadStore?.operationByClient
+      ? this.directThreadStore.operationByClient(projectId, requestedSteerRequestId)
+      : null;
+    if (preexisting && normalizeString(preexisting.operation_type, "") === "steer_turn" && preexisting.status === "committed") {
+      const existingOperation = this.directThreadStore.operationResult(preexisting);
+      if ((existingOperation.result?.intent?.sessionId && existingOperation.result.intent.sessionId !== sessionId)
+        || (existingOperation.result?.intent?.turnId && existingOperation.result.intent.turnId !== turnId)) {
+        const error = new Error("Direct steer client operation id is bound to another session turn.");
+        error.code = "client_operation_id_conflict";
+        throw error;
+      }
+      const requestedInput = directTurnControlInput(params);
+      const requestedInputDigest = sha256(stableStringify(requestedInput));
+      if (existingOperation.result?.inputDigest && existingOperation.result.inputDigest !== requestedInputDigest) {
+        const error = new Error("Direct steer client operation id was reused with different input.");
+        error.code = "client_operation_id_conflict";
+        throw error;
+      }
+      const currentTurn = this.sessionStore.readTurn(sessionId, turnId) || turn;
+      return {
+        turn: turnSnapshot(currentTurn),
+        steerRequestId: normalizeString(existingOperation.result?.steerRequestId, requestedSteerRequestId),
+        status: "accepted",
+        controlState: "queued_for_active_turn",
+        providerContinuationRequired: true,
+        operation: existingOperation,
+        reused: true,
+      };
+    }
+    let recoveryIntent = null;
+    if (preexisting && normalizeString(preexisting.operation_type, "") === "steer_turn" && preexisting.status === "planned") {
+      try {
+        const plannedResult = JSON.parse(preexisting.result_json || "{}");
+        if (isPlainObject(plannedResult.intent)) recoveryIntent = plannedResult.intent;
+      } catch {}
+    }
+    const expectedTurnId = normalizeString(recoveryIntent?.turnId || params.expectedTurnId, "");
+    if (expectedTurnId && expectedTurnId !== turn.turnId) {
+      const error = new Error("Direct steer target turn is stale.");
+      error.code = "direct_turn_stale";
+      throw error;
+    }
+    if (!ACTIVE_TURN_STATES.has(turn.state)) {
+      const error = new Error("Direct steer requires an active turn.");
+      error.code = "direct_turn_not_active";
+      throw error;
+    }
+    const requestedInput = directTurnControlInput(params);
+    const requestedInputDigest = sha256(stableStringify(requestedInput));
+    if (recoveryIntent?.inputDigest && requestedInputDigest !== recoveryIntent.inputDigest) {
+      const error = new Error("Direct steer client operation id was reused with different input.");
+      error.code = "client_operation_id_conflict";
+      throw error;
+    }
+    const input = recoveryIntent?.inputDigest && Array.isArray(recoveryIntent.input)
+      ? recoveryIntent.input
+      : requestedInput;
+    const text = input[0].text;
+    if (text.length > this.maxPromptChars) {
+      const error = new Error("Direct steer input exceeds the configured prompt bound.");
+      error.code = "direct_turn_control_input_too_large";
+      throw error;
+    }
+    const steering = Array.isArray(turn.steeringRequests) ? turn.steeringRequests : [];
+    const steerRequestId = normalizeString(recoveryIntent?.steerRequestId || requestedSteerRequestId, `direct_steer_${sha256(stableStringify({ projectId, sessionId, turnId, input })).slice(0, 28)}`);
+    const expectedTurnDigest = normalizeString(recoveryIntent?.expectedTurnDigest || params.expectedTurnDigest, "");
+    const currentTurnDigest = sha256(stableStringify({ turnId: turn.turnId, state: turn.state, steeringCount: steering.length, updatedAt: turn.updatedAt }));
+    const existingSteering = steering.find((entry) => entry?.steerRequestId === steerRequestId);
+    if (expectedTurnDigest && expectedTurnDigest !== currentTurnDigest && !existingSteering) {
+      const error = new Error("Direct steer rejected a stale turn head.");
+      error.code = "direct_turn_stale";
+      throw error;
+    }
+    const steerInputDigest = recoveryIntent?.inputDigest || requestedInputDigest;
+    if (existingSteering) {
+      if (existingSteering.inputDigest !== steerInputDigest) {
+        const error = new Error("Direct steer request identity was reused with different input.");
+        error.code = "client_operation_id_conflict";
+        throw error;
+      }
+      const currentSession = this.sessionStore.readSession(sessionId) || session;
+      const nextMessages = (Array.isArray(currentSession.messages) ? currentSession.messages : []).map((message) => {
+        if (message?.id !== turnId) return message;
+        const items = Array.isArray(message.items) ? message.items : [];
+        if (items.some((item) => item?.id === steerRequestId)) return message;
+        return {
+          ...message,
+          items: [...items, { id: steerRequestId, type: "userMessage", turnId, content: [{ type: "text", text }], control: "steer" }],
+        };
+      });
+      this.sessionStore.writeSession({ ...currentSession, messages: nextMessages });
+      const existingIntent = recoveryIntent || {
+        schema: "direct_thread_control_intent@1",
+        sessionId,
+        turnId,
+        steerRequestId,
+        expectedTurnDigest: existingSteering.expectedTurnDigest,
+        input,
+        inputDigest: existingSteering.inputDigest,
+      };
+      const plan = this.planThreadControlOperation("steer_turn", {
+        projectId,
+        threadId: sessionId,
+        clientOperationId: steerRequestId,
+        expectedTurnId: turnId,
+        requestDigest: existingSteering.inputDigest,
+        target: { threadIds: [sessionId], turnIds: [turnId] },
+        intent: existingIntent,
+      }, { target: { threadIds: [sessionId], turnIds: [turnId] }, intent: existingIntent });
+      const operation = plan.existingResult?.status === "committed"
+        ? plan.existingResult
+        : this.commitThreadControlOperation(plan, {
+            steerRequestId,
+            turnId,
+            inputDigest: existingSteering.inputDigest,
+            providerContinuationRequired: true,
+          });
+      return {
+        turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId) || turn),
+        steerRequestId,
+        status: "accepted",
+        controlState: "queued_for_active_turn",
+        providerContinuationRequired: true,
+        operation,
+        reused: true,
+        steering: existingSteering,
+      };
+    }
+    const steerIntent = {
+      schema: "direct_thread_control_intent@1",
+      sessionId,
+      turnId,
+      steerRequestId,
+      expectedTurnDigest: currentTurnDigest,
+      input,
+      inputDigest: steerInputDigest,
+    };
+    const plan = this.planThreadControlOperation("steer_turn", {
+      projectId,
+      threadId: sessionId,
+      clientOperationId: steerRequestId,
+      expectedTurnId: turnId,
+      requestDigest: steerInputDigest,
+      target: { threadIds: [sessionId], turnIds: [turnId] },
+      intent: steerIntent,
+    }, { target: { threadIds: [sessionId], turnIds: [turnId] }, intent: steerIntent });
+    if (plan.existingResult?.status === "committed") {
+      return {
+        turn: turnSnapshot(turn),
+        steerRequestId,
+        status: "accepted",
+        controlState: "queued_for_active_turn",
+        providerContinuationRequired: true,
+        operation: plan.existingResult,
+        reused: true,
+      };
+    }
+    const steer = {
+      schema: "direct_turn_steer_request@1",
+      steerRequestId,
+      sessionId,
+      turnId,
+      input,
+      inputDigest: steerInputDigest,
+      expectedTurnDigest: currentTurnDigest,
+      acceptedAt: nowIso(),
+      ownerControlledSurface: context.ownerControlled === true,
+      providerContinuationRequired: true,
+      rawPathExposed: false,
+    };
+    const updatedTurn = this.sessionStore.updateTurnState(sessionId, turnId, turn.state, {
+      input: [...(Array.isArray(turn.input) ? turn.input : []), ...input],
+      steeringRequests: [...steering, steer],
+      requestShape: {
+        ...(isPlainObject(turn.requestShape) ? turn.requestShape : {}),
+        steerRequestIds: [...steering, steer].map((entry) => entry.steerRequestId),
+        lastSteerRequestId: steerRequestId,
+        turnControlBinding: "exact_session_turn",
+      },
+    });
+    const currentSession = this.sessionStore.readSession(sessionId) || session;
+    const nextMessages = (Array.isArray(currentSession.messages) ? currentSession.messages : []).map((message) => message?.id === turnId
+      ? {
+          ...message,
+          items: [
+            ...(Array.isArray(message.items) ? message.items : []),
+            { id: steerRequestId, type: "userMessage", turnId, content: [{ type: "text", text }], control: "steer" },
+          ],
+        }
+      : message);
+    this.sessionStore.writeSession({ ...currentSession, messages: nextMessages });
+    const operation = this.commitThreadControlOperation(plan, {
+      steerRequestId,
+      turnId,
+      inputDigest: steer.inputDigest,
+      providerContinuationRequired: true,
+    });
+    return {
+      turn: turnSnapshot(updatedTurn),
+      steerRequestId,
+      status: "accepted",
+      controlState: "queued_for_active_turn",
+      providerContinuationRequired: true,
+      operation,
     };
   }
 
@@ -3752,6 +5552,138 @@ class DirectLiveTextController {
     return RUN_COMMAND_TOOL_NAMES.has(normalizeString(obligation.name, ""));
   }
 
+  isStatefulExecObligation(obligation = {}) {
+    return ["exec_command", "write_stdin"].includes(normalizeString(obligation.name, ""));
+  }
+
+  async emitStatefulExecRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
+    const toolName = normalizeString(obligation.name, "");
+    const grantAuthorization = this.harnessGrantAuthorizationFor(sessionId, turnId, project, toolName);
+    if (!grantAuthorization.authorized || !this.statefulExecSessionManager) {
+      this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+        status: "unsupported",
+        authorityState: "unsupported",
+        approvalAvailable: false,
+        executionAllowed: false,
+        continuationAllowed: false,
+        failureKind: grantAuthorization.reason || "stateful_exec_unavailable",
+      }, {
+        nextTurnState: "failed",
+        turnPatch: {
+          error: {
+            code: grantAuthorization.reason || "stateful_exec_unavailable",
+            message: "Direct stateful exec is available only to the exact current full-access task grant.",
+          },
+        },
+      });
+      return 0;
+    }
+    const session = this.sessionStore.readSession(sessionId) || {};
+    const grant = this.harnessGrantForTurn(sessionId, turnId, project);
+    const args = parseToolArgumentsObject(obligation);
+    try {
+      const binding = {
+        project,
+        harnessGrant: grant,
+        grantId: grant?.grantId,
+        taskId: sessionId,
+        threadId: sessionId,
+        projectId: normalizeString(project.id || project.projectId || session.projectId, ""),
+        executionEnvironmentDigest: normalizeString(grant?.executionEnvironmentDigest || session.executionEnvironmentDigest, ""),
+      };
+      let result = toolName === "exec_command"
+        ? this.statefulExecSessionManager.start({
+            ...binding,
+            cmd: args.cmd,
+            command: args.command || args.executable,
+            args: args.args || args.argv,
+            cwd: args.cwd || args.workdir,
+            env: args.env,
+            stdinPolicy: args.stdinPolicy,
+            idleTimeoutMs: args.idleTimeoutMs,
+            hardTimeoutMs: args.hardTimeoutMs,
+          })
+        : this.statefulExecSessionManager.writeStdin({
+            ...binding,
+            sessionId: args.sessionId || args.session_id || args.execSessionId,
+            input: args.chars ?? args.input ?? args.data ?? "",
+            eof: args.eof === true,
+          });
+      if (toolName === "exec_command" && typeof this.statefulExecSessionManager.initialYield === "function") {
+        // Provider-originated exec must expose a controller-owned bounded
+        // initial observation, allowing short commands to settle while
+        // keeping interactive sessions live for the declared stdin path.
+        result = await this.statefulExecSessionManager.initialYield({
+          ...binding,
+          sessionId: result.sessionId,
+        });
+      }
+      this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+        status: toolName === "exec_command" ? "stateful_session_started" : "stateful_stdin_written",
+        authorityState: "grant_auto_approval",
+        authorityMode: grantAuthorization.authorityMode,
+        harnessGrantId: grantAuthorization.grantId,
+        harnessGrantRevision: grantAuthorization.grantRevision,
+        approvalPolicy: grantAuthorization.approvalPolicy,
+        sandboxMode: grantAuthorization.sandboxMode,
+        approvalAvailable: false,
+        executionAllowed: true,
+        continuationAllowed: true,
+        statefulExecSessionId: normalizeString(result.sessionId, args.sessionId || args.execSessionId),
+        statefulExecResult: result,
+      }, { nextTurnState: "continuation_ready" });
+      this.emitNotification(surfaceSession, "warning", {
+        threadId: sessionId,
+        turnId,
+        message: toolName === "exec_command"
+          ? "Direct started the exact task-bound stateful exec session without a per-call approval round trip."
+          : "Direct wrote to the exact task-bound stateful exec session without a per-call approval round trip.",
+      });
+      const envelope = {
+        schema: "direct_stateful_exec_tool_result_envelope@1",
+        envelopeId: `stateful_exec_result_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${result.resultDigest}`).slice(0, 24)}`,
+        toolName,
+        callId: normalizeString(obligation.callId, ""),
+        resultKind: "stateful_exec",
+        status: "ready_for_provider_continuation",
+        providerOutput: result,
+        sideEffectExecuted: true,
+        rawCommandIncluded: false,
+        rawInputIncluded: false,
+        rawPathIncluded: false,
+        rawSecretIncluded: false,
+      };
+      envelope.envelopeDigest = sha256(stableStringify(envelope));
+      await this.continueAfterSafeResidentUtilityResult(
+        surfaceSession,
+        sessionId,
+        turnId,
+        obligation,
+        envelope,
+        project,
+      );
+      return 1;
+    } catch (error) {
+      this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+        status: "unsupported",
+        authorityState: "unsupported",
+        approvalAvailable: false,
+        executionAllowed: false,
+        continuationAllowed: false,
+        failureKind: error.code || "stateful_exec_failed",
+      }, {
+        nextTurnState: "failed",
+        turnPatch: {
+          error: {
+            code: error.code || "stateful_exec_failed",
+            message: error.message || "Direct stateful exec failed.",
+          },
+        },
+      });
+      return 0;
+    }
+  }
+
   commandExecutionRequestParams(obligation = {}, turn = {}, project = {}) {
     const parentResponseId = parentResponseIdForToolStep(turn, obligation);
     const parentResponseSource = parentResponseSourceForToolStep(obligation);
@@ -3913,6 +5845,34 @@ class DirectLiveTextController {
       });
       return 0;
     }
+    const grantAuthorization = this.harnessGrantAuthorizationFor(
+      sessionId,
+      turnId,
+      project,
+      "run_command",
+    );
+    if (grantAuthorization.authorized) {
+      this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+        approvalAvailable: true,
+        authorityState: "grant_auto_approval",
+        authorityMode: grantAuthorization.authorityMode,
+        harnessGrantId: grantAuthorization.grantId,
+        harnessGrantRevision: grantAuthorization.grantRevision,
+        approvalPolicy: grantAuthorization.approvalPolicy,
+        sandboxMode: grantAuthorization.sandboxMode,
+      }, {
+        nextTurnState: "tool_waiting",
+      });
+      await this.approveExecuteAndContinueCommandExecution({
+        sessionId,
+        turnId,
+        obligationId: obligation.obligationId,
+        project,
+        surfaceSession,
+        approvedBy: "direct-thread-harness-grant",
+      });
+      return 0;
+    }
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       approvalAvailable: true,
       authorityState: "command_waiting_for_approval",
@@ -3930,7 +5890,8 @@ class DirectLiveTextController {
   }
 
   async emitPatchApplyApprovalRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
-    if (typeof this.workspaceRequest !== "function") {
+    const fullAccessBinding = this.fullAccessLocalBinding(sessionId, turnId, project, "apply_patch");
+    if (typeof this.workspaceRequest !== "function" && !fullAccessBinding) {
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
         status: "unsupported",
         authorityState: "unsupported",
@@ -3956,7 +5917,9 @@ class DirectLiveTextController {
         sessionId,
         turnId,
         obligationId: obligation.obligationId,
-        workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
+        workspaceRequest: fullAccessBinding
+          ? (method, params) => this.fullAccessLocalEnvironmentExecutor.request(fullAccessBinding, method, params)
+          : (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
       });
     } catch (error) {
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
@@ -3998,6 +5961,34 @@ class DirectLiveTextController {
             message: "Direct patch apply cannot be approved for continuation in this runtime bundle.",
           },
         },
+      });
+      return 0;
+    }
+    const grantAuthorization = this.harnessGrantAuthorizationFor(
+      sessionId,
+      turnId,
+      project,
+      "apply_patch",
+    );
+    if (grantAuthorization.authorized) {
+      this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+        approvalAvailable: true,
+        authorityState: "grant_auto_approval",
+        authorityMode: grantAuthorization.authorityMode,
+        harnessGrantId: grantAuthorization.grantId,
+        harnessGrantRevision: grantAuthorization.grantRevision,
+        approvalPolicy: grantAuthorization.approvalPolicy,
+        sandboxMode: grantAuthorization.sandboxMode,
+      }, {
+        nextTurnState: "tool_waiting",
+      });
+      await this.approveExecuteAndContinuePatchApply({
+        sessionId,
+        turnId,
+        obligationId: obligation.obligationId,
+        project,
+        surfaceSession,
+        approvedBy: "direct-thread-harness-grant",
       });
       return 0;
     }
@@ -4347,6 +6338,7 @@ class DirectLiveTextController {
 
   utilityContinuationRequestFromEnvelope(sessionId, turnId, obligation = {}, envelope = {}) {
     const nativeAgentRuntimeResult = normalizeString(envelope.resultKind, "") === "direct_sub_agent_runtime";
+    const statefulExecResult = normalizeString(envelope.resultKind, "") === "stateful_exec";
     const outputType = normalizeString(obligation.providerCallType || obligation.toolType, "") === "custom_tool_call"
       ? "custom_tool_call_output"
       : "function_call_output";
@@ -4371,7 +6363,9 @@ class DirectLiveTextController {
         toolLoopId: normalizeString(obligation.toolLoopId, `utility_loop_${sha256(`${sessionId}:${turnId}`).slice(0, 20)}`),
         stepId: normalizeString(obligation.stepId, `utility_step_${sha256(`${obligation.obligationId}:${resultId}`).slice(0, 20)}`),
         stepOrdinal: Number(obligation.stepOrdinal || 1) || 1,
-        maxStepCount: nativeAgentRuntimeResult ? MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS : 1,
+        maxStepCount: nativeAgentRuntimeResult
+          ? MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS
+          : statefulExecResult ? MAX_READONLY_TOOL_LOOP_STEPS : 1,
         parentResponseId: normalizeString(obligation.parentResponseId, ""),
         parentResponseSource: normalizeString(obligation.parentResponseSource, ""),
         parentResponseDigest: normalizeString(obligation.parentResponseDigest, ""),
@@ -4406,7 +6400,7 @@ class DirectLiveTextController {
       requestControls: {
         store: false,
         parallelToolCalls: false,
-        toolDeclarations: nativeAgentRuntimeResult,
+        toolDeclarations: nativeAgentRuntimeResult || statefulExecResult,
         toolOutputItem: true,
         previousResponseId: false,
       },
@@ -4500,9 +6494,13 @@ class DirectLiveTextController {
       "sub_agent_list_status",
       "sub_agent_inspect_status",
     ].includes(resultKind);
-    const residentContinuation = ledgerContinuation || agentRuntimeContinuation;
+    const statefulExecContinuation = resultKind === "stateful_exec";
+    const residentContinuation = ledgerContinuation || agentRuntimeContinuation || statefulExecContinuation;
     const directStatus = this.statusForProject(project || {});
     const ledgerBinding = this.epistemicLedgerTurnBinding(sessionId, turnId);
+    const harnessGrant = statefulExecContinuation
+      ? this.harnessGrantForTurn(sessionId, turnId, project || {})
+      : null;
     const continuationToolNames = ledgerContinuation
       ? implementationContinuationToolNames(
           directStatus,
@@ -4513,6 +6511,9 @@ class DirectLiveTextController {
             ...NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES,
             ...READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES,
           ]
+        : statefulExecContinuation
+          ? harnessGrantCapabilityNames(harnessGrant)
+              .filter((name) => STATEFUL_EXEC_CAPABILITY_NAMES.includes(name))
         : [];
     const continuationToolComposition = residentContinuation
       ? composeImplementationToolBundleForRequest({
@@ -4534,6 +6535,7 @@ class DirectLiveTextController {
             directStatus.evidenceId || "direct_runtime_facts",
           externalCapabilityProfile: directStatus.externalCapabilityProfile,
           providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
+          harnessGrant,
           roleLedgerToolBundle: ledgerContinuation ? ledgerBinding?.bundle : null,
         })
       : { tools: [], toolNames: [] };
@@ -4556,6 +6558,16 @@ class DirectLiveTextController {
       fetchImpl: this.fetchImpl || undefined,
       instructions: agentRuntimeContinuation
         ? NATIVE_AGENT_RUNTIME_CONTINUATION_INSTRUCTIONS
+        : statefulExecContinuation
+          ? statefulExecContinuationInstructions(
+              continuationToolNames,
+              normalizeString(
+                envelope.providerOutput?.sessionId ||
+                  envelope.providerOutput?.statefulExecSessionId ||
+                  obligation.statefulExecSessionId,
+                "",
+              ),
+            )
         : selfConstitutionContinuation
           ? SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS
           : DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
@@ -4605,6 +6617,14 @@ class DirectLiveTextController {
         nextToolObligations.length === 1 &&
         (ledgerContinuation
           ? continuationToolComposition.toolNames.includes(nextToolName)
+          : statefulExecContinuation
+            ? continuationToolComposition.toolNames.includes(nextToolName) &&
+              this.harnessGrantAuthorizationFor(
+                sessionId,
+                turnId,
+                project,
+                nextToolName,
+              ).authorized
           : isNativeSubAgentRuntimeToolName(nextToolName) ||
             isReadOnlySubAgentStatusToolName(nextToolName));
       const loopCap = agentRuntimeContinuation
@@ -4615,18 +6635,23 @@ class DirectLiveTextController {
         terminal = { state: "tool_waiting", error: null };
         continuationOutcome = ledgerContinuation
           ? "next_epistemic_ledger_step"
+          : statefulExecContinuation
+            ? "next_stateful_exec_step"
           : "next_native_agent_runtime_step";
       } else {
+        const transitionKind = ledgerContinuation
+          ? "epistemic_ledger"
+          : statefulExecContinuation ? "stateful_exec" : "agent_runtime";
         const failureKind = loopCapExceeded
-          ? `${ledgerContinuation ? "epistemic_ledger" : "agent_runtime"}_tool_loop_cap_exceeded`
-          : `unsupported_${ledgerContinuation ? "epistemic_ledger" : "native_agent_runtime"}_transition`;
+          ? `${transitionKind}_tool_loop_cap_exceeded`
+          : `unsupported_${transitionKind === "agent_runtime" ? "native_agent_runtime" : transitionKind}_transition`;
         terminal = {
           state: "failed",
           error: {
             code: failureKind,
             message: loopCapExceeded
-              ? `Direct ${ledgerContinuation ? "epistemic-ledger" : "native-agent"} tool loop reached its configured step cap.`
-              : `Direct ${ledgerContinuation ? "epistemic-ledger" : "native-agent"} continuation emitted an unsupported or ambiguous tool transition.`,
+              ? `Direct ${transitionKind.replaceAll("_", "-")} tool loop reached its configured step cap.`
+              : `Direct ${transitionKind.replaceAll("_", "-")} continuation emitted an unsupported or ambiguous tool transition.`,
           },
         };
         continuationOutcome = failureKind;
@@ -4649,7 +6674,7 @@ class DirectLiveTextController {
       (result.ok === true && terminal.state === "completed") ||
       (
         terminal.state === "tool_waiting" &&
-        ["next_epistemic_ledger_step", "next_native_agent_runtime_step"].includes(continuationOutcome)
+        ["next_epistemic_ledger_step", "next_native_agent_runtime_step", "next_stateful_exec_step"].includes(continuationOutcome)
       );
     const completedTurn = this.sessionStore.updateTurnState(sessionId, turnId, terminal.state, {
       continuationResponseId: normalizeString(result.responseId, ""),
@@ -4684,9 +6709,11 @@ class DirectLiveTextController {
       }, project, {
         streamPhase: ledgerContinuation
           ? "ledger-continuation"
+          : statefulExecContinuation
+            ? "stateful-exec-continuation"
           : "native-agent-runtime-continuation",
-        approvalMessage: `Direct ${ledgerContinuation ? "ledger" : "native-agent"} continuation advanced to another governed tool transition.`,
-        unavailableMessage: `Direct ${ledgerContinuation ? "ledger" : "native-agent"} continuation requested an unavailable transition.`,
+        approvalMessage: `Direct ${ledgerContinuation ? "ledger" : statefulExecContinuation ? "stateful-exec" : "native-agent"} continuation advanced to another governed tool transition.`,
+        unavailableMessage: `Direct ${ledgerContinuation ? "ledger" : statefulExecContinuation ? "stateful-exec" : "native-agent"} continuation requested an unavailable transition.`,
       });
     } else {
       this.emitNotification(surfaceSession, "turn/completed", {
@@ -5195,7 +7222,7 @@ class DirectLiveTextController {
     return isExternalPromotedToolName(obligation?.name);
   }
 
-  buildExternalPromotedEnvelope(sessionId, turnId, obligation = {}, project = {}) {
+  async buildExternalPromotedEnvelope(sessionId, turnId, obligation = {}, project = {}) {
     const toolName = normalizeString(obligation?.name, "");
     const args = parseToolArgumentsObject(obligation) || {};
     const projectId = normalizeString(project?.id || project?.projectId || project?.name, "project_direct_external");
@@ -5213,6 +7240,102 @@ class DirectLiveTextController {
       ...project,
       workThreadId,
     });
+    const profileSchemaValid = profile?.schema === "external_capability_profile@1";
+    let profileValidationError = "";
+    if (profileSchemaValid) {
+      try {
+        validateExternalCapabilityProfile(profile);
+      } catch (error) {
+        profileValidationError = normalizeString(error?.code || error?.message, "external_capability_profile_invalid");
+      }
+    }
+    const usableExternalProfile = profileSchemaValid && !profileValidationError
+      ? profile
+      : buildExternalCapabilityProfile({ projectId, workThreadId });
+    const externalResolver = toolName === "read_mcp_resource"
+      ? this.mcpResourceReadResolver
+      : this.externalDiscoveryResolver;
+    let backendResult = null;
+    let backendScopeError = "";
+    if (!profileSchemaValid || profileValidationError) backendScopeError = "external_capability_profile_invalid";
+    if (
+      !backendScopeError &&
+      (normalizeString(profile?.projectId, "") !== projectId ||
+        (workThreadId && normalizeString(profile?.workThreadId, "") !== workThreadId))
+    ) {
+      backendScopeError = "external_capability_profile_scope_mismatch";
+    }
+    if (!EXTERNAL_PROMOTED_TOOL_SET.has(toolName)) backendScopeError = "external_tool_not_admitted";
+    if (externalResolver && !backendScopeError) {
+      try {
+        backendResult = await externalResolver({
+          project,
+          projectId,
+          workThreadId,
+          threadId: sessionId,
+          turnId,
+          toolName,
+          arguments: args,
+          callId: normalizeString(obligation.callId, ""),
+          profile: usableExternalProfile,
+        });
+        this.assertOpen();
+        if (!isPlainObject(backendResult)) {
+          backendScopeError = "external_backend_result_unavailable";
+        } else if (
+          normalizeString(backendResult.projectId, "") !== projectId ||
+          (workThreadId && normalizeString(backendResult.workThreadId, "") !== workThreadId) ||
+          normalizeString(backendResult.threadId, "") !== sessionId ||
+          normalizeString(backendResult.profileDigest, "") !== normalizeString(profile?.profileDigest, "")
+        ) {
+          backendScopeError = "external_backend_scope_mismatch";
+        }
+      } catch (error) {
+        backendScopeError = normalizeString(error?.code || error?.message, "external_backend_unavailable");
+      }
+    }
+    if (!EXTERNAL_PROMOTED_TOOL_SET.has(toolName)) {
+      const providerOutput = {
+        kind: `${toolName || "external_tool"}_result`,
+        status: "blocked",
+        blockerCodes: ["external_tool_not_admitted"],
+        dynamicMcpActionPerformed: false,
+        pluginInstallPerformed: false,
+        workspaceMutationStarted: false,
+        rawExternalPayloadIncluded: false,
+        rawResourceUriIncluded: false,
+        rawSecretIncluded: false,
+      };
+      const resultDigest = sha256(stableStringify(providerOutput));
+      const envelope = {
+        schema: "direct_external_promoted_tool_result_envelope@1",
+        envelopeId: `external_tool_result_${sha256(`${sessionId}:${turnId}:${stableObligationId}:${resultDigest}`).slice(0, 24)}`,
+        toolName,
+        callId: normalizeString(obligation.callId, ""),
+        resultKind: "external_discovery_status",
+        status: "blocked",
+        blockerCodes: ["external_tool_not_admitted"],
+        resultDigest,
+        providerOutput,
+        contextAdmission: {
+          admittedAs: "external_discovery_descriptor_summary",
+          admissionState: "blocked",
+          readOnly: true,
+          mutatesWorkspace: false,
+          grantsDynamicMcpAuthority: false,
+          pluginInstallAllowed: false,
+          discoveredToolAutoPromotionAllowed: false,
+        },
+        rawPromptIncluded: false,
+        rawResultIncluded: false,
+        rawWorkspacePathIncluded: false,
+        rawExternalPayloadIncluded: false,
+        rawResourceUriIncluded: false,
+        rawSecretIncluded: false,
+      };
+      envelope.envelopeDigest = sha256(stableStringify(envelope));
+      return envelope;
+    }
     if (toolName === "read_mcp_resource") {
       const serverIdentityId = normalizeString(args.serverIdentityId || args.serverId, "");
       const resourceUri = normalizeString(args.resourceUri || args.uri, "");
@@ -5265,7 +7388,7 @@ class DirectLiveTextController {
         return envelope;
       }
       const readEnvelope = buildMcpResourceReadEnvelope({
-        profile,
+        profile: usableExternalProfile,
         projectId,
         workThreadId,
         threadId: sessionId,
@@ -5273,9 +7396,19 @@ class DirectLiveTextController {
         callId: normalizeString(obligation.callId, ""),
         serverIdentityId,
         resourceUri,
-        mimeType: normalizeString(args.mimeType || args.contentType, "text/plain"),
-        status: "unavailable",
-        blockerCodes: ["mcp_resource_payload_backend_unavailable"],
+        mimeType: normalizeString(backendResult?.mimeType || args.mimeType || args.contentType, "text/plain"),
+        payload: backendScopeError ? "" : backendResult?.payload,
+        content: backendScopeError ? "" : backendResult?.content,
+        status: backendScopeError ? "blocked" : backendResult ? normalizeString(backendResult.status, "completed") : "unavailable",
+        readFreshness: normalizeString(backendResult?.readFreshness, "fresh_external_read"),
+        sourceObservedAt: normalizeString(backendResult?.sourceObservedAt, ""),
+        payloadArtifactRef: backendResult?.payloadArtifactRef,
+        evidenceRefs: backendResult?.evidenceRefs,
+        blockerCodes: backendScopeError
+          ? [backendScopeError]
+          : backendResult
+            ? backendResult.blockerCodes
+            : ["mcp_resource_payload_backend_unavailable"],
       });
       const providerOutput = summarizeExternalDiscoveryResult(toolName, readEnvelope);
       const envelope = {
@@ -5311,7 +7444,7 @@ class DirectLiveTextController {
     }
 
     const declaration = buildExternalToolResidentDeclaration({
-      profile,
+      profile: usableExternalProfile,
       generatedAt: nowIso(),
     });
     const gate = buildExternalDiscoveryToolCallGate({
@@ -5323,30 +7456,40 @@ class DirectLiveTextController {
       },
     });
     const discoveryEnvelope = buildExternalDiscoveryResultEnvelope({
-      profile,
+      profile: usableExternalProfile,
       declaration,
       gate,
       projectId,
       workThreadId,
       threadId: sessionId,
       turnId,
+      discoveryBackendAvailable: backendScopeError ? false : backendResult ? backendResult.discoveryBackendAvailable !== false : undefined,
+      unavailableReason: backendScopeError || backendResult?.unavailableReason,
+      discoveryDescriptors: backendScopeError ? [] : backendResult?.discoveryDescriptors,
+      resourceDescriptors: backendScopeError ? [] : backendResult?.resourceDescriptors,
+      resourceTemplateDescriptors: backendScopeError ? [] : backendResult?.resourceTemplateDescriptors,
+      evidenceRefs: backendResult?.evidenceRefs,
     });
     const providerOutput = summarizeExternalDiscoveryResult(toolName, discoveryEnvelope);
+    const externalExecutionBlocked = Boolean(backendScopeError) && backendScopeError !== "external_backend_unavailable";
     const envelope = {
       schema: "direct_external_promoted_tool_result_envelope@1",
       envelopeId: `external_tool_result_${sha256(`${sessionId}:${turnId}:${stableObligationId}:${discoveryEnvelope.envelopeDigest}`).slice(0, 24)}`,
       toolName,
       callId: normalizeString(obligation.callId, ""),
       resultKind: "external_discovery_status",
-      status: discoveryEnvelope.status === "completed" || discoveryEnvelope.status === "degraded" || discoveryEnvelope.status === "unavailable"
+      status: !externalExecutionBlocked && (discoveryEnvelope.status === "completed" || discoveryEnvelope.status === "degraded" || discoveryEnvelope.status === "unavailable")
         ? "ready_for_provider_continuation"
         : "blocked",
-      blockerCodes: Array.isArray(discoveryEnvelope.blockerCodes) ? discoveryEnvelope.blockerCodes : [],
+      blockerCodes: [...new Set([
+        ...(Array.isArray(discoveryEnvelope.blockerCodes) ? discoveryEnvelope.blockerCodes : []),
+        ...(externalExecutionBlocked ? [backendScopeError] : []),
+      ])],
       resultDigest: normalizeString(discoveryEnvelope.envelopeDigest, ""),
       providerOutput,
       contextAdmission: {
         admittedAs: "external_discovery_descriptor_summary",
-        admissionState: discoveryEnvelope.contextAdmission === "blocked" ? "blocked" : "admitted",
+        admissionState: discoveryEnvelope.contextAdmission === "blocked" || externalExecutionBlocked ? "blocked" : "admitted",
         readOnly: true,
         mutatesWorkspace: false,
         grantsDynamicMcpAuthority: false,
@@ -5365,7 +7508,7 @@ class DirectLiveTextController {
   }
 
   async emitExternalPromotedRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
-    const envelope = this.buildExternalPromotedEnvelope(sessionId, turnId, obligation, project);
+    const envelope = await this.buildExternalPromotedEnvelope(sessionId, turnId, obligation, project);
     await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
     return 1;
   }
@@ -5405,6 +7548,16 @@ class DirectLiveTextController {
         );
         continue;
       }
+      if (this.isStatefulExecObligation(obligation)) {
+        createdCount += await this.emitStatefulExecRequest(
+          surfaceSession,
+          sessionId,
+          turnId,
+          obligation,
+          project,
+        );
+        continue;
+      }
       if (this.isPatchApplyObligation(obligation)) {
         createdCount += await this.emitPatchApplyApprovalRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
@@ -5432,6 +7585,34 @@ class DirectLiveTextController {
         const params = this.readOnlyToolRequestParams(obligation, turn, project);
         const loopCapExceeded = Number(params.stepOrdinal || 1) > MAX_READONLY_TOOL_LOOP_STEPS;
         if (params.approvalAvailable && !loopCapExceeded) {
+          const grantAuthorization = this.harnessGrantAuthorizationFor(
+            sessionId,
+            turnId,
+            project,
+            "read_file",
+          );
+          if (grantAuthorization.authorized) {
+            this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+              approvalAvailable: true,
+              authorityState: "grant_auto_approval",
+              authorityMode: grantAuthorization.authorityMode,
+              harnessGrantId: grantAuthorization.grantId,
+              harnessGrantRevision: grantAuthorization.grantRevision,
+              approvalPolicy: grantAuthorization.approvalPolicy,
+              sandboxMode: grantAuthorization.sandboxMode,
+            }, {
+              nextTurnState: "tool_waiting",
+            });
+            await this.approveExecuteAndContinueReadOnlyTool({
+              sessionId,
+              turnId,
+              obligationId: obligation.obligationId,
+              project,
+              surfaceSession,
+              approvedBy: "direct-thread-harness-grant",
+            });
+            return createdCount;
+          }
           this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
             approvalAvailable: true,
             authorityState: "approval_waiting",
@@ -5482,6 +7663,34 @@ class DirectLiveTextController {
                 : "Direct read-only tool call cannot be approved for continuation in this runtime bundle.",
             },
           },
+        });
+        continue;
+      }
+      const grantAuthorization = this.harnessGrantAuthorizationFor(
+        sessionId,
+        turnId,
+        project,
+        "read_file",
+      );
+      if (grantAuthorization.authorized) {
+        this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+          approvalAvailable: true,
+          authorityState: "grant_auto_approval",
+          authorityMode: grantAuthorization.authorityMode,
+          harnessGrantId: grantAuthorization.grantId,
+          harnessGrantRevision: grantAuthorization.grantRevision,
+          approvalPolicy: grantAuthorization.approvalPolicy,
+          sandboxMode: grantAuthorization.sandboxMode,
+        }, {
+          nextTurnState: "tool_waiting",
+        });
+        await this.approveExecuteAndContinueReadOnlyTool({
+          sessionId,
+          turnId,
+          obligationId: obligation.obligationId,
+          project,
+          surfaceSession,
+          approvedBy: "direct-thread-harness-grant",
         });
         continue;
       }
@@ -6060,7 +8269,13 @@ class DirectLiveTextController {
   }
 
   async approveExecuteAndContinueReadOnlyTool(options = {}) {
-    if (typeof this.workspaceRequest !== "function") {
+    const fullAccessBinding = this.fullAccessLocalBinding(
+      options.sessionId,
+      options.turnId,
+      options.project || {},
+      "read_file",
+    );
+    if (typeof this.workspaceRequest !== "function" && !fullAccessBinding) {
       const error = new Error("Direct read-only tool execution requires the workspace backend.");
       error.code = "workspace_backend_unavailable";
       throw error;
@@ -6071,14 +8286,18 @@ class DirectLiveTextController {
       sessionId,
       turnId,
       obligationId,
-      approvedBy: "local-user",
+      fullAccess: Boolean(fullAccessBinding),
+      approvedBy: normalizeString(options.approvedBy, "local-user"),
     });
     const executed = await executeApprovedReadOnlyToolObligation({
       sessionStore: this.sessionStore,
       sessionId,
       turnId,
       obligationId,
-      workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
+      fullAccess: Boolean(fullAccessBinding),
+      workspaceRequest: fullAccessBinding
+        ? (method, params) => this.fullAccessLocalEnvironmentExecutor.request(fullAccessBinding, method, params)
+        : (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
     });
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
@@ -6089,7 +8308,10 @@ class DirectLiveTextController {
     const stepId = normalizeString(currentObligation.stepId, "");
     const originalUserIntent = userPromptTextFromTurn(turn);
     const directStatus = this.statusForProject(project || {});
-    const continuationToolNames = implementationContinuationToolNames(directStatus, originalUserIntent);
+    const harnessGrant = this.harnessGrantForTurn(sessionId, turnId, project || {});
+    const continuationToolNames = harnessGrant
+      ? harnessGrantCapabilityNames(harnessGrant)
+      : implementationContinuationToolNames(directStatus, originalUserIntent);
     const continuationToolComposition = composeImplementationToolBundleForRequest({
       projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
       sessionId,
@@ -6102,6 +8324,7 @@ class DirectLiveTextController {
       runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
+      harnessGrant,
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
@@ -6117,6 +8340,7 @@ class DirectLiveTextController {
         sessionId,
         turnId,
         obligationId,
+        fullAccess: Boolean(fullAccessBinding),
         continuationLiveSendEnabled: true,
         ...directWorkThreadContextCarrier(options),
       });
@@ -6290,7 +8514,13 @@ class DirectLiveTextController {
   }
 
   async approveExecuteAndContinuePatchApply(options = {}) {
-    if (typeof this.workspaceRequest !== "function") {
+    const fullAccessBinding = this.fullAccessLocalBinding(
+      options.sessionId,
+      options.turnId,
+      options.project || {},
+      "apply_patch",
+    );
+    if (typeof this.workspaceRequest !== "function" && !fullAccessBinding) {
       const error = new Error("Direct patch apply requires the workspace backend.");
       error.code = "workspace_patch_backend_unavailable";
       throw error;
@@ -6301,7 +8531,7 @@ class DirectLiveTextController {
       sessionId,
       turnId,
       obligationId,
-      approvedBy: "local-user",
+      approvedBy: normalizeString(options.approvedBy, "local-user"),
     });
     const executed = await executeApprovedPatchApplyObligation({
       sessionStore: this.sessionStore,
@@ -6309,7 +8539,9 @@ class DirectLiveTextController {
       turnId,
       obligationId,
       clientPatchDecisionId: normalizeString(options.clientPatchDecisionId, ""),
-      workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
+      workspaceRequest: fullAccessBinding
+        ? (method, params) => this.fullAccessLocalEnvironmentExecutor.request(fullAccessBinding, method, params)
+        : (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
     });
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
@@ -6318,7 +8550,10 @@ class DirectLiveTextController {
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const originalUserIntent = userPromptTextFromTurn(turn);
     const directStatus = this.statusForProject(project || {});
-    const continuationToolNames = implementationContinuationToolNames(directStatus, originalUserIntent);
+    const harnessGrant = this.harnessGrantForTurn(sessionId, turnId, project || {});
+    const continuationToolNames = harnessGrant
+      ? harnessGrantCapabilityNames(harnessGrant)
+      : implementationContinuationToolNames(directStatus, originalUserIntent);
     const continuationToolComposition = composeImplementationToolBundleForRequest({
       projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
       sessionId,
@@ -6331,6 +8566,7 @@ class DirectLiveTextController {
       runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
+      harnessGrant,
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
@@ -6518,7 +8754,7 @@ class DirectLiveTextController {
       sessionId,
       turnId,
       obligationId,
-      approvedBy: "local-user",
+      approvedBy: normalizeString(options.approvedBy, "local-user"),
     });
     const executed = await executeApprovedCommandExecutionObligation({
       sessionStore: this.sessionStore,
@@ -6572,7 +8808,10 @@ class DirectLiveTextController {
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const originalUserIntent = userPromptTextFromTurn(turn);
     const directStatus = this.statusForProject(project || {});
-    const continuationToolNames = commandRepairContinuationToolNames(directStatus, originalUserIntent);
+    const harnessGrant = this.harnessGrantForTurn(sessionId, turnId, project || {});
+    const continuationToolNames = harnessGrant
+      ? harnessGrantCapabilityNames(harnessGrant)
+      : commandRepairContinuationToolNames(directStatus, originalUserIntent);
     const continuationToolComposition = composeImplementationToolBundleForRequest({
       projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
       sessionId,
@@ -6585,6 +8824,7 @@ class DirectLiveTextController {
       runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
+      harnessGrant,
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
@@ -6774,7 +9014,11 @@ class DirectLiveTextController {
     const projection = buildDirectAttachmentCapabilityProjection({
       projectId: normalizeString(project.id, ""),
       runtimeKind: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+      workspaceKind: normalizeString(project.workspace?.kind, ""),
       status: status.status === "ready" ? "ready" : "blocked",
+      providerAttachmentCapability: Object.prototype.hasOwnProperty.call(status, "providerAttachmentCapability")
+        ? status.providerAttachmentCapability
+        : project.providerAttachmentCapability,
     });
     assertDirectAttachmentCapabilityProjectionSafe(projection);
     return projection;
@@ -6782,7 +9026,13 @@ class DirectLiveTextController {
 
   directAttachmentSubmitPacket(params = {}, context = {}, prompt = "") {
     const attachments = Array.isArray(params.attachmentDrafts) ? params.attachmentDrafts : [];
-    const capabilityProjection = this.directAttachmentCapability(context.project || {}, this.statusForProject(context.project || {}));
+    const project = context.project || {};
+    const sessionId = normalizeString(params.sessionId || params.threadId, "");
+    const session = sessionId ? this.sessionStore.readSession(sessionId) : null;
+    const capabilityProjection = this.directAttachmentCapability(
+      project,
+      this.statusForProject(project, { model: session?.model || params.model }),
+    );
     const packet = buildDirectAttachmentSubmitPacket({
       projectId: normalizeString(context.project?.id, ""),
       surfaceId: "codex",
@@ -6802,6 +9052,133 @@ class DirectLiveTextController {
       throw error;
     }
     return { capabilityProjection, packet };
+  }
+
+  async resolveDirectAttachmentPayloads(params = {}, context = {}, packet = null) {
+    const rows = Array.isArray(packet?.dispositions)
+      ? packet.dispositions.filter((row) => row.disposition === "provider_payload")
+      : [];
+    if (!rows.length) return [];
+    if (!this.attachmentPayloadResolver) {
+      const error = new Error("Direct provider attachment payload custody is unavailable.");
+      error.code = "direct_attachment_payload_resolver_missing";
+      throw error;
+    }
+    const project = context.project || {};
+    const projectId = normalizeString(project.id || project.projectId, "");
+    const taskId = normalizeString(params.sessionId || params.threadId || context.surfaceSession?.activeThreadId, "");
+    if (!projectId || !taskId) {
+      const error = new Error("Direct provider attachment payload custody requires an exact task and project.");
+      error.code = "direct_attachment_payload_scope_missing";
+      throw error;
+    }
+    const payloads = [];
+    for (const row of rows) {
+      const draft = (Array.isArray(params.attachmentDrafts) ? params.attachmentDrafts : [])
+        .find((candidate) => normalizeString(candidate?.id || candidate?.draftId, "") === row.draftId);
+      const resolved = await this.attachmentPayloadResolver({
+        project,
+        projectId,
+        taskId,
+        threadId: taskId,
+        draftId: row.draftId,
+        draft,
+        kind: row.kind,
+        mimeType: row.mimeType,
+        capabilityProjection: packet.capabilityProjection,
+        ownerControlled: context.ownerControlled === true,
+      });
+      this.assertOpen();
+      if (!isPlainObject(resolved) || resolved.status === "blocked" || resolved.custody !== "exact") {
+        const error = new Error("Direct provider attachment payload did not return exact admitted custody.");
+        error.code = "direct_attachment_payload_custody_blocked";
+        throw error;
+      }
+      if (normalizeString(resolved.projectId, projectId) !== projectId ||
+          normalizeString(resolved.taskId || resolved.threadId, taskId) !== taskId ||
+          normalizeString(resolved.draftId, "") !== row.draftId ||
+          normalizeString(resolved.kind, row.kind) !== row.kind ||
+          normalizeString(resolved.mimeType, row.mimeType) !== row.mimeType) {
+        const error = new Error("Direct provider attachment payload scope does not match the active task.");
+        error.code = "direct_attachment_payload_scope_mismatch";
+        throw error;
+      }
+      const base64 = normalizeString(resolved.base64 || resolved.dataBase64 || resolved.payloadBase64, "");
+      if (!base64 || resolved.rawPayloadIncluded === true || resolved.rawPathIncluded === true) {
+        const error = new Error("Direct provider attachment payload is missing or unsafe.");
+        error.code = "direct_attachment_payload_invalid";
+        throw error;
+      }
+      const payloadDigest = sha256(base64);
+      if (resolved.payloadDigest && resolved.payloadDigest !== payloadDigest) {
+        const error = new Error("Direct provider attachment payload digest mismatch.");
+        error.code = "direct_attachment_payload_digest_mismatch";
+        throw error;
+      }
+      payloads.push({
+        draftId: row.draftId,
+        kind: row.kind,
+        mimeType: row.mimeType,
+        displayName: row.displayName,
+        base64,
+        payloadDigest,
+        custody: "exact",
+        modelVisibility: "provider_input",
+      });
+    }
+    return payloads;
+  }
+
+  applyDirectAttachmentPayloads(requestBody = {}, payloads = []) {
+    if (!Array.isArray(payloads) || !payloads.length) return requestBody;
+    const body = requestBody;
+    const message = Array.isArray(body.input) && isPlainObject(body.input[0]) ? body.input[0] : null;
+    if (!message) throw new Error("Direct provider attachment input message is unavailable.");
+    if (!Array.isArray(message.content)) message.content = [];
+    for (const payload of payloads) {
+      const content = payload.kind === "image"
+        ? {
+            type: "input_image",
+            image_url: `data:${payload.mimeType};base64,${payload.base64}`,
+            detail: "auto",
+          }
+        : {
+            type: "input_file",
+            filename: payload.displayName,
+            file_data: `data:${payload.mimeType};base64,${payload.base64}`,
+          };
+      message.content.push(content);
+    }
+    return body;
+  }
+
+  recordDirectAttachmentProviderVisibility(packet = {}, payloads = [], options = {}) {
+    if (!isPlainObject(packet) || !Array.isArray(payloads) || !payloads.length) return packet;
+    const providerAccepted = options.providerAccepted !== false;
+    const modelVisibility = providerAccepted ? "provider_input" : "provider_input_unconfirmed";
+    const byDraftId = new Map(payloads.map((payload) => [payload.draftId, payload]));
+    packet.transcriptWitnesses = (Array.isArray(packet.transcriptWitnesses) ? packet.transcriptWitnesses : []).map((witness) => {
+      const payload = byDraftId.get(witness.draftId);
+      if (!payload) return witness;
+      return {
+        ...witness,
+        submitState: providerAccepted ? "bound_to_provider_input" : "provider_input_unconfirmed",
+        providerAccepted,
+        providerAcceptanceEvidenceRef: providerAccepted
+          ? `direct_provider_input_${payload.payloadDigest.slice(0, 24)}`
+          : "direct_provider_transport_failed",
+        modelVisibility,
+      };
+    });
+    packet.providerPayloads = payloads.map((payload) => ({
+      draftId: payload.draftId,
+      payloadDigest: payload.payloadDigest,
+      modelVisibility,
+      rawPayloadIncluded: false,
+    }));
+    packet.rawPayloadIncluded = false;
+    packet.packetDigest = sha256(stableStringify(packet));
+    return packet;
   }
 
   async startTurn(params = {}, context = {}) {
@@ -6832,12 +9209,19 @@ class DirectLiveTextController {
       error.code = "direct_session_project_scope_mismatch";
       throw error;
     }
+    if (session.importedSessionReadOnly === true) {
+      const error = new Error("Imported Direct sessions are read-only; use an explicit checkpoint continuation.");
+      error.code = "direct_imported_session_read_only";
+      throw error;
+    }
+    const ownerControlled = context.ownerControlled === true;
     const requestedTurnModel = normalizeString(params.model, "");
-    const model = normalizeString(session.model, "") || this.requestedModelForProject(project);
-    if (requestedTurnModel && model && requestedTurnModel !== model) {
+    const boundSessionModel = normalizeString(session.model, "") || this.requestedModelForProject(project);
+    const model = requestedTurnModel && ownerControlled ? requestedTurnModel : boundSessionModel;
+    if (requestedTurnModel && model && requestedTurnModel !== boundSessionModel && !ownerControlled) {
       const error = new Error("The turn model is stale relative to the task runtime binding.");
       error.code = "direct_turn_runtime_binding_stale";
-      error.canonicalModel = model;
+      error.canonicalModel = boundSessionModel;
       throw error;
     }
     const status = this.assertReady(project, { model });
@@ -6935,6 +9319,11 @@ class DirectLiveTextController {
         clientTurnRequestId,
       };
     }
+    const providerAttachmentPayloads = await this.resolveDirectAttachmentPayloads(
+      params,
+      context,
+      attachmentSubmit.packet,
+    );
     const activeTurn = this.activeTurnForSession(session);
     if (activeTurn) {
       const error = new Error(`Direct live text session already has an active turn: ${activeTurn.turnId}`);
@@ -6947,14 +9336,29 @@ class DirectLiveTextController {
       params.reasoningEffort || params.reasoning_effort || params.effort,
       "",
     );
-    const reasoningEffort = normalizeString(session.reasoningEffort, requestedTurnReasoningEffort);
+    const boundSessionReasoningEffort = normalizeString(session.reasoningEffort, "");
+    const reasoningEffort = ownerControlled && requestedTurnReasoningEffort
+      ? requestedTurnReasoningEffort
+      : normalizeString(boundSessionReasoningEffort, requestedTurnReasoningEffort);
     if (
-      requestedTurnReasoningEffort && reasoningEffort &&
-      requestedTurnReasoningEffort !== reasoningEffort
+      requestedTurnReasoningEffort &&
+      requestedTurnReasoningEffort !== boundSessionReasoningEffort && !ownerControlled
     ) {
       const error = new Error("The turn reasoning effort is stale relative to the task runtime binding.");
       error.code = "direct_turn_runtime_binding_stale";
-      error.canonicalReasoningEffort = reasoningEffort;
+      error.canonicalReasoningEffort = boundSessionReasoningEffort;
+      throw error;
+    }
+    const requestedServiceTier = normalizeString(params.serviceTier || params.service_tier, "");
+    const serviceTier = requestedServiceTier || normalizeString(session.serviceTier, "");
+    if (serviceTier && !DIRECT_SERVICE_TIERS.has(serviceTier)) {
+      const error = new Error(`Direct service tier is not supported: ${serviceTier}`);
+      error.code = "direct_service_tier_unsupported";
+      throw error;
+    }
+    if (requestedServiceTier && !ownerControlled && requestedServiceTier !== session.serviceTier) {
+      const error = new Error("The turn service tier is not owner-controlled for this Direct task.");
+      error.code = "direct_turn_service_tier_not_owner_controlled";
       throw error;
     }
     const existingTurnIds = this.sessionStore.listTurnIdsFromDisk(session.sessionId);
@@ -6963,12 +9367,15 @@ class DirectLiveTextController {
     const previousSummary = summaries.length ? summaries[summaries.length - 1] : null;
     const previousTurn = previousSummary?.turnId ? this.sessionStore.readTurn(session.sessionId, previousSummary.turnId) : null;
     const binding = normalizeCodexBinding(project.surfaceBinding?.codex || {});
-    const directLiveTier = binding.runtimeMode === "direct-experimental" &&
+    const directLiveTier = (binding.runtimeMode === "direct" || binding.runtimeMode === "direct-experimental") &&
       binding.directTransport === "live-text";
-    const textOnlyTier = directLiveTier &&
+    const textOnlyTier = binding.runtimeMode === "direct-experimental" && directLiveTier &&
       binding.directTier === "text-only";
     const implementationTier = directLiveTier &&
       binding.directTier === "implementation-lane";
+    const harnessGrant = implementationTier
+      ? this.resolveHarnessGrant(project, session)
+      : null;
     let activeSubAgentPolicySemanticResult = null;
     if (
       implementationTier &&
@@ -6984,7 +9391,7 @@ class DirectLiveTextController {
       this.assertOpen();
     }
     const implementationToolNames = implementationTier
-      ? implementationInitialPolicyCandidateToolNames(status, prompt)
+      ? implementationInitialPolicyCandidateToolNames(status, prompt, { harnessGrant })
       : [];
     const useRecentDialogue = compiledAgentContext
       ? false
@@ -7088,6 +9495,7 @@ class DirectLiveTextController {
           runtimeFactsId: status.evidenceId || status.modelEvidenceId || "direct_runtime_facts",
           externalCapabilityProfile: status.externalCapabilityProfile,
           providerHostedToolsStatus: status.providerHostedToolsStatus,
+          harnessGrant,
         })
       : null;
     let requestBody = implementationTier
@@ -7096,6 +9504,7 @@ class DirectLiveTextController {
             model,
             prompt,
             reasoningEffort,
+            serviceTier,
             tools: implementationToolComposition.tools,
             toolChoicePolicy: "auto",
           })
@@ -7104,14 +9513,19 @@ class DirectLiveTextController {
           model,
           prompt,
           reasoningEffort,
+          serviceTier,
         });
     const turn = this.sessionStore.createTurn(session.sessionId, {
       input: [{ role: "user", text: prompt }],
       model: requestBody.model,
       reasoningEffort,
+      serviceTier,
       clientTurnRequestId,
       requestShape: {
         ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
+        directTurnOwnerControlled: ownerControlled,
+        directTurnServiceTier: serviceTier,
+        serviceTier,
         ...(activeSubAgentPolicySemanticResult?.settlement
           ? {
               activeSubAgentPolicySemanticSettlementId:
@@ -7213,6 +9627,7 @@ class DirectLiveTextController {
               externalCapabilityProfile: status.externalCapabilityProfile,
               providerHostedToolsStatus: status.providerHostedToolsStatus,
               roleLedgerToolBundle: epistemicLedgerTurnBinding?.bundle,
+              harnessGrant,
             })
           : null;
         selfConstitutionSnapshot = implementationTier
@@ -7225,6 +9640,7 @@ class DirectLiveTextController {
               status,
               toolComposition: implementationToolComposition,
               compiledAgentContext,
+              harnessGrant,
             })
           : null;
         contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
@@ -7332,6 +9748,7 @@ class DirectLiveTextController {
           status,
           toolComposition: implementationToolComposition,
           compiledAgentContext,
+          harnessGrant,
         });
       }
       if (implementationTier) {
@@ -7348,8 +9765,12 @@ class DirectLiveTextController {
           toolChoicePolicy: "auto",
         });
       }
+      this.applyDirectAttachmentPayloads(requestBody, providerAttachmentPayloads);
       requestShape = {
         ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
+        directTurnOwnerControlled: ownerControlled,
+        directTurnServiceTier: serviceTier,
+        serviceTier,
         ...selfConstitutionRequestShapeFields(selfConstitutionSnapshot),
         ...(activeSubAgentPolicySemanticResult?.settlement
           ? {
@@ -7371,6 +9792,9 @@ class DirectLiveTextController {
         directAttachmentDispositionSummary: attachmentSubmit.packet.summary,
         directAttachmentRawPayloadIncluded: false,
         directAttachmentRawPathIncluded: false,
+        directAttachmentProviderPayloadCount: providerAttachmentPayloads.length,
+        directAttachmentProviderPayloadDigests: providerAttachmentPayloads.map((payload) => payload.payloadDigest),
+        directAttachmentProviderModelVisibility: providerAttachmentPayloads.length ? "provider_input" : "none",
         ...(contextResult ? {
           contextBuildId: contextResult.contextPack.contextBuildId,
           contextPackContentHash: contextResult.contextPack.contextPackContentHash,
@@ -7507,9 +9931,11 @@ class DirectLiveTextController {
       prompt: requestBody.input?.[0]?.content?.[0]?.text || prompt,
       instructions: requestBody.instructions,
       requestBody,
+      providerAttachmentPayloads,
       requestKind: implementationTier ? "implementation_tool_initial" : "text_only",
       model: requestBody.model,
       reasoningEffort,
+      serviceTier,
       project,
       surfaceSession,
       userItem,
@@ -7737,8 +10163,10 @@ class DirectLiveTextController {
       instructions,
       requestBody,
       requestKind,
+      providerAttachmentPayloads,
       model,
       reasoningEffort,
+      serviceTier,
       project,
       surfaceSession,
       userItem,
@@ -7863,6 +10291,7 @@ class DirectLiveTextController {
       profileDoc: this.profileDoc,
       model,
       reasoningEffort,
+      serviceTier,
       prompt,
       instructions,
       fetchImpl: this.fetchImpl || undefined,
@@ -7877,7 +10306,25 @@ class DirectLiveTextController {
           ...probeOptions,
           requestBody,
         })
-      : await runTextOnlyDirectProbe(probeOptions);
+      : await runTextOnlyDirectProbe({
+          ...probeOptions,
+          requestBody,
+        });
+    if (Array.isArray(providerAttachmentPayloads) && providerAttachmentPayloads.length) {
+      const storedTurn = this.sessionStore.readTurn(sessionId, turnId);
+      const packet = storedTurn?.directAttachmentSubmitPacket;
+      if (isPlainObject(packet)) {
+        const updatedPacket = this.recordDirectAttachmentProviderVisibility(
+          packet,
+          providerAttachmentPayloads,
+          { providerAccepted: result.ok === true },
+        );
+        this.sessionStore.updateTurnState(sessionId, turnId, storedTurn.state, {
+          directAttachmentSubmitPacket: updatedPacket,
+          directAttachmentTranscriptWitnesses: updatedPacket.transcriptWitnesses,
+        });
+      }
+    }
     if (
       epistemicContextDeliveryBinding &&
       !epistemicContextDeliveryRecorded &&
@@ -8078,17 +10525,31 @@ class DirectLiveTextController {
     if (!sessionMatchesProject(session, projectId)) {
       throw new Error("Direct live text session does not belong to the active project.");
     }
+    const projection = this.capabilitiesForTask(context.project || {}, session.sessionId);
     return {
       thread: threadSnapshotFromSession(session),
       model: session.model,
+      reasoningEffort: session.reasoningEffort,
+      serviceTier: session.serviceTier,
+      capabilities: projection.capabilities,
+      taskBinding: projection.taskBinding,
     };
   }
 
-  interruptTurn(params = {}) {
+  interruptTurn(params = {}, context = {}) {
     const turnId = normalizeString(params.turnId, "");
     const sessionId = normalizeString(params.sessionId || params.threadId, "");
     const turn = turnId && sessionId ? this.sessionStore.readTurn(sessionId, turnId) : null;
     if (!turn) throw new Error(`Direct live text turn not found: ${turnId || "missing"}.`);
+    const projectId = normalizeString(context.project?.id, "");
+    if (projectId) {
+      const session = this.sessionStore.readSession(sessionId);
+      if (!session || !sessionMatchesProject(session, projectId)) {
+        const error = new Error("Direct interrupt target does not belong to the active project.");
+        error.code = "direct_session_project_scope_mismatch";
+        throw error;
+      }
+    }
     if (TERMINAL_TURN_STATES.has(turn.state)) {
       return { turn: turnSnapshot(turn), status: `${turn.state}_already` };
     }
@@ -8106,11 +10567,25 @@ class DirectLiveTextController {
   async handleRequest(method, params = {}, context = {}) {
     if (method === "initialize") return this.initialize(params, context);
     if (method === "account/read") return this.accountRead(params, context);
+    if (method === "account/login/start") return this.accountLoginStart(params, context);
+    if (method === "account/rateLimits/read") return this.rateLimitsRead(params, context);
+    if (method === "account/usage/read") return this.usageRead(params, context);
+    if (method === "model/list") return this.modelList(params, context);
     if (method === "configRequirements/read") return this.configRequirementsRead(params, context);
+    if (method === "environment/status") return this.environmentStatus(params, context);
     if (method === "thread/start") return this.startThread(params, context);
+    if (method === "thread/resume") return this.resumeThread(params, context);
+    if (method === "thread/fork") return this.forkThread(params, context);
+    if (method === "thread/selectAccessProfile") return this.selectFullAccessTaskProfile(params, context);
     if (method === "thread/list") return this.listThreads(params, context);
     if (method === "thread/read") return this.readThread(params, context);
+    if (method === "thread/rollback") return this.rollbackThread(params, context);
+    if (method === "exec_command") return this.startStatefulExec(params, context);
+    if (method === "write_stdin") return this.writeStatefulExecStdin(params, context);
+    if (method === "exec_command/cancel") return this.cancelStatefulExec(params, context);
+    if (method === "exec_command/wait") return this.waitStatefulExec(params, context);
     if (method === "turn/start") return this.startTurn(params, context);
+    if (method === "turn/steer") return this.steerTurn(params, context);
     if (method === "worker/start") return this.startWorkerFromHandoff(params, context);
     if (method === "turn/interrupt" || method === "turn/abort") return this.interruptTurn(params, context);
     throw new Error(`Direct live text controller does not support ${method}.`);
@@ -8127,6 +10602,8 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     this.connectionId = "";
     this.transportKind = DIRECT_LIVE_TEXT_SURFACE_TRANSPORT;
     this.serverRequests = new Map();
+    this.activeThreadId = "";
+    this.taskCapabilityProjection = null;
   }
 
   sendEvent(payload) {
@@ -8181,13 +10658,21 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
 
   async connect(connection = {}) {
     this.connectionId = crypto.randomUUID();
-    const status = this.controller?.statusForProject?.(this.project || {}) || {};
+    const connectedTaskId = normalizeString(connection.taskBinding?.taskId, "");
+    if (connectedTaskId) this.activeThreadId = connectedTaskId;
+    const projection = this.activeThreadId && this.controller?.capabilitiesForTask
+      ? this.controller.capabilitiesForTask(this.project || {}, this.activeThreadId)
+      : null;
+    const status = projection?.directLiveText || this.controller?.statusForProject?.(this.project || {}) || {};
     this.connection = {
       ...connection,
       transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       connectionId: this.connectionId,
-      capabilities: connection.capabilities || buildDirectLiveTextCapabilities(status),
+      capabilities: projection?.capabilities || connection.capabilities || buildDirectLiveTextCapabilities(status),
+      directLiveText: status,
+      taskBinding: projection?.taskBinding || connection.taskBinding || null,
     };
+    this.taskCapabilityProjection = projection;
     this.emitStatus("connected");
     return {
       connected: true,
@@ -8199,11 +10684,42 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
   async request(method, params = {}) {
     if (!this.controller) throw new Error("Direct live text controller is unavailable.");
     try {
-      return await this.controller.handleRequest(String(method || ""), params || {}, {
+      const requestMethod = String(method || "");
+      const result = await this.controller.handleRequest(requestMethod, params || {}, {
         project: this.project,
         surfaceSession: this,
         connection: this.connection,
+        ownerControlled: true,
       });
+      if (requestMethod === "initialize" || requestMethod === "thread/start" || requestMethod === "thread/resume" || requestMethod === "thread/fork" || requestMethod === "thread/selectAccessProfile" || requestMethod === "thread/read" || requestMethod === "thread/rollback" || requestMethod === "exec_command") {
+        const taskId = normalizeString(
+          requestMethod === "exec_command"
+            ? params?.taskId || params?.threadId || this.activeThreadId
+            : result?.thread?.id || result?.thread?.threadId || params?.sessionId || params?.threadId,
+          "",
+        );
+        if (taskId) {
+          this.activeThreadId = taskId;
+          this.taskCapabilityProjection = this.controller.capabilitiesForTask
+            ? this.controller.capabilitiesForTask(this.project || {}, taskId)
+            : null;
+          if (this.taskCapabilityProjection) {
+            this.connection = {
+              ...(this.connection || {}),
+              capabilities: this.taskCapabilityProjection.capabilities,
+              directLiveText: this.taskCapabilityProjection.directLiveText,
+              taskBinding: this.taskCapabilityProjection.taskBinding,
+            };
+            this.emitStatus("connected");
+          }
+        }
+        if (!taskId) return result;
+        return {
+          ...(isPlainObject(result) ? result : { result }),
+          capabilities: this.taskCapabilityProjection?.capabilities || result?.capabilities,
+        };
+      }
+      return result;
     } catch (error) {
       throw normalizeDirectSurfaceRequestError(error);
     }
@@ -8365,6 +10881,8 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     if (!options.silent) this.emitStatus("disconnected", { error: options.reason || "" });
     this.connection = null;
     this.connectionId = "";
+    this.activeThreadId = "";
+    this.taskCapabilityProjection = null;
   }
 }
 

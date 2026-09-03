@@ -420,12 +420,15 @@ function indexEntryFromSession(session) {
     status: normalizeString(session.status, "created"),
     model: normalizeString(session.model, ""),
     reasoningEffort: normalizeString(session.reasoningEffort, ""),
+    serviceTier: normalizeString(session.serviceTier, ""),
     agentId: normalizeString(session.agentId, ""),
     agentRunId: normalizeString(session.agentRunId, ""),
     agentKind: normalizeString(session.agentKind, ""),
     agentThreadId: normalizeString(session.agentThreadId, sessionId),
     parentThreadId: normalizeString(session.parentThreadId, ""),
     primaryThreadId: normalizeString(session.primaryThreadId, ""),
+    historyHeadTurnId: normalizeString(session.historyHeadTurnId || turns.at(-1)?.turnId, ""),
+    historyHeadDigest: normalizeString(session.historyHeadDigest, ""),
     agentLabel: normalizeString(session.agentLabel, ""),
     agentRole: normalizeString(session.agentRole, ""),
     roleHandoffPacketId: normalizeString(session.roleHandoffPacketId, ""),
@@ -910,6 +913,7 @@ class DirectSessionStore {
       updatedAt: normalizeString(input.updatedAt, now),
       model: normalizeString(input.model, ""),
       reasoningEffort: normalizeString(input.reasoningEffort, ""),
+      serviceTier: normalizeString(input.serviceTier, ""),
       agentId: normalizeString(input.agentId, ""),
       agentRunId: normalizeString(input.agentRunId, ""),
       parentAgentId: normalizeString(input.parentAgentId, ""),
@@ -973,6 +977,73 @@ class DirectSessionStore {
     };
     this.writeSession(session);
     return session;
+  }
+
+  forkSession(sessionId, input = {}, options = {}) {
+    const sourceId = requireSafeId(sessionId, "source session");
+    const source = this.readSession(sourceId);
+    if (!source) throw new Error(`Direct session not found: ${sourceId}`);
+    const requestedId = normalizeString(input.sessionId || input.threadId, "");
+    const childId = requestedId ? requireSafeId(requestedId, "fork session") : normalizeId("", "direct_session");
+    if (childId === sourceId) throw new Error("Direct fork target must be a new session.");
+    if (this.readSession(childId)) throw new Error("Direct fork target session already exists.");
+    const now = nowIso(options.nowMs);
+    const sourceTurns = this.listTurnIdsFromDisk(sourceId)
+      .map((turnId) => this.readTurn(sourceId, turnId))
+      .filter((turn) => turn && turn.rolledBack !== true);
+    const sourceTurnIds = sourceTurns.map((turn) => turn.turnId);
+    const child = {
+      ...source,
+      sessionId: childId,
+      title: normalizeString(input.title, `${normalizeString(source.title, "Direct session")} (fork)`),
+      createdAt: normalizeString(input.createdAt, now),
+      updatedAt: normalizeString(input.updatedAt, now),
+      status: "created",
+      parentThreadId: source.sessionId,
+      primaryThreadId: normalizeString(source.primaryThreadId, source.sessionId),
+      agentId: normalizeString(input.agentId, ""),
+      agentRunId: normalizeString(input.agentRunId, ""),
+      agentThreadId: normalizeString(input.agentThreadId, childId),
+      clientTurnRequests: {},
+      sourceClass: "forked-direct-native",
+      nativeDirectSession: true,
+      providerContinuityAvailable: false,
+      continuityState: "local_history_fork",
+      harnessAccessProfile: normalizeString(input.harnessAccessProfile, source.harnessAccessProfile),
+      harnessGrantId: normalizeString(input.harnessGrantId, ""),
+      executionEnvironmentDigest: normalizeString(input.executionEnvironmentDigest, source.executionEnvironmentDigest),
+      parentForkLineage: isPlainObject(input.parentForkLineage)
+        ? input.parentForkLineage
+        : {
+            schema: "direct_thread_fork_lineage@1",
+            sourceThreadId: source.sessionId,
+            sourceTurnIds: sourceTurnIds.slice(),
+            sourceHistoryHeadTurnId: sourceTurnIds.at(-1) || "",
+            sourceHistoryHeadDigest: normalizeString(input.sourceHistoryHeadDigest, ""),
+            exactHistoryCopied: true,
+            providerContinuityHandleUsed: false,
+            rawPathExposed: false,
+          },
+    };
+    this.writeSession(child);
+    for (const sourceTurn of sourceTurns) {
+      const childTurn = {
+        ...sourceTurn,
+        sessionId: childId,
+        parentThreadId: normalizeString(sourceTurn.parentThreadId, source.sessionId),
+        sourceTurnId: sourceTurn.turnId,
+        forkedFromThreadId: source.sessionId,
+      };
+      this.writeTurn(childTurn);
+      const sourceEventPath = this.eventPath(sourceId, sourceTurn.turnId);
+      const childEventPath = this.eventPath(childId, sourceTurn.turnId);
+      if (fs.existsSync(sourceEventPath)) {
+        ensureDirectory(path.dirname(childEventPath));
+        fs.copyFileSync(sourceEventPath, childEventPath);
+      }
+    }
+    this.writeSession(child);
+    return child;
   }
 
   readTurn(sessionId, turnId) {
@@ -1082,6 +1153,7 @@ class DirectSessionStore {
       updatedAt: normalizeString(input.updatedAt, now),
       model: normalizeString(input.model, session.model),
       reasoningEffort: normalizeString(input.reasoningEffort, session.reasoningEffort),
+      serviceTier: normalizeString(input.serviceTier, session.serviceTier),
       profileSnapshotId: normalizeString(input.profileSnapshotId, session.profileSnapshotId),
       clientTurnRequestId: normalizeString(input.clientTurnRequestId, ""),
       requestBuiltAt: "",
@@ -1144,6 +1216,7 @@ class DirectSessionStore {
           updatedAt: turn.updatedAt,
           model: turn.model,
           reasoningEffort: turn.reasoningEffort,
+          serviceTier: turn.serviceTier,
           normalizedEventCount: 0,
           usageAttributionStatus: normalizeString(turn.usageAttribution?.status, ""),
           usageTotalTokensKnown: Number(turn.usageAttribution?.totals?.totalTokensKnown || 0),

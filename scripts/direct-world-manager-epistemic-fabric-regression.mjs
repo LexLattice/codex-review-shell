@@ -866,6 +866,528 @@ assert.throws(
 );
 pendingRuntime.close();
 
+// SC11.3 production seam: ordinary matching events remain durably pending
+// during one bounded debounce window, then coalesce into one exact delivery.
+const debounceRootDir = fs.mkdtempSync(
+  path.join(os.tmpdir(), "direct-epistemic-debounce-"),
+);
+const debounceDbPath = path.join(
+  debounceRootDir,
+  "world-manager-epistemic-ledger.sqlite",
+);
+const scheduledFlushes = [];
+const cancelledFlushes = [];
+const debounceScheduler = {
+  schedule(callback, delayMs) {
+    const task = { callback, delayMs, cancelled: false };
+    scheduledFlushes.push(task);
+    return task;
+  },
+  cancel(task) {
+    task.cancelled = true;
+    cancelledFlushes.push(task);
+  },
+};
+const debounceRuntime = new DirectWorldManagerEpistemicFabricRuntime({
+  dbPath: debounceDbPath,
+  now,
+  scheduler: debounceScheduler,
+});
+debounceRuntime.bootstrap({ projectIds: [projectId] });
+const debounceStanding = buildNotificationStanding({
+  standingId: `project_manager_debounce:${projectId}`,
+  subscriberRoleRef: ref("role_instance", "project_manager_debounce"),
+  subscriberScope: {
+    kind: "project",
+    userWorldId: "user_world_local",
+    projectId,
+  },
+  sourceStreamPatterns: [`project:${projectId}`],
+  eventActTypeRefs: [],
+  epistemicPostures: ["observed", "challenged"],
+  objectScopeRefs: [],
+  materialityPredicateRef: ref(
+    "materiality_policy",
+    "project_manager_debounce",
+  ),
+  deliveryPolicy: "safe_boundary",
+  wakePolicy: "never",
+  coalescingPolicyRef: ref("coalescing_policy", "semantic_scope"),
+  evidenceVisibilityPolicyRef: ref(
+    "evidence_visibility_policy",
+    "project_bounded",
+  ),
+  operationalPolicy: {
+    debounceWindowMs: 250,
+    maximumEventsPerDelivery: 24,
+    maximumPendingEvents: 256,
+    maximumQueuedDeliveries: 64,
+    maximumWakeFrequencyMs: 2_000,
+    priorityThreshold: "normal",
+    coalescingKey: "semantic_scope",
+    supersessionBehavior: "latest_per_object",
+  },
+  revision: 1,
+}, { now });
+debounceRuntime.broker.registerStanding(debounceStanding);
+debounceRuntime.persistBroker();
+const debounceBundle = debounceRuntime.compileRoleTools({
+  roleLane: "implementation_worker",
+  projectId,
+  actorRef: ref("agent", "debounce_worker"),
+  agentWorldRef: ref("agent_world", "debounce_worker_world"),
+  authorityBoundaryRef: ref(
+    "authority_boundary",
+    "debounce_worker_boundary",
+  ),
+});
+function debounceAppend(idempotencyKey, objectId) {
+  return debounceRuntime.invokeLedgerTool({
+    bundle: debounceBundle,
+    operationName: "ledger_publish_observation",
+    arguments: {
+      subjectScope: {
+        kind: "project",
+        userWorldId: "user_world_local",
+        projectId,
+      },
+      objectRefs: [ref("debounce_object", objectId)],
+      evidenceRefs: [],
+      affectsRefs: [],
+      expectedRevisionVector: [],
+      semanticPayload: { observation: objectId },
+      rendererSafeSummary: `Debounce observation ${objectId}.`,
+      idempotencyKey,
+    },
+    visibleEvidenceRefs: [],
+  });
+}
+const firstDebounceAppend = debounceAppend("debounce-observation-1", "one");
+assert.equal(firstDebounceAppend.append.routing.deliveries.length, 0);
+assert.equal(scheduledFlushes.length, 1);
+assert.equal(debounceRuntime.status().pendingFlushScheduled, true);
+assert.equal(
+  debounceRuntime.ledgerStore.listPendingOutboxEntries().length,
+  1,
+);
+assert.equal(
+  debounceRuntime.ledgerStore.listPendingOutboxEntries()[0].dispatchState,
+  "pending",
+);
+const secondDebounceAppend = debounceAppend("debounce-observation-2", "two");
+assert.equal(secondDebounceAppend.append.routing.deliveries.length, 0);
+assert.equal(scheduledFlushes.length, 1, "only one runtime timer is pending");
+assert.equal(debounceRuntime.broker.pending.size, 1);
+assert.equal(
+  debounceRuntime.ledgerStore.listPendingOutboxEntries().length,
+  2,
+);
+tick += 300;
+scheduledFlushes[0].callback();
+const debounceDeliveries = [
+  ...debounceRuntime.broker.deliveries.values(),
+].filter((delivery) =>
+  delivery.subscriptionRef.id === debounceStanding.standingId);
+assert.equal(debounceDeliveries.length, 1);
+assert.deepEqual(
+  debounceDeliveries[0].eventRefs.map((eventRef) => eventRef.id),
+  [
+    firstDebounceAppend.append.event.ledgerEventId,
+    secondDebounceAppend.append.event.ledgerEventId,
+  ],
+);
+assert.equal(
+  debounceRuntime.ledgerStore.listPendingOutboxEntries().length,
+  0,
+);
+const dispatchedDebounceSeeds = debounceRuntime.ledgerStore.listOutboxEntries({
+  dispatchState: "dispatched",
+}).filter((entry) => entry.seed.subscriptionRef.id === debounceStanding.standingId);
+assert.equal(dispatchedDebounceSeeds.length, 2);
+for (const entry of dispatchedDebounceSeeds) {
+  assert.deepEqual(entry.deliveryRef, {
+    kind: "ledger_delivery",
+    id: debounceDeliveries[0].deliveryId,
+    digest: debounceDeliveries[0].deliveryDigest,
+  });
+}
+// The production standing uses latest-per-object supersession for the bounded
+// projection, while the delivery retains both exact event refs so neither
+// durable outbox seed is stranded.
+const sameObjectFirst = debounceAppend("debounce-same-object-1", "same");
+const sameObjectSecond = debounceAppend("debounce-same-object-2", "same");
+assert.equal(scheduledFlushes.length, 2);
+tick += 300;
+scheduledFlushes.at(-1).callback();
+assert.equal(
+  debounceRuntime.ledgerStore.listPendingOutboxEntries()
+    .filter((entry) => entry.seed.subscriptionRef.id === debounceStanding.standingId)
+    .length,
+  0,
+);
+const sameObjectDeliveries = [...debounceRuntime.broker.deliveries.values()]
+  .filter((delivery) => delivery.subscriptionRef.id === debounceStanding.standingId)
+  .filter((delivery) => delivery.eventRefs.some((eventRef) =>
+    eventRef.id === sameObjectFirst.append.event.ledgerEventId ||
+    eventRef.id === sameObjectSecond.append.event.ledgerEventId));
+assert.equal(sameObjectDeliveries.length, 1);
+assert.deepEqual(
+  sameObjectDeliveries[0].eventRefs.map((eventRef) => eventRef.id)
+    .sort((left, right) => left.localeCompare(right)),
+  [
+    sameObjectFirst.append.event.ledgerEventId,
+    sameObjectSecond.append.event.ledgerEventId,
+  ].sort((left, right) => left.localeCompare(right)),
+);
+assert.equal(sameObjectDeliveries[0].boundedProjection.eventCount, 1);
+const pendingBeforeBypass = debounceAppend("debounce-before-bypass", "queued");
+assert.equal(scheduledFlushes.length, 3);
+const immediateDebounceAppend = debounceRuntime.invokeLedgerTool({
+  bundle: debounceBundle,
+  operationName: "ledger_raise_contradiction",
+  arguments: {
+    subjectScope: {
+      kind: "project",
+      userWorldId: "user_world_local",
+      projectId,
+    },
+    objectRefs: [ref("debounce_object", "urgent")],
+    evidenceRefs: [],
+    affectsRefs: [],
+    expectedRevisionVector: [],
+    semanticPayload: { contradictionType: "urgent_fixture" },
+    rendererSafeSummary: "Urgent debounce bypass fixture.",
+    idempotencyKey: "debounce-urgent-1",
+  },
+  visibleEvidenceRefs: [],
+});
+const immediateDebounceDeliveries =
+  immediateDebounceAppend.append.routing.deliveries.filter((delivery) =>
+    delivery.subscriptionRef.id === debounceStanding.standingId);
+assert.equal(immediateDebounceDeliveries.length, 1);
+assert.deepEqual(
+  immediateDebounceDeliveries[0].eventRefs.map((eventRef) => eventRef.id)
+    .sort((left, right) => left.localeCompare(right)),
+  [
+    pendingBeforeBypass.append.event.ledgerEventId,
+    immediateDebounceAppend.append.event.ledgerEventId,
+  ].sort((left, right) => left.localeCompare(right)),
+);
+assert.equal(
+  debounceRuntime.ledgerStore.listPendingOutboxEntries().length,
+  0,
+  "an immediate flush also reconciles earlier buffered seeds",
+);
+assert.equal(debounceRuntime.status().pendingFlushScheduled, false);
+const cancelledAppend = debounceAppend("debounce-observation-3", "three");
+assert.equal(cancelledAppend.append.routing.deliveries.length, 0);
+assert.equal(scheduledFlushes.length, 4);
+const cancelledTask = scheduledFlushes.at(-1);
+debounceRuntime.close();
+assert.equal(cancelledTask.cancelled, true);
+assert.equal(cancelledFlushes.length, 2);
+assert.equal(scheduledFlushes[2].cancelled, true);
+// A callback already queued by the host after close is harmless and cannot
+// flush or reopen the closed runtime.
+cancelledTask.callback();
+const restartedDebounceRuntime = new DirectWorldManagerEpistemicFabricRuntime({
+  dbPath: debounceDbPath,
+  now,
+  scheduler: debounceScheduler,
+});
+restartedDebounceRuntime.bootstrap({ projectIds: [projectId] });
+assert.equal(
+  restartedDebounceRuntime.ledgerStore.listPendingOutboxEntries().length,
+  0,
+);
+assert.ok([...restartedDebounceRuntime.broker.deliveries.values()].some((delivery) =>
+  delivery.eventRefs.some((eventRef) =>
+    eventRef.id === cancelledAppend.append.event.ledgerEventId)));
+restartedDebounceRuntime.close();
+fs.rmSync(debounceRootDir, { recursive: true, force: true });
+
+// A newly created pending group can have an earlier deadline than the timer
+// installed for an older group. The runtime keeps one timer, cancels the
+// later timer, and delivers the earlier group without waiting past its own
+// debounce window.
+const deadlineRootDir = fs.mkdtempSync(
+  path.join(os.tmpdir(), "direct-epistemic-deadline-")
+);
+const deadlineDbPath = path.join(
+  deadlineRootDir,
+  "world-manager-epistemic-ledger.sqlite",
+);
+const deadlineScheduled = [];
+const deadlineCancelled = [];
+const deadlineScheduler = {
+  schedule(callback, delayMs) {
+    const task = { callback, delayMs, cancelled: false };
+    deadlineScheduled.push(task);
+    return task;
+  },
+  cancel(task) {
+    task.cancelled = true;
+    deadlineCancelled.push(task);
+  },
+};
+const deadlineRuntime = new DirectWorldManagerEpistemicFabricRuntime({
+  dbPath: deadlineDbPath,
+  now,
+  scheduler: deadlineScheduler,
+});
+deadlineRuntime.bootstrap({ projectIds: [] });
+function deadlineStanding(standingId, objectId, debounceWindowMs) {
+  return buildNotificationStanding({
+    standingId,
+    subscriberRoleRef: ref("role_instance", standingId),
+    subscriberScope: {
+      kind: "project",
+      userWorldId: "user_world_local",
+      projectId,
+    },
+    sourceStreamPatterns: [`project:${projectId}`],
+    eventActTypeRefs: [],
+    epistemicPostures: ["observed"],
+    objectScopeRefs: [ref("deadline_object", objectId)],
+    materialityPredicateRef: ref("materiality_policy", standingId),
+    deliveryPolicy: "safe_boundary",
+    wakePolicy: "never",
+    coalescingPolicyRef: ref("coalescing_policy", standingId),
+    evidenceVisibilityPolicyRef: ref(
+      "evidence_visibility_policy",
+      "project_bounded",
+    ),
+    operationalPolicy: {
+      debounceWindowMs,
+      maximumEventsPerDelivery: 24,
+      maximumPendingEvents: 256,
+      maximumQueuedDeliveries: 64,
+      maximumWakeFrequencyMs: 2_000,
+      priorityThreshold: "normal",
+      coalescingKey: "subscription",
+      supersessionBehavior: "retain_all",
+    },
+    revision: 1,
+  }, { now });
+}
+const longDeadlineStanding = deadlineStanding(
+  "deadline_long",
+  "long",
+  1_000,
+);
+const earlyDeadlineStanding = deadlineStanding(
+  "deadline_early",
+  "early",
+  100,
+);
+deadlineRuntime.broker.registerStanding(longDeadlineStanding);
+deadlineRuntime.broker.registerStanding(earlyDeadlineStanding);
+deadlineRuntime.persistBroker();
+const deadlineBundle = deadlineRuntime.compileRoleTools({
+  roleLane: "implementation_worker",
+  projectId,
+  actorRef: ref("agent", "deadline_worker"),
+  agentWorldRef: ref("agent_world", "deadline_worker_world"),
+  authorityBoundaryRef: ref(
+    "authority_boundary",
+    "deadline_worker_boundary",
+  ),
+});
+function deadlineAppend(idempotencyKey, objectId) {
+  return deadlineRuntime.invokeLedgerTool({
+    bundle: deadlineBundle,
+    operationName: "ledger_publish_observation",
+    arguments: {
+      subjectScope: {
+        kind: "project",
+        userWorldId: "user_world_local",
+        projectId,
+      },
+      objectRefs: [ref("deadline_object", objectId)],
+      evidenceRefs: [],
+      affectsRefs: [],
+      expectedRevisionVector: [],
+      semanticPayload: { observation: objectId },
+      rendererSafeSummary: `Deadline observation ${objectId}.`,
+      idempotencyKey,
+    },
+    visibleEvidenceRefs: [],
+  });
+}
+const longDeadlineAppend = deadlineAppend("deadline-long-1", "long");
+assert.equal(longDeadlineAppend.append.routing.deliveries.length, 0);
+assert.equal(deadlineRuntime.broker.pending.size, 1);
+assert.equal(deadlineScheduled.length, 1);
+const firstDeadlineTask = deadlineScheduled[0];
+const earlyDeadlineAppend = deadlineAppend("deadline-early-1", "early");
+assert.equal(earlyDeadlineAppend.append.routing.deliveries.length, 0);
+assert.equal(deadlineRuntime.broker.pending.size, 2);
+assert.equal(deadlineScheduled.length, 2);
+assert.equal(deadlineCancelled.length, 1);
+assert.equal(deadlineCancelled[0], firstDeadlineTask);
+assert.equal(firstDeadlineTask.cancelled, true);
+assert.ok(
+  deadlineScheduled[1].delayMs < firstDeadlineTask.delayMs,
+  "an earlier pending deadline must reschedule the sole runtime timer",
+);
+assert.equal(
+  deadlineRuntime.ledgerStore.listPendingOutboxEntries().length,
+  2,
+);
+tick += 200;
+deadlineScheduled[1].callback();
+const earlyDeadlineDeliveries = [
+  ...deadlineRuntime.broker.deliveries.values(),
+].filter((delivery) =>
+  delivery.subscriptionRef.id === earlyDeadlineStanding.standingId);
+const longDeadlineDeliveries = [
+  ...deadlineRuntime.broker.deliveries.values(),
+].filter((delivery) =>
+  delivery.subscriptionRef.id === longDeadlineStanding.standingId);
+assert.equal(earlyDeadlineDeliveries.length, 1);
+assert.equal(longDeadlineDeliveries.length, 0);
+assert.deepEqual(
+  earlyDeadlineDeliveries[0].eventRefs.map((eventRef) => eventRef.id),
+  [earlyDeadlineAppend.append.event.ledgerEventId],
+);
+assert.equal(
+  deadlineRuntime.ledgerStore.listPendingOutboxEntries().length,
+  1,
+  "the long-window seed remains pending until its exact delivery exists",
+);
+assert.equal(deadlineScheduled.length, 3);
+assert.equal(deadlineScheduled[2].cancelled, false);
+tick += 1_000;
+deadlineScheduled[2].callback();
+const completedLongDeadlineDeliveries = [
+  ...deadlineRuntime.broker.deliveries.values(),
+].filter((delivery) =>
+  delivery.subscriptionRef.id === longDeadlineStanding.standingId);
+assert.equal(completedLongDeadlineDeliveries.length, 1);
+assert.deepEqual(
+  completedLongDeadlineDeliveries[0].eventRefs.map((eventRef) => eventRef.id),
+  [longDeadlineAppend.append.event.ledgerEventId],
+);
+assert.equal(deadlineRuntime.ledgerStore.listPendingOutboxEntries().length, 0);
+deadlineRuntime.close();
+assert.equal(deadlineRuntime.pendingFlushTimer, null);
+fs.rmSync(deadlineRootDir, { recursive: true, force: true });
+
+// SC11.5 backpressure seam: an expired pending debounce group must not spin
+// zero-delay timers while a subscription queue is full.  Releasing capacity
+// through the real delivery transition wakes the group exactly once.
+const pressureRootDir = fs.mkdtempSync(
+  path.join(os.tmpdir(), "direct-epistemic-backpressure-"),
+);
+const pressureDbPath = path.join(
+  pressureRootDir,
+  "world-manager-epistemic-ledger.sqlite",
+);
+let pressureTick = Date.parse("2026-08-01T16:00:00.000Z");
+const pressureNow = () => pressureTick;
+const pressureScheduled = [];
+const pressureCancelled = [];
+const pressureScheduler = {
+  schedule(callback, delayMs) {
+    const task = { callback, delayMs, cancelled: false };
+    pressureScheduled.push(task);
+    return task;
+  },
+  cancel(task) {
+    task.cancelled = true;
+    pressureCancelled.push(task);
+  },
+};
+const pressureAgentRef = ref("agent", "pressure_project_manager");
+const pressureRuntime = new DirectWorldManagerEpistemicFabricRuntime({
+  dbPath: pressureDbPath,
+  now: pressureNow,
+  scheduler: pressureScheduler,
+  contextImporter: async ({ hydrationRequest }) => ({
+    bundleRef: ref("semantic_context_bundle", "pressure_bundle"),
+    operationalManifestRef: ref("operational_meta_context_manifest", "pressure_manifest"),
+    selectionWitnessRef: ref("semantic_context_selection_witness", "pressure_selection"),
+    selectedObjectRefs: hydrationRequest.requestedObjectRefs,
+    selectedEvidenceRefs: hydrationRequest.requestedEvidenceRefs,
+    omittedRefs: [],
+    freshness: "fresh",
+  }),
+});
+pressureRuntime.bootstrap({ projectIds: [] });
+const pressureStanding = buildNotificationStanding({
+  standingId: `project_manager_pressure:${projectId}`,
+  subscriberRoleRef: ref("role_instance", "pressure_project_manager"),
+  subscriberScope: { kind: "project", userWorldId: "user_world_local", projectId },
+  sourceStreamPatterns: [`project:${projectId}`],
+  eventActTypeRefs: [],
+  epistemicPostures: ["observed", "challenged"],
+  objectScopeRefs: [],
+  materialityPredicateRef: ref("materiality_policy", "pressure_materiality"),
+  deliveryPolicy: "safe_boundary",
+  wakePolicy: "never",
+  coalescingPolicyRef: ref("coalescing_policy", "pressure_scope"),
+  evidenceVisibilityPolicyRef: ref("evidence_visibility_policy", "project_bounded"),
+  operationalPolicy: {
+    debounceWindowMs: 250,
+    maximumEventsPerDelivery: 24,
+    maximumPendingEvents: 256,
+    maximumQueuedDeliveries: 1,
+    maximumWakeFrequencyMs: 2_000,
+    priorityThreshold: "normal",
+    coalescingKey: "subscription",
+    supersessionBehavior: "retain_all",
+  },
+  revision: 1,
+}, { now: pressureNow });
+pressureRuntime.broker.registerStanding(pressureStanding);
+pressureRuntime.persistBroker();
+const pressureBundle = pressureRuntime.compileRoleTools({
+  roleLane: "implementation_worker",
+  projectId,
+  actorRef: ref("agent", "pressure_worker"),
+  agentWorldRef: ref("agent_world", "pressure_worker_world"),
+  authorityBoundaryRef: ref("authority_boundary", "pressure_worker_boundary"),
+});
+const pressureAppend = (operationName, idempotencyKey, objectId) => pressureRuntime.invokeLedgerTool({
+  bundle: pressureBundle,
+  operationName,
+  arguments: {
+    subjectScope: { kind: "project", userWorldId: "user_world_local", projectId },
+    objectRefs: [ref("pressure_object", objectId)],
+    evidenceRefs: [],
+    affectsRefs: [],
+    expectedRevisionVector: [],
+    semanticPayload: { observation: objectId },
+    rendererSafeSummary: `Pressure observation ${objectId}.`,
+    idempotencyKey,
+  },
+  visibleEvidenceRefs: [],
+});
+const occupied = pressureAppend("ledger_raise_contradiction", "pressure-occupied", "occupied");
+const occupiedDelivery = occupied.append.routing.deliveries.find((delivery) =>
+  delivery.subscriptionRef.id === pressureStanding.standingId);
+assert.ok(occupiedDelivery, "first pressure event should occupy the delivery queue");
+const blocked = pressureAppend("ledger_publish_observation", "pressure-blocked", "blocked");
+assert.equal(blocked.append.routing.deliveries.length, 0);
+assert.equal(pressureScheduled.length, 1);
+pressureTick += 300;
+const blockedTimer = pressureScheduled[0];
+blockedTimer.callback();
+assert.equal(pressureScheduled.length, 2, "backpressure retry should use one bounded timer");
+assert(pressureScheduled[1].delayMs > 0, "backpressure retry must not reschedule at zero delay");
+assert.equal(pressureRuntime.broker.pending.size, 1, "pending match must survive queue backpressure");
+await pressureRuntime.importDeliveryContext(occupiedDelivery.deliveryId);
+assert.equal(pressureRuntime.broker.deliveries.get(occupiedDelivery.deliveryId).deliveryPosture, "delivered");
+assert.equal(pressureScheduled.length, 3, "delivery transition should wake the pending group");
+assert.equal(pressureScheduled[2].delayMs, 0, "capacity release should be event-driven");
+pressureScheduled[2].callback();
+const pressureDeliveries = [...pressureRuntime.broker.deliveries.values()].filter((delivery) =>
+  delivery.subscriptionRef.id === pressureStanding.standingId);
+assert.equal(pressureDeliveries.length, 2, "pending group should flush exactly once after release");
+assert.equal(pressureRuntime.broker.pending.size, 0);
+pressureRuntime.close();
+fs.rmSync(pressureRootDir, { recursive: true, force: true });
+
 fs.rmSync(rootDir, { recursive: true, force: true });
 
 console.log(JSON.stringify({
@@ -894,5 +1416,10 @@ console.log(JSON.stringify({
   completedDeliveryImportIdempotent: true,
   wakeRequiresAdapterConfirmation: true,
   restartRebuildsDerivedInvalidations: true,
+  productionDebounceScheduling: true,
+  productionEligibleEventsCoalesced: true,
+  productionOutboxSeedsReconciled: true,
+  productionImmediateBypass: true,
+  productionCloseRestartRecovery: true,
   pollingRequired: false,
 }, null, 2));

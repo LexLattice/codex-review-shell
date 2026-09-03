@@ -1,0 +1,135 @@
+{
+  "schema": "direct-semantic-service-dss05-generation-manifest.v1",
+  "status": "FROZEN_SEMANTIC_CONSTRUCTION_IMPLEMENTATION_WITHHELD",
+  "subject": "Direct Semantic Service DSS-0.5 real closed-page backend semantic slice",
+  "generation": 1,
+  "moduleId": "direct.semantic-service.dss05.real-closed-page.generation-1",
+  "semanticCandidateCommit": "26222f9bd695efadb0102d666fd1631ae6e71785",
+  "semanticModuleDigest": "sha256:70f1b66394f19d3de5fc32925c858f8dcfcf2bc28e5d7c00f307744ec9f7350a",
+  "predecessor": {
+    "dss04SemanticCandidate": "04c6437522779c060c2c3f3e3050a42ca0b77a1f",
+    "dss04SemanticPassClosure": "55ef4eef5811cdc753bb810f773564bf11359b5c",
+    "dss04ImplementationSource": "6a1facfa7999b7042304de97e64c1463cff8c09b",
+    "dss04LocalClosure": "docs/operations/direct-dss04-realization/local_implementation_closure.v1.json"
+  },
+  "compilerCommit": "2dec60ee75178b98b9ae517a576002519e1f0f81",
+  "compilerTree": "e164a47da90001899f1e15ecb2f9b35b56968814",
+  "combinedFreezeDigest": "sha256:0d29f80d9c66f9f1c5aae0e39139fb4c6add536b3468099070894664454b82ac",
+  "combinedFreezeDigestLaw": "Dss05.Generation1.FrozenSubject.v1 over exact contract/declaration/compiler/neighbor/custody artifacts; local construction commit is recorded after this manifest without circular rebinding",
+  "artifacts": [
+    {
+      "path": "docs/DIRECT_SEMANTIC_SERVICE_DSS05_IMPLEMENTATION_CONTRACT.md",
+      "role": "NORMATIVE_CONTRACT",
+      "sha256": "e743b83944fcbf6a5fb746d684233fa9b412c798fca393c8013aec8d176639cf",
+      "byteLength": 8817
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss05-generation-1/module.v0.json",
+      "role": "SEMANTIC_DECLARATION",
+      "sha256": "70f1b66394f19d3de5fc32925c858f8dcfcf2bc28e5d7c00f307744ec9f7350a",
+      "byteLength": 116628
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss05-generation-1/tests_first_contract.v1.json",
+      "role": "TESTS_FIRST_CONTRACT",
+      "sha256": "c2e34c0bc785b66fffb969ae36203a3d54e1f8f8ce3cce660fea91fc56e63e22",
+      "byteLength": 22773
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss05-generation-1/critical_neighbor_matrix.v1.json",
+      "role": "CRITICAL_NEIGHBOR_MATRIX",
+      "sha256": "ca59ae0c6eb47ba5c64900042f7436718eee4e2287831a72c98dd1eac707cbd2",
+      "byteLength": 7806
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss05-generation-1/intervention_matrix.v1.json",
+      "role": "INTERVENTION_MATRIX",
+      "sha256": "08226001d7d21b6a7f771536f577594560e4244ee4319cf88adb94b723904a87",
+      "byteLength": 4615
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss05-generation-1/surface_reconciliation.v1.json",
+      "role": "SURFACE_RECONCILIATION",
+      "sha256": "40e06fe628eb5ecfbeb9a530ff97cdd39828b21c5e40b238ca6784f628b8ea7a",
+      "byteLength": 2854
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss05-generation-1/noncritical_risk_ledger.v1.json",
+      "role": "NONCRITICAL_RISK_LEDGER",
+      "sha256": "fa681e671488d6745f5438f1496418fb7ae7f7564aefb7aa84bcd3855c8701cc",
+      "byteLength": 1307
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss05-generation-1/construction_input.v1.json",
+      "role": "CONSTRUCTION_INPUT",
+      "sha256": "8bc834d7a7e8fdad922c6db6024058bd39f5330f3b51740a23185ead6c7f8be8",
+      "byteLength": 1371
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss05-generation-1/compiler_pin.v1.json",
+      "role": "EXTERNAL_COMPILER_PIN",
+      "sha256": "6cb9494194739c43e2e79dfa33e86ec120e0801d09e5732258539f626bb88ecb",
+      "byteLength": 3620
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss05-generation-1/compilation.v0.json",
+      "role": "BASE_COMPILATION",
+      "sha256": "d1526aaeeaf3e34b62b736786de6dc3054f0498c5906c40d7d7d31717201e41e",
+      "byteLength": 272810
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss05-generation-1/compilation.learning.v1.json",
+      "role": "LEARNED_COMPILATION",
+      "sha256": "85afbf2dbef915a4ca7d6ed98f8b38c98c042a0a5811f9c1e482ea30a80eae0e",
+      "byteLength": 564549
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss05-generation-1/compiler_custody_receipt.v1.json",
+      "role": "EXTERNAL_COMPILER_CUSTODY_RECEIPT",
+      "sha256": "1799bb56d9e854bcdf99897ebb7b4a2fc34df9d14a4949235cc9164704176615",
+      "byteLength": 1914
+    },
+    {
+      "path": "scripts/build-direct-semantic-service-dss05-semantic-construction.mjs",
+      "role": "DECLARATION_BUILDER",
+      "sha256": "d03023d667d547748ba67f510eec6429a77ef02ac8203af0b61ce01db97f6beb",
+      "byteLength": 58888
+    },
+    {
+      "path": "scripts/freeze-direct-semantic-service-dss05-semantic-construction.mjs",
+      "role": "FAIL_CLOSED_FREEZE_VERIFIER",
+      "sha256": "d5d40826312182f1aa75f2a2e742ca23dc534dfbbd06dde40371e9b3cfd64b78",
+      "byteLength": 15950
+    }
+  ],
+  "populations": {
+    "carriers": 12,
+    "operations": 14,
+    "qualifiedTransitions": 47,
+    "projectSurfaces": 53,
+    "baseObligations": 321,
+    "learnedObligations": 638,
+    "staticRemands": 0,
+    "criticalNeighbors": 11,
+    "interventions": 11
+  },
+  "authority": {
+    "effect": "NONE",
+    "granted": [
+      "one bounded semantic construction and freeze for project-owner critical review"
+    ],
+    "withheld": [
+      "runtime implementation",
+      "provider/network/credential use",
+      "Spark/live-provider admission",
+      "companion audit",
+      "merge",
+      "push",
+      "promotion",
+      "commissioning",
+      "activation",
+      "DSS-0.6 UI or institutional handoff",
+      "compiler/kernel modification"
+    ]
+  }
+}

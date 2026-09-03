@@ -4,7 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { stagePaths, removeDraft, buildAttachmentReferenceBlock } = require("../src/main/attachment-staging-store.js");
+const { stagePaths, removeDraft, readStagedAttachmentPayload, buildAttachmentReferenceBlock } = require("../src/main/attachment-staging-store.js");
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-review-shell-attachments-"));
 const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-review-shell-attachments-ext-"));
@@ -30,6 +30,20 @@ try {
   await assert(externalDraft.kind === "image", "png should be classified as image");
   await assert(Boolean(externalDraft.stagedRelPath), "external file should be staged");
   await assert(!externalDraft.sourcePath, "external raw source path must not be projected");
+  const stagedPayload = await readStagedAttachmentPayload(project, externalDraft);
+  await assert(stagedPayload?.buffer.equals(await fs.readFile(externalFile)), "valid staged payload should be read through the bounded handle");
+  const stagedPath = path.join(root, externalDraft.stagedRelPath);
+  await fs.rm(stagedPath);
+  await fs.symlink(externalFile, stagedPath);
+  const symlinkPayload = await readStagedAttachmentPayload(project, externalDraft);
+  await assert(symlinkPayload === null, "a staged symlink replacement must fail closed without reading its target");
+  await fs.rm(stagedPath);
+  await fs.writeFile(stagedPath, await fs.readFile(externalFile));
+  const oversizedBytes = 26 * 1024 * 1024;
+  await fs.truncate(stagedPath, oversizedBytes);
+  const oversizedPayload = await readStagedAttachmentPayload(project, externalDraft);
+  await assert(oversizedPayload === null, "oversized staged payload must fail closed before allocation");
+  await assert((await fs.stat(stagedPath)).size === oversizedBytes, "oversized staged payload rejection must preserve the staged file");
   await removeDraft(project, externalDraft.id);
 
   const dirPath = path.join(externalRoot, "dir");

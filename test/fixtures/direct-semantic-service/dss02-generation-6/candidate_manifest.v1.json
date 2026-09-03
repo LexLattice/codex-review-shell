@@ -1,0 +1,258 @@
+{
+  "schema": "direct-semantic-service-dss02-candidate-manifest@1",
+  "subject": "DSS-0.2 durable job kernel generation 6",
+  "generation": 6,
+  "candidateCommit": null,
+  "frozenParentCommit": "8d5a45bb7a8534d1b801975c49ea32015f2a9c0a",
+  "predecessorCandidateCommit": "7fc76558f29623701e2aeebb234e1cfb4d858e95",
+  "semanticCompilerCommit": "5e05af80d2bce6b2132cfd263c34507f894f127c",
+  "moduleId": "direct.semantic-service.dss02-durable-job-kernel.generation-6.v0",
+  "verificationModuleId": "direct.semantic-service.dss02-durable-job-kernel.generation-6.v1",
+  "standing": "preimplementation_candidate_only",
+  "semanticModuleDigest": "8d52528b48cb2577c41b97c40be889bd62d7b583bad37bc848fd0f2d03d3ba93",
+  "verificationExtensionDigest": "515d5c877ffd9a2a0df29080ecf11da6c135be30da5801cb7a9c2369bff32c5d",
+  "compilerReceipts": {
+    "v0": {
+      "verdict": "OBLIGATIONS_EMITTED",
+      "obligationCount": 865,
+      "staticRemandCount": 0
+    },
+    "v1": {
+      "verdict": "OBLIGATIONS_EMITTED",
+      "obligationCount": 3204,
+      "staticRemandCount": 0
+    }
+  },
+  "surfacePartition": {
+    "equation": "P = M disjoint-union X",
+    "pCount": 912,
+    "mCount": 900,
+    "xCount": 12,
+    "intersectionCount": 0,
+    "uncoveredCount": 0,
+    "outsideUniverseCount": 0,
+    "pDigest": "6b5a5b7a073411e67f935374c6270a2ee69313ee77c05e9d76def28bd0b0852d",
+    "mDigest": "ee92452243edb8f90e92df22edf373c220ccd54cfdef08e26cc664c887305b85",
+    "xDigest": "684f9cae60f8352b22781a2a5fd4b8793c7317c2be21271b27a25522287d1c5c",
+    "mechanicallyChecked": true
+  },
+  "independentDiscovery": {
+    "classes": [
+      "CARRIER_DECLARATION",
+      "CARRIER_DEPENDENCY",
+      "CARRIER_INPUT",
+      "CARRIER_LIFECYCLE",
+      "CURRENT_SOURCE",
+      "LIFECYCLE_TRANSITION_BINDING",
+      "NORMATIVE_OBJECT",
+      "OPERATION_DECLARATION",
+      "OPERATION_INPUT",
+      "OPERATION_OUTPUT",
+      "PERSISTENCE_PROOF",
+      "STORE_POPULATION"
+    ],
+    "occurrenceCount": 787,
+    "surfaceRefs": [
+      "clock.authorization-time",
+      "clock.daemon-generation",
+      "clock.sqlite-global-sequence",
+      "consumer.cli-electron-codex-clients",
+      "grant.daemon-credential-bootstrap",
+      "grant.daemon-operation-credential",
+      "grant.job-mutation-lease",
+      "grant.owner-profile-provisioning",
+      "grant.semantic-request-operation",
+      "grant.service-administration",
+      "interface.authorization-proof",
+      "interface.direct-semantic-cli",
+      "interface.direct-semantic-unix-socket",
+      "interface.protected-credential-fd",
+      "mutation.authority-lineage-transaction",
+      "mutation.authorization-challenge-consumption",
+      "mutation.bootstrap-attempt-claim",
+      "mutation.capacity-counter-update",
+      "mutation.cas-publish-before-reference",
+      "mutation.custody-key-rotation",
+      "mutation.delivery-cursor-advance",
+      "mutation.dispatch-boundary-transition",
+      "mutation.idempotency-admission",
+      "mutation.sqlite-immediate-transaction",
+      "mutation.waiter-slot-transition",
+      "object.authorization-challenge",
+      "object.authorization-proof-digest",
+      "object.authorized-safe-projection",
+      "object.backpressure-observation",
+      "object.bootstrap-attempt-receipt",
+      "object.bootstrap-authorization-receipt",
+      "object.cancellation-decision",
+      "object.capability-verifier-record",
+      "object.cas-artifact",
+      "object.custody-key-revision",
+      "object.custody-key-rotation",
+      "object.daemon-generation",
+      "object.delivery-acknowledgment",
+      "object.delivery-attempt",
+      "object.delivery-cursor",
+      "object.delivery-subscription",
+      "object.idempotency-binding",
+      "object.job-derived-heads",
+      "object.job-event-ledger",
+      "object.job-mutation-lease",
+      "object.later-tranche-dispatch-boundary",
+      "object.owner-bootstrap-commitment",
+      "object.owner-bootstrap-root-pin",
+      "object.quarantined-artifact",
+      "object.recovery-disposition",
+      "object.request-authorization-receipt",
+      "object.schema-migration-revision",
+      "object.semantic-job-receipt",
+      "object.semantic-job-request",
+      "object.semantic-principal-lineage",
+      "operation.acknowledge-delivery",
+      "operation.acquire-job-lease",
+      "operation.admit-durable-job",
+      "operation.append-authenticated-event",
+      "operation.apply-backpressure",
+      "operation.authorize-bootstrap",
+      "operation.authorize-owner-profile-provisioning",
+      "operation.bootstrap-daemon-authority",
+      "operation.create-delivery-subscription",
+      "operation.decide-cancellation",
+      "operation.dispose-quarantined-artifact",
+      "operation.handoff-later-tranche",
+      "operation.issue-authorization-challenge",
+      "operation.issue-daemon-credential",
+      "operation.observe-transport-peer",
+      "operation.offer-delivery",
+      "operation.open-service-generation",
+      "operation.project-authorized-job-view",
+      "operation.provision-bootstrap-commitment",
+      "operation.publish-cas-artifact",
+      "operation.quarantine-artifact",
+      "operation.rebuild-derived-state",
+      "operation.recover-authority-lineage",
+      "operation.recover-service-generation",
+      "operation.release-job-lease",
+      "operation.release-waiter-slot",
+      "operation.reserve-waiter-slot",
+      "operation.resolve-daemon-credential",
+      "operation.revoke-daemon-credential",
+      "operation.rotate-custody-key",
+      "operation.verify-owner-bootstrap-root-pin",
+      "policy.dss-v0-constitution",
+      "policy.dss01-authority-foundation",
+      "policy.dss02-implementation-contract",
+      "source.authority-challenge-channel",
+      "source.concurrent-waiter-population",
+      "source.owner-bootstrap-trust-root",
+      "source.unix-peer-credentials"
+    ],
+    "registryOnlyNonExcludedSurfaceCount": 0,
+    "registryOrPlannedOnlyNonExcludedSurfaceCount": 0,
+    "plannedOwnerOccurrenceCount": 20,
+    "carrierDeclarationCount": 28,
+    "carrierLifecycleCount": 126,
+    "carrierDependencyCount": 86,
+    "carrierInputCount": 86,
+    "operationDeclarationCount": 31,
+    "operationInputCount": 109,
+    "operationOutputCount": 76,
+    "lifecycleTransitionBindingCount": 126,
+    "lifecycleOwningOperationBindingCount": 125,
+    "carrierQualifiedTransitionCount": 132,
+    "explicitTransitionOutcomeDeclarationCount": 132,
+    "lifecycleInvalidationTheoremCount": 1,
+    "normativeObjectCount": 23,
+    "persistenceProofCount": 28,
+    "storePopulationCount": 58
+  },
+  "persistenceProofCount": 28,
+  "lifecycleTransitionProof": {
+    "totalEvents": 126,
+    "operationOwnedEvents": 125,
+    "qualifiedTransitions": 132,
+    "invalidationTheorems": 1,
+    "crossOutputNegativeFixturePassed": true,
+    "explicitOutcomeDeclarations": 132,
+    "outcomePolarityNegativeFixturePassed": true
+  },
+  "predecessorDisposition": "REMAND",
+  "implementationAuthority": "WITHHELD_PENDING_INDEPENDENT_RATIFICATION",
+  "files": [
+    {
+      "path": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md",
+      "byteLength": 46385,
+      "sha256": "9a10ba440d8bd8a6d60c8553eec57af2ecdc655ba990254acdab4770a6fb80f5"
+    },
+    {
+      "path": "scripts/build-direct-semantic-service-dss02-audit-package.mjs",
+      "byteLength": 183135,
+      "sha256": "078823ee6c6c494aaea7923f94f155e787ef35d7703c3f9f411a12026fdb4813"
+    },
+    {
+      "path": "scripts/seal-direct-semantic-service-dss02-generation-6.mjs",
+      "byteLength": 11771,
+      "sha256": "8bf4d448412f0741090059a6f1ea6fd7e584f04d87cfdc89a6bb86c4f5c24002"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/README.md",
+      "byteLength": 3096,
+      "sha256": "6d054efc594d44a90607574f1ad613148f7603c949ba2ffe37b0934d44927947"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/audit_intake.md",
+      "byteLength": 2427,
+      "sha256": "cf2ed2bfe4f391e2df7b597e5742ba875d9cf8b29a140781d51edb8629fcd964"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/audit_intake.v1.json",
+      "byteLength": 1489,
+      "sha256": "7dad8018a49f3847cb87248bdec2df1496a358e68326908a8520bc7f9b65e005"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/candidate_self_check.md",
+      "byteLength": 1993,
+      "sha256": "755f6b63b152a873829195d060f9a7ae18b5ebc76575b09bcde8d92b2fcf60cd"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/compilation.v0.json",
+      "byteLength": 798062,
+      "sha256": "2e255bb33610d0ae1878b5f51f30d3fad7dfec14df9f98382fe86a7ab7151470"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/compilation.v1.json",
+      "byteLength": 5998149,
+      "sha256": "0f560861000aa76f2aae2d5a1f9a22c029aa67e43f4d3cb1271aeb811feda3c2"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/compiler_pin.v1.json",
+      "byteLength": 1657,
+      "sha256": "9ad233229d5bba98b4732a0ac4840199d5b9840ae3abcf11747482958be0af97"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/module.v0.json",
+      "byteLength": 153625,
+      "sha256": "8bc7c3310a0e2ebcd4818ef3254a0a7f0fe95b148b8d85d661f226aa7bf0d3bb"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/predecessor_audit_disposition.v1.json",
+      "byteLength": 4283,
+      "sha256": "f4574341727d3b218f51e9a5a873ce7b42be5fe99e1014cfb33190a2ba84a661"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/predecessor_repair_matrix.v1.json",
+      "byteLength": 3611,
+      "sha256": "3f5e14bfe14fbeb761f4d7c04da02570cc4a09f1c3ff801e1c9f3562ea24720d"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/surface_reconciliation.v6.json",
+      "byteLength": 1339178,
+      "sha256": "6856a0f99156f78f5f8ea22d540e4c608c8e16fdd959ac737e075f63ee344016"
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss02-generation-6/verification_extension.v1.json",
+      "byteLength": 37950,
+      "sha256": "3d0b53a7e7c7449ef115470db3243477143a0b33300fc46402066d3b540a8eeb"
+    }
+  ]
+}

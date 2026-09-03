@@ -27,6 +27,7 @@ function directRuntimePathFromBinding(binding) {
   const runtimeMode = normalizeString(raw.runtimeMode, "legacy-app-server").toLowerCase();
   const directTransport = normalizeString(raw.directTransport, "fixture").toLowerCase();
   const directTier = normalizeString(raw.directTier || raw.activationTier || raw.runtimeTier, "none").toLowerCase();
+  if (runtimeMode === "direct" && directTransport === "live-text") return "direct-implementation";
   if (runtimeMode !== "direct-experimental") return "app-server";
   if (directTransport === "live-text" && (directTier === "text-only" || directTier === "text_only")) return "direct-text";
   if (directTransport === "live-text" && (directTier === "implementation-lane" || directTier === "implementation_lane")) {
@@ -35,7 +36,7 @@ function directRuntimePathFromBinding(binding) {
   return "app-server";
 }
 
-function bindingForDirectRuntimePath(binding, runtimePath) {
+function bindingForDirectRuntimePath(binding, runtimePath, options = {}) {
   const raw = isPlainObject(binding) ? binding : {};
   const path = normalizeDirectRuntimePath(runtimePath);
   if (path === "direct-text") {
@@ -51,7 +52,7 @@ function bindingForDirectRuntimePath(binding, runtimePath) {
     return {
       ...raw,
       bindingProvider: "direct-chatgpt-codex",
-      runtimeMode: "direct-experimental",
+      runtimeMode: options.ordinary === true ? "direct" : "direct-experimental",
       directTransport: "live-text",
       directTier: "implementation-lane",
     };

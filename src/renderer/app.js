@@ -2775,6 +2775,7 @@ function directRuntimePathFromCodex(codex = {}) {
   const runtimeMode = String(codex.runtimeMode || "legacy-app-server").toLowerCase();
   const directTransport = String(codex.directTransport || "fixture").toLowerCase();
   const directTier = String(codex.directTier || codex.activationTier || codex.runtimeTier || "none").toLowerCase();
+  if (runtimeMode === "direct" && directTransport === "live-text") return "direct-implementation";
   if (runtimeMode !== "direct-experimental") return "app-server";
   if (directTransport === "live-text" && (directTier === "implementation-lane" || directTier === "implementation_lane")) {
     return "direct-implementation";
@@ -2797,7 +2798,7 @@ function directRuntimeBindingFieldsForPath(runtimePath, currentCodex = null) {
   if (runtimePath === "direct-implementation" || runtimePath === "direct") {
     return {
       bindingProvider: "direct-chatgpt-codex",
-      runtimeMode: "direct-experimental",
+      runtimeMode: "direct",
       directTransport: "live-text",
       directTier: "implementation-lane",
     };
@@ -3580,7 +3581,7 @@ function renderDirectRuntimeStatus() {
   }
   if (els.directExperimentalEnableButton) {
     const canUseEnableAction = Boolean(activeProject()) && Boolean(bridge.enableDirectExperimentalRuntime) && !state.directRuntimeLoading;
-    const canEnable = (status.directImplementationLane?.canSelect === true || activation.state === "eligible") && canUseEnableAction;
+    const canEnable = status.runtimeMode !== "direct" && (status.directImplementationLane?.canSelect === true || activation.state === "eligible") && canUseEnableAction;
     els.directExperimentalEnableButton.disabled = !canEnable;
     els.directExperimentalEnableButton.title = canEnable
       ? "Enable Direct for this project with tool-capable routing."

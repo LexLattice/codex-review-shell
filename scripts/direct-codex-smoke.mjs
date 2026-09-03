@@ -2518,11 +2518,10 @@ try {
     turnId: liveAck.turn.id,
   });
   assert(liveCompletedInterrupt.status === "completed_already", "Expected abort after completion to preserve completed terminal state.");
-  await assertRejects(
-    () => liveSurface.request("thread/resume", { threadId: liveThread.thread.id }),
-    "Expected unsupported live text methods to fail visibly.",
-  );
-  assert(liveFetchCalls === 1, "Unsupported live text methods must not be forwarded to provider transport.");
+  const liveResume = await liveSurface.request("thread/resume", { threadId: liveThread.thread.id });
+  assert(liveResume.resumed === true, "Expected Direct live text to resume its durable thread.");
+  assert(liveResume.thread.id === liveThread.thread.id, "Expected Direct resume to preserve the exact thread identity.");
+  assert(liveFetchCalls === 1, "Thread lifecycle methods must not be forwarded to provider transport.");
 
   const liveThreadStore = new DirectThreadStore({
     rootDir: path.join(liveTextControllerParent, "direct-sessions"),

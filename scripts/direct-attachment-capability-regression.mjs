@@ -31,6 +31,126 @@ assert.equal(capability.canConsumeWorkspaceFileReference, true);
 assert.equal(capability.canConsumeStagedFileReference, true);
 assert.equal(capability.canConsumeTextReference, true);
 
+// WSL staged bytes remain references until a workspace-backend payload reader
+// is installed; a provider resolver's mere existence cannot grant custody.
+const wslCapability = buildDirectAttachmentCapabilityProjection({
+  projectId,
+  runtimeKind: "direct-live-text",
+  workspaceKind: "wsl",
+  status: "ready",
+  providerAttachmentCapability: {
+    file: { supported: true, payloadCustody: "exact", evidenceState: "accepted", sourceDigest: "resolver:wsl" },
+    image: { supported: true, payloadCustody: "exact", evidenceState: "accepted", sourceDigest: "resolver:wsl" },
+  },
+});
+assertDirectAttachmentCapabilityProjectionSafe(wslCapability);
+assert.equal(wslCapability.canConsumeProviderFilePayload, false);
+assert.equal(wslCapability.canConsumeProviderImagePayload, false);
+const wslPacket = buildDirectAttachmentSubmitPacket({
+  projectId,
+  attachments: [{
+    id: "att_wsl_staged",
+    status: "ready",
+    kind: "file",
+    displayName: "wsl-notes.md",
+    mimeType: "text/markdown",
+    stagedRelPath: ".codex/review-shell/attachments/att_wsl_staged/wsl-notes.md",
+  }],
+  capabilityProjection: wslCapability,
+});
+assert.equal(wslPacket.dispositions[0].disposition, "staged_ref");
+assert.notEqual(wslPacket.dispositions[0].disposition, "provider_payload");
+
+// Active content stays reference-only even when the provider can consume
+// exact file/image payloads.
+const payloadCapability = buildDirectAttachmentCapabilityProjection({
+  projectId,
+  status: "ready",
+  providerAttachmentCapability: {
+    file: { supported: true, payloadCustody: "exact", evidenceState: "accepted", sourceDigest: "resolver:local" },
+    image: { supported: true, payloadCustody: "exact", evidenceState: "accepted", sourceDigest: "resolver:local" },
+  },
+});
+assertDirectAttachmentCapabilityProjectionSafe(payloadCapability);
+assert.equal(payloadCapability.canConsumeProviderFilePayload, true);
+assert.equal(payloadCapability.canConsumeProviderImagePayload, true);
+
+const fileOnlyCapability = buildDirectAttachmentCapabilityProjection({
+  projectId,
+  status: "ready",
+  providerAttachmentCapability: {
+    file: { supported: true, payloadCustody: "exact", evidenceState: "accepted", sourceDigest: "resolver:file-only" },
+    image: { supported: false, payloadCustody: "none", evidenceState: "unsupported" },
+  },
+});
+assertDirectAttachmentCapabilityProjectionSafe(fileOnlyCapability);
+assert.equal(fileOnlyCapability.canConsumeProviderFilePayload, true);
+assert.equal(fileOnlyCapability.canConsumeProviderImagePayload, false);
+assert.equal(fileOnlyCapability.capabilityEvidence.providerImagePayload, "unsupported");
+const fileOnlyPacket = buildDirectAttachmentSubmitPacket({
+  projectId,
+  attachments: [{
+    id: "att_file_only",
+    status: "ready",
+    kind: "file",
+    displayName: "file-only.txt",
+    mimeType: "text/plain",
+    stagedRelPath: ".codex/review-shell/attachments/att_file_only/file-only.txt",
+  }],
+  capabilityProjection: fileOnlyCapability,
+});
+assert.equal(fileOnlyPacket.dispositions[0].disposition, "provider_payload");
+
+const imageOnlyCapability = buildDirectAttachmentCapabilityProjection({
+  projectId,
+  status: "ready",
+  providerAttachmentCapability: {
+    file: { supported: false, payloadCustody: "none", evidenceState: "unsupported" },
+    image: { supported: true, payloadCustody: "exact", evidenceState: "accepted", sourceDigest: "resolver:image-only" },
+  },
+});
+assertDirectAttachmentCapabilityProjectionSafe(imageOnlyCapability);
+assert.equal(imageOnlyCapability.canConsumeProviderFilePayload, false);
+assert.equal(imageOnlyCapability.canConsumeProviderImagePayload, true);
+assert.equal(imageOnlyCapability.capabilityEvidence.providerFilePayload, "unsupported");
+const imageOnlyPacket = buildDirectAttachmentSubmitPacket({
+  projectId,
+  attachments: [{
+    id: "att_image_only",
+    status: "ready",
+    kind: "image",
+    displayName: "image-only.png",
+    mimeType: "image/png",
+    stagedRelPath: ".codex/review-shell/attachments/att_image_only/image-only.png",
+  }],
+  capabilityProjection: imageOnlyCapability,
+});
+assert.equal(imageOnlyPacket.dispositions[0].disposition, "provider_payload");
+
+const noAttachmentPacket = buildDirectAttachmentSubmitPacket({
+  projectId,
+  attachments: [],
+  capabilityProjection: fileOnlyCapability,
+});
+assert.equal(noAttachmentPacket.status, "ready");
+assert.equal(noAttachmentPacket.attachmentCount, 0);
+const activePacket = buildDirectAttachmentSubmitPacket({
+  projectId,
+  attachments: [{
+    id: "att_active_html",
+    status: "ready",
+    kind: "file",
+    displayName: "dashboard.html",
+    mimeType: "text/html",
+    stagedRelPath: ".codex/review-shell/attachments/att_active_html/dashboard.html",
+    typeEvidence: { risk: "active_content" },
+    provider: { disposition: "reference_only", reason: "security_policy_blocked" },
+  }],
+  capabilityProjection: payloadCapability,
+});
+assert.equal(activePacket.dispositions[0].disposition, "staged_ref");
+assert.equal(activePacket.dispositions[0].dispositionReason, "security_policy_blocked");
+
 const workspaceDraft = {
   id: "att_workspace",
   projectId,

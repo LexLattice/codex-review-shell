@@ -456,6 +456,28 @@ class DirectWorldManagerEpistemicFabricRuntime {
         ? options.artifactRuntimeEvidenceResolver
         : null;
     this.deliveryDrainPromise = null;
+    const scheduler = isPlainObject(options.scheduler) ? options.scheduler : {};
+    const scheduleFlush = typeof options.scheduleFlush === "function"
+      ? options.scheduleFlush
+      : typeof scheduler.schedule === "function"
+        ? scheduler.schedule
+        : typeof scheduler.setTimeout === "function"
+          ? scheduler.setTimeout
+          : null;
+    const cancelFlush = typeof options.cancelFlush === "function"
+      ? options.cancelFlush
+      : typeof scheduler.cancel === "function"
+        ? scheduler.cancel
+        : typeof scheduler.clearTimeout === "function"
+          ? scheduler.clearTimeout
+          : null;
+    this.scheduleFlush = scheduleFlush || ((callback, delayMs) =>
+      setTimeout(callback, delayMs));
+    this.cancelFlush = cancelFlush || ((timer) => clearTimeout(timer));
+    this.pendingFlushTimer = null;
+    this.pendingFlushDueAt = 0;
+    this.pendingFlushRetryDelayMs = 0;
+    this.closed = false;
     const persistedArtifactState =
       this.stateStore.read(ARTIFACT_STATE_COMPONENT)?.state || null;
     this.artifactState = persistedArtifactState
@@ -484,6 +506,7 @@ class DirectWorldManagerEpistemicFabricRuntime {
     this.persistBroker();
     this.persistArtifacts();
     this.started = true;
+    this.schedulePendingFlush();
     return this.status();
   }
 
@@ -640,6 +663,123 @@ class DirectWorldManagerEpistemicFabricRuntime {
       ARTIFACT_STATE_COMPONENT,
       this.artifactState,
     );
+  }
+
+  clearPendingFlushSchedule() {
+    if (this.pendingFlushTimer === null) return false;
+    this.cancelFlush(this.pendingFlushTimer);
+    this.pendingFlushTimer = null;
+    this.pendingFlushDueAt = 0;
+    return true;
+  }
+
+  pendingFlushDueTime() {
+    let earliest = 0;
+    for (const pending of this.broker.pending.values()) {
+      const openedAt = Date.parse(text(pending.openedAt, ""));
+      const debounceWindowMs = Number(
+        pending.subscription?.operationalPolicy?.debounceWindowMs,
+      );
+      if (!Number.isFinite(openedAt) || !Number.isFinite(debounceWindowMs)) {
+        continue;
+      }
+      const dueAt = openedAt + Math.max(0, debounceWindowMs);
+      if (!earliest || dueAt < earliest) earliest = dueAt;
+    }
+    return earliest;
+  }
+
+  schedulePendingFlush(options = {}) {
+    if (this.closed) return false;
+    if (!this.broker.pending.size) {
+      this.clearPendingFlushSchedule();
+      this.pendingFlushRetryDelayMs = 0;
+      return false;
+    }
+    const dueAt = this.pendingFlushDueTime();
+    if (!dueAt) return false;
+    const force = options.force === true;
+    if (force && this.pendingFlushTimer !== null) this.clearPendingFlushSchedule();
+    // Keep one runtime-owned timer, but always point it at the earliest
+    // currently pending delivery. A later append can introduce a subscription
+    // whose deadline precedes the timer that was already installed.
+    if (
+      !force && this.pendingFlushTimer !== null &&
+      this.pendingFlushDueAt > 0 &&
+      this.pendingFlushDueAt <= dueAt
+    ) {
+      return false;
+    }
+    if (this.pendingFlushTimer !== null) this.clearPendingFlushSchedule();
+    const nowMs = Number(this.now()) || Date.now();
+    const requestedRetryDelayMs = Number(options.retryDelayMs);
+    const retryDelayMs = Number.isFinite(requestedRetryDelayMs)
+      ? Math.max(0, requestedRetryDelayMs)
+      : Math.max(0, Number(this.pendingFlushRetryDelayMs) || 0);
+    this.pendingFlushDueAt = dueAt;
+    this.pendingFlushTimer = this.scheduleFlush(() => {
+      this.pendingFlushTimer = null;
+      this.pendingFlushDueAt = 0;
+      if (this.closed) return;
+      const flushResult = this.flushPendingOutbox();
+      this.pendingFlushRetryDelayMs = flushResult.backpressureBlocked ? 250 : 0;
+      this.schedulePendingFlush();
+    }, dueAt > nowMs ? dueAt - nowMs : retryDelayMs);
+    return true;
+  }
+
+  reconcileRoutedOutbox(entries = []) {
+    const deliveries = [
+      ...this.broker.deliveries.values(),
+    ];
+    let dispatched = 0;
+    for (const entry of entries) {
+      if (!["pending", "retry_pending"].includes(entry.dispatchState)) {
+        continue;
+      }
+      const seed = entry.seed;
+      const delivery = deliveries.find((candidate) =>
+        candidate.subscriptionRef?.id === seed.subscriptionRef.id &&
+        candidate.subscriptionRef?.digest === seed.subscriptionRef.digest &&
+        candidate.eventRefs?.some((eventRef) =>
+          eventRef.id === seed.ledgerEventRef.id &&
+          eventRef.digest === seed.ledgerEventRef.digest));
+      if (!delivery) continue;
+      this.ledgerStore.markOutboxDispatched(seed.outboxSeedId, {
+        kind: "ledger_delivery",
+        id: delivery.deliveryId,
+        digest: delivery.deliveryDigest,
+      });
+      dispatched += 1;
+    }
+    return {
+      dispatched,
+      pending: entries.length - dispatched,
+    };
+  }
+
+  flushPendingOutbox() {
+    const pending = this.ledgerStore.listPendingOutboxEntries();
+    const nowMs = Number(this.now()) || Date.now();
+    const dueAt = this.pendingFlushDueTime();
+    const flushed = this.broker.flush({ now: this.now });
+    // Persist exact broker delivery identities before acknowledging any
+    // durable outbox seed. A crash after this write is recovered idempotently
+    // by the durable delivery identity on the next bootstrap.
+    this.persistBroker();
+    if (!pending.length) {
+      return { flushed: flushed.deliveries.length, dispatched: 0, pending: 0, backpressureBlocked: false };
+    }
+    const reconciliation = this.reconcileRoutedOutbox(pending);
+    return {
+      flushed: flushed.deliveries.length,
+      ...reconciliation,
+      backpressureBlocked:
+        flushed.deliveries.length === 0 &&
+        this.broker.pending.size > 0 &&
+        dueAt > 0 &&
+        dueAt <= nowMs,
+    };
   }
 
   compileRoleTools(input = {}) {
@@ -859,7 +999,6 @@ class DirectWorldManagerEpistemicFabricRuntime {
       };
     }
     const routed = this.broker.routeEvents([appended.event], {
-      flushAll: true,
       now: this.now,
       subscriptionIdsByEvent: {
         [appended.event.ledgerEventId]: pendingEntries.map(
@@ -871,36 +1010,11 @@ class DirectWorldManagerEpistemicFabricRuntime {
     // outbox. Restart may then retry idempotently, but cannot lose a delivery
     // after its outbox row says it was dispatched.
     this.persistBroker();
-    for (const entry of pendingEntries) {
-      const delivery = [
-        ...routed.deliveries,
-        ...this.broker.deliveries.values(),
-      ].find(
-        (candidate) =>
-          candidate.subscriptionRef.id === entry.seed.subscriptionRef.id &&
-          candidate.eventRefs.some(
-            (eventRef) => eventRef.id === appended.event.ledgerEventId,
-          ),
-      );
-      if (delivery) {
-        this.ledgerStore.markOutboxDispatched(
-          entry.seed.outboxSeedId,
-          {
-            kind: "ledger_delivery",
-            id: delivery.deliveryId,
-            digest: delivery.deliveryDigest,
-          },
-        );
-      } else {
-        this.ledgerStore.markOutboxDispatchFailed(
-          entry.seed.outboxSeedId,
-          {
-            failureCode: "ledger_delivery_not_materialized",
-            retryable: true,
-          },
-        );
-      }
-    }
+    // A bypass or maximum-events flush may consume matches buffered by an
+    // earlier append, so reconcile the complete pending outbox, not only the
+    // seed belonging to this event.
+    this.reconcileRoutedOutbox(this.ledgerStore.listPendingOutboxEntries());
+    this.schedulePendingFlush();
     const invalidationResult =
       this.deriveAndStoreContextInvalidations(appended.event);
     const invalidations = invalidationResult.invalidations;
@@ -2924,6 +3038,12 @@ class DirectWorldManagerEpistemicFabricRuntime {
           now: this.now,
         });
         this.persistBroker();
+        // A delivered queue item releases one slot for any debounce group
+        // that was held at maximumQueuedDeliveries.  Wake the pending flush
+        // from this actual delivery transition instead of waiting for a
+        // zero-delay timer loop.
+        this.pendingFlushRetryDelayMs = 0;
+        this.schedulePendingFlush({ force: true, retryDelayMs: 0 });
         deliveryTransition = durableInboxAccepted
           ? "delivered_to_semantic_inbox"
           : "delivered_to_role_runtime";
@@ -2967,49 +3087,12 @@ class DirectWorldManagerEpistemicFabricRuntime {
       }, {}),
     });
     this.persistBroker();
-    let drained = 0;
-    let failed = 0;
-    for (const entry of pending) {
-      const delivery = [
-        ...routed.deliveries,
-        ...this.broker.deliveries.values(),
-      ].find(
-        (candidate) =>
-          candidate.subscriptionRef.id === entry.seed.subscriptionRef.id &&
-          candidate.eventRefs.some(
-            (eventRef) => eventRef.id === entry.seed.ledgerEventRef.id,
-          ),
-      ) || [...this.broker.deliveries.values()].find(
-        (candidate) =>
-          candidate.subscriptionRef.id === entry.seed.subscriptionRef.id &&
-          candidate.eventRefs.some(
-            (eventRef) =>
-              eventRef.id === entry.seed.ledgerEventRef.id &&
-              eventRef.digest === entry.seed.ledgerEventRef.digest,
-          ),
-      );
-      if (delivery) {
-        this.ledgerStore.markOutboxDispatched(
-          entry.seed.outboxSeedId,
-          {
-            kind: "ledger_delivery",
-            id: delivery.deliveryId,
-            digest: delivery.deliveryDigest,
-          },
-        );
-        drained += 1;
-      } else {
-        this.ledgerStore.markOutboxDispatchFailed(
-          entry.seed.outboxSeedId,
-          {
-            failureCode: "restart_delivery_not_materialized",
-            retryable: true,
-          },
-        );
-        failed += 1;
-      }
-    }
-    return { drained, failed };
+    const reconciliation = this.reconcileRoutedOutbox(pending);
+    this.schedulePendingFlush();
+    return {
+      drained: reconciliation.dispatched,
+      failed: reconciliation.pending,
+    };
   }
 
   projection() {
@@ -3082,6 +3165,8 @@ class DirectWorldManagerEpistemicFabricRuntime {
       deliveryTargetResolverAvailable: Boolean(
         this.deliveryTargetResolver,
       ),
+      pendingFlushScheduled: this.pendingFlushTimer !== null,
+      pendingFlushDueAt: this.pendingFlushDueAt || null,
       artifactWorkThreadDispatchAdapterAvailable: Boolean(
         this.artifactWorkThreadDispatchAdapter,
       ),
@@ -3098,6 +3183,9 @@ class DirectWorldManagerEpistemicFabricRuntime {
   }
 
   close() {
+    this.closed = true;
+    this.clearPendingFlushSchedule();
+    this.pendingFlushRetryDelayMs = 0;
     this.persistBroker();
     this.persistArtifacts();
     this.ledgerStore.close();

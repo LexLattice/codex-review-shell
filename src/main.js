@@ -88,6 +88,9 @@ const {
   buildDirectLiveTextCapabilities,
 } = require("./main/direct/controller/live-text-controller");
 const {
+  DirectThreadHarnessGrantStore,
+} = require("./main/direct/authority/direct-thread-harness-grant");
+const {
   DEFAULT_TEXT_PROBE_INSTRUCTIONS,
   DEFAULT_TEXT_PROBE_PROMPT,
   runImplementationToolInitialProbe,
@@ -276,7 +279,11 @@ const {
 const {
   assertStatefulExecSessionSurfaceSafe,
   buildStatefulExecSessionSurface,
+  DirectStatefulExecSessionManager,
 } = require("./main/direct/tools/stateful-exec-session");
+const {
+  DirectFullAccessLocalEnvironmentExecutor,
+} = require("./main/direct/tools/full-access-local-environment");
 const {
   assertCodeModeExecutionLaneSafe,
   buildCodeModeExecutionLaneStatus,
@@ -288,7 +295,15 @@ const {
 } = require("./main/direct/external/capability-discovery");
 const {
   buildExternalCapabilityProfile,
+  capabilityWitnessFor,
+  mcpServerIdentityFor,
 } = require("./main/direct/external/external-capability-profile");
+const {
+  configuredMcpServerIdentityInput,
+  configuredMcpServersForProject,
+  createDirectConfiguredMcpResolvers,
+  normalizeConfiguredMcpServer,
+} = require("./main/direct/external/configured-mcp-adapter");
 const {
   assertMcpResourceToolBoundarySafe,
   buildMcpResourceToolBoundaryStatus,
@@ -333,6 +348,7 @@ const {
   stagePaths: stageAttachmentPaths,
   stageClipboardImage,
   removeDraft: removeAttachmentDraft,
+  readStagedAttachmentPayload,
 } = require("./main/attachment-staging-store");
 const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
 const { readUsageLedgerAnalytics } = require("./main/usage-ledger-analytics");
@@ -512,6 +528,7 @@ let directLiveProbeEvidenceStore = null;
 let directImplementationProofEvidenceStore = null;
 let directFixtureController = null;
 let directLiveTextController = null;
+let directLiveTextControllerDisposalPromise = null;
 let directNativeAgentPool = null;
 let workspaceWorkerLifecycleRegistry = null;
 let workspaceWorkerShutdownInFlight = null;
@@ -523,6 +540,7 @@ let directWorkspaceWorkerDelegationPolicyRegistry = null;
 let directActiveSubAgentPolicyService = null;
 let directProviderMetadataAdapter = null;
 let directActivationStore = null;
+let directConfiguredMcpResolvers = null;
 let worldManagerSemanticCoordinator = null;
 let worldManagerService = null;
 let worldManagerRoleRuntime = null;
@@ -1814,9 +1832,10 @@ function defaultConfig() {
         surfaceBinding: {
           codex: {
             mode: "managed",
-            bindingProvider: "codex-compatible",
-            runtimeMode: "legacy-app-server",
-            directTransport: "fixture",
+            bindingProvider: "direct-chatgpt-codex",
+            runtimeMode: "direct",
+            directTransport: "live-text",
+            directTier: "implementation-lane",
             runtime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
             profileId: "",
             target: "",
@@ -1824,7 +1843,7 @@ function defaultConfig() {
             model: "",
             reasoningEffort: "",
             spawnAgentModelOverrides: false,
-            label: "Managed Codex lane",
+            label: "Direct full access",
             provider: {
               kind: "codex_executable",
               flavor: "vanilla",
@@ -2725,6 +2744,13 @@ function normalizeProject(input, index = 0) {
   const ignoredWatchedArtifactPaths = Array.isArray(raw.ignoredWatchedArtifactPaths)
     ? raw.ignoredWatchedArtifactPaths.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
     : [];
+  const configuredMcpServers = [
+    ...(Array.isArray(raw.mcpServers) ? raw.mcpServers : []),
+    ...(Array.isArray(raw.mcp?.servers) ? raw.mcp.servers : []),
+  ].map(normalizeConfiguredMcpServer).filter(Boolean);
+  const configuredCodexMcpServers = (Array.isArray(rawCodex.mcpServers) ? rawCodex.mcpServers : [])
+    .map(normalizeConfiguredMcpServer)
+    .filter(Boolean);
 
   return {
     id,
@@ -2765,6 +2791,7 @@ function normalizeProject(input, index = 0) {
         }),
         usageLedger: normalizeUsageLedgerConfig(rawCodex.usageLedger || rawCodex.usage_ledger),
         remoteAuth: normalizeRemoteAuthConfig(rawCodex.remoteAuth),
+        mcpServers: configuredCodexMcpServers,
       },
       chatgpt: {
         reviewThreadUrl: safeChatgptUrl(primaryReview?.url || rawChatgpt.reviewThreadUrl, "https://chatgpt.com/"),
@@ -2773,6 +2800,7 @@ function normalizeProject(input, index = 0) {
       },
     },
     chatThreads,
+    mcpServers: configuredMcpServers,
     activeChatThreadId: activeThreadId,
     lastActiveThreadId: normalizeString(raw.lastActiveThreadId, activeThreadId),
     laneBindings,
@@ -3480,6 +3508,12 @@ function ensureDirectAuthLoginCoordinator() {
   return directAuthLoginCoordinator;
 }
 
+function ensureDirectConfiguredMcpResolvers() {
+  if (directConfiguredMcpResolvers) return directConfiguredMcpResolvers;
+  directConfiguredMcpResolvers = createDirectConfiguredMcpResolvers();
+  return directConfiguredMcpResolvers;
+}
+
 function ensureDirectCodexCliAuthStore() {
   if (directCodexCliAuthStore) return directCodexCliAuthStore;
   directCodexCliAuthStore = createCodexCliAuthStore();
@@ -3665,8 +3699,23 @@ function closeDirectEpistemicService() {
 }
 
 function closeDirectLiveTextController(reason = "Direct runtime closed.") {
-  directLiveTextController?.close?.(reason);
+  const controller = directLiveTextController;
+  controller?.close?.(reason);
+  if (controller?.statefulExecDisposePromise) {
+    const currentDisposal = controller.statefulExecDisposePromise.catch((error) => {
+      console.warn("[direct-live-text] stateful exec disposal failed", error?.code || error?.message);
+      return { status: "unresolved_cleanup", cleanupFailure: error?.code || "direct_stateful_exec_disposal_failed" };
+    });
+    directLiveTextControllerDisposalPromise = directLiveTextControllerDisposalPromise
+      ? Promise.all([directLiveTextControllerDisposalPromise, currentDisposal]).then((receipts) => receipts.find((receipt) => receipt?.status !== "completed") || receipts[receipts.length - 1])
+      : currentDisposal;
+  }
   directLiveTextController = null;
+}
+
+async function awaitDirectLiveTextControllerDisposal(reason = "Direct runtime closed.") {
+  if (directLiveTextController) closeDirectLiveTextController(reason);
+  return directLiveTextControllerDisposalPromise || { status: "completed", disposed: false, activeSessionCount: 0 };
 }
 
 function workspaceWorkerShutdownTimeoutMs() {
@@ -4527,6 +4576,15 @@ function resolveDirectWorkspaceWorkerDelegationPolicy(input = {}) {
 
 function ensureDirectLiveTextController() {
   if (directLiveTextController) return directLiveTextController;
+  const directHarnessGrantStore = new DirectThreadHarnessGrantStore({ rootDir: directSessionRootDir() });
+  const statefulExecSessionManager = new DirectStatefulExecSessionManager({
+    grantStore: directHarnessGrantStore,
+    workspaceRootResolver: (input) => workspaceRoot(input?.project || input, repoRoot),
+  });
+  const fullAccessLocalEnvironmentExecutor = new DirectFullAccessLocalEnvironmentExecutor({
+    grantStore: directHarnessGrantStore,
+    workspaceRootResolver: (input) => workspaceRoot(input?.project || input, repoRoot),
+  });
   directLiveTextController = new DirectLiveTextController({
     sessionStore: ensureDirectSessionStore(),
     directThreadStore: ensureDirectThreadStore(),
@@ -4552,7 +4610,42 @@ function ensureDirectLiveTextController() {
       resolveDirectWorkspaceWorkerDelegationPolicy(context),
     subAgentStatusSurfaceResolver: (context) => directSubAgentStatusSurfaceFor(context),
     externalCapabilityProfileResolver: (context) => buildDirectExternalCapabilityProfileForProject(context),
-    providerHostedToolsStatusResolver: (context) => buildDirectProviderHostedToolsStatusForProject(context),
+    providerMetadataResolver: (context) => directProviderMetadataStatusForProject(context.project),
+    accountLoginResolver: (context) => ensureDirectAuthController().beginLogin(context.params || {}),
+    configRequirementsResolver: (context) => ({
+      requirements: context.project?.directConfigRequirements || context.project?.configRequirements || null,
+      status: (context.project?.directConfigRequirements || context.project?.configRequirements) ? "available" : "none",
+      source: "direct-project-configuration",
+    }),
+    environmentStatusResolver: (context) => refreshWorldManagerEnvironmentReadiness({ project: context.project }),
+    externalDiscoveryResolver: (context) => ensureDirectConfiguredMcpResolvers().externalDiscoveryResolver(context),
+    mcpResourceReadResolver: (context) => ensureDirectConfiguredMcpResolvers().mcpResourceReadResolver(context),
+    attachmentPayloadResolver: async (context) => {
+      const staged = await readStagedAttachmentPayload(context.project, context.draft || {});
+      if (!staged) return { status: "blocked", reason: "staged_attachment_not_found" };
+      const base64 = staged.buffer.toString("base64");
+      return {
+        status: "completed",
+        custody: "exact",
+        projectId: context.projectId,
+        taskId: context.taskId,
+        draftId: context.draftId,
+        kind: context.kind,
+        mimeType: staged.mimeType,
+        base64,
+        payloadDigest: crypto.createHash("sha256").update(base64).digest("hex"),
+        modelVisibility: "provider_input",
+        rawPathIncluded: false,
+        rawPayloadIncluded: false,
+      };
+    },
+    providerHostedToolsStatusResolver: (context) => buildDirectProviderHostedToolsStatusForProject({
+      ...context,
+      directProviderMetadata: directProviderMetadataStatusForProject(context.project),
+    }),
+    harnessGrantStore: directHarnessGrantStore,
+    statefulExecSessionManager,
+    fullAccessLocalEnvironmentExecutor,
     compiledAgentContextResolver: (input) =>
       worldManagerRoleRuntime?.resolveCompiledAgentContext(input) || null,
     epistemicContextDeliveryResolver: (input) =>
@@ -4976,48 +5069,51 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     ...(runtimeStatus.directTextOnly || {}),
     ...textOnlyEvaluation.status,
   };
+  const ordinaryDirectSelected = normalizeCodexBinding(project.surfaceBinding?.codex || {}).runtimeMode === "direct";
   const implementationBlockers = activationEvaluation.status.gateSummary?.blockers
     ?.map((item) => item.blockerCode || item.reason || item.id)
     .filter(Boolean) || [];
-  runtimeStatus.directImplementationLane = {
-    ...(runtimeStatus.directImplementationLane || {}),
-    tier: "implementation-lane",
-    status: activationEvaluation.status.enabled
-      ? (activationEvaluation.status.degraded ? "degraded" : "enabled")
-      : (activationEvaluation.status.eligible ? "eligible" : "blocked"),
-    selected: activationEvaluation.status.enabled === true,
-    canEnable: activationEvaluation.status.eligible === true,
-    blockers: implementationBlockers,
-    missingImplementationOnlyGates: implementationBlockers,
-  };
-  runtimeStatus.direct = {
-    ...(runtimeStatus.direct || {}),
-    status: runtimeStatus.directImplementationLane.selected
-      ? runtimeStatus.directImplementationLane.status
-      : runtimeStatus.directTextOnly?.selected
-        ? "degraded_text_only"
-        : runtimeStatus.directImplementationLane.canSelect || runtimeStatus.directImplementationLane.canEnable
-          ? "eligible"
-          : runtimeStatus.directTextOnly?.canEnable
-            ? "eligible_text_only_fallback"
-            : "blocked",
-    selected: runtimeStatus.directImplementationLane.selected === true || runtimeStatus.directTextOnly?.selected === true,
-    canSelect: runtimeStatus.directImplementationLane.canSelect === true ||
-      runtimeStatus.directImplementationLane.canEnable === true ||
-      runtimeStatus.directTextOnly?.canEnable === true,
-    toolMode: runtimeStatus.directImplementationLane.selected && runtimeStatus.liveTextRuntime?.toolsEnabled
-      ? "tool_capable"
-      : runtimeStatus.directTextOnly?.selected
-        ? "text_only_fallback"
-        : "unavailable",
-    toolsAvailable: runtimeStatus.directImplementationLane.selected === true && runtimeStatus.liveTextRuntime?.toolsEnabled === true,
-    textOnlyFallbackAvailable: runtimeStatus.directTextOnly?.canEnable === true,
-    blockers: runtimeStatus.directImplementationLane.canSelect || runtimeStatus.directImplementationLane.canEnable
-      ? []
-      : runtimeStatus.directImplementationLane.blockers,
-    fallbackBlockers: runtimeStatus.directTextOnly?.blockers || [],
-    userFacingLabel: "Direct",
-  };
+  if (!ordinaryDirectSelected) {
+    runtimeStatus.directImplementationLane = {
+      ...(runtimeStatus.directImplementationLane || {}),
+      tier: "implementation-lane",
+      status: activationEvaluation.status.enabled
+        ? (activationEvaluation.status.degraded ? "degraded" : "enabled")
+        : (activationEvaluation.status.eligible ? "eligible" : "blocked"),
+      selected: activationEvaluation.status.enabled === true,
+      canEnable: activationEvaluation.status.eligible === true,
+      blockers: implementationBlockers,
+      missingImplementationOnlyGates: implementationBlockers,
+    };
+    runtimeStatus.direct = {
+      ...(runtimeStatus.direct || {}),
+      status: runtimeStatus.directImplementationLane.selected
+        ? runtimeStatus.directImplementationLane.status
+        : runtimeStatus.directTextOnly?.selected
+          ? "degraded_text_only"
+          : runtimeStatus.directImplementationLane.canSelect || runtimeStatus.directImplementationLane.canEnable
+            ? "eligible"
+            : runtimeStatus.directTextOnly?.canEnable
+              ? "eligible_text_only_fallback"
+              : "blocked",
+      selected: runtimeStatus.directImplementationLane.selected === true || runtimeStatus.directTextOnly?.selected === true,
+      canSelect: runtimeStatus.directImplementationLane.canSelect === true ||
+        runtimeStatus.directImplementationLane.canEnable === true ||
+        runtimeStatus.directTextOnly?.canEnable === true,
+      toolMode: runtimeStatus.directImplementationLane.selected && runtimeStatus.liveTextRuntime?.toolsEnabled
+        ? "tool_capable"
+        : runtimeStatus.directTextOnly?.selected
+          ? "text_only_fallback"
+          : "unavailable",
+      toolsAvailable: runtimeStatus.directImplementationLane.selected === true && runtimeStatus.liveTextRuntime?.toolsEnabled === true,
+      textOnlyFallbackAvailable: runtimeStatus.directTextOnly?.canEnable === true,
+      blockers: runtimeStatus.directImplementationLane.canSelect || runtimeStatus.directImplementationLane.canEnable
+        ? []
+        : runtimeStatus.directImplementationLane.blockers,
+      fallbackBlockers: runtimeStatus.directTextOnly?.blockers || [],
+      userFacingLabel: "Direct",
+    };
+  }
   let threadStoreForContext = null;
   try {
     threadStoreForContext = ensureDirectThreadStore();
@@ -5027,7 +5123,9 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     projectId,
     runtimeStatus,
     legacySession,
-    directFallbackBlockers: implementationBlockers,
+    directFallbackBlockers: ordinaryDirectSelected
+      ? runtimeStatus.directImplementationLane?.blockers || []
+      : implementationBlockers,
     generatedAt: runtimeStatus.generatedAt,
   });
   return runtimeStatus;
@@ -5241,8 +5339,13 @@ function buildDirectExternalCapabilityProfileForProject(input = {}) {
     ...(Array.isArray(project.directExternalCapabilityProfile?.serverIdentities) ? project.directExternalCapabilityProfile.serverIdentities : []),
     ...(Array.isArray(project.codex?.mcpServerIdentities) ? project.codex.mcpServerIdentities : []),
     ...(Array.isArray(project.surfaceBinding?.codex?.mcpServerIdentities) ? project.surfaceBinding.codex.mcpServerIdentities : []),
+    ...configuredMcpServersForProject(project).map((server) => mcpServerIdentityFor(configuredMcpServerIdentityInput(server))),
   ];
-  if (!serverIdentities.length) {
+  const uniqueServerIdentities = serverIdentities.filter((server, index, rows) => {
+    const identityId = normalizeString(server?.serverIdentityId || server?.id, "");
+    return identityId && rows.findIndex((candidate) => normalizeString(candidate?.serverIdentityId || candidate?.id, "") === identityId) === index;
+  });
+  if (!uniqueServerIdentities.length) {
     return {
       status: "unavailable",
       reason: "external_source_identity_missing",
@@ -5266,13 +5369,21 @@ function buildDirectExternalCapabilityProfileForProject(input = {}) {
     generatedAt,
   });
   assertMcpResourceToolBoundarySafe(mcpBoundaryStatus);
+  const configuredServers = configuredMcpServersForProject(project);
+  const configuredServerIds = new Set(configuredServers.map((server) => server.serverIdentityId));
+  const capabilityRows = configuredServers.length && !configuredServerIds.has("mcp_server_project_fixture")
+    ? buildExternalCapabilityProfile({ projectId, workThreadId }).capabilityRows.map((row) => row.serverIdentityId
+      ? capabilityWitnessFor({ ...row, serverIdentityId: configuredServers[0].serverIdentityId, rowId: "" })
+      : row)
+    : undefined;
   return buildExternalCapabilityProfile({
     projectId,
     workThreadId,
     generatedAt,
     discoveryRegistry,
     mcpBoundaryStatus,
-    serverIdentities,
+    serverIdentities: uniqueServerIdentities,
+    ...(capabilityRows ? { capabilityRows } : {}),
   });
 }
 
@@ -6263,7 +6374,11 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
   const liveTextStatus = input.liveTextStatus || ensureDirectLiveTextController().statusForProject(project, {
     model: scopedModel,
   });
+  const taskProjection = activeThreadId && ensureDirectLiveTextController().capabilitiesForTask
+    ? ensureDirectLiveTextController().capabilitiesForTask(project, activeThreadId)
+    : null;
   const runtimeCapabilities = input.runtimeCapabilities || buildDirectLiveTextCapabilities(liveTextStatus);
+  const taskScopedRuntimeCapabilities = taskProjection?.capabilities || runtimeCapabilities;
   const agentUsageStatus = input.agentUsageStatus || buildDirectAgentUsageStatusForProject(projectId);
   const workThreadBundle = input.workThreadBundle || directWorkThreadProjectionForProject(project);
   const agentRegistryBundle = input.agentRegistryBundle || directAgentRegistryProjectionForProject(project);
@@ -6348,7 +6463,23 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     generatedAt,
     runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || {}),
     liveTextStatus,
-    runtimeCapabilities,
+    runtimeCapabilities: taskScopedRuntimeCapabilities,
+    runtimeCapabilityProjection: taskScopedRuntimeCapabilities.runtimeCapabilityProjection || {
+      schema: "direct_runtime_capability_projection@1",
+      source: "direct-live-text-task-capability-projection",
+      authoritative: true,
+      scope: activeThreadId ? "task" : "project",
+      taskId: activeThreadId,
+      projectId,
+      grantId: "",
+      grantRevision: 0,
+      current: false,
+      declaredToolNames: [],
+      rawGrantIncluded: false,
+      rawProviderPayloadIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    },
     directAuthPreflight: input.directAuthPreflight || null,
     runtimeWitnessProjection,
     composerRuntimeWitness,
@@ -6507,6 +6638,36 @@ async function switchActiveCodexRuntimePath(project, runtimePath, reason = "acti
     config: null,
     status: buildDirectRuntimeStatusForProject(activeProject),
   };
+}
+
+async function selectOrdinaryDirectRuntime(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  return withDirectActivationLock(projectId, async () => {
+    const config = await loadConfig();
+    const project = config.projects.find((item) => item.id === projectId);
+    if (!project) throw new Error("Project not found.");
+    const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), projectId);
+    if (activeTurns > 0) {
+      const error = new Error("A direct turn is active. Wait before changing the runtime selection.");
+      error.code = "active_direct_turn_exists";
+      throw error;
+    }
+    const nextBinding = bindingForDirectRuntimePath(project.surfaceBinding?.codex || {}, "direct-implementation", { ordinary: true });
+    const nextProject = projectWithCodexBinding(project, nextBinding);
+    const nextProjects = config.projects.map((item) => item.id === projectId ? nextProject : item);
+    const saved = await saveConfig({ ...config, projects: nextProjects });
+    const savedProject = saved.projects.find((item) => item.id === projectId) || nextProject;
+    currentProject = savedProject;
+    await reloadCodexSurfaceAfterRuntimeTransition(savedProject, "runtime-path-direct", payload);
+    emitDirectRuntimeStatus(savedProject);
+    return {
+      ok: true,
+      runtimePath: "direct-implementation",
+      project: savedProject,
+      config: saved,
+      status: buildDirectRuntimeStatusForProject(savedProject),
+    };
+  });
 }
 
 async function enableDirectExperimentalProject(payload = {}) {
@@ -7037,7 +7198,7 @@ async function setCodexRuntimePath(payload = {}) {
   if (!project) throw new Error("Project not found.");
 
   const currentPath = directRuntimePathFromBinding(project.surfaceBinding?.codex || {});
-  if (persistDefault && currentPath === runtimePath) {
+  if (persistDefault && currentPath === runtimePath && !(runtimePath === "direct-implementation" && project.surfaceBinding?.codex?.runtimeMode === "direct-experimental")) {
     return {
       ok: true,
       duplicate: true,
@@ -7049,13 +7210,7 @@ async function setCodexRuntimePath(payload = {}) {
   }
 
   if (runtimePath === "direct-implementation") {
-    return enableDirectExperimentalProject({
-      ...payload,
-      projectId,
-      clientActivationId: payload.clientActivationId || payload.clientOperationId,
-      expectedRuntimeMode: "direct-experimental",
-      expectedDirectTransport: "live-text",
-    });
+    return selectOrdinaryDirectRuntime({ ...payload, projectId });
   }
 
   if (!persistDefault) {
@@ -7438,7 +7593,7 @@ function projectWithDirectWorkbenchBinding(project = {}, operation = {}, index =
   const existingCodexBinding = project.surfaceBinding?.codex || {};
   const runtimePathBinding = directRuntimePathFromBinding(existingCodexBinding) === operation.runtimePath
     ? existingCodexBinding
-    : bindingForDirectRuntimePath(existingCodexBinding, operation.runtimePath);
+    : bindingForDirectRuntimePath(existingCodexBinding, operation.runtimePath, { ordinary: true });
   const codexBinding = alignCodexHostRuntimeWithWorkspace(runtimePathBinding, {
     mode: operation.mode,
     currentWorkspace: project.workspace,
@@ -7869,11 +8024,31 @@ function createCodexSurfaceSession(sender, connection = {}) {
 function refreshActiveDirectCodexSurfaceCapabilities() {
   const transport = normalizeString(activeCodexSurfaceConnection?.transport, "");
   if (transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) {
-    const liveTextStatus = currentProject ? ensureDirectLiveTextController().statusForProject(currentProject) : null;
+    const surfaceSession = codexView?.webContents?.id && codexSurfaceSessions?.get(codexView.webContents.id);
+    const activeThreadId = normalizeString(
+      surfaceSession?.activeThreadId || activeCodexSurfaceConnection?.taskBinding?.taskId,
+      "",
+    );
+    const taskProjection = currentProject && activeThreadId && ensureDirectLiveTextController().capabilitiesForTask
+      ? ensureDirectLiveTextController().capabilitiesForTask(currentProject, activeThreadId)
+      : null;
+    const liveTextStatus = taskProjection?.directLiveText || (currentProject
+      ? ensureDirectLiveTextController().statusForProject(currentProject)
+      : null);
+    if (surfaceSession && taskProjection) {
+      surfaceSession.taskCapabilityProjection = taskProjection;
+      surfaceSession.connection = {
+        ...(surfaceSession.connection || {}),
+        capabilities: taskProjection.capabilities,
+        directLiveText: taskProjection.directLiveText,
+        taskBinding: taskProjection.taskBinding,
+      };
+    }
     activeCodexSurfaceConnection = {
       ...activeCodexSurfaceConnection,
-      capabilities: buildDirectLiveTextCapabilities(liveTextStatus || {}),
+      capabilities: taskProjection?.capabilities || buildDirectLiveTextCapabilities(liveTextStatus || {}),
       directLiveText: liveTextStatus || null,
+      taskBinding: taskProjection?.taskBinding || activeCodexSurfaceConnection?.taskBinding || null,
     };
     return activeCodexSurfaceConnection.capabilities;
   }
@@ -8202,10 +8377,16 @@ async function loadCodexSurface(project, options = {}) {
     const runtimeStatus = buildDirectRuntimeStatusForProject(project);
     const directTransport = normalizeDirectExperimentalTransport(codex.directTransport);
     const isLiveText = directTransport === "live-text";
-    const liveTextStatus = isLiveText ? ensureDirectLiveTextController().statusForProject(project) : null;
+    const directLiveTextController = isLiveText ? ensureDirectLiveTextController() : null;
+    const initialTaskProjection = directLiveTextController && threadExtras.initialThreadId
+      ? directLiveTextController.capabilitiesForTask(project, threadExtras.initialThreadId)
+      : null;
+    const liveTextStatus = initialTaskProjection?.directLiveText || (directLiveTextController
+      ? directLiveTextController.statusForProject(project)
+      : null);
     const transport = isLiveText ? DIRECT_LIVE_TEXT_SURFACE_TRANSPORT : DIRECT_FIXTURE_SURFACE_TRANSPORT;
     const capabilities = isLiveText
-      ? buildDirectLiveTextCapabilities(liveTextStatus)
+      ? initialTaskProjection?.capabilities || buildDirectLiveTextCapabilities(liveTextStatus)
       : buildDirectFixtureCapabilities();
     const directSurfaceProjection = buildDirectCodexSurfaceProjectionForProject(project, {
       runtimeStatus,
@@ -8225,6 +8406,7 @@ async function loadCodexSurface(project, options = {}) {
       capabilities,
       activationEpoch: Number(options.activationEpoch) || 0,
       directLiveText: liveTextStatus || null,
+      taskBinding: initialTaskProjection?.taskBinding || null,
       directSurfaceProjection,
       fixture: isLiveText ? null : {
         id: "plain-text-turn",
@@ -13842,8 +14024,13 @@ function closeApplicationRuntimeAfterOrderedWorkspaceShutdown() {
 app.on("before-quit", (event) => {
   if (applicationQuitAfterOrderedShutdown) return;
   event.preventDefault();
-  coordinateWorkspaceWorkerShutdown("Application quit requested.").then((receipt) => {
+  coordinateWorkspaceWorkerShutdown("Application quit requested.").then(async (receipt) => {
     if (receipt.status !== "completed") return;
+    const statefulReceipt = await awaitDirectLiveTextControllerDisposal("Application quit requested.");
+    if (statefulReceipt.status !== "completed") {
+      console.warn("[direct-live-text] ordered shutdown blocked", statefulReceipt.cleanupFailure || "stateful_exec_cleanup_incomplete");
+      return;
+    }
     closeApplicationRuntimeAfterOrderedWorkspaceShutdown();
     applicationQuitAfterOrderedShutdown = true;
     app.quit();

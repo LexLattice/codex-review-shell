@@ -65,42 +65,72 @@ function normalizeCapabilityEvidenceState(value, fallback = "profile_declared") 
   return fallback;
 }
 
+function providerAttachmentCapabilityFor(input = {}, kind = "file") {
+  // The direct transport has no workspace-backend reader for WSL staged
+  // bytes.  A resolver or provider profile may still exist, but it cannot
+  // establish exact payload custody for a WSL draft.  Keep the capability
+  // projection reference-only until that authority exists.
+  const workspaceKind = normalizeString(input.workspaceKind || input.workspace?.kind, "").toLowerCase();
+  if (workspaceKind === "wsl") return { supported: false, evidenceState: "unsupported", custody: "none" };
+  const source = isPlainObject(input.providerAttachmentCapability) ? input.providerAttachmentCapability : {};
+  const candidate = source[kind] || source[`${kind}Payload`] || source.providerPayload;
+  if (candidate === true) return { supported: true, evidenceState: "accepted", custody: "exact" };
+  if (!isPlainObject(candidate)) return { supported: false, evidenceState: "unsupported", custody: "none" };
+  const supported = candidate.supported === true || candidate.enabled === true || candidate.available === true;
+  return {
+    supported,
+    evidenceState: normalizeCapabilityEvidenceState(candidate.evidenceState, supported ? "profile_declared" : "unsupported"),
+    custody: normalizeString(candidate.payloadCustody || candidate.custody, "none"),
+    sourceDigest: normalizeString(candidate.sourceDigest || candidate.evidenceKey, ""),
+  };
+}
+
 function buildDirectAttachmentCapabilityProjection(input = {}) {
   const status = normalizeString(input.status, "ready");
   const ready = status === "ready";
+  const filePayload = providerAttachmentCapabilityFor(input, "file");
+  const imagePayload = providerAttachmentCapabilityFor(input, "image");
+  const filePayloadReady = ready && filePayload.supported && filePayload.custody === "exact" && filePayload.evidenceState !== "unsupported";
+  const imagePayloadReady = ready && imagePayload.supported && imagePayload.custody === "exact" && imagePayload.evidenceState !== "unsupported";
   const projection = {
     schema: DIRECT_ATTACHMENT_CAPABILITY_PROJECTION_SCHEMA,
     projectionId: normalizeString(input.projectionId, `direct_attachment_capability_${sha256(`${input.projectId || ""}:${status}`).slice(0, 24)}`),
     projectId: normalizeString(input.projectId, ""),
     generatedAt: normalizeString(input.generatedAt, nowIso(input.nowMs)),
     runtimeKind: normalizeString(input.runtimeKind || input.transport, "direct-live-text"),
+    workspaceKind: normalizeString(input.workspaceKind || input.workspace?.kind, ""),
     status: ready ? "available" : "degraded",
-    canConsumeProviderFilePayload: false,
-    canConsumeProviderImagePayload: false,
+    canConsumeProviderFilePayload: filePayloadReady,
+    canConsumeProviderImagePayload: imagePayloadReady,
     canConsumeWorkspaceFileReference: ready,
     canConsumeStagedFileReference: ready,
     canConsumeTextReference: ready,
     capabilityEvidence: {
-      providerFilePayload: "unsupported",
-      providerImagePayload: "unsupported",
+      providerFilePayload: filePayloadReady ? filePayload.evidenceState : "unsupported",
+      providerImagePayload: imagePayloadReady ? imagePayload.evidenceState : "unsupported",
       workspaceFileReference: ready ? "profile_declared" : "unknown",
       stagedFileReference: ready ? "profile_declared" : "unknown",
       textReference: ready ? "profile_declared" : "unknown",
     },
     blockedStateWitnesses: [
-      {
+      ...(filePayloadReady ? [] : [{
         capability: "provider_file_payload",
         reason: "direct_provider_file_payload_not_proven",
-      },
-      {
+      }]),
+      ...(imagePayloadReady ? [] : [{
         capability: "provider_image_payload",
         reason: "direct_provider_image_payload_not_proven",
-      },
+      }]),
     ],
     rawPayloadIncluded: false,
     rawPathIncluded: false,
     rawTextIncluded: false,
     rawSecretIncluded: false,
+    providerPayloadCustody: filePayloadReady || imagePayloadReady ? "exact" : "none",
+    providerPayloadEvidence: {
+      file: filePayloadReady ? filePayload.sourceDigest : "",
+      image: imagePayloadReady ? imagePayload.sourceDigest : "",
+    },
   };
   projection.projectionDigest = digestFor("direct-attachment-capability-projection@1", projection);
   return projection;
@@ -122,8 +152,11 @@ function normalizedDraft(input = {}) {
     workspaceEvidenceKey: normalizeString(draft.workspaceEvidenceKey, ""),
     capabilityEvidenceState: normalizeCapabilityEvidenceState(draft.provider?.capabilityEvidenceState, "profile_declared"),
     sourceDisposition: normalizeString(draft.provider?.disposition, ""),
+    providerReason: normalizeString(draft.provider?.reason, ""),
     unsupportedReason: boundedString(draft.provider?.unsupportedReason || "", 220),
     typeRisk: normalizeString(draft.typeEvidence?.risk, ""),
+    providerPayloadCustody: normalizeString(draft.provider?.payloadCustody || draft.provider?.custody, "none"),
+    providerPayloadEvidenceKey: normalizeString(draft.provider?.payloadEvidenceKey || draft.provider?.evidenceKey, ""),
   };
 }
 
@@ -133,6 +166,68 @@ function directDispositionForDraft(draft = {}, capability = {}) {
       disposition: "unsupported",
       reason: "attachment_not_ready",
       capabilityEvidenceState: "unsupported",
+    };
+  }
+  const mimeType = draft.mimeType.toLowerCase();
+  const displayName = draft.displayName.toLowerCase();
+  const activeType = mimeType === "text/html" || mimeType === "application/xhtml+xml" ||
+    mimeType === "image/svg+xml" || /\.(?:html?|svg)$/.test(displayName);
+  const sourceDisposition = draft.sourceDisposition.toLowerCase();
+  const referenceOnlySource = new Set([
+    "reference_only",
+    "workspace_ref",
+    "staged_ref",
+    "text_ref",
+    "security_policy_blocked",
+    "active_content_reference_only",
+  ]).has(sourceDisposition);
+  const activeContent = activeType || draft.typeRisk === "active_content" ||
+    draft.providerReason === "security_policy_blocked" || referenceOnlySource;
+  const referenceReason = draft.providerReason ||
+    (draft.typeRisk === "active_content" || activeType || referenceOnlySource
+      ? "security_policy_blocked"
+      : draft.unsupportedReason);
+  // Active content and security-policy reference dispositions may use the
+  // safest available reference, but are never promoted to provider bytes.
+  if (activeContent) {
+    if (draft.workspaceRelPath && capability.canConsumeWorkspaceFileReference === true) {
+      return {
+        disposition: "workspace_ref",
+        reason: referenceReason || "security_policy_blocked",
+        capabilityEvidenceState: normalizeCapabilityEvidenceState(capability.capabilityEvidence?.workspaceFileReference, "profile_declared"),
+        workspaceRelPath: draft.workspaceRelPath,
+      };
+    }
+    if (draft.stagedRelPath && capability.canConsumeStagedFileReference === true) {
+      return {
+        disposition: "staged_ref",
+        reason: referenceReason || "security_policy_blocked",
+        capabilityEvidenceState: normalizeCapabilityEvidenceState(capability.capabilityEvidence?.stagedFileReference, "profile_declared"),
+        stagedRelPath: draft.stagedRelPath,
+      };
+    }
+    if (capability.canConsumeTextReference === true && (draft.workspaceRelPath || draft.stagedRelPath)) {
+      return {
+        disposition: "text_ref",
+        reason: referenceReason || "security_policy_blocked",
+        capabilityEvidenceState: normalizeCapabilityEvidenceState(capability.capabilityEvidence?.textReference, "profile_declared"),
+      };
+    }
+  }
+  const exactSource = (sourceDisposition === "provider_payload" && draft.providerPayloadCustody === "exact") ||
+    (draft.stagedRelPath && capability.providerPayloadCustody === "exact");
+  const workspaceKind = normalizeString(capability.workspaceKind || capability.workspace?.kind, "").toLowerCase();
+  const payloadCapable = draft.kind === "image"
+    ? capability.canConsumeProviderImagePayload === true
+    : capability.canConsumeProviderFilePayload === true;
+  if (workspaceKind !== "wsl" && !activeContent && exactSource && payloadCapable) {
+    return {
+      disposition: "provider_payload",
+      reason: "provider_payload_exact_custody",
+      capabilityEvidenceState: normalizeCapabilityEvidenceState(
+        capability.capabilityEvidence?.[draft.kind === "image" ? "providerImagePayload" : "providerFilePayload"],
+        "accepted",
+      ),
     };
   }
   if (draft.workspaceRelPath && capability.canConsumeWorkspaceFileReference === true) {
@@ -160,7 +255,7 @@ function directDispositionForDraft(draft = {}, capability = {}) {
   }
   return {
     disposition: "unsupported",
-    reason: draft.unsupportedReason || "attachment_reference_unavailable",
+    reason: referenceReason || "attachment_reference_unavailable",
     capabilityEvidenceState: "unsupported",
   };
 }
@@ -194,6 +289,8 @@ function buildDirectAttachmentSubmitPacket(input = {}) {
       workspaceEvidenceKey: draft.workspaceEvidenceKey,
       rawPayloadIncluded: false,
       rawPathIncluded: false,
+      providerPayloadCustody: disposition.disposition === "provider_payload" ? "exact" : "none",
+      providerPayloadEvidenceKey: draft.providerPayloadEvidenceKey,
     };
     row.rowDigest = digestFor("direct-attachment-submit-row@1", row);
     return row;
@@ -204,8 +301,8 @@ function buildDirectAttachmentSubmitPacket(input = {}) {
     draftId: row.draftId,
     displayName: row.displayName,
     disposition: row.disposition,
-    submitState: row.disposition === "unsupported" ? "blocked_before_submit" : "submitted_as_reference",
-    providerAccepted: false,
+    submitState: row.disposition === "unsupported" ? "blocked_before_submit" : row.disposition === "provider_payload" ? "submitted_as_provider_payload" : "submitted_as_reference",
+    providerAccepted: row.disposition === "provider_payload" ? null : false,
     providerAcceptanceEvidenceRef: "",
     rawPayloadIncludedInTranscript: false,
   }));
@@ -283,8 +380,23 @@ function assertDirectAttachmentCapabilityProjectionSafe(projection = {}) {
   for (const key of ["rawPayloadIncluded", "rawPathIncluded", "rawTextIncluded", "rawSecretIncluded"]) {
     if (projection[key] !== false) throw new Error(`direct_attachment_capability_raw_exposure:${key}`);
   }
-  if (projection.canConsumeProviderFilePayload !== false || projection.canConsumeProviderImagePayload !== false) {
-    throw new Error("direct_attachment_payload_capability_overclaimed");
+  const canConsumeProviderFilePayload = projection.canConsumeProviderFilePayload === true;
+  const canConsumeProviderImagePayload = projection.canConsumeProviderImagePayload === true;
+  if (canConsumeProviderFilePayload || canConsumeProviderImagePayload) {
+    if (normalizeString(projection.workspaceKind || projection.workspace?.kind, "").toLowerCase() === "wsl") {
+      throw new Error("direct_attachment_wsl_payload_capability_overclaimed");
+    }
+    if (projection.providerPayloadCustody !== "exact") throw new Error("direct_attachment_payload_capability_overclaimed");
+    const enabledEvidence = [
+      [canConsumeProviderFilePayload, "providerFilePayload"],
+      [canConsumeProviderImagePayload, "providerImagePayload"],
+    ];
+    for (const [enabled, kind] of enabledEvidence) {
+      if (!enabled) continue;
+      if (["unsupported", "unknown"].includes(normalizeCapabilityEvidenceState(projection.capabilityEvidence?.[kind], "unknown"))) {
+        throw new Error("direct_attachment_payload_capability_overclaimed");
+      }
+    }
   }
   return true;
 }
@@ -304,6 +416,14 @@ function assertDirectAttachmentSubmitPacketSafe(packet = {}) {
   for (const witness of arrayOrEmpty(packet.transcriptWitnesses)) {
     if (witness.rawPayloadIncludedInTranscript !== false) {
       throw new Error(`direct_attachment_transcript_payload_leak:${witness.draftId || ""}`);
+    }
+  }
+  for (const payload of arrayOrEmpty(packet.providerPayloads)) {
+    if (payload.rawPayloadIncluded !== false || payload.rawPathIncluded === true) {
+      throw new Error(`direct_attachment_provider_payload_raw_exposure:${payload.draftId || ""}`);
+    }
+    if (!["provider_input", "provider_input_unconfirmed"].includes(normalizeString(payload.modelVisibility, ""))) {
+      throw new Error(`direct_attachment_provider_payload_visibility_missing:${payload.draftId || ""}`);
     }
   }
   return true;

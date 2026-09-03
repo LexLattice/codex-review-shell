@@ -1,0 +1,3708 @@
+{
+  "schema": "semantic-contract-module.v0",
+  "module_id": "direct.semantic-service.dss05.real-closed-page.generation-1",
+  "ontology": {
+    "o_declarations": [
+      "DSS-0.4 closed page",
+      "worker execution",
+      "provider/model response",
+      "advisory semantic standing"
+    ],
+    "e_observation_bridges": [
+      "DSS-0.4 projection bytes to exact page handoff",
+      "provider transport to quarantined raw-result custody",
+      "provider usage report to bounded usage receipt"
+    ],
+    "forbidden_grants": [
+      "closed page never grants repository or credential access",
+      "worker observation never mints project or kernel authority",
+      "provider/model selection requires admitted runtime evidence",
+      "advisory result never authorizes mutation or DSS-0.6 handoff"
+    ]
+  },
+  "project_surface": [
+    {
+      "id": "source.dss04-closed-page-projection",
+      "kind": "SOURCE",
+      "provenance": "DSS-0.4 project-closed-page exact projection"
+    },
+    {
+      "id": "source.worker-runtime-installation",
+      "kind": "SOURCE",
+      "provenance": "owner-issued worker runtime descriptor"
+    },
+    {
+      "id": "source.model-adapter-installation",
+      "kind": "SOURCE",
+      "provenance": "owner-issued isolated model-adapter descriptor"
+    },
+    {
+      "id": "source.provider-runtime-evidence",
+      "kind": "SOURCE",
+      "provenance": "admitted runtime/provider availability evidence"
+    },
+    {
+      "id": "source.raw-provider-quarantine",
+      "kind": "SOURCE",
+      "provenance": "private quarantine custody root"
+    },
+    {
+      "id": "source.worker-event-ledger",
+      "kind": "SOURCE",
+      "provenance": "authenticated DSS-0.5 append-only event ledger"
+    },
+    {
+      "id": "source.future-repository-jurisdiction",
+      "kind": "SOURCE",
+      "provenance": "excluded future repository/tool/filesystem jurisdiction"
+    },
+    {
+      "id": "policy.dss-v0-constitution",
+      "kind": "POLICY",
+      "provenance": "DSS v0 constitution"
+    },
+    {
+      "id": "policy.dss04-closed-page-handoff",
+      "kind": "POLICY",
+      "provenance": "DSS-0.4 closed-page projection contract"
+    },
+    {
+      "id": "policy.dss05-semantic-contract",
+      "kind": "POLICY",
+      "provenance": "DSS-0.5 generation-1 contract"
+    },
+    {
+      "id": "policy.worker-runtime-isolation",
+      "kind": "POLICY",
+      "provenance": "worker isolation and credential exclusion policy"
+    },
+    {
+      "id": "policy.model-adapter-dialect",
+      "kind": "POLICY",
+      "provenance": "canonical provider-dialect mapping policy"
+    },
+    {
+      "id": "policy.attempt-lineage",
+      "kind": "POLICY",
+      "provenance": "fixed per-slot attempt and retry policy"
+    },
+    {
+      "id": "policy.output-admission",
+      "kind": "POLICY",
+      "provenance": "canonical response/output admission policy"
+    },
+    {
+      "id": "object.dss04-closed-page-handoff",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "immutable DSS-0.4 handoff envelope"
+    },
+    {
+      "id": "object.worker-execution-runtime",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "WorkerExecutionRuntimeRevision"
+    },
+    {
+      "id": "object.model-adapter-revision",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "isolated model adapter revision"
+    },
+    {
+      "id": "object.execution-capsule",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "ExecutionCapsule"
+    },
+    {
+      "id": "object.execution-request",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "canonical provider request"
+    },
+    {
+      "id": "object.execution-attempt",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "exact attempt lineage"
+    },
+    {
+      "id": "object.raw-result-custody",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "quarantine-first RawResult custody"
+    },
+    {
+      "id": "object.canonical-response",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "canonical MicroResult response"
+    },
+    {
+      "id": "object.usage-receipt",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "provider usage and transport receipt"
+    },
+    {
+      "id": "object.execution-evaluation",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "frozen advisory cell evaluation"
+    },
+    {
+      "id": "object.advisory-disposition",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "terminal advisory disposition"
+    },
+    {
+      "id": "object.worker-recovery-disposition",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "recovery classification"
+    },
+    {
+      "id": "grant.dss05-administration",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "owner administration of runtime and adapter revisions"
+    },
+    {
+      "id": "grant.dss05-page-execution",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "execution against one admitted page"
+    },
+    {
+      "id": "grant.dss05-output-admission",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "raw-to-canonical output admission"
+    },
+    {
+      "id": "interface.dss04-closed-page-handoff",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "authorized DSS-0.4 to DSS-0.5 page handoff"
+    },
+    {
+      "id": "interface.dss05-advisory-results",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "advisory-only result projection"
+    },
+    {
+      "id": "consumer.dss04-closed-page-worker",
+      "kind": "CONSUMER",
+      "provenance": "DSS-0.4 closed-page projection consumer"
+    },
+    {
+      "id": "consumer.future-dss06-ui-handoff",
+      "kind": "CONSUMER",
+      "provenance": "future DSS-0.6 UI/institutional consumer"
+    },
+    {
+      "id": "consumer.future-dss05-live-provider",
+      "kind": "CONSUMER",
+      "provenance": "future live-provider breadth beyond admitted adapter evidence"
+    },
+    {
+      "id": "operation.install-worker-execution-runtime",
+      "kind": "OPERATION",
+      "provenance": "runtime revision admission"
+    },
+    {
+      "id": "operation.install-model-adapter-revision",
+      "kind": "OPERATION",
+      "provenance": "model adapter admission"
+    },
+    {
+      "id": "operation.admit-closed-page-handoff",
+      "kind": "OPERATION",
+      "provenance": "page handoff admission"
+    },
+    {
+      "id": "operation.build-canonical-execution-request",
+      "kind": "OPERATION",
+      "provenance": "canonical request construction"
+    },
+    {
+      "id": "operation.allocate-execution-attempt",
+      "kind": "OPERATION",
+      "provenance": "replicate-slot attempt allocation"
+    },
+    {
+      "id": "operation.dispatch-execution-attempt",
+      "kind": "OPERATION",
+      "provenance": "bounded adapter dispatch"
+    },
+    {
+      "id": "operation.capture-quarantine-raw-result",
+      "kind": "OPERATION",
+      "provenance": "raw response quarantine"
+    },
+    {
+      "id": "operation.admit-canonical-response",
+      "kind": "OPERATION",
+      "provenance": "canonical response admission"
+    },
+    {
+      "id": "operation.record-provider-usage",
+      "kind": "OPERATION",
+      "provenance": "usage/transport recording"
+    },
+    {
+      "id": "operation.evaluate-execution-cell",
+      "kind": "OPERATION",
+      "provenance": "cell evaluation"
+    },
+    {
+      "id": "operation.seal-advisory-disposition",
+      "kind": "OPERATION",
+      "provenance": "terminal advisory disposition"
+    },
+    {
+      "id": "operation.cancel-execution-attempt",
+      "kind": "OPERATION",
+      "provenance": "prospective cancellation"
+    },
+    {
+      "id": "operation.recover-worker-execution",
+      "kind": "OPERATION",
+      "provenance": "restart recovery"
+    },
+    {
+      "id": "mutation.worker-event-transaction",
+      "kind": "MUTATION_PATH",
+      "provenance": "one authenticated event plus derived-head transaction"
+    },
+    {
+      "id": "mutation.raw-quarantine-before-reference",
+      "kind": "MUTATION_PATH",
+      "provenance": "raw CAS/quarantine publish-before-reference"
+    },
+    {
+      "id": "mutation.canonical-response-admission",
+      "kind": "MUTATION_PATH",
+      "provenance": "raw validation to canonical response transaction"
+    },
+    {
+      "id": "mutation.attempt-terminal-compare-and-swap",
+      "kind": "MUTATION_PATH",
+      "provenance": "one attempt terminal winner"
+    },
+    {
+      "id": "clock.worker-monotonic",
+      "kind": "CLOCK",
+      "provenance": "worker monotonic boundary clock"
+    },
+    {
+      "id": "clock.worker-wall",
+      "kind": "CLOCK",
+      "provenance": "worker recorded-at clock"
+    }
+  ],
+  "exclusions": [
+    {
+      "id": "x.dss05-spark-live-provider",
+      "surface_id": "consumer.future-dss05-live-provider",
+      "owner": "dss05-owner",
+      "theorem": "No Spark or other live provider is admitted by this semantic slice without externally anchored runtime/provider evidence; unavailable evidence yields UNAVAILABLE or typed remand before dispatch."
+    },
+    {
+      "id": "x.dss05-repository-access",
+      "surface_id": "source.future-repository-jurisdiction",
+      "owner": "dss05-owner",
+      "theorem": "The worker receives only the exact closed page and cannot widen repository, filesystem, tool, network, or credential jurisdiction."
+    },
+    {
+      "id": "x.dss06-ui-handoff",
+      "surface_id": "consumer.future-dss06-ui-handoff",
+      "owner": "dss06-owner",
+      "theorem": "DSS-0.5 produces advisory results only and contains no UI, institutional wakeup, commissioning, promotion, or activation operation."
+    }
+  ],
+  "carriers": [
+    {
+      "id": "e.dss04-closed-page-handoff",
+      "carrier_lane": "E",
+      "claim_target": "O",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "exact current DSS-0.4 closed-page projection is received",
+        "non_claims": [
+          "repository truth",
+          "model authority",
+          "DSS-0.6 handoff"
+        ]
+      },
+      "authority": {
+        "owner": "dss04-projection-owner",
+        "root": "dss04-projection-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "page_ref",
+          "materialization_ref",
+          "page_digest",
+          "route_population_digest",
+          "completeness_receipt_ref",
+          "sufficiency_receipt_ref",
+          "batch_seal_ref"
+        ],
+        "generation_fields": [
+          "dss04_service_generation",
+          "dss04_semantic_candidate",
+          "dss04_implementation_source_commit",
+          "projection_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact DSS-0.4 closed-page projection and handoff envelope",
+        "population_owner": "dss04-projection-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "UNSEEN",
+          "ADMITTED",
+          "REJECTED",
+          "STALE"
+        ],
+        "initial_state": "UNSEEN",
+        "events": [
+          "ACCEPT",
+          "REJECT",
+          "MARK_STALE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "UNSEEN",
+          "ADMITTED"
+        ]
+      },
+      "surface_refs": [
+        "source.dss04-closed-page-projection",
+        "object.dss04-closed-page-handoff",
+        "interface.dss04-closed-page-handoff",
+        "consumer.dss04-closed-page-worker"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "d.worker-execution-runtime",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "owner-admitted isolated WorkerExecutionRuntimeRevision is current",
+        "non_claims": [
+          "provider success",
+          "project mutation",
+          "credential possession"
+        ]
+      },
+      "authority": {
+        "owner": "dss05-runtime-owner",
+        "root": "dss05-worker-runtime-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "workerExecutionRuntimeRevisionRef",
+          "substrateBinding",
+          "backendAdapterRevision",
+          "processLauncherDigest",
+          "sandboxPolicyDigest",
+          "scratchPolicyDigest",
+          "environmentAllowlistDigest",
+          "credentialExclusionPolicyDigest",
+          "outputCapturePolicyDigest",
+          "runtimeArtifactDigest"
+        ],
+        "generation_fields": [
+          "dss05_service_generation",
+          "runtime_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one owner-admitted worker runtime revision",
+        "population_owner": "dss05-runtime-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "ADMITTED",
+          "UNAVAILABLE",
+          "REVOKED",
+          "BROKEN"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "ADMIT",
+          "MARK_UNAVAILABLE",
+          "REVOKE",
+          "BREAK"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "ADMITTED"
+        ]
+      },
+      "surface_refs": [
+        "source.worker-runtime-installation",
+        "source.provider-runtime-evidence",
+        "policy.worker-runtime-isolation",
+        "policy.dss-v0-constitution",
+        "object.worker-execution-runtime",
+        "grant.dss05-administration",
+        "clock.worker-monotonic",
+        "clock.worker-wall"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "d.model-adapter-revision",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "one isolated adapter maps an admitted provider dialect to canonical Direct output",
+        "non_claims": [
+          "provider truth",
+          "credential authority",
+          "unbounded provider breadth"
+        ]
+      },
+      "authority": {
+        "owner": "dss05-adapter-owner",
+        "root": "dss05-model-adapter-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "modelAdapterRevisionRef",
+          "adapterBuildDigest",
+          "providerDialect",
+          "requestMappingDigest",
+          "responseMappingDigest",
+          "outputSchemaDigest",
+          "transportPolicyDigest"
+        ],
+        "generation_fields": [
+          "workerExecutionRuntimeRevisionRef",
+          "dss05_service_generation",
+          "adapter_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact isolated model-adapter revision with admitted runtime evidence",
+        "population_owner": "dss05-adapter-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "ADMITTED",
+          "UNAVAILABLE",
+          "REVOKED",
+          "BROKEN"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "ADMIT",
+          "MARK_UNAVAILABLE",
+          "REVOKE",
+          "BREAK"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "ADMITTED"
+        ]
+      },
+      "surface_refs": [
+        "source.model-adapter-installation",
+        "source.provider-runtime-evidence",
+        "policy.model-adapter-dialect",
+        "object.model-adapter-revision",
+        "grant.dss05-administration"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "d.execution-capsule",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "one capsule binds page, route occurrence, runtime, adapter, policy, and canonical output schema",
+        "non_claims": [
+          "model result truth",
+          "project mutation",
+          "provider continuity"
+        ]
+      },
+      "authority": {
+        "owner": "dss05-capsule-owner",
+        "root": "dss05-execution-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "capsuleRef",
+          "edgeOccurrenceRef",
+          "evidenceMaterializationRef",
+          "evidenceMaterializationDigest",
+          "executionProfileRevisionRef",
+          "backendAdapterRevision",
+          "providerProfileRevisionRef",
+          "model",
+          "reasoningEffort",
+          "workerExecutionRuntimeRevisionRef",
+          "executionPolicyRef",
+          "outputSchemaDigest",
+          "compilerPinRef"
+        ],
+        "generation_fields": [
+          "dss04_service_generation",
+          "dss05_service_generation",
+          "capsule_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact page-confined execution capsule",
+        "population_owner": "dss05-capsule-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "ADMITTED",
+          "REJECTED",
+          "EXPIRED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "ADMIT",
+          "REJECT",
+          "EXPIRE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": false,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "ADMITTED"
+        ]
+      },
+      "surface_refs": [
+        "policy.dss04-closed-page-handoff",
+        "policy.dss05-semantic-contract",
+        "object.execution-capsule",
+        "grant.dss05-page-execution"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "d.execution-request",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "canonical request bytes are derived from one capsule and adapter mapping",
+        "non_claims": [
+          "raw provider prompt",
+          "credential disclosure",
+          "provider acceptance"
+        ]
+      },
+      "authority": {
+        "owner": "dss05-request-owner",
+        "root": "dss05-request-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "requestRef",
+          "capsuleRef",
+          "adapterRevision",
+          "inputProjectionDigest",
+          "canonicalRequestDigest",
+          "requestSchemaDigest"
+        ],
+        "generation_fields": [
+          "dss05_service_generation",
+          "request_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one canonical request for one capsule and attempt family",
+        "population_owner": "dss05-request-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "BUILT",
+          "DISPATCHED",
+          "REJECTED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "BUILD",
+          "DISPATCH",
+          "REJECT"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": false,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "BUILT",
+          "DISPATCHED"
+        ]
+      },
+      "surface_refs": [
+        "policy.model-adapter-dialect",
+        "object.execution-request",
+        "grant.dss05-page-execution"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "d.execution-attempt",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "every attempt preserves exact replicate-slot lineage and one terminal winner",
+        "non_claims": [
+          "retry success",
+          "agreement truth",
+          "silent retry"
+        ]
+      },
+      "authority": {
+        "owner": "dss05-attempt-owner",
+        "root": "dss05-attempt-lineage-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "attemptRef",
+          "jobRef",
+          "capsuleRef",
+          "ordinal",
+          "replicateSlotRef",
+          "priorAttemptRef",
+          "attemptLineageDigest",
+          "allocatedAt"
+        ],
+        "generation_fields": [
+          "dss05_service_generation",
+          "runtime_revision",
+          "adapter_revision",
+          "attempt_policy_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact attempt per expected replicate slot; every sibling remains separately accountable",
+        "population_owner": "dss05-attempt-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "ALLOCATED",
+          "STARTED",
+          "TERMINAL",
+          "FAILED",
+          "INTERRUPTED",
+          "TIMED_OUT",
+          "UNKNOWN_TERMINAL",
+          "CANCELLED_PRESTART",
+          "EXHAUSTED",
+          "RECOVERY_BLOCKED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "ALLOCATE",
+          "START",
+          "COMPLETE",
+          "FAIL",
+          "INTERRUPT",
+          "TIMEOUT",
+          "UNKNOWN_TERMINAL",
+          "CANCEL",
+          "EXHAUST",
+          "BLOCK"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "ALLOCATED",
+          "STARTED",
+          "TERMINAL"
+        ]
+      },
+      "surface_refs": [
+        "policy.attempt-lineage",
+        "object.execution-attempt",
+        "mutation.attempt-terminal-compare-and-swap",
+        "grant.dss05-page-execution"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.raw-result-custody",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "raw provider bytes were captured into private quarantine with exact attempt custody",
+        "non_claims": [
+          "canonical result",
+          "provider truth",
+          "ordinary raw payload disclosure"
+        ]
+      },
+      "authority": {
+        "owner": "dss05-quarantine-owner",
+        "root": "dss05-raw-quarantine-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "rawResultRef",
+          "attemptRef",
+          "backendProcessRef",
+          "providerTerminalKind",
+          "mediaType",
+          "rawResultDigest",
+          "rawByteCount",
+          "quarantineObjectRef",
+          "capturedAt"
+        ],
+        "generation_fields": [
+          "capsuleRef",
+          "workerExecutionRuntimeRevisionRef",
+          "modelAdapterRevisionRef",
+          "quarantine_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one raw response custody record for one attempt",
+        "population_owner": "dss05-quarantine-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "CAPTURED",
+          "QUARANTINED",
+          "REJECTED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "CAPTURE",
+          "QUARANTINE",
+          "REJECT"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "CAPTURED",
+          "QUARANTINED"
+        ]
+      },
+      "surface_refs": [
+        "source.raw-provider-quarantine",
+        "object.raw-result-custody",
+        "mutation.raw-quarantine-before-reference"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "d.canonical-response",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "canonical response is admitted only after raw structural and binding validation",
+        "non_claims": [
+          "project truth",
+          "authority effect",
+          "raw payload replacement"
+        ]
+      },
+      "authority": {
+        "owner": "dss05-output-owner",
+        "root": "dss05-output-admission-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "microResultRef",
+          "kernelRef",
+          "capsuleRef",
+          "attemptRef",
+          "edgeOccurrenceRef",
+          "evidenceMaterializationRef",
+          "evidenceMaterializationDigest",
+          "resultStatus",
+          "typedClaimsDigest",
+          "evidenceRefsDigest"
+        ],
+        "generation_fields": [
+          "dss05_service_generation",
+          "outputSchemaDigest",
+          "canonical_response_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one canonical MicroResult per admitted attempt",
+        "population_owner": "dss05-output-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "ADMITTED",
+          "REJECTED",
+          "REMANDED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "ADMIT",
+          "REJECT",
+          "REMAND"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "ADMITTED",
+          "REMANDED"
+        ]
+      },
+      "surface_refs": [
+        "policy.output-admission",
+        "object.canonical-response",
+        "interface.dss05-advisory-results",
+        "grant.dss05-output-admission",
+        "mutation.canonical-response-admission"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.usage-receipt",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "provider usage and transport standing are observed for one exact attempt",
+        "non_claims": [
+          "billing authority",
+          "successful completion",
+          "missing usage as zero"
+        ]
+      },
+      "authority": {
+        "owner": "dss05-accounting-owner",
+        "root": "dss05-usage-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "usageReceiptRef",
+          "attemptRef",
+          "requestDigest",
+          "rawResultDigest",
+          "providerUsageDigest",
+          "transportStatus",
+          "accountingStatus"
+        ],
+        "generation_fields": [
+          "capsuleRef",
+          "adapterRevision",
+          "usage_schema_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one usage/transport receipt per attempt, including unavailable usage",
+        "population_owner": "dss05-accounting-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "RECORDED",
+          "INCOMPLETE",
+          "REJECTED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "RECORD",
+          "MARK_INCOMPLETE",
+          "REJECT"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "RECORDED",
+          "INCOMPLETE"
+        ]
+      },
+      "surface_refs": [
+        "source.provider-runtime-evidence",
+        "object.usage-receipt",
+        "interface.dss05-advisory-results"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "d.execution-evaluation",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "frozen evaluation covers the complete visible attempt/result set for one cell",
+        "non_claims": [
+          "truth ratification",
+          "silent retry",
+          "majority as truth"
+        ]
+      },
+      "authority": {
+        "owner": "dss05-evaluation-owner",
+        "root": "dss05-evaluation-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "evaluationRef",
+          "executionPlanRef",
+          "cellRef",
+          "microResultRefsDigest",
+          "attestationRefsDigest",
+          "evaluationPolicyRef",
+          "dissentRefsDigest",
+          "unmetAssuranceRefsDigest"
+        ],
+        "generation_fields": [
+          "dss05_service_generation",
+          "evaluation_policy_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one evaluation over the complete visible attempt/result population for one expected cell",
+        "population_owner": "dss05-evaluation-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "RECORDED",
+          "REJECTED",
+          "REMANDED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "RECORD",
+          "REJECT",
+          "REMAND"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "RECORDED",
+          "REMANDED"
+        ]
+      },
+      "surface_refs": [
+        "policy.attempt-lineage",
+        "policy.output-admission",
+        "object.execution-evaluation",
+        "interface.dss05-advisory-results"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "d.advisory-disposition",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "terminal advisory disposition closes the exact planned cell population without authority effect",
+        "non_claims": [
+          "project mutation",
+          "semantic ratification",
+          "false completion"
+        ]
+      },
+      "authority": {
+        "owner": "dss05-disposition-owner",
+        "root": "dss05-disposition-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "advisoryDispositionRef",
+          "jobRef",
+          "executionPlanRef",
+          "terminalCoverageReceiptRef",
+          "evaluationRefsDigest",
+          "openCellRefsDigest",
+          "coveragePosture"
+        ],
+        "generation_fields": [
+          "dss05_service_generation",
+          "selection_policy_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one terminal disposition for one exact execution plan population",
+        "population_owner": "dss05-disposition-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "SEALED",
+          "REMANDED",
+          "TERMINAL_FAILURES",
+          "CANCELLED"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "SEAL",
+          "REMAND",
+          "FAIL",
+          "CANCEL"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "SEALED",
+          "REMANDED",
+          "TERMINAL_FAILURES",
+          "CANCELLED"
+        ]
+      },
+      "surface_refs": [
+        "object.advisory-disposition",
+        "interface.dss05-advisory-results"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "d.worker-recovery-disposition",
+      "carrier_lane": "D",
+      "claim_target": "D",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "restart reconstruction equals the durable status, reason, authority effect, source custody, and complete populations",
+        "non_claims": [
+          "recovery by relabel",
+          "new attempt on unknown handoff",
+          "history erasure"
+        ]
+      },
+      "authority": {
+        "owner": "dss05-recovery-owner",
+        "root": "dss05-recovery-root"
+      },
+      "identity": {
+        "stable_fields": [
+          "recoveryDispositionRef",
+          "serviceGeneration",
+          "eventLedgerHeadDigest",
+          "reconstructedPopulationDigest",
+          "status",
+          "reason",
+          "authorityEffect",
+          "sourceReceiptDigest"
+        ],
+        "generation_fields": [
+          "dss05_service_generation",
+          "recovery_revision"
+        ],
+        "alias_law": "Only the complete canonical identity aliases this carrier; mutable labels, paths, provider ids, prompts, and aggregate counts never alias it."
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one recovery disposition for one service generation and authenticated ledger head",
+        "population_owner": "dss05-recovery-owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "created",
+          "recorded",
+          "current"
+        ],
+        "relations": [
+          "created<=recorded",
+          "recorded<=current-boundary",
+          "no backdating or later-generation replay"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "ABSENT",
+          "READY",
+          "BLOCKED",
+          "BROKEN"
+        ],
+        "initial_state": "ABSENT",
+        "events": [
+          "CLASSIFY",
+          "READY",
+          "BLOCK",
+          "BREAK"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "READY",
+          "BLOCKED"
+        ]
+      },
+      "surface_refs": [
+        "source.worker-event-ledger",
+        "object.worker-recovery-disposition",
+        "operation.recover-worker-execution",
+        "mutation.worker-event-transaction"
+      ],
+      "canonical_construct": false
+    }
+  ],
+  "operations": [
+    {
+      "id": "install-worker-execution-runtime",
+      "owner": "dss05-runtime-owner",
+      "inputs": [],
+      "outputs": [
+        "d.worker-execution-runtime"
+      ],
+      "output_cases": [
+        "ADMITTED",
+        "UNAVAILABLE",
+        "REVOKED",
+        "BROKEN",
+        "UNAUTHORIZED",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "owner descriptor, isolation evidence, and immutable runtime revision publish in one custody transaction",
+      "replay": "exact runtime descriptor replays; any changed digest rejects without replacement",
+      "events": [
+        "ADMIT",
+        "MARK_UNAVAILABLE",
+        "REVOKE",
+        "BREAK"
+      ],
+      "surface_refs": [
+        "operation.install-worker-execution-runtime",
+        "grant.dss05-administration"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "ADMITTED",
+        "UNAVAILABLE",
+        "REVOKED",
+        "BROKEN"
+      ]
+    },
+    {
+      "id": "install-model-adapter-revision",
+      "owner": "dss05-adapter-owner",
+      "inputs": [
+        "d.worker-execution-runtime"
+      ],
+      "outputs": [
+        "d.model-adapter-revision"
+      ],
+      "output_cases": [
+        "ADMITTED",
+        "UNAVAILABLE",
+        "REVOKED",
+        "BROKEN",
+        "UNAUTHORIZED",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "runtime revision, adapter build/dialect mapping, and availability evidence join before publication",
+      "replay": "exact adapter/runtime tuple replays; changed build, dialect, or evidence conflicts",
+      "events": [
+        "ADMIT",
+        "MARK_UNAVAILABLE",
+        "REVOKE",
+        "BREAK"
+      ],
+      "surface_refs": [
+        "operation.install-model-adapter-revision",
+        "grant.dss05-administration"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "ADMITTED",
+        "UNAVAILABLE",
+        "REVOKED",
+        "BROKEN"
+      ]
+    },
+    {
+      "id": "admit-closed-page-handoff",
+      "owner": "dss05-capsule-owner",
+      "inputs": [
+        "e.dss04-closed-page-handoff",
+        "d.worker-execution-runtime",
+        "d.model-adapter-revision"
+      ],
+      "outputs": [
+        "e.dss04-closed-page-handoff",
+        "d.execution-capsule"
+      ],
+      "output_cases": [
+        "ADMITTED",
+        "REJECTED",
+        "STALE_GENERATION",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "handoff, runtime, adapter, and capsule identity are checked at one currentness latch",
+      "replay": "same page/runtime/adapter tuple returns original capsule; changed page or revision rejects",
+      "events": [
+        "ACCEPT",
+        "ADMIT",
+        "REJECT",
+        "MARK_STALE"
+      ],
+      "surface_refs": [
+        "operation.admit-closed-page-handoff",
+        "interface.dss04-closed-page-handoff",
+        "grant.dss05-page-execution"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "ADMITTED",
+        "REJECTED",
+        "STALE_GENERATION"
+      ]
+    },
+    {
+      "id": "build-canonical-execution-request",
+      "owner": "dss05-request-owner",
+      "inputs": [
+        "d.execution-capsule"
+      ],
+      "outputs": [
+        "d.execution-request"
+      ],
+      "output_cases": [
+        "BUILT",
+        "REJECTED",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "canonical request bytes and request identity publish after capsule-bound mapping validation",
+      "replay": "same capsule and request digest replays; provider ids or raw prompts cannot alter identity",
+      "events": [
+        "BUILD",
+        "REJECT"
+      ],
+      "surface_refs": [
+        "operation.build-canonical-execution-request",
+        "grant.dss05-page-execution"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "BUILT",
+        "REJECTED"
+      ]
+    },
+    {
+      "id": "expire-execution-capsule",
+      "owner": "dss05-capsule-owner",
+      "inputs": [
+        "d.execution-capsule"
+      ],
+      "outputs": [
+        "d.execution-capsule"
+      ],
+      "output_cases": [
+        "EXPIRED",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "capsule expiry and event-ledger append commit together before any dispatch",
+      "replay": "same capsule expiry replays; expired capsules cannot be revived or dispatched",
+      "events": [
+        "EXPIRE"
+      ],
+      "surface_refs": [
+        "operation.admit-closed-page-handoff",
+        "grant.dss05-page-execution"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "EXPIRED"
+      ]
+    },
+    {
+      "id": "allocate-execution-attempt",
+      "owner": "dss05-attempt-owner",
+      "inputs": [
+        "d.execution-capsule",
+        "d.execution-request"
+      ],
+      "outputs": [
+        "d.execution-attempt"
+      ],
+      "output_cases": [
+        "ALLOCATED",
+        "OVER_BUDGET",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "one expected replicate-slot reservation and attempt-lineage row commit atomically",
+      "replay": "same slot/capsule/policy returns original attempt; conflicting ordinal or lineage rejects",
+      "events": [
+        "ALLOCATE"
+      ],
+      "surface_refs": [
+        "operation.allocate-execution-attempt",
+        "grant.dss05-page-execution"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "ALLOCATED"
+      ]
+    },
+    {
+      "id": "dispatch-execution-attempt",
+      "owner": "dss05-attempt-owner",
+      "inputs": [
+        "d.execution-attempt",
+        "d.execution-request",
+        "d.execution-capsule",
+        "d.worker-execution-runtime",
+        "d.model-adapter-revision"
+      ],
+      "outputs": [
+        "d.execution-request",
+        "d.execution-attempt"
+      ],
+      "output_cases": [
+        "DISPATCHED",
+        "STARTED",
+        "TRANSPORT_UNAVAILABLE_BEFORE_DISPATCH",
+        "RUNTIME_FAILED_BEFORE_RAW_CAPTURE",
+        "STALE_GENERATION",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "adapter/runtime assurance, request dispatch boundary, and attempt START event share one terminal CAS boundary",
+      "replay": "a dispatched attempt is never silently redispatched; exact dispatch boundary replay returns its existing lineage",
+      "events": [
+        "DISPATCH",
+        "START"
+      ],
+      "surface_refs": [
+        "operation.dispatch-execution-attempt",
+        "grant.dss05-page-execution"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "DISPATCHED",
+        "STARTED"
+      ]
+    },
+    {
+      "id": "capture-quarantine-raw-result",
+      "owner": "dss05-quarantine-owner",
+      "inputs": [
+        "d.execution-attempt",
+        "d.execution-capsule",
+        "d.model-adapter-revision"
+      ],
+      "outputs": [
+        "d.execution-attempt",
+        "e.raw-result-custody"
+      ],
+      "output_cases": [
+        "CAPTURED",
+        "QUARANTINED",
+        "PROVIDER_COMPLETED",
+        "PROVIDER_FAILED",
+        "TRANSPORT_INTERRUPTED",
+        "TIMEOUT",
+        "UNKNOWN_TERMINAL",
+        "RAW_CAPTURE_REJECTED",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "raw bytes publish to private quarantine before any ordinary reference and exact attempt terminal winner commit",
+      "replay": "same attempt/process/raw digest replays; a changed raw digest or second terminal winner is rejected",
+      "events": [
+        "CAPTURE",
+        "QUARANTINE",
+        "COMPLETE",
+        "FAIL",
+        "INTERRUPT",
+        "TIMEOUT",
+        "UNKNOWN_TERMINAL"
+      ],
+      "surface_refs": [
+        "operation.capture-quarantine-raw-result",
+        "source.raw-provider-quarantine"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "CAPTURED",
+        "QUARANTINED",
+        "PROVIDER_COMPLETED",
+        "PROVIDER_FAILED",
+        "TRANSPORT_INTERRUPTED",
+        "TIMEOUT",
+        "UNKNOWN_TERMINAL",
+        "RAW_CAPTURE_REJECTED"
+      ]
+    },
+    {
+      "id": "admit-canonical-response",
+      "owner": "dss05-output-owner",
+      "inputs": [
+        "e.raw-result-custody",
+        "d.execution-attempt",
+        "d.execution-capsule"
+      ],
+      "outputs": [
+        "d.canonical-response"
+      ],
+      "output_cases": [
+        "ADMITTED",
+        "RAW_RESULT_STRUCTURAL_REJECTION",
+        "BINDING_REJECTION",
+        "REMANDED",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "quarantine digest, canonical schema, capsule/attempt/page bindings, and response publication commit together",
+      "replay": "same raw custody and validator receipts return original canonical response; failed raw output cannot be retried into admission",
+      "events": [
+        "ADMIT",
+        "REJECT",
+        "REMAND"
+      ],
+      "surface_refs": [
+        "operation.admit-canonical-response",
+        "grant.dss05-output-admission"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "ADMITTED",
+        "RAW_RESULT_STRUCTURAL_REJECTION",
+        "REMANDED"
+      ]
+    },
+    {
+      "id": "record-provider-usage",
+      "owner": "dss05-accounting-owner",
+      "inputs": [
+        "d.execution-attempt",
+        "d.execution-request",
+        "e.raw-result-custody"
+      ],
+      "outputs": [
+        "e.usage-receipt"
+      ],
+      "output_cases": [
+        "RECORDED",
+        "INCOMPLETE",
+        "REJECTED",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "usage, transport interruption, and raw-result lineage record in one append-only accounting transaction",
+      "replay": "same attempt/raw/request tuple replays; absent usage is INCOMPLETE, never zero or success",
+      "events": [
+        "RECORD",
+        "MARK_INCOMPLETE",
+        "REJECT"
+      ],
+      "surface_refs": [
+        "operation.record-provider-usage",
+        "interface.dss05-advisory-results"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "RECORDED",
+        "INCOMPLETE",
+        "REJECTED"
+      ]
+    },
+    {
+      "id": "evaluate-execution-cell",
+      "owner": "dss05-evaluation-owner",
+      "inputs": [
+        "d.execution-capsule",
+        "d.execution-attempt",
+        "d.canonical-response",
+        "e.usage-receipt"
+      ],
+      "outputs": [
+        "d.execution-attempt",
+        "d.execution-evaluation"
+      ],
+      "output_cases": [
+        "RECORDED",
+        "REJECTED",
+        "REMANDED",
+        "ATTEMPT_EXHAUSTED",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "complete visible attempt/result population and frozen evaluation policy are read at one evaluation boundary",
+      "replay": "same complete population and policy replays; adding a preferred retry changes lineage and cannot replace evaluation",
+      "events": [
+        "RECORD",
+        "REJECT",
+        "REMAND",
+        "EXHAUST"
+      ],
+      "surface_refs": [
+        "operation.evaluate-execution-cell",
+        "policy.attempt-lineage"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "RECORDED",
+        "REJECTED",
+        "REMANDED",
+        "ATTEMPT_EXHAUSTED"
+      ]
+    },
+    {
+      "id": "seal-advisory-disposition",
+      "owner": "dss05-disposition-owner",
+      "inputs": [
+        "d.execution-capsule",
+        "d.execution-attempt",
+        "d.canonical-response",
+        "e.usage-receipt",
+        "d.execution-evaluation"
+      ],
+      "outputs": [
+        "d.advisory-disposition"
+      ],
+      "output_cases": [
+        "SEALED",
+        "REMANDED",
+        "TERMINAL_FAILURES",
+        "CANCELLED",
+        "POPULATION_MISMATCH",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "terminal coverage, evaluations, usage, and all attempt lineage seal in one immutable disposition transaction",
+      "replay": "same terminal coverage replays; missing sibling slot, omitted failure, or changed policy blocks sealing",
+      "events": [
+        "SEAL",
+        "REMAND",
+        "FAIL",
+        "CANCEL"
+      ],
+      "surface_refs": [
+        "operation.seal-advisory-disposition",
+        "interface.dss05-advisory-results"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "SEALED",
+        "REMANDED",
+        "TERMINAL_FAILURES",
+        "CANCELLED"
+      ]
+    },
+    {
+      "id": "cancel-execution-attempt",
+      "owner": "dss05-attempt-owner",
+      "inputs": [
+        "d.execution-attempt"
+      ],
+      "outputs": [
+        "d.execution-attempt"
+      ],
+      "output_cases": [
+        "CANCELLED_PRESTART",
+        "CANCELLATION_LOST_RACE",
+        "COMPLETE",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "cancellation compares the exact attempt dispatch boundary and records the winning terminal event",
+      "replay": "a pre-dispatch cancellation replays; an acknowledged running or terminal attempt cannot be silently cancelled or retried",
+      "events": [
+        "CANCEL"
+      ],
+      "surface_refs": [
+        "operation.cancel-execution-attempt",
+        "grant.dss05-page-execution"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "CANCELLED_PRESTART"
+      ]
+    },
+    {
+      "id": "recover-worker-execution",
+      "owner": "dss05-recovery-owner",
+      "inputs": [
+        "e.dss04-closed-page-handoff",
+        "d.worker-execution-runtime",
+        "d.model-adapter-revision",
+        "d.execution-capsule",
+        "d.execution-request",
+        "d.execution-attempt",
+        "e.raw-result-custody",
+        "d.canonical-response",
+        "e.usage-receipt",
+        "d.execution-evaluation",
+        "d.advisory-disposition",
+        "d.worker-recovery-disposition"
+      ],
+      "outputs": [
+        "d.worker-recovery-disposition"
+      ],
+      "output_cases": [
+        "READY",
+        "BLOCKED",
+        "BROKEN",
+        "RECOVERY_EVENTS_APPENDED",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "atomicity": "authenticated event-ledger verification and full population reconstruction precede recovery disposition publication",
+      "replay": "same ledger head and source populations replay; unknown dispatch, missing quarantine, or digest mismatch blocks without new attempt",
+      "events": [
+        "CLASSIFY",
+        "READY",
+        "BLOCK",
+        "BREAK"
+      ],
+      "surface_refs": [
+        "operation.recover-worker-execution",
+        "source.worker-event-ledger"
+      ],
+      "canonical_construct": false,
+      "mutating_outcomes": [
+        "READY",
+        "BLOCKED",
+        "BROKEN",
+        "RECOVERY_EVENTS_APPENDED"
+      ]
+    }
+  ],
+  "qualified_transitions": [
+    {
+      "transitionId": "admit-closed-page-handoff:e.dss04-closed-page-handoff:ACCEPT:1",
+      "carrierId": "e.dss04-closed-page-handoff",
+      "operationId": "admit-closed-page-handoff",
+      "owner": "dss05-capsule-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "UNSEEN"
+      ],
+      "event": "ACCEPT",
+      "toState": "ADMITTED",
+      "outcomeCases": [
+        "ADMITTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "admit-closed-page-handoff:e.dss04-closed-page-handoff:REJECT:1",
+      "carrierId": "e.dss04-closed-page-handoff",
+      "operationId": "admit-closed-page-handoff",
+      "owner": "dss05-capsule-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "UNSEEN",
+        "ADMITTED"
+      ],
+      "event": "REJECT",
+      "toState": "REJECTED",
+      "outcomeCases": [
+        "REJECTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "admit-closed-page-handoff:e.dss04-closed-page-handoff:MARK_STALE:1",
+      "carrierId": "e.dss04-closed-page-handoff",
+      "operationId": "admit-closed-page-handoff",
+      "owner": "dss05-capsule-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "ADMITTED"
+      ],
+      "event": "MARK_STALE",
+      "toState": "STALE",
+      "outcomeCases": [
+        "STALE_GENERATION"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "install-worker-execution-runtime:d.worker-execution-runtime:ADMIT:1",
+      "carrierId": "d.worker-execution-runtime",
+      "operationId": "install-worker-execution-runtime",
+      "owner": "dss05-runtime-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "ADMIT",
+      "toState": "ADMITTED",
+      "outcomeCases": [
+        "ADMITTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "install-worker-execution-runtime:d.worker-execution-runtime:MARK_UNAVAILABLE:1",
+      "carrierId": "d.worker-execution-runtime",
+      "operationId": "install-worker-execution-runtime",
+      "owner": "dss05-runtime-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "ADMITTED"
+      ],
+      "event": "MARK_UNAVAILABLE",
+      "toState": "UNAVAILABLE",
+      "outcomeCases": [
+        "UNAVAILABLE"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "install-worker-execution-runtime:d.worker-execution-runtime:REVOKE:1",
+      "carrierId": "d.worker-execution-runtime",
+      "operationId": "install-worker-execution-runtime",
+      "owner": "dss05-runtime-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "ADMITTED"
+      ],
+      "event": "REVOKE",
+      "toState": "REVOKED",
+      "outcomeCases": [
+        "REVOKED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "install-worker-execution-runtime:d.worker-execution-runtime:BREAK:1",
+      "carrierId": "d.worker-execution-runtime",
+      "operationId": "install-worker-execution-runtime",
+      "owner": "dss05-runtime-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "ADMITTED",
+        "UNAVAILABLE"
+      ],
+      "event": "BREAK",
+      "toState": "BROKEN",
+      "outcomeCases": [
+        "BROKEN"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "install-model-adapter-revision:d.model-adapter-revision:ADMIT:1",
+      "carrierId": "d.model-adapter-revision",
+      "operationId": "install-model-adapter-revision",
+      "owner": "dss05-adapter-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "ADMIT",
+      "toState": "ADMITTED",
+      "outcomeCases": [
+        "ADMITTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "install-model-adapter-revision:d.model-adapter-revision:MARK_UNAVAILABLE:1",
+      "carrierId": "d.model-adapter-revision",
+      "operationId": "install-model-adapter-revision",
+      "owner": "dss05-adapter-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "ADMITTED"
+      ],
+      "event": "MARK_UNAVAILABLE",
+      "toState": "UNAVAILABLE",
+      "outcomeCases": [
+        "UNAVAILABLE"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "install-model-adapter-revision:d.model-adapter-revision:REVOKE:1",
+      "carrierId": "d.model-adapter-revision",
+      "operationId": "install-model-adapter-revision",
+      "owner": "dss05-adapter-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "ADMITTED"
+      ],
+      "event": "REVOKE",
+      "toState": "REVOKED",
+      "outcomeCases": [
+        "REVOKED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "install-model-adapter-revision:d.model-adapter-revision:BREAK:1",
+      "carrierId": "d.model-adapter-revision",
+      "operationId": "install-model-adapter-revision",
+      "owner": "dss05-adapter-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "ADMITTED",
+        "UNAVAILABLE"
+      ],
+      "event": "BREAK",
+      "toState": "BROKEN",
+      "outcomeCases": [
+        "BROKEN"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "admit-closed-page-handoff:d.execution-capsule:ADMIT:1",
+      "carrierId": "d.execution-capsule",
+      "operationId": "admit-closed-page-handoff",
+      "owner": "dss05-capsule-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "ADMIT",
+      "toState": "ADMITTED",
+      "outcomeCases": [
+        "ADMITTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "admit-closed-page-handoff:d.execution-capsule:REJECT:1",
+      "carrierId": "d.execution-capsule",
+      "operationId": "admit-closed-page-handoff",
+      "owner": "dss05-capsule-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "ADMITTED"
+      ],
+      "event": "REJECT",
+      "toState": "REJECTED",
+      "outcomeCases": [
+        "REJECTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "expire-execution-capsule:d.execution-capsule:EXPIRE:1",
+      "carrierId": "d.execution-capsule",
+      "operationId": "expire-execution-capsule",
+      "owner": "dss05-capsule-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "ADMITTED"
+      ],
+      "event": "EXPIRE",
+      "toState": "EXPIRED",
+      "outcomeCases": [
+        "EXPIRED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "build-canonical-execution-request:d.execution-request:BUILD:1",
+      "carrierId": "d.execution-request",
+      "operationId": "build-canonical-execution-request",
+      "owner": "dss05-request-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "BUILD",
+      "toState": "BUILT",
+      "outcomeCases": [
+        "BUILT"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "build-canonical-execution-request:d.execution-request:REJECT:1",
+      "carrierId": "d.execution-request",
+      "operationId": "build-canonical-execution-request",
+      "owner": "dss05-request-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "BUILT"
+      ],
+      "event": "REJECT",
+      "toState": "REJECTED",
+      "outcomeCases": [
+        "REJECTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "dispatch-execution-attempt:d.execution-request:DISPATCH:1",
+      "carrierId": "d.execution-request",
+      "operationId": "dispatch-execution-attempt",
+      "owner": "dss05-attempt-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "BUILT"
+      ],
+      "event": "DISPATCH",
+      "toState": "DISPATCHED",
+      "outcomeCases": [
+        "DISPATCHED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "allocate-execution-attempt:d.execution-attempt:ALLOCATE:1",
+      "carrierId": "d.execution-attempt",
+      "operationId": "allocate-execution-attempt",
+      "owner": "dss05-attempt-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "ALLOCATE",
+      "toState": "ALLOCATED",
+      "outcomeCases": [
+        "ALLOCATED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "dispatch-execution-attempt:d.execution-attempt:START:1",
+      "carrierId": "d.execution-attempt",
+      "operationId": "dispatch-execution-attempt",
+      "owner": "dss05-attempt-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "ALLOCATED"
+      ],
+      "event": "START",
+      "toState": "STARTED",
+      "outcomeCases": [
+        "STARTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "capture-quarantine-raw-result:d.execution-attempt:COMPLETE:1",
+      "carrierId": "d.execution-attempt",
+      "operationId": "capture-quarantine-raw-result",
+      "owner": "dss05-quarantine-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "STARTED"
+      ],
+      "event": "COMPLETE",
+      "toState": "TERMINAL",
+      "outcomeCases": [
+        "PROVIDER_COMPLETED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "capture-quarantine-raw-result:d.execution-attempt:FAIL:1",
+      "carrierId": "d.execution-attempt",
+      "operationId": "capture-quarantine-raw-result",
+      "owner": "dss05-quarantine-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "STARTED"
+      ],
+      "event": "FAIL",
+      "toState": "FAILED",
+      "outcomeCases": [
+        "PROVIDER_FAILED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "capture-quarantine-raw-result:d.execution-attempt:INTERRUPT:1",
+      "carrierId": "d.execution-attempt",
+      "operationId": "capture-quarantine-raw-result",
+      "owner": "dss05-quarantine-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "STARTED"
+      ],
+      "event": "INTERRUPT",
+      "toState": "INTERRUPTED",
+      "outcomeCases": [
+        "TRANSPORT_INTERRUPTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "capture-quarantine-raw-result:d.execution-attempt:TIMEOUT:1",
+      "carrierId": "d.execution-attempt",
+      "operationId": "capture-quarantine-raw-result",
+      "owner": "dss05-quarantine-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "STARTED"
+      ],
+      "event": "TIMEOUT",
+      "toState": "TIMED_OUT",
+      "outcomeCases": [
+        "TIMEOUT"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "capture-quarantine-raw-result:d.execution-attempt:UNKNOWN_TERMINAL:1",
+      "carrierId": "d.execution-attempt",
+      "operationId": "capture-quarantine-raw-result",
+      "owner": "dss05-quarantine-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "STARTED"
+      ],
+      "event": "UNKNOWN_TERMINAL",
+      "toState": "UNKNOWN_TERMINAL",
+      "outcomeCases": [
+        "UNKNOWN_TERMINAL"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "cancel-execution-attempt:d.execution-attempt:CANCEL:1",
+      "carrierId": "d.execution-attempt",
+      "operationId": "cancel-execution-attempt",
+      "owner": "dss05-attempt-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "ALLOCATED"
+      ],
+      "event": "CANCEL",
+      "toState": "CANCELLED_PRESTART",
+      "outcomeCases": [
+        "CANCELLED_PRESTART"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "evaluate-execution-cell:d.execution-attempt:EXHAUST:1",
+      "carrierId": "d.execution-attempt",
+      "operationId": "evaluate-execution-cell",
+      "owner": "dss05-evaluation-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "TERMINAL",
+        "FAILED",
+        "INTERRUPTED"
+      ],
+      "event": "EXHAUST",
+      "toState": "EXHAUSTED",
+      "outcomeCases": [
+        "ATTEMPT_EXHAUSTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "recover-worker-execution:d.execution-attempt:BLOCK:1",
+      "carrierId": "d.execution-attempt",
+      "operationId": "recover-worker-execution",
+      "owner": "dss05-recovery-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "STARTED",
+        "TERMINAL",
+        "FAILED",
+        "INTERRUPTED"
+      ],
+      "event": "BLOCK",
+      "toState": "RECOVERY_BLOCKED",
+      "outcomeCases": [
+        "BLOCKED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "capture-quarantine-raw-result:e.raw-result-custody:CAPTURE:1",
+      "carrierId": "e.raw-result-custody",
+      "operationId": "capture-quarantine-raw-result",
+      "owner": "dss05-quarantine-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "CAPTURE",
+      "toState": "CAPTURED",
+      "outcomeCases": [
+        "CAPTURED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "capture-quarantine-raw-result:e.raw-result-custody:QUARANTINE:1",
+      "carrierId": "e.raw-result-custody",
+      "operationId": "capture-quarantine-raw-result",
+      "owner": "dss05-quarantine-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "CAPTURED"
+      ],
+      "event": "QUARANTINE",
+      "toState": "QUARANTINED",
+      "outcomeCases": [
+        "QUARANTINED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "capture-quarantine-raw-result:e.raw-result-custody:REJECT:1",
+      "carrierId": "e.raw-result-custody",
+      "operationId": "capture-quarantine-raw-result",
+      "owner": "dss05-quarantine-owner",
+      "priorStateSource": "OPERATION_INPUT",
+      "fromStates": [
+        "CAPTURED",
+        "QUARANTINED"
+      ],
+      "event": "REJECT",
+      "toState": "REJECTED",
+      "outcomeCases": [
+        "RAW_CAPTURE_REJECTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "admit-canonical-response:d.canonical-response:ADMIT:1",
+      "carrierId": "d.canonical-response",
+      "operationId": "admit-canonical-response",
+      "owner": "dss05-output-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "ADMIT",
+      "toState": "ADMITTED",
+      "outcomeCases": [
+        "ADMITTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "admit-canonical-response:d.canonical-response:REJECT:1",
+      "carrierId": "d.canonical-response",
+      "operationId": "admit-canonical-response",
+      "owner": "dss05-output-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "REJECT",
+      "toState": "REJECTED",
+      "outcomeCases": [
+        "RAW_RESULT_STRUCTURAL_REJECTION"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "admit-canonical-response:d.canonical-response:REMAND:1",
+      "carrierId": "d.canonical-response",
+      "operationId": "admit-canonical-response",
+      "owner": "dss05-output-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "REJECTED"
+      ],
+      "event": "REMAND",
+      "toState": "REMANDED",
+      "outcomeCases": [
+        "REMANDED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "record-provider-usage:e.usage-receipt:RECORD:1",
+      "carrierId": "e.usage-receipt",
+      "operationId": "record-provider-usage",
+      "owner": "dss05-accounting-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "RECORD",
+      "toState": "RECORDED",
+      "outcomeCases": [
+        "RECORDED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "record-provider-usage:e.usage-receipt:MARK_INCOMPLETE:1",
+      "carrierId": "e.usage-receipt",
+      "operationId": "record-provider-usage",
+      "owner": "dss05-accounting-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "RECORDED"
+      ],
+      "event": "MARK_INCOMPLETE",
+      "toState": "INCOMPLETE",
+      "outcomeCases": [
+        "INCOMPLETE"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "record-provider-usage:e.usage-receipt:REJECT:1",
+      "carrierId": "e.usage-receipt",
+      "operationId": "record-provider-usage",
+      "owner": "dss05-accounting-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "INCOMPLETE"
+      ],
+      "event": "REJECT",
+      "toState": "REJECTED",
+      "outcomeCases": [
+        "REJECTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "evaluate-execution-cell:d.execution-evaluation:RECORD:1",
+      "carrierId": "d.execution-evaluation",
+      "operationId": "evaluate-execution-cell",
+      "owner": "dss05-evaluation-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "RECORD",
+      "toState": "RECORDED",
+      "outcomeCases": [
+        "RECORDED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "evaluate-execution-cell:d.execution-evaluation:REJECT:1",
+      "carrierId": "d.execution-evaluation",
+      "operationId": "evaluate-execution-cell",
+      "owner": "dss05-evaluation-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "RECORDED"
+      ],
+      "event": "REJECT",
+      "toState": "REJECTED",
+      "outcomeCases": [
+        "REJECTED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "evaluate-execution-cell:d.execution-evaluation:REMAND:1",
+      "carrierId": "d.execution-evaluation",
+      "operationId": "evaluate-execution-cell",
+      "owner": "dss05-evaluation-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "RECORDED"
+      ],
+      "event": "REMAND",
+      "toState": "REMANDED",
+      "outcomeCases": [
+        "REMANDED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "seal-advisory-disposition:d.advisory-disposition:SEAL:1",
+      "carrierId": "d.advisory-disposition",
+      "operationId": "seal-advisory-disposition",
+      "owner": "dss05-disposition-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "SEAL",
+      "toState": "SEALED",
+      "outcomeCases": [
+        "SEALED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "seal-advisory-disposition:d.advisory-disposition:REMAND:1",
+      "carrierId": "d.advisory-disposition",
+      "operationId": "seal-advisory-disposition",
+      "owner": "dss05-disposition-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "REMAND",
+      "toState": "REMANDED",
+      "outcomeCases": [
+        "REMANDED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "seal-advisory-disposition:d.advisory-disposition:FAIL:1",
+      "carrierId": "d.advisory-disposition",
+      "operationId": "seal-advisory-disposition",
+      "owner": "dss05-disposition-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "FAIL",
+      "toState": "TERMINAL_FAILURES",
+      "outcomeCases": [
+        "TERMINAL_FAILURES"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "seal-advisory-disposition:d.advisory-disposition:CANCEL:1",
+      "carrierId": "d.advisory-disposition",
+      "operationId": "seal-advisory-disposition",
+      "owner": "dss05-disposition-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "CANCEL",
+      "toState": "CANCELLED",
+      "outcomeCases": [
+        "CANCELLED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "recover-worker-execution:d.worker-recovery-disposition:CLASSIFY:1",
+      "carrierId": "d.worker-recovery-disposition",
+      "operationId": "recover-worker-execution",
+      "owner": "dss05-recovery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "CLASSIFY",
+      "toState": "ABSENT",
+      "outcomeCases": [
+        "RECOVERY_EVENTS_APPENDED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "recover-worker-execution:d.worker-recovery-disposition:READY:1",
+      "carrierId": "d.worker-recovery-disposition",
+      "operationId": "recover-worker-execution",
+      "owner": "dss05-recovery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "READY",
+      "toState": "READY",
+      "outcomeCases": [
+        "READY"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "recover-worker-execution:d.worker-recovery-disposition:BLOCK:1",
+      "carrierId": "d.worker-recovery-disposition",
+      "operationId": "recover-worker-execution",
+      "owner": "dss05-recovery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT"
+      ],
+      "event": "BLOCK",
+      "toState": "BLOCKED",
+      "outcomeCases": [
+        "BLOCKED"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    },
+    {
+      "transitionId": "recover-worker-execution:d.worker-recovery-disposition:BREAK:1",
+      "carrierId": "d.worker-recovery-disposition",
+      "operationId": "recover-worker-execution",
+      "owner": "dss05-recovery-owner",
+      "priorStateSource": "CARRIER_INITIAL_STATE",
+      "fromStates": [
+        "ABSENT",
+        "BLOCKED"
+      ],
+      "event": "BREAK",
+      "toState": "BROKEN",
+      "outcomeCases": [
+        "BROKEN"
+      ],
+      "atomicCommitBoundary": "one authenticated worker event transaction; CAS winner is retained",
+      "replayBehavior": "exact identity and source digest replay; conflicting identity or terminal winner rejects"
+    }
+  ],
+  "authority_owner_registry": [
+    "dss04-projection-owner",
+    "dss05-accounting-owner",
+    "dss05-adapter-owner",
+    "dss05-attempt-owner",
+    "dss05-capsule-owner",
+    "dss05-disposition-owner",
+    "dss05-evaluation-owner",
+    "dss05-output-owner",
+    "dss05-quarantine-owner",
+    "dss05-recovery-owner",
+    "dss05-request-owner",
+    "dss05-runtime-owner"
+  ],
+  "authority_root_registry": [
+    "dss04-projection-root",
+    "dss05-attempt-lineage-root",
+    "dss05-disposition-root",
+    "dss05-evaluation-root",
+    "dss05-execution-root",
+    "dss05-model-adapter-root",
+    "dss05-output-admission-root",
+    "dss05-raw-quarantine-root",
+    "dss05-recovery-root",
+    "dss05-request-root",
+    "dss05-usage-root",
+    "dss05-worker-runtime-root"
+  ],
+  "store_populations": [
+    {
+      "carrierId": "e.dss04-closed-page-handoff",
+      "owner": "dss04-projection-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.worker-execution-runtime",
+      "owner": "dss05-runtime-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.model-adapter-revision",
+      "owner": "dss05-adapter-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.execution-capsule",
+      "owner": "dss05-capsule-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.execution-request",
+      "owner": "dss05-request-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.execution-attempt",
+      "owner": "dss05-attempt-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "e.raw-result-custody",
+      "owner": "dss05-quarantine-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.canonical-response",
+      "owner": "dss05-output-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "e.usage-receipt",
+      "owner": "dss05-accounting-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.execution-evaluation",
+      "owner": "dss05-evaluation-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.advisory-disposition",
+      "owner": "dss05-disposition-owner",
+      "storage": "sqlite-plus-cas"
+    },
+    {
+      "carrierId": "d.worker-recovery-disposition",
+      "owner": "dss05-recovery-owner",
+      "storage": "sqlite-plus-cas"
+    }
+  ],
+  "persistence_proofs": [
+    {
+      "carrierId": "e.dss04-closed-page-handoff",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    },
+    {
+      "carrierId": "d.worker-execution-runtime",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    },
+    {
+      "carrierId": "d.model-adapter-revision",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    },
+    {
+      "carrierId": "d.execution-capsule",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    },
+    {
+      "carrierId": "d.execution-request",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    },
+    {
+      "carrierId": "d.execution-attempt",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    },
+    {
+      "carrierId": "e.raw-result-custody",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    },
+    {
+      "carrierId": "d.canonical-response",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    },
+    {
+      "carrierId": "e.usage-receipt",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    },
+    {
+      "carrierId": "d.execution-evaluation",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    },
+    {
+      "carrierId": "d.advisory-disposition",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    },
+    {
+      "carrierId": "d.worker-recovery-disposition",
+      "publishBeforeReference": true,
+      "reconstruction": "rederive from authenticated event ledger and source custody"
+    }
+  ],
+  "effect_declarations": {
+    "install-worker-execution-runtime": {
+      "mutatingOutcomes": [
+        "ADMITTED",
+        "BROKEN",
+        "REVOKED",
+        "UNAVAILABLE"
+      ],
+      "readOnlyOutcomes": [
+        "UNAUTHORIZED",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "UNAUTHORIZED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "install-model-adapter-revision": {
+      "mutatingOutcomes": [
+        "ADMITTED",
+        "BROKEN",
+        "REVOKED",
+        "UNAVAILABLE"
+      ],
+      "readOnlyOutcomes": [
+        "UNAUTHORIZED",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "UNAUTHORIZED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "admit-closed-page-handoff": {
+      "mutatingOutcomes": [
+        "ADMITTED",
+        "REJECTED",
+        "STALE_GENERATION"
+      ],
+      "readOnlyOutcomes": [
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "build-canonical-execution-request": {
+      "mutatingOutcomes": [
+        "BUILT",
+        "REJECTED"
+      ],
+      "readOnlyOutcomes": [
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "expire-execution-capsule": {
+      "mutatingOutcomes": [
+        "EXPIRED"
+      ],
+      "readOnlyOutcomes": [
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "allocate-execution-attempt": {
+      "mutatingOutcomes": [
+        "ALLOCATED"
+      ],
+      "readOnlyOutcomes": [
+        "OVER_BUDGET",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "OVER_BUDGET",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "dispatch-execution-attempt": {
+      "mutatingOutcomes": [
+        "DISPATCHED",
+        "STARTED"
+      ],
+      "readOnlyOutcomes": [
+        "TRANSPORT_UNAVAILABLE_BEFORE_DISPATCH",
+        "RUNTIME_FAILED_BEFORE_RAW_CAPTURE",
+        "STALE_GENERATION",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "TRANSPORT_UNAVAILABLE_BEFORE_DISPATCH",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "RUNTIME_FAILED_BEFORE_RAW_CAPTURE",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_GENERATION",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "capture-quarantine-raw-result": {
+      "mutatingOutcomes": [
+        "CAPTURED",
+        "PROVIDER_COMPLETED",
+        "PROVIDER_FAILED",
+        "QUARANTINED",
+        "RAW_CAPTURE_REJECTED",
+        "TIMEOUT",
+        "TRANSPORT_INTERRUPTED",
+        "UNKNOWN_TERMINAL"
+      ],
+      "readOnlyOutcomes": [
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "admit-canonical-response": {
+      "mutatingOutcomes": [
+        "ADMITTED",
+        "RAW_RESULT_STRUCTURAL_REJECTION",
+        "REMANDED"
+      ],
+      "readOnlyOutcomes": [
+        "BINDING_REJECTION",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "BINDING_REJECTION",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "record-provider-usage": {
+      "mutatingOutcomes": [
+        "INCOMPLETE",
+        "RECORDED",
+        "REJECTED"
+      ],
+      "readOnlyOutcomes": [
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "evaluate-execution-cell": {
+      "mutatingOutcomes": [
+        "ATTEMPT_EXHAUSTED",
+        "RECORDED",
+        "REJECTED",
+        "REMANDED"
+      ],
+      "readOnlyOutcomes": [
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "seal-advisory-disposition": {
+      "mutatingOutcomes": [
+        "CANCELLED",
+        "REMANDED",
+        "SEALED",
+        "TERMINAL_FAILURES"
+      ],
+      "readOnlyOutcomes": [
+        "POPULATION_MISMATCH",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "POPULATION_MISMATCH",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "cancel-execution-attempt": {
+      "mutatingOutcomes": [
+        "CANCELLED_PRESTART"
+      ],
+      "readOnlyOutcomes": [
+        "CANCELLATION_LOST_RACE",
+        "COMPLETE",
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "CANCELLATION_LOST_RACE",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "COMPLETE",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    },
+    "recover-worker-execution": {
+      "mutatingOutcomes": [
+        "BLOCKED",
+        "BROKEN",
+        "READY",
+        "RECOVERY_EVENTS_APPENDED"
+      ],
+      "readOnlyOutcomes": [
+        "REPLAYED",
+        "IDEMPOTENCY_CONFLICT",
+        "STALE_PREDECESSOR"
+      ],
+      "effect": "typed carrier transition or explicit no-write outcome",
+      "noWritePosture": [
+        {
+          "outcome": "REPLAYED",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "IDEMPOTENCY_CONFLICT",
+          "writes": [],
+          "authorityEffect": "none"
+        },
+        {
+          "outcome": "STALE_PREDECESSOR",
+          "writes": [],
+          "authorityEffect": "none"
+        }
+      ]
+    }
+  },
+  "semantic_laws": {
+    "slice": "DSS-0.4 exact closed-page projection -> one worker runtime and isolated model-adapter boundary -> advisory output",
+    "identity": "all identity values are externally anchored or content-addressed; names-only, labels, paths, provider ids, prompts, and aggregate counts cannot establish identity",
+    "custody": "runtime, adapter, capsule, request, attempt, raw quarantine, canonical response, usage, evaluation, disposition, and recovery records carry exact source/custody digests",
+    "currentness": "DSS-0.4 service generation, page/batch/seal and both runtime revisions are joined at the same admission latch; stale values fail closed",
+    "authority": "only owner-issued runtime/adapter descriptors and exact per-operation capability intersections may advance state; every worker/model result has authorityEffect=none",
+    "providerSelection": "ADMITTED_RUNTIME_EVIDENCE_ONLY; Spark and every live provider are explicitly UNAVAILABLE/DEFERRED until an externally anchored runtime/provider evidence record exists",
+    "isolation": {
+      "pageOnly": true,
+      "repositoryAccess": false,
+      "networkAccess": false,
+      "credentialsExcluded": true,
+      "outputByteLimitRequired": true,
+      "privateQuarantineRequired": true
+    },
+    "request": "canonical request is derived from capsule and adapter mapping; raw prompt, credential, endpoint, provider continuation, and caller-authored request bodies are excluded",
+    "attemptLineage": "attemptRef is unique per replicate slot and process invocation; every retryable failure is predeclared; admitted result statuses are never silently retried",
+    "rawCustody": "raw provider output enters private quarantine before ordinary reference; structural/binding rejection remains visible and cannot become canonical output",
+    "outcomes": [
+      "supports",
+      "refutes",
+      "inconclusive",
+      "remands",
+      "transport_unavailable_before_dispatch",
+      "transport_interrupted_before_raw_capture",
+      "runtime_failed_before_raw_capture",
+      "raw_result_structural_rejection"
+    ],
+    "cancellation": "prospective only; exact compare-and-swap winner remains authoritative and unknown dispatch blocks cancellation/retry",
+    "replay": "same canonical request and source custody return the original receipt; any changed digest, policy, runtime, adapter, page, or lineage yields idempotency conflict or stale rejection",
+    "recovery": "recovery recomputes status, reason, authority effect, source receipt digests, and every carrier/transition/outcome population from the authenticated event ledger; unequal or missing source blocks",
+    "effects": "advisory only; no project mutation, kernel mutation, route mutation, authority grant, provider truth, UI handoff, or promotion"
+  },
+  "attempt_policy": {
+    "schema": "direct_semantic_attempt_policy@1",
+    "attemptPolicyRef": "dss05-attempt-policy-generation-1",
+    "retryableFailureClasses": [
+      "transport_unavailable_before_dispatch",
+      "transport_interrupted_before_raw_capture",
+      "runtime_failed_before_raw_capture",
+      "raw_result_structural_rejection"
+    ],
+    "maximumAttemptsPerReplicateSlot": 1,
+    "replicateCountPerCell": 1,
+    "selectionRule": "all_results_independent",
+    "timeoutMs": 0,
+    "outputByteLimit": 0,
+    "fixedBeforeExecution": true,
+    "providerRetryStanding": "NO_ADMITTED_RESULT_OR_TERMINAL_FAILURE_IS_RETRIED; only predeclared retryable classes may open a new attempt under a new attemptRef"
+  },
+  "provider_evidence_policy": {
+    "schema": "direct_semantic_dss05_provider_evidence_policy@1",
+    "standing": "REQUIRED_BEFORE_PROVIDER_DISPATCH",
+    "admittedEvidenceFields": [
+      "providerProfileRevisionRef",
+      "providerAvailabilityDigest",
+      "modelAvailabilityDigest",
+      "endpointPolicyDigest",
+      "credentialExclusionDigest",
+      "observedAt"
+    ],
+    "missingPosture": "UNAVAILABLE_BEFORE_DISPATCH",
+    "sparkPosture": "EXCLUDED_DEFERRED"
+  },
+  "transition_population": {
+    "carrierEventCount": 47,
+    "qualifiedTransitionCount": 47,
+    "carrierEventPopulation": [
+      "d.advisory-disposition:CANCEL",
+      "d.advisory-disposition:FAIL",
+      "d.advisory-disposition:REMAND",
+      "d.advisory-disposition:SEAL",
+      "d.canonical-response:ADMIT",
+      "d.canonical-response:REJECT",
+      "d.canonical-response:REMAND",
+      "d.execution-attempt:ALLOCATE",
+      "d.execution-attempt:BLOCK",
+      "d.execution-attempt:CANCEL",
+      "d.execution-attempt:COMPLETE",
+      "d.execution-attempt:EXHAUST",
+      "d.execution-attempt:FAIL",
+      "d.execution-attempt:INTERRUPT",
+      "d.execution-attempt:START",
+      "d.execution-attempt:TIMEOUT",
+      "d.execution-attempt:UNKNOWN_TERMINAL",
+      "d.execution-capsule:ADMIT",
+      "d.execution-capsule:EXPIRE",
+      "d.execution-capsule:REJECT",
+      "d.execution-evaluation:RECORD",
+      "d.execution-evaluation:REJECT",
+      "d.execution-evaluation:REMAND",
+      "d.execution-request:BUILD",
+      "d.execution-request:DISPATCH",
+      "d.execution-request:REJECT",
+      "d.model-adapter-revision:ADMIT",
+      "d.model-adapter-revision:BREAK",
+      "d.model-adapter-revision:MARK_UNAVAILABLE",
+      "d.model-adapter-revision:REVOKE",
+      "d.worker-execution-runtime:ADMIT",
+      "d.worker-execution-runtime:BREAK",
+      "d.worker-execution-runtime:MARK_UNAVAILABLE",
+      "d.worker-execution-runtime:REVOKE",
+      "d.worker-recovery-disposition:BLOCK",
+      "d.worker-recovery-disposition:BREAK",
+      "d.worker-recovery-disposition:CLASSIFY",
+      "d.worker-recovery-disposition:READY",
+      "e.dss04-closed-page-handoff:ACCEPT",
+      "e.dss04-closed-page-handoff:MARK_STALE",
+      "e.dss04-closed-page-handoff:REJECT",
+      "e.raw-result-custody:CAPTURE",
+      "e.raw-result-custody:QUARANTINE",
+      "e.raw-result-custody:REJECT",
+      "e.usage-receipt:MARK_INCOMPLETE",
+      "e.usage-receipt:RECORD",
+      "e.usage-receipt:REJECT"
+    ],
+    "qualifiedTransitionPopulation": [
+      "admit-canonical-response:d.canonical-response:ADMIT:1",
+      "admit-canonical-response:d.canonical-response:REJECT:1",
+      "admit-canonical-response:d.canonical-response:REMAND:1",
+      "admit-closed-page-handoff:d.execution-capsule:ADMIT:1",
+      "admit-closed-page-handoff:d.execution-capsule:REJECT:1",
+      "admit-closed-page-handoff:e.dss04-closed-page-handoff:ACCEPT:1",
+      "admit-closed-page-handoff:e.dss04-closed-page-handoff:MARK_STALE:1",
+      "admit-closed-page-handoff:e.dss04-closed-page-handoff:REJECT:1",
+      "allocate-execution-attempt:d.execution-attempt:ALLOCATE:1",
+      "build-canonical-execution-request:d.execution-request:BUILD:1",
+      "build-canonical-execution-request:d.execution-request:REJECT:1",
+      "cancel-execution-attempt:d.execution-attempt:CANCEL:1",
+      "capture-quarantine-raw-result:d.execution-attempt:COMPLETE:1",
+      "capture-quarantine-raw-result:d.execution-attempt:FAIL:1",
+      "capture-quarantine-raw-result:d.execution-attempt:INTERRUPT:1",
+      "capture-quarantine-raw-result:d.execution-attempt:TIMEOUT:1",
+      "capture-quarantine-raw-result:d.execution-attempt:UNKNOWN_TERMINAL:1",
+      "capture-quarantine-raw-result:e.raw-result-custody:CAPTURE:1",
+      "capture-quarantine-raw-result:e.raw-result-custody:QUARANTINE:1",
+      "capture-quarantine-raw-result:e.raw-result-custody:REJECT:1",
+      "dispatch-execution-attempt:d.execution-attempt:START:1",
+      "dispatch-execution-attempt:d.execution-request:DISPATCH:1",
+      "evaluate-execution-cell:d.execution-attempt:EXHAUST:1",
+      "evaluate-execution-cell:d.execution-evaluation:RECORD:1",
+      "evaluate-execution-cell:d.execution-evaluation:REJECT:1",
+      "evaluate-execution-cell:d.execution-evaluation:REMAND:1",
+      "expire-execution-capsule:d.execution-capsule:EXPIRE:1",
+      "install-model-adapter-revision:d.model-adapter-revision:ADMIT:1",
+      "install-model-adapter-revision:d.model-adapter-revision:BREAK:1",
+      "install-model-adapter-revision:d.model-adapter-revision:MARK_UNAVAILABLE:1",
+      "install-model-adapter-revision:d.model-adapter-revision:REVOKE:1",
+      "install-worker-execution-runtime:d.worker-execution-runtime:ADMIT:1",
+      "install-worker-execution-runtime:d.worker-execution-runtime:BREAK:1",
+      "install-worker-execution-runtime:d.worker-execution-runtime:MARK_UNAVAILABLE:1",
+      "install-worker-execution-runtime:d.worker-execution-runtime:REVOKE:1",
+      "record-provider-usage:e.usage-receipt:MARK_INCOMPLETE:1",
+      "record-provider-usage:e.usage-receipt:RECORD:1",
+      "record-provider-usage:e.usage-receipt:REJECT:1",
+      "recover-worker-execution:d.execution-attempt:BLOCK:1",
+      "recover-worker-execution:d.worker-recovery-disposition:BLOCK:1",
+      "recover-worker-execution:d.worker-recovery-disposition:BREAK:1",
+      "recover-worker-execution:d.worker-recovery-disposition:CLASSIFY:1",
+      "recover-worker-execution:d.worker-recovery-disposition:READY:1",
+      "seal-advisory-disposition:d.advisory-disposition:CANCEL:1",
+      "seal-advisory-disposition:d.advisory-disposition:FAIL:1",
+      "seal-advisory-disposition:d.advisory-disposition:REMAND:1",
+      "seal-advisory-disposition:d.advisory-disposition:SEAL:1"
+    ],
+    "transitionEventPopulation": [
+      "d.advisory-disposition:CANCEL",
+      "d.advisory-disposition:FAIL",
+      "d.advisory-disposition:REMAND",
+      "d.advisory-disposition:SEAL",
+      "d.canonical-response:ADMIT",
+      "d.canonical-response:REJECT",
+      "d.canonical-response:REMAND",
+      "d.execution-attempt:ALLOCATE",
+      "d.execution-attempt:BLOCK",
+      "d.execution-attempt:CANCEL",
+      "d.execution-attempt:COMPLETE",
+      "d.execution-attempt:EXHAUST",
+      "d.execution-attempt:FAIL",
+      "d.execution-attempt:INTERRUPT",
+      "d.execution-attempt:START",
+      "d.execution-attempt:TIMEOUT",
+      "d.execution-attempt:UNKNOWN_TERMINAL",
+      "d.execution-capsule:ADMIT",
+      "d.execution-capsule:EXPIRE",
+      "d.execution-capsule:REJECT",
+      "d.execution-evaluation:RECORD",
+      "d.execution-evaluation:REJECT",
+      "d.execution-evaluation:REMAND",
+      "d.execution-request:BUILD",
+      "d.execution-request:DISPATCH",
+      "d.execution-request:REJECT",
+      "d.model-adapter-revision:ADMIT",
+      "d.model-adapter-revision:BREAK",
+      "d.model-adapter-revision:MARK_UNAVAILABLE",
+      "d.model-adapter-revision:REVOKE",
+      "d.worker-execution-runtime:ADMIT",
+      "d.worker-execution-runtime:BREAK",
+      "d.worker-execution-runtime:MARK_UNAVAILABLE",
+      "d.worker-execution-runtime:REVOKE",
+      "d.worker-recovery-disposition:BLOCK",
+      "d.worker-recovery-disposition:BREAK",
+      "d.worker-recovery-disposition:CLASSIFY",
+      "d.worker-recovery-disposition:READY",
+      "e.dss04-closed-page-handoff:ACCEPT",
+      "e.dss04-closed-page-handoff:MARK_STALE",
+      "e.dss04-closed-page-handoff:REJECT",
+      "e.raw-result-custody:CAPTURE",
+      "e.raw-result-custody:QUARANTINE",
+      "e.raw-result-custody:REJECT",
+      "e.usage-receipt:MARK_INCOMPLETE",
+      "e.usage-receipt:RECORD",
+      "e.usage-receipt:REJECT"
+    ],
+    "relation": "EXACT_CARRIER_EVENT_TO_QUALIFIED_TRANSITION_BIJECTION"
+  },
+  "predecessor": {
+    "exactDss04Projection": {
+      "dss04SemanticCandidate": "04c6437522779c060c2c3f3e3050a42ca0b77a1f",
+      "dss04SemanticPassClosure": "55ef4eef5811cdc753bb810f773564bf11359b5c",
+      "dss04ImplementationSource": "6a1facfa7999b7042304de97e64c1463cff8c09b",
+      "dss04LocalClosure": "docs/operations/direct-dss04-realization/local_implementation_closure.v1.json"
+    },
+    "requiredStanding": "DSS04_PAGE_MATERIALIZED_AND_BATCH_SEALED",
+    "acceptance": "field-for-field equality of page, materialization, completeness, sufficiency, batch seal, service generation, and projection revision",
+    "mismatchPosture": "REJECT_WITH_NO_EFFECT"
+  },
+  "exclusions_law": {
+    "noDss06": "consumer.future-dss06-ui-handoff is owner-ratified exclusion only",
+    "noLiveProvider": "provider/model selection remains deferred until runtime evidence; no credentials/network use is admitted",
+    "noRepository": "worker sees exact closed page only"
+  }
+}

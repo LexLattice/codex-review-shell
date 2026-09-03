@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("node:fs/promises");
+const fsNative = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
@@ -358,6 +359,69 @@ async function removeDraft(project, draftId, requestWorkspace) {
   return { ok: true, draftId: cleanDraftId };
 }
 
+async function readStagedAttachmentPayload(project, draft = {}) {
+  const cleanDraftId = cleanString(draft.id || draft.draftId, "");
+  const root = workspaceRoot(project);
+  if (!cleanDraftId || !root || workspaceKind(project) !== "local") return null;
+  const stagedRelPath = cleanString(draft.stagedRelPath, "");
+  if (!stagedRelPath || !stagedRelPath.startsWith(`${STAGING_ROOT_REL}/`)) return null;
+  const filePath = path.resolve(root, stagedRelPath);
+  if (!relativeWithin(root, filePath)) return null;
+  const draftDir = path.dirname(filePath);
+  const manifestPath = path.join(draftDir, "manifest.json");
+  let manifest;
+  try {
+    manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(manifest) || manifest.schema !== "composer_attachment_draft_manifest@1" ||
+      manifest.draftId !== cleanDraftId || manifest.projectId !== cleanString(project?.id, "") ||
+      manifest.stagedRelPath !== normalizeSlashes(stagedRelPath) ||
+      manifest.stagedPathEvidenceKey !== evidenceKey("staged-path", stagedRelPath)) return null;
+  if (draft.stagedPathEvidenceKey && draft.stagedPathEvidenceKey !== evidenceKey("staged-path", stagedRelPath)) return null;
+  const manifestSize = Number(manifest.sizeBytes);
+  if (!Number.isSafeInteger(manifestSize) || manifestSize < 0 || manifestSize > MAX_FILE_BYTES) return null;
+  let handle = null;
+  try {
+    const noFollow = fsNative.constants?.O_NOFOLLOW || 0;
+    const pathStat = await fs.lstat(filePath);
+    if (!pathStat.isFile() || pathStat.isSymbolicLink()) return null;
+    handle = await fs.open(filePath, fsNative.constants.O_RDONLY | noFollow);
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile() || openedStat.isSymbolicLink() || openedStat.size > MAX_FILE_BYTES) return null;
+    const pathIdentity = Number.isSafeInteger(pathStat.dev) && Number.isSafeInteger(pathStat.ino) && pathStat.dev >= 0 && pathStat.ino > 0
+      ? `${pathStat.dev}:${pathStat.ino}`
+      : "";
+    const openedIdentity = Number.isSafeInteger(openedStat.dev) && Number.isSafeInteger(openedStat.ino) && openedStat.dev >= 0 && openedStat.ino > 0
+      ? `${openedStat.dev}:${openedStat.ino}`
+      : "";
+    if (!pathIdentity || !openedIdentity || pathIdentity !== openedIdentity) return null;
+    const buffer = Buffer.alloc(Math.max(1, Math.min(MAX_FILE_BYTES + 1, manifestSize + 1)));
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (!result.bytesRead) break;
+      bytesRead += result.bytesRead;
+    }
+    const finalStat = await handle.stat();
+    if (finalStat.size > MAX_FILE_BYTES || finalStat.size !== manifestSize || bytesRead !== manifestSize || bytesRead > MAX_FILE_BYTES) return null;
+    const content = buffer.subarray(0, bytesRead);
+    if (manifest.contentEvidenceKey !== contentEvidenceKey(cleanDraftId, content)) return null;
+    return {
+      buffer: content,
+      mimeType: cleanString(manifest.mimeType || draft.mimeType, "application/octet-stream"),
+      displayName: cleanString(manifest.displayName || draft.displayName, path.basename(filePath)),
+      sizeBytes: content.length,
+      contentEvidenceKey: manifest.contentEvidenceKey,
+    };
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
 function attachmentReferenceLines(attachments = []) {
   const lines = [];
   for (const attachment of Array.isArray(attachments) ? attachments : []) {
@@ -381,5 +445,6 @@ module.exports = {
   stagePaths,
   stageClipboardImage,
   removeDraft,
+  readStagedAttachmentPayload,
   buildAttachmentReferenceBlock,
 };
