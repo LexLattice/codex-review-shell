@@ -17,6 +17,14 @@ const PROVIDER_AFFORDANCE_CLAIM_SCHEMA = "headless_provider_affordance_claim@1";
 const MAX_EVIDENCE_REFS = 32;
 const MAX_EVIDENCE_REF_DEPTH = 1;
 const MAX_EVIDENCE_REF_FIELD_LENGTH = 256;
+const MAX_EVIDENCE_REF_LABEL_LENGTH = 160;
+const SAFE_EVIDENCE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const SAFE_EVIDENCE_DIGEST_PATTERN = /^(?:sha256:[a-f0-9]{64}|[A-Za-z0-9][A-Za-z0-9._:-]{0,255})$/;
+const EVIDENCE_URI_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+const EVIDENCE_PATH_PATTERN = /(?:^|[\\/])(?:\.\.?(?:[\\/]|$)|[^\\/]*[\\/])/;
+const EVIDENCE_BARE_FILE_PATTERN = /^[^\\/\s]+\.[A-Za-z0-9]{1,16}$/;
+const EVIDENCE_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
+const EVIDENCE_SECRET_PATTERN = /(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|secret|bearer|private[_ -]?key|authorization|client[_ -]?secret|(?:token|key)\s*[:=]|sk-[a-z0-9]|ghp_[a-z0-9]|github_pat_|xox[baprs]-|akia[0-9a-z]{12,}|aiza[0-9a-z_-]{20,})/i;
 const SAFE_EVIDENCE_REF_KEYS = new Set([
   "kind",
   "id",
@@ -109,9 +117,29 @@ function validateEvidenceRefs(input) {
     const safe = {};
     for (const key of keys) {
       if (typeof candidate[key] !== "string") return { ok: false, errorCode: "invalid_evidence_refs" };
-      const value = normalizeString(candidate[key], "");
-      if (value.length > MAX_EVIDENCE_REF_FIELD_LENGTH) {
-        return { ok: false, errorCode: "evidence_ref_field_too_long" };
+      const value = candidate[key];
+      if (!value || value !== value.trim() || value.length > MAX_EVIDENCE_REF_FIELD_LENGTH) {
+        return { ok: false, errorCode: "invalid_evidence_refs" };
+      }
+      const isIdentifier = ["kind", "id", "artifactId", "projectId", "refId", "evidenceKey"].includes(key);
+      const isDigest = ["digest", "artifactDigest"].includes(key);
+      if (isIdentifier && !SAFE_EVIDENCE_IDENTIFIER_PATTERN.test(value)) {
+        return { ok: false, errorCode: "invalid_evidence_refs" };
+      }
+      if (isDigest && !SAFE_EVIDENCE_DIGEST_PATTERN.test(value)) {
+        return { ok: false, errorCode: "invalid_evidence_refs" };
+      }
+      if (["rendererSafeLabel", "source"].includes(key)) {
+        if (
+          value.length > MAX_EVIDENCE_REF_LABEL_LENGTH ||
+          EVIDENCE_CONTROL_PATTERN.test(value) ||
+          EVIDENCE_URI_PATTERN.test(value) ||
+          EVIDENCE_PATH_PATTERN.test(value) ||
+          EVIDENCE_BARE_FILE_PATTERN.test(value) ||
+          EVIDENCE_SECRET_PATTERN.test(value)
+        ) {
+          return { ok: false, errorCode: "invalid_evidence_refs" };
+        }
       }
       if (value) safe[key] = value;
     }

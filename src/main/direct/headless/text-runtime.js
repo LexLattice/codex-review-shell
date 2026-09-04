@@ -512,75 +512,84 @@ class DirectHeadlessTextRuntime {
     const readTurn = () => this.controller.sessionStore?.readTurn
       ? this.controller.sessionStore.readTurn(sessionId, turnId)
       : null;
-    const isSettled = (turn) => {
+    const isSettled = (turn, { sessionClosed = false } = {}) => {
       const state = normalizeString(turn?.state || turn?.status, "");
-      return !surfaceSession?.hasServerRequest?.() && IMPLEMENTATION_TERMINAL_TURN_STATES.has(state);
+      return (sessionClosed || !surfaceSession?.hasServerRequest?.()) && IMPLEMENTATION_TERMINAL_TURN_STATES.has(state);
     };
     while (Date.now() < deadline) {
       const turn = readTurn();
-      if (isSettled(turn)) return turn;
+      if (isSettled(turn)) return { ...turn, settled: true };
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     const timeoutError = {
       code: "headless_implementation_settle_timeout",
       message: "Headless implementation turn did not settle before the bounded wait expired.",
     };
+    const activeBeforeClose = this.controller.activeRuns?.get(turnId);
+    const activePromise = activeBeforeClose?.promise || null;
     try {
       if (typeof this.controller.interruptTurn === "function") {
-        await this.controller.interruptTurn({ sessionId, threadId: sessionId, turnId }, {});
+        const interruptResult = this.controller.interruptTurn({ sessionId, threadId: sessionId, turnId }, {});
+        if (interruptResult?.then) Promise.resolve(interruptResult).catch(() => {});
       }
     } catch (_) {}
-    const activeBeforeClose = this.controller.activeRuns?.get(turnId);
     if (activeBeforeClose?.abortController && !activeBeforeClose.abortController.signal.aborted) {
       try { activeBeforeClose.abortController.abort(timeoutError.message); } catch (_) {}
     }
     try {
-      await surfaceSession?.dispose?.({ silent: true, reason: timeoutError.code });
+      const disposeResult = surfaceSession?.dispose?.({ silent: true, reason: timeoutError.code });
+      if (disposeResult?.then) Promise.resolve(disposeResult).catch(() => {});
     } catch (_) {}
-    for (const request of surfaceSession?.serverRequests?.values?.() || []) {
-      if (request?.status === "pending") {
-        request.status = "failed";
-        request.errorSummary = timeoutError.message;
-        request.updatedAt = nowIso();
-      }
-    }
-    const active = this.controller.activeRuns?.get(turnId);
-    if (active?.promise) {
-      await Promise.race([
-        Promise.resolve(active.promise).catch(() => {}),
-        new Promise((resolve) => setTimeout(resolve, Math.min(1000, this.implementationSettleTimeoutMs))),
-      ]);
-    }
-    let turn = readTurn();
-    const cleanupDeadline = Date.now() + Math.min(1000, this.implementationSettleTimeoutMs);
-    while (!isSettled(turn) && Date.now() < cleanupDeadline) {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      turn = readTurn();
-    }
-    if (isSettled(turn)) {
+    const turn = readTurn();
+    const activeAfterClose = this.controller.activeRuns?.get(turnId);
+    const observedActivePromise = activePromise || activeAfterClose?.promise || null;
+    if (observedActivePromise || !isSettled(turn, { sessionClosed: true })) {
       return {
-        ...turn,
-        error: turn.error || timeoutError,
+        ...(turn || { state: "cancellation_pending", status: "cancellation_pending" }),
+        error: timeoutError,
         boundedWaitExpired: true,
-        cancellationSettled: true,
+        cancellationPending: true,
+        cancellationSettled: false,
+        settled: false,
+        activePromise: observedActivePromise,
+        surfaceSessionClosed: true,
       };
     }
-    if (turn && typeof this.controller.sessionStore?.updateTurnState === "function") {
-      try {
-        turn = this.controller.sessionStore.updateTurnState(sessionId, turnId, "failed", {
-          error: timeoutError,
-          boundedWaitExpired: true,
-          cancellationSettled: true,
-        });
-      } catch (_) {}
-    }
-    return turn || {
-      state: "failed",
-      status: "failed",
-      error: timeoutError,
+    return {
+      ...turn,
+      error: turn.error || timeoutError,
       boundedWaitExpired: true,
       cancellationSettled: true,
+      settled: true,
     };
+  }
+
+  async awaitImplementationCancellationSettled(surfaceSession, sessionId = "", turnId = "", pending = {}) {
+    const readTurn = () => this.controller.sessionStore?.readTurn
+      ? this.controller.sessionStore.readTurn(sessionId, turnId)
+      : null;
+    let activePromise = pending.activePromise || this.controller.activeRuns?.get(turnId)?.promise;
+    if (activePromise) await Promise.resolve(activePromise).catch(() => {});
+    while (true) {
+      const active = this.controller.activeRuns?.get(turnId);
+      if (active?.promise && active.promise !== activePromise) {
+        activePromise = active.promise;
+        await Promise.resolve(activePromise).catch(() => {});
+        continue;
+      }
+      const turn = readTurn();
+      if ((pending.surfaceSessionClosed === true || !surfaceSession?.hasServerRequest?.()) &&
+          IMPLEMENTATION_TERMINAL_TURN_STATES.has(normalizeString(turn?.state || turn?.status, ""))) {
+        return {
+          ...turn,
+          error: turn.error || pending.error,
+          boundedWaitExpired: true,
+          cancellationSettled: true,
+          settled: true,
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
   }
 
   async runPacket(packet = {}) {
@@ -650,9 +659,28 @@ class DirectHeadlessTextRuntime {
         ? await surfaceSession.request("turn/start", startTurnParams)
         : await this.controller.startTurn(startTurnParams, context);
       const active = this.controller.activeRuns?.get(turnAck?.turn?.id);
-      const finalTurn = implementationRuntime
+      let finalTurn = implementationRuntime
         ? await this.waitForImplementationSettled(surfaceSession, packet.targetThreadId, turnAck?.turn?.id)
         : (active?.promise ? await active.promise : null);
+      if (implementationRuntime && finalTurn?.cancellationPending && finalTurn.settled !== true) {
+        mark("cancellation_pending", {
+          providerCompleted: false,
+          replayState: "replay_unsafe",
+          turnId: turnAck?.turn?.id || "",
+          terminalTurnState: normalizeString(finalTurn.state || finalTurn.status, ""),
+          blockerCode: "headless_implementation_settle_timeout",
+          boundedWaitExpired: true,
+          cancellationRequested: true,
+          cancellationSettled: false,
+          error: isPlainObject(finalTurn.error) ? finalTurn.error : null,
+        });
+        finalTurn = await this.awaitImplementationCancellationSettled(
+          surfaceSession,
+          packet.targetThreadId,
+          turnAck?.turn?.id,
+          finalTurn,
+        );
+      }
       const settledTurn = this.controller.sessionStore?.readTurn
         ? this.controller.sessionStore.readTurn(packet.targetThreadId, turnAck?.turn?.id)
         : null;

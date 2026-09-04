@@ -189,7 +189,7 @@ try {
   const callerEvidence = {
     kind: "operator_note",
     id: "note-1",
-    digest: "sha256:note-1",
+    digest: `sha256:${"a".repeat(64)}`,
     rendererSafeLabel: "Operator note",
   };
   const evidenceAccepted = await postEvent(baseUrl, event({
@@ -211,6 +211,21 @@ try {
   assert.equal(mixedEvidence.response.status, 400);
   assert.equal(mixedEvidence.body.error, "invalid_evidence_refs");
   assert.equal(daemon.store.count("direct_bridge_inbox_events"), evidenceCountBeforeMixed);
+
+  for (const [suffix, unsafeRef] of [
+    ["uri", { kind: "operator_note", id: "unsafe-uri", source: "file:///etc/passwd" }],
+    ["path", { kind: "operator_note", id: "unsafe-path", rendererSafeLabel: "../private/notes.txt" }],
+    ["secret", { kind: "operator_note", id: "unsafe-secret", rendererSafeLabel: "api_key=sk-proj-secret" }],
+  ]) {
+    const beforeUnsafe = daemon.store.count("direct_bridge_inbox_events");
+    const unsafe = await postEvent(baseUrl, event({
+      idempotencyKey: `idem-unsafe-evidence-${suffix}`,
+      evidenceRefs: [callerEvidence, unsafeRef],
+    }));
+    assert.equal(unsafe.response.status, 400);
+    assert.equal(unsafe.body.error, "invalid_evidence_refs");
+    assert.equal(daemon.store.count("direct_bridge_inbox_events"), beforeUnsafe);
+  }
 
   const stored = await requestJson(baseUrl, `/v1/bridge/events/${encodeURIComponent(accepted.body.event.envelopeId)}`);
   assert.equal(stored.response.status, 200);
