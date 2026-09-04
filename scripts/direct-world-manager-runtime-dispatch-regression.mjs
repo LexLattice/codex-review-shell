@@ -167,6 +167,11 @@ const controller = new DirectLiveTextController({
     ].join("\n"), 200, { "content-type": "text/event-stream" });
   },
 });
+const originalControllerStartThread = controller.startThread.bind(controller);
+controller.startThread = (params = {}, context = {}) => originalControllerStartThread({
+  ...params,
+  reasoningEffort: params.reasoningEffort || "medium",
+}, context);
 roleRuntime = new DirectRoleRuntime({
   controller,
   sessionStore,
@@ -191,10 +196,11 @@ roleRuntime.rememberResident({
   lastRunState: "completed",
 });
 
-function makeFabric() {
+function makeFabric({ dbPath: fabricDbPath = dbPath, scheduler = undefined } = {}) {
   return new DirectWorldManagerEpistemicFabricRuntime({
-    dbPath,
+    dbPath: fabricDbPath,
     now,
+    ...(scheduler ? { scheduler } : {}),
     nativeContextImporterEnabled: true,
     recipientResolver: (input) =>
       roleRuntime.resolveLedgerRecipient(input),
@@ -207,7 +213,11 @@ function makeFabric() {
   });
 }
 
-fabric = makeFabric();
+const inertScheduler = {
+  schedule: () => ({ inert: true }),
+  cancel: () => {},
+};
+fabric = makeFabric({ scheduler: inertScheduler });
 fabric.bootstrap({ projectIds: [projectId] });
 const standing = fabric.ensureProjectStanding(projectId);
 fabric.broker.registerStanding(buildNotificationStanding({
@@ -230,9 +240,9 @@ const workerBundle = fabric.compileRoleTools({
   authorityBoundaryRef: exactRef("authority_boundary", "project_boundary_fixture"),
 });
 
-function appendBlocker(idempotencyKey, suffix) {
-  return fabric.invokeLedgerTool({
-    bundle: workerBundle,
+function appendBlocker(runtime = fabric, bundle = workerBundle, idempotencyKey, suffix) {
+  return runtime.invokeLedgerTool({
+    bundle,
     operationName: "ledger_raise_blocker",
     arguments: {
       subjectScope: {
@@ -254,7 +264,30 @@ function appendBlocker(idempotencyKey, suffix) {
   });
 }
 
-appendBlocker("runtime-dispatch-blocker-1", "one");
+function appendProposal(runtime, bundle, idempotencyKey, suffix) {
+  return runtime.invokeLedgerTool({
+    bundle,
+    operationName: "ledger_propose_claim",
+    arguments: {
+      subjectScope: {
+        kind: "project",
+        userWorldId: "user_world_local",
+        projectId,
+      },
+      objectRefs: [exactRef("project_observation", `observation_${suffix}`)],
+      evidenceRefs: [],
+      affectsRefs: [],
+      expectedRevisionVector: [],
+      semanticPayload: { claim: `Routine proposal ${suffix}` },
+      rendererSafeSummary: `Routine proposal ${suffix}.`,
+      idempotencyKey,
+    },
+    visibleEvidenceRefs: [],
+  });
+}
+
+appendBlocker(fabric, workerBundle, "runtime-dispatch-blocker-1", "one");
+fabric.flushPendingOutbox();
 const firstDrain = await fabric.dispatchQueuedDeliveries();
 assert.equal(firstDrain.delivered, 1);
 assert.equal(providerRequestCount, 1);
@@ -270,6 +303,99 @@ assert.equal(
 const replayDrain = await fabric.dispatchQueuedDeliveries();
 assert.equal(replayDrain.attempted, 0);
 assert.equal(providerRequestCount, 1);
+if (fabric.deliveryDrainPromise) await fabric.deliveryDrainPromise;
+
+// A delivery arriving while the first context import is in flight must be
+// picked up by the same drain when that import completes.
+const originalDeliveryDispatchAdapter = fabric.deliveryDispatchAdapter;
+let firstDispatchEntered;
+const firstDispatchEnteredPromise = new Promise((resolve) => {
+  firstDispatchEntered = resolve;
+});
+let releaseFirstDispatch;
+const firstDispatchRelease = new Promise((resolve) => {
+  releaseFirstDispatch = resolve;
+});
+let stalledDispatchCount = 0;
+fabric.deliveryDispatchAdapter = async (input) => {
+  stalledDispatchCount += 1;
+  if (stalledDispatchCount === 1) {
+    firstDispatchEntered();
+    await firstDispatchRelease;
+  }
+  return originalDeliveryDispatchAdapter(input);
+};
+tick += 3_000;
+appendBlocker(fabric, workerBundle, "runtime-dispatch-stalled-first", "stalled-first");
+const stalledFirstFlush = fabric.flushPendingOutbox();
+assert.equal(stalledFirstFlush.flushed, 0);
+assert.equal([...fabric.broker.deliveries.values()].filter((delivery) => delivery.deliveryPosture === "queued").length, 1);
+const stalledDrainPromise = fabric.dispatchQueuedDeliveries();
+await firstDispatchEnteredPromise;
+tick += 3_000;
+appendBlocker(fabric, workerBundle, "runtime-dispatch-queued-during-drain", "queued-during-drain");
+fabric.flushPendingOutbox();
+releaseFirstDispatch();
+const stalledDrain = await stalledDrainPromise;
+assert.equal(stalledDrain.delivered, 2);
+assert.equal(stalledDispatchCount, 2);
+assert.equal(
+  [...fabric.broker.deliveries.values()].filter((delivery) => delivery.deliveryPosture === "queued").length,
+  0,
+);
+fabric.deliveryDispatchAdapter = originalDeliveryDispatchAdapter;
+
+const controlledTimerEntries = [];
+const controlledScheduler = {
+  schedule: (callback, delayMs) => {
+    const entry = { callback, delayMs, cancelled: false };
+    controlledTimerEntries.push(entry);
+    return entry;
+  },
+  cancel: (entry) => { if (entry) entry.cancelled = true; },
+};
+const timerFabric = makeFabric({
+  dbPath: path.join(rootDir, "world-manager-idle-debounce.sqlite"),
+  scheduler: controlledScheduler,
+});
+timerFabric.bootstrap({ projectIds: [projectId] });
+const timerStanding = timerFabric.ensureProjectStanding(projectId);
+timerFabric.broker.registerStanding(buildNotificationStanding({
+  ...timerStanding,
+  epistemicPostures: [...timerStanding.epistemicPostures, "candidate"],
+  wakePolicy: "always_new_run",
+  operationalPolicy: {
+    ...timerStanding.operationalPolicy,
+    priorityThreshold: "routine",
+  },
+  revision: timerStanding.revision + 1,
+}, { now }));
+timerFabric.persistBroker();
+const timerWorkerBundle = timerFabric.compileRoleTools({
+  roleLane: "implementation_worker",
+  projectId,
+  actorRef: exactRef("agent", "implementation_worker_idle_timer_fixture"),
+  agentWorldRef: exactRef("agent_world", "implementation_worker_idle_timer_world_fixture"),
+  authorityBoundaryRef: exactRef("authority_boundary", "project_idle_timer_boundary_fixture"),
+});
+const providerCountBeforeTimer = providerRequestCount;
+appendProposal(timerFabric, timerWorkerBundle, "runtime-dispatch-idle-timer-1", "idle-timer");
+const timerEntry = controlledTimerEntries.at(-1);
+assert(timerEntry && timerEntry.delayMs >= 0, "A due non-immediate event must install a controlled debounce timer.");
+tick = timerFabric.pendingFlushDueTime();
+timerEntry.callback();
+await timerFabric.deliveryDrainPromise;
+assert.equal(providerRequestCount, providerCountBeforeTimer + 1, "The due debounce timer must initiate exactly one downstream dispatch.");
+assert.equal([...timerFabric.broker.deliveries.values()].filter((delivery) => delivery.deliveryPosture === "queued").length, 0, "The timer-initiated drain must consume its queued delivery.");
+assert.equal(timerFabric.artifactState.contextDispatchReceipts.length, 1);
+
+const providerCountBeforeClosedTimer = providerRequestCount;
+appendProposal(timerFabric, timerWorkerBundle, "runtime-dispatch-idle-timer-closed", "idle-timer-closed");
+const closedTimerEntry = controlledTimerEntries.at(-1);
+timerFabric.close();
+closedTimerEntry.callback();
+await Promise.resolve();
+assert.equal(providerRequestCount, providerCountBeforeClosedTimer, "Closing before a debounce deadline must prevent a new adapter effect.");
 
 const activeRunRef = exactRef("direct_role_run", "project_manager_active_run");
 roleRuntime.rememberResident({
@@ -283,11 +409,11 @@ roleRuntime.rememberResident({
   runPosture: "active_generating",
   lastRunState: "running",
 });
-appendBlocker("runtime-dispatch-blocker-2", "two");
+appendBlocker(fabric, workerBundle, "runtime-dispatch-blocker-2", "two");
 const activeDrain = await fabric.dispatchQueuedDeliveries();
 assert.equal(activeDrain.delivered, 0);
 assert.equal(activeDrain.deferred, 1);
-assert.equal(providerRequestCount, 1);
+assert.equal(providerRequestCount, providerCountBeforeTimer + 1);
 const deferredDelivery = [...fabric.broker.deliveries.values()].find(
   (delivery) => delivery.deliveryPosture === "queued",
 );
@@ -311,7 +437,7 @@ roleRuntime.rememberResident({
 });
 const boundaryDrain = await fabric.dispatchQueuedDeliveries();
 assert.equal(boundaryDrain.delivered, 1);
-assert.equal(providerRequestCount, 2);
+assert.equal(providerRequestCount, providerCountBeforeTimer + 2);
 
 const activated = fabric.activateImplementationPatch({
   projectId,
@@ -342,9 +468,9 @@ assert.equal(
   producerDispatch.authorization.workspaceMutationAllowed,
   false,
 );
-assert.equal(providerRequestCount, 3);
-assert.ok(providerToolNames[2].includes("ledger_publish_observation"));
-assert.ok(!providerToolNames[2].includes("ledger_submit_audit_verdict"));
+assert.equal(providerRequestCount, providerCountBeforeTimer + 3);
+assert.ok(providerToolNames[5].includes("ledger_publish_observation"));
+assert.ok(!providerToolNames[5].includes("ledger_submit_audit_verdict"));
 await controller.waitForTurnCompletion({
   sessionId: producerDispatch.receipt.workerSessionId,
   turnId: producerDispatch.receipt.workerTurnId,
@@ -353,7 +479,7 @@ const producerReplay = await fabric.dispatchProducerAssignment(
   activated.lifecycle.lifecycleId,
 );
 assert.equal(producerReplay.reused, true);
-assert.equal(providerRequestCount, 3);
+assert.equal(providerRequestCount, providerCountBeforeTimer + 3);
 
 const published = fabric.publishArtifactRevision({
   lifecycleId: activated.lifecycle.lifecycleId,
@@ -392,9 +518,9 @@ assert.ok(auditDispatches.every((entry) =>
   entry.receipt.authorityMode === "artifact_constitution"));
 assert.ok(auditDispatches.every((entry) =>
   !entry.authorization.boundedCapabilityNames.includes("apply_patch")));
-assert.equal(providerRequestCount, 5);
-assert.ok(providerToolNames[3].includes("ledger_submit_audit_verdict"));
-assert.ok(providerToolNames[4].includes("ledger_submit_audit_verdict"));
+assert.equal(providerRequestCount, providerCountBeforeTimer + 5);
+assert.ok(providerToolNames[6].includes("ledger_submit_audit_verdict"));
+assert.ok(providerToolNames[7].includes("ledger_submit_audit_verdict"));
 for (const entry of auditDispatches) {
   await controller.waitForTurnCompletion({
     sessionId: entry.receipt.workerSessionId,
@@ -429,7 +555,7 @@ assert.equal(
   fabric.artifactState.contextDispatchReceipts.length,
   receiptCountBeforeRestart,
 );
-assert.equal(providerRequestCount, 5);
+assert.equal(providerRequestCount, providerCountBeforeTimer + 5);
 
 console.log(JSON.stringify({
   schema: "direct_world_manager_runtime_dispatch_regression@1",

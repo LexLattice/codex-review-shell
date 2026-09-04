@@ -376,7 +376,7 @@ try {
     clientTurnRequestId: "client_req_direct_thread_deck_effort",
     model: "gpt-5.5",
     effort: "high",
-  }, { project, surfaceSession: { sendEvent: () => {} } });
+  }, { project, surfaceSession: { sendEvent: () => {} }, ownerControlled: true });
   const turn = sessionStore.readTurn(started.thread.id, ack.turn.id);
   assert.equal(turn.reasoningEffort, "high");
   await waitFor(

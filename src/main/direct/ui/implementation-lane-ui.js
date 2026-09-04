@@ -230,7 +230,7 @@ function witnessChips(runtimeStatus = {}) {
     chip({
       chipId: "runtime-tier",
       kind: "runtime-tier",
-      label: active === "direct-implementation-lane" ? "Direct implementation" : active === "direct-text-only" ? "Direct text" : "App Server",
+      label: active === "direct-implementation-lane" ? "Direct full access" : active === "direct-text-only" ? "Direct text" : "App Server",
       state: lane.selected || text.selected ? "ok" : "unknown",
       summary: "Selection is project binding, not turn authority.",
       evidenceKey: "direct_runtime_status",

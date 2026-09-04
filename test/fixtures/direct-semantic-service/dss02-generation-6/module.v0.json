@@ -1,0 +1,4661 @@
+{
+  "schema": "semantic-contract-module.v0",
+  "module_id": "direct.semantic-service.dss02-durable-job-kernel.generation-6.v0",
+  "ontology": {
+    "o_declarations": [
+      "one local Direct profile has one explicit durable substrate and at most one SQLite writer generation",
+      "filesystem bytes, SQLite pages, Unix peer credentials, process lifetimes, and wall-clock observations remain O until owner-issued bridges establish E or D standing",
+      "DSS-0.2 persists lawful request custody and delivery state but performs no semantic compilation, evidence materialization, worker execution, result admission, evaluation, or completion"
+    ],
+    "e_observation_bridges": [
+      "kernel peer credentials become a bounded transport observation but never a semantic principal",
+      "an admitted daemon public verifier plus a one-use connection- and generation-bound Ed25519 request proof becomes a durable authorization receipt for one operation and scope",
+      "canonical event envelopes plus per-job/global digest chains and HMAC custody tags become authenticated job history",
+      "verified publish-before-reference turns canonical bytes into a lawful CAS artifact reference",
+      "deterministic reducer replay turns an authenticated event prefix into a derived current-state projection",
+      "restart verification turns a complete store observation into an explicit recovery disposition"
+    ],
+    "forbidden_grants": [
+      "requester labels, Unix identity, capability reference strings, receipts, queue position, or renderer state as authority",
+      "CAS existence, SQLite rows, process exit, provider markers, empty results, or client display as semantic completion",
+      "mutable projection heads as truth independent of the event history",
+      "quarantine bytes in ordinary events, renderer projections, or unprivileged results",
+      "silent retry, lease renewal, cancellation success, orphan attachment, corruption repair, or authority substitution on restart",
+      "DSS-0.3+ execution, compiler, materializer, worker, MicroResult, attestation, evaluation, or disposition authority",
+      "serialized or cloned DSS-0.1 principal/capability projections, caller-supplied verifier records, public keys, signatures, or references as daemon authority"
+    ]
+  },
+  "project_surface": [
+    {
+      "id": "policy.dss02-implementation-contract",
+      "kind": "POLICY",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md: candidate durable-job-kernel law"
+    },
+    {
+      "id": "policy.dss-v0-constitution",
+      "kind": "POLICY",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_V0_CONSTITUTION.md: parent authority, lifecycle, custody, and delivery law"
+    },
+    {
+      "id": "policy.dss01-authority-foundation",
+      "kind": "POLICY",
+      "provenance": "src/main/direct/semantic-service/authorization.js and capability-authority.js at frozen parent"
+    },
+    {
+      "id": "source.unix-peer-credentials",
+      "kind": "SOURCE",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: kernel-derived local transport observation"
+    },
+    {
+      "id": "source.owner-bootstrap-trust-root",
+      "kind": "SOURCE",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2 and 3: offline installation-pinned Ed25519 owner root existing before the profile and daemon"
+    },
+    {
+      "id": "source.authority-challenge-channel",
+      "kind": "SOURCE",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: single-use daemon-generation and connection-bound authorization challenge"
+    },
+    {
+      "id": "source.concurrent-waiter-population",
+      "kind": "SOURCE",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 9: daemon-owned boundary-local active waiter-token population"
+    },
+    {
+      "id": "interface.direct-semantic-unix-socket",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2 and 12: planned owner-only length-prefixed local protocol"
+    },
+    {
+      "id": "interface.direct-semantic-cli",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 12: planned replaceable CLI client"
+    },
+    {
+      "id": "interface.protected-credential-fd",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: inherited owner-only bootstrap/private-credential channel"
+    },
+    {
+      "id": "interface.authorization-proof",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: closed versioned Ed25519 AuthorizationProof request object"
+    },
+    {
+      "id": "object.semantic-job-request",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "src/main/direct/semantic-service/contract-schemas.js SemanticJobRequest at frozen parent"
+    },
+    {
+      "id": "object.semantic-job-receipt",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "src/main/direct/semantic-service/contract-schemas.js SemanticJobReceipt at frozen parent"
+    },
+    {
+      "id": "object.schema-migration-revision",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 6 and 13: checksum-pinned monotonic schema authority"
+    },
+    {
+      "id": "object.daemon-generation",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2 and 13: durable writer generation and recovery boundary"
+    },
+    {
+      "id": "object.owner-bootstrap-root-pin",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2 and 3: immutable installed offline owner public-key fingerprint and configuration revision"
+    },
+    {
+      "id": "object.owner-bootstrap-commitment",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2 and 3: owner-root-signed profile and secret commitment created before daemon start"
+    },
+    {
+      "id": "object.bootstrap-attempt-receipt",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: immutable one-attempt filesystem claim and outcome evidence"
+    },
+    {
+      "id": "object.bootstrap-authorization-receipt",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: verified profile/owner/secret/descriptor/generation bootstrap authorization"
+    },
+    {
+      "id": "object.semantic-principal-lineage",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: immutable daemon principal lineage distinct from DSS-0.1 projections"
+    },
+    {
+      "id": "object.capability-verifier-record",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: immutable Ed25519 public verifier and bound scope lineage"
+    },
+    {
+      "id": "object.authorization-challenge",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: single-use CSPRNG challenge with protocol, connection, generation, and expiry identity"
+    },
+    {
+      "id": "object.request-authorization-receipt",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: immutable accepted or denied challenge/proof decision receipt"
+    },
+    {
+      "id": "object.authorization-proof-digest",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: canonical domain-separated signed-transcript digest without private material"
+    },
+    {
+      "id": "object.idempotency-binding",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 4: immutable tuple, digest, job, authority, and admission binding"
+    },
+    {
+      "id": "object.job-event-ledger",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 5 and 6: planned immutable SQLite job/service events"
+    },
+    {
+      "id": "object.job-derived-heads",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 5: planned replayable reducer projections"
+    },
+    {
+      "id": "object.cas-artifact",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 7: planned content-addressed canonical artifact"
+    },
+    {
+      "id": "object.quarantined-artifact",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 7: planned separately custodied raw/invalid object"
+    },
+    {
+      "id": "object.custody-key-revision",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "src/main/direct/semantic-service/contract-schemas.js CustodyKeyRevision at frozen parent"
+    },
+    {
+      "id": "object.custody-key-rotation",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "src/main/direct/semantic-service/contract-schemas.js CustodyKeyRotationRecord at frozen parent"
+    },
+    {
+      "id": "object.job-mutation-lease",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 9: durable daemon-generation and fencing-token-bound JobMutationLease"
+    },
+    {
+      "id": "object.backpressure-observation",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 9: complete counter, limit-policy, and event-head decision vector"
+    },
+    {
+      "id": "object.delivery-subscription",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "src/main/direct/semantic-service/contract-schemas.js DeliverySubscription at frozen parent"
+    },
+    {
+      "id": "object.delivery-attempt",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "src/main/direct/semantic-service/contract-schemas.js DeliveryAttempt at frozen parent"
+    },
+    {
+      "id": "object.delivery-acknowledgment",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "src/main/direct/semantic-service/contract-schemas.js DeliveryAcknowledgment at frozen parent"
+    },
+    {
+      "id": "object.delivery-cursor",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 11: durable acknowledgment-only contiguous cursor"
+    },
+    {
+      "id": "object.cancellation-decision",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "src/main/direct/semantic-service/contract-schemas.js SemanticJobCancellationDecision at frozen parent"
+    },
+    {
+      "id": "object.later-tranche-dispatch-boundary",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 10: exact pre-dispatch or committed-handoff authority boundary"
+    },
+    {
+      "id": "object.recovery-disposition",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 13: planned explicit restart/corruption classification"
+    },
+    {
+      "id": "object.authorized-safe-projection",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 11: planned bounded disclosure projection"
+    },
+    {
+      "id": "clock.sqlite-global-sequence",
+      "kind": "CLOCK",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 5: one store-global event order"
+    },
+    {
+      "id": "clock.daemon-generation",
+      "kind": "CLOCK",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2, 9, and 13: restart fencing boundary"
+    },
+    {
+      "id": "clock.authorization-time",
+      "kind": "CLOCK",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: bounded challenge/bootstrap issue, validation, and expiry observations"
+    },
+    {
+      "id": "grant.owner-profile-provisioning",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2 and 3: offline owner-root authority to create one signed profile genesis commitment"
+    },
+    {
+      "id": "grant.semantic-request-operation",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "src/main/direct/semantic-service/capability-authority.js opaque operation-scoped capability"
+    },
+    {
+      "id": "grant.service-administration",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2, 6, and 8: opaque service-admin capability"
+    },
+    {
+      "id": "grant.daemon-credential-bootstrap",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: one-use pre-listener owner bootstrap ceremony"
+    },
+    {
+      "id": "grant.daemon-operation-credential",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: durable public verifier plus challenge-bound request proof"
+    },
+    {
+      "id": "grant.job-mutation-lease",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 9: planned generation/fencing-bound lease"
+    },
+    {
+      "id": "operation.observe-transport-peer",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: planned socket peer-credential derivation"
+    },
+    {
+      "id": "operation.verify-owner-bootstrap-root-pin",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2 and 3: immutable installed root-pin comparison whose only failure transition is BROKEN"
+    },
+    {
+      "id": "operation.authorize-owner-profile-provisioning",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: offline-only fresh-profile provisioning decision under the immutable root pin"
+    },
+    {
+      "id": "operation.provision-bootstrap-commitment",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2 and 3: offline owner-root-signed profile genesis provisioning"
+    },
+    {
+      "id": "operation.authorize-bootstrap",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: pinned-root signature, commitment, descriptor, expiry, and one-attempt verification"
+    },
+    {
+      "id": "operation.bootstrap-daemon-authority",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: one-use fail-closed authority-root initialization"
+    },
+    {
+      "id": "operation.issue-daemon-credential",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: authorized immutable principal/verifier issuance"
+    },
+    {
+      "id": "operation.resolve-daemon-credential",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: challenge signature and current-lineage resolution"
+    },
+    {
+      "id": "operation.issue-authorization-challenge",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: persisted 256-bit CSPRNG single-use challenge issuance"
+    },
+    {
+      "id": "operation.revoke-daemon-credential",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: exact global-boundary verifier revocation"
+    },
+    {
+      "id": "operation.recover-authority-lineage",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 3 and 13: event-derived verifier/principal reconstruction"
+    },
+    {
+      "id": "operation.authorize-semantic-request",
+      "kind": "OPERATION",
+      "provenance": "src/main/direct/semantic-service/authorization.js DSS-0.1 request authorization"
+    },
+    {
+      "id": "operation.open-service-generation",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2, 6, and 13: migration-pinned generation opening"
+    },
+    {
+      "id": "operation.admit-durable-job",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 4-6: planned transactional request admission"
+    },
+    {
+      "id": "operation.append-authenticated-event",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 5-6: planned event/custody append"
+    },
+    {
+      "id": "operation.rebuild-derived-state",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 5 and 13: planned reducer replay and comparison"
+    },
+    {
+      "id": "operation.publish-cas-artifact",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 7: planned publish-before-reference path"
+    },
+    {
+      "id": "operation.quarantine-artifact",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 7: planned raw-content quarantine path"
+    },
+    {
+      "id": "operation.dispose-quarantined-artifact",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 7: authorized quarantine expiry or destruction without CAS admission"
+    },
+    {
+      "id": "operation.rotate-custody-key",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 8: planned dual-tag rotation boundary"
+    },
+    {
+      "id": "operation.acquire-job-lease",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 9: planned fenced lease acquisition"
+    },
+    {
+      "id": "operation.release-job-lease",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 9: explicit release or abandonment of a persisted fencing lease"
+    },
+    {
+      "id": "operation.apply-backpressure",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 9: planned service-owned capacity decision"
+    },
+    {
+      "id": "operation.reserve-waiter-slot",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 9: linearizable last-slot reservation or rejection"
+    },
+    {
+      "id": "operation.release-waiter-slot",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 9: exactly-once response/timeout/disconnect/shutdown release"
+    },
+    {
+      "id": "operation.decide-cancellation",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 10: planned prospective cancellation"
+    },
+    {
+      "id": "operation.handoff-later-tranche",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 10: durable dispatch-boundary transition without execution standing"
+    },
+    {
+      "id": "operation.create-delivery-subscription",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 11: planned authorized subscription creation"
+    },
+    {
+      "id": "operation.offer-delivery",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 11: planned revalidated bounded offer"
+    },
+    {
+      "id": "operation.acknowledge-delivery",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 11: planned exact digest acknowledgment"
+    },
+    {
+      "id": "operation.project-authorized-job-view",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 11-12: planned safe inspect/wait/results projection"
+    },
+    {
+      "id": "operation.recover-service-generation",
+      "kind": "OPERATION",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 13: planned fail-closed recovery sequence"
+    },
+    {
+      "id": "mutation.sqlite-immediate-transaction",
+      "kind": "MUTATION_PATH",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 6: planned sole-writer immediate transaction path"
+    },
+    {
+      "id": "mutation.bootstrap-attempt-claim",
+      "kind": "MUTATION_PATH",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: atomic no-replace one-attempt claim and directory fsync"
+    },
+    {
+      "id": "mutation.authority-lineage-transaction",
+      "kind": "MUTATION_PATH",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: bootstrap, issue, and revoke event transaction"
+    },
+    {
+      "id": "mutation.authorization-challenge-consumption",
+      "kind": "MUTATION_PATH",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 3: expected-revision one-use challenge and receipt transaction"
+    },
+    {
+      "id": "mutation.idempotency-admission",
+      "kind": "MUTATION_PATH",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 4: binding, counters, and admission event transaction"
+    },
+    {
+      "id": "mutation.cas-publish-before-reference",
+      "kind": "MUTATION_PATH",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 7: planned durable publication path"
+    },
+    {
+      "id": "mutation.capacity-counter-update",
+      "kind": "MUTATION_PATH",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 9: event-coupled checked accounting transition"
+    },
+    {
+      "id": "mutation.waiter-slot-transition",
+      "kind": "MUTATION_PATH",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 9: daemon-generation-bound boundary-local reserve/release gate"
+    },
+    {
+      "id": "mutation.delivery-cursor-advance",
+      "kind": "MUTATION_PATH",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 11: planned acknowledgment-only cursor transition"
+    },
+    {
+      "id": "mutation.dispatch-boundary-transition",
+      "kind": "MUTATION_PATH",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 10: fenced one-way handoff commit"
+    },
+    {
+      "id": "mutation.custody-key-rotation",
+      "kind": "MUTATION_PATH",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md section 8: planned exact sequence key transition"
+    },
+    {
+      "id": "consumer.future-dss03-execution-backend",
+      "kind": "CONSUMER",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_V0_CONSTITUTION.md DSS-0.3: future fake execution backend; excluded from this tranche"
+    },
+    {
+      "id": "consumer.cli-electron-codex-clients",
+      "kind": "CONSUMER",
+      "provenance": "docs/DIRECT_SEMANTIC_SERVICE_DSS02_IMPLEMENTATION_CONTRACT.md sections 2 and 12: replaceable bounded clients"
+    }
+  ],
+  "exclusions": [
+    {
+      "id": "exclude.dss03-execution",
+      "surface_id": "consumer.future-dss03-execution-backend",
+      "owner": "dss02-candidate-owner",
+      "theorem": "DSS-0.2 may queue only for a future dispatch boundary and cannot execute or complete semantic cells"
+    },
+    {
+      "id": "exclude.dss01-inprocess-authorization",
+      "surface_id": "operation.authorize-semantic-request",
+      "owner": "dss02-candidate-owner",
+      "theorem": "the frozen DSS-0.1 operation accepts only factory-local principal/capability object identity; DSS-0.2 preserves it as predecessor evidence but never invokes, serializes, clones, or reconstructs it as daemon authority"
+    }
+  ],
+  "carriers": [
+    {
+      "authority": {
+        "owner": "direct-semantic-transport-owner",
+        "root": "unix-peer-credential-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "semantic principal",
+          "operation authority",
+          "job scope",
+          "standing after disconnect"
+        ],
+        "predicate": "the kernel observed one local socket peer at one connection boundary"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [],
+        "join_relations": []
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.transport-peer-observation",
+      "identity": {
+        "alias_law": "peer metadata never aliases a Direct semantic principal",
+        "generation_fields": [
+          "socket_inode",
+          "peer_pid",
+          "peer_uid",
+          "observation_nonce"
+        ],
+        "stable_fields": [
+          "connection_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "OBSERVE",
+          "DISCONNECT",
+          "REJECT"
+        ],
+        "initial_state": "UNOBSERVED",
+        "states": [
+          "UNOBSERVED",
+          "OBSERVED",
+          "DISCONNECTED",
+          "REJECTED"
+        ]
+      },
+      "persistence": "BOUNDARY_LOCAL",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one kernel-derived peer observation for the live accepted connection",
+        "population_owner": "direct-semantic-transport-owner"
+      },
+      "surface_refs": [
+        "source.unix-peer-credentials",
+        "interface.direct-semantic-unix-socket"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-installation-owner",
+        "root": "direct-semantic-installation-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "caller-selected key",
+          "filesystem-ownership authority",
+          "Unix-peer authority",
+          "daemon private-key custody",
+          "DSS-0.2 rotation",
+          "DSS-0.2 retirement",
+          "successor-root standing"
+        ],
+        "predicate": "one immutable installed owner configuration pins the offline Ed25519 public root before any profile, daemon, or bootstrap caller exists; removal or substitution is only BROKEN"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [],
+        "join_relations": [
+          "installation-precedes-profile",
+          "Ed25519-public-root-only",
+          "immutable-through-DSS-0.2",
+          "removal-or-substitution-means-BROKEN"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.owner-bootstrap-trust-root",
+      "identity": {
+        "alias_law": "owner bootstrap roots alias only under the same immutable installation, Ed25519 fingerprint, configuration revision, pin digest, installation event, and verification observation",
+        "generation_fields": [
+          "verification_observation_digest",
+          "verification_time",
+          "breakage_reason"
+        ],
+        "stable_fields": [
+          "installation_ref",
+          "owner_root_fingerprint",
+          "owner_root_algorithm",
+          "installation_configuration_revision",
+          "root_pin_digest",
+          "installation_event_digest"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "VERIFY",
+          "DETECT_BREAKAGE",
+          "BLOCK"
+        ],
+        "initial_state": "PINNED",
+        "states": [
+          "PINNED",
+          "BROKEN"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "the one immutable installed public root pin created before DSS-0.2; no DSS-0.2 operation can rotate, retire, replace, or add a root",
+        "population_owner": "direct-semantic-installation-owner"
+      },
+      "surface_refs": [
+        "source.owner-bootstrap-trust-root",
+        "object.owner-bootstrap-root-pin",
+        "grant.owner-profile-provisioning",
+        "operation.verify-owner-bootstrap-root-pin"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-installation-owner",
+        "root": "direct-semantic-installation-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "daemon request authority",
+          "caller-selected root",
+          "existing-profile replacement",
+          "repeatable provisioning"
+        ],
+        "predicate": "the offline installation owner authorized exactly one fresh-profile bootstrap commitment under the pinned owner root and protected output descriptor policy"
+      },
+      "claim_target": "D",
+      "composition": {
+        "input_families": [
+          "e.owner-bootstrap-trust-root"
+        ],
+        "join_relations": [
+          "same-installed-owner-root",
+          "fresh-profile-no-replace",
+          "offline-process-only",
+          "protected-output-descriptor-policy"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.owner-bootstrap-trust-root"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "AUTHORIZED",
+          "DENIED"
+        ]
+      },
+      "id": "d.owner-profile-provisioning",
+      "identity": {
+        "alias_law": "provisioning decisions alias only under the same installed root, fresh profile observation, daemon/protocol revisions, descriptor policy, nonce, and offline decision boundary",
+        "generation_fields": [
+          "owner_root_fingerprint",
+          "installation_configuration_revision",
+          "absent_profile_observation_digest",
+          "expected_daemon_revision",
+          "protocol_revision",
+          "descriptor_policy_digest",
+          "authorization_nonce",
+          "authorization_time"
+        ],
+        "stable_fields": [
+          "installation_ref",
+          "profile_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "OBSERVE_ABSENT_PROFILE",
+          "AUTHORIZE_ONCE",
+          "DENY",
+          "CONSUME"
+        ],
+        "initial_state": "PENDING",
+        "states": [
+          "PENDING",
+          "AUTHORIZED_ONCE",
+          "DENIED",
+          "CONSUMED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "POLICY_COVERAGE",
+        "membership_predicate": "the pinned root, authenticated offline installation process, exact absent-profile observation, requested profile, revisions, and protected output policy",
+        "population_owner": "direct-semantic-installation-owner"
+      },
+      "surface_refs": [
+        "source.owner-bootstrap-trust-root",
+        "object.owner-bootstrap-root-pin",
+        "object.owner-bootstrap-commitment",
+        "grant.owner-profile-provisioning",
+        "operation.verify-owner-bootstrap-root-pin",
+        "operation.authorize-owner-profile-provisioning",
+        "operation.provision-bootstrap-commitment"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-installation-owner",
+        "root": "direct-semantic-offline-owner-bootstrap-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "COMPOSITE",
+        "non_claims": [
+          "caller-supplied trust root",
+          "daemon self-authorization",
+          "reusable bootstrap",
+          "ordinary socket authority"
+        ],
+        "predicate": "the offline installed owner root signed one unattempted profile genesis and high-entropy secret commitment before daemon start"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "d.owner-profile-provisioning"
+        ],
+        "join_relations": [
+          "installed-owner-root-fingerprint",
+          "owner-root-signature",
+          "fresh-profile-no-replace",
+          "maximum-attempts-equals-one"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "d.owner-profile-provisioning"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.owner-bootstrap-commitment",
+      "identity": {
+        "alias_law": "bootstrap commitments alias only under the same installed owner root, profile genesis, exact closed commitment, nonce, expiry, descriptor policy, and signature",
+        "generation_fields": [
+          "genesis_declaration_digest",
+          "commitment_digest",
+          "secret_commitment",
+          "bootstrap_nonce",
+          "expected_daemon_revision",
+          "protocol_revision",
+          "descriptor_policy_digest",
+          "created_at",
+          "expires_at",
+          "maximum_attempts",
+          "owner_signature"
+        ],
+        "stable_fields": [
+          "profile_ref",
+          "owner_root_fingerprint"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "PROVISION",
+          "CLAIM_ATTEMPT",
+          "CONSUME",
+          "EXPIRE",
+          "BLOCK"
+        ],
+        "initial_state": "ABSENT",
+        "states": [
+          "ABSENT",
+          "PROVISIONED",
+          "ATTEMPT_CLAIMED",
+          "CONSUMED",
+          "EXPIRED",
+          "BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one atomically published owner-root-signed pending commitment for a profile that did not previously exist",
+        "population_owner": "direct-semantic-installation-owner"
+      },
+      "surface_refs": [
+        "source.owner-bootstrap-trust-root",
+        "object.owner-bootstrap-root-pin",
+        "object.owner-bootstrap-commitment",
+        "grant.owner-profile-provisioning",
+        "operation.provision-bootstrap-commitment",
+        "interface.protected-credential-fd"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-store-owner",
+        "root": "direct-semantic-profile-generation-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "COMPOSITE",
+        "non_claims": [
+          "request authority",
+          "transport-peer derivation",
+          "silent migration",
+          "cross-generation lease standing"
+        ],
+        "predicate": "one exclusive daemon generation opened one checksum-pinned schema lineage and immutable writer boundary before any client connection"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [],
+        "join_relations": [
+          "exclusive-profile-lock",
+          "monotonic-checksum-pinned-migration",
+          "one-current-daemon-generation"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.service-generation-custody",
+      "identity": {
+        "alias_law": "service generations alias only under the same profile, migration lineage, schema checksum, and open event",
+        "generation_fields": [
+          "schema_migration_revision",
+          "schema_checksum",
+          "daemon_generation",
+          "generation_open_event_digest"
+        ],
+        "stable_fields": [
+          "profile_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "MIGRATE",
+          "OPEN",
+          "VERIFY",
+          "BLOCK"
+        ],
+        "initial_state": "UNOPENED",
+        "states": [
+          "UNOPENED",
+          "MIGRATING",
+          "OPEN",
+          "BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "HISTORICAL_MEMBERSHIP",
+        "membership_predicate": "every migration revision through the current schema and every durable daemon-generation record",
+        "population_owner": "direct-semantic-store-owner"
+      },
+      "surface_refs": [
+        "object.schema-migration-revision",
+        "object.daemon-generation",
+        "clock.daemon-generation",
+        "operation.open-service-generation",
+        "mutation.sqlite-immediate-transaction"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-installation-owner",
+        "root": "direct-semantic-offline-owner-bootstrap-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "caller-mintable root",
+          "retry authority",
+          "ordinary request authority",
+          "authority after failed or consumed attempt"
+        ],
+        "predicate": "one installed-owner-root-signed commitment authorized exactly one profile-bound, generation-bound, descriptor-bound bootstrap attempt after constant-time secret verification"
+      },
+      "claim_target": "D",
+      "composition": {
+        "input_families": [
+          "e.owner-bootstrap-commitment",
+          "e.service-generation-custody"
+        ],
+        "join_relations": [
+          "same-profile",
+          "installed-owner-root-signature",
+          "constant-time-secret-commitment",
+          "protected-descriptor-provenance",
+          "maximum-attempts-equals-one",
+          "current-daemon-and-protocol",
+          "unexpired",
+          "no-prior-bootstrap"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.owner-bootstrap-commitment",
+          "e.service-generation-custody"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "AUTHORIZED",
+          "DENIED",
+          "EXPIRED"
+        ]
+      },
+      "id": "d.bootstrap-authorization",
+      "identity": {
+        "alias_law": "bootstrap authorization aliases only under the exact pinned owner root, signed commitment, profile, nonce, descriptor, one attempt, daemon/protocol generation, expiry, and immutable receipt",
+        "generation_fields": [
+          "owner_root_fingerprint",
+          "commitment_digest",
+          "bootstrap_nonce",
+          "descriptor_provenance_digest",
+          "attempt_receipt_digest",
+          "attempt_count",
+          "maximum_attempts",
+          "protocol_revision",
+          "expected_daemon_revision",
+          "daemon_generation",
+          "expires_at",
+          "validation_time",
+          "authorization_receipt_digest"
+        ],
+        "stable_fields": [
+          "profile_ref",
+          "commitment_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "VERIFY_COMMITMENT",
+          "CLAIM_ATTEMPT",
+          "AUTHORIZE_ONCE",
+          "CONSUME",
+          "DENY_AND_BLOCK",
+          "EXPIRE"
+        ],
+        "initial_state": "PENDING",
+        "states": [
+          "PENDING",
+          "AUTHORIZED_ONCE",
+          "CONSUMED",
+          "DENIED_AND_BLOCKED",
+          "EXPIRED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "POLICY_COVERAGE",
+        "membership_predicate": "all owner-root signature, profile genesis, secret commitment, descriptor provenance, expiry, attempt-count, daemon, protocol, and no-prior-initialization predicates",
+        "population_owner": "direct-semantic-installation-owner"
+      },
+      "surface_refs": [
+        "object.owner-bootstrap-commitment",
+        "object.bootstrap-attempt-receipt",
+        "object.bootstrap-authorization-receipt",
+        "grant.daemon-credential-bootstrap",
+        "operation.authorize-bootstrap",
+        "mutation.bootstrap-attempt-claim",
+        "interface.protected-credential-fd",
+        "clock.authorization-time"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-authority-owner",
+        "root": "direct-semantic-daemon-bootstrap-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "COMPOSITE",
+        "non_claims": [
+          "DSS-0.1 object serialization",
+          "caller-mintable authority",
+          "private-key custody",
+          "transport identity equivalence"
+        ],
+        "predicate": "the authenticated service history contains the complete current principal and Ed25519 verifier lineage rooted in one consumed installed-owner bootstrap authorization"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "d.bootstrap-authorization",
+          "e.service-generation-custody"
+        ],
+        "join_relations": [
+          "same-consumed-bootstrap-authorization",
+          "same-attempt-receipt",
+          "authenticated-authority-event-prefix",
+          "complete-principal-verifier-inventory"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "d.bootstrap-authorization",
+          "e.service-generation-custody"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.daemon-authority-lineage",
+      "identity": {
+        "alias_law": "authority lineages alias only under the same consumed owner-root authorization, attempt receipt, complete verifier/principal population, issuer, registry, revocation epoch, and event head",
+        "generation_fields": [
+          "bootstrap_authorization_receipt_digest",
+          "bootstrap_attempt_receipt_digest",
+          "owner_root_fingerprint",
+          "principal_inventory_digest",
+          "verifier_inventory_digest",
+          "issuer_revision",
+          "registry_revision_set",
+          "revocation_epoch",
+          "authority_event_head"
+        ],
+        "stable_fields": [
+          "profile_ref",
+          "bootstrap_event_digest"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "BOOTSTRAP",
+          "ISSUE",
+          "SUPERSEDE",
+          "REVOKE",
+          "RECOVER",
+          "BLOCK"
+        ],
+        "initial_state": "UNINITIALIZED",
+        "states": [
+          "UNINITIALIZED",
+          "CURRENT",
+          "SUPERSEDED",
+          "BROKEN",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "HISTORICAL_MEMBERSHIP",
+        "membership_predicate": "the exact bootstrap authorization and every principal-lineage, verifier issue, supersession, expiry, and revocation event needed to resolve current daemon authority",
+        "population_owner": "direct-semantic-authority-owner"
+      },
+      "surface_refs": [
+        "object.bootstrap-authorization-receipt",
+        "object.bootstrap-attempt-receipt",
+        "object.semantic-principal-lineage",
+        "object.capability-verifier-record",
+        "grant.daemon-credential-bootstrap",
+        "grant.daemon-operation-credential",
+        "operation.bootstrap-daemon-authority",
+        "operation.issue-daemon-credential",
+        "operation.revoke-daemon-credential",
+        "operation.recover-authority-lineage",
+        "mutation.authority-lineage-transaction",
+        "policy.dss01-authority-foundation"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-authority-owner",
+        "root": "direct-semantic-daemon-challenge-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "request authority",
+          "standing after expiry or restart",
+          "cross-connection reuse"
+        ],
+        "predicate": "one persisted 256-bit-CSPRNG challenge is usable at most once by the exact live connection, profile, daemon generation, protocol revision, and expiry"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "e.transport-peer-observation",
+          "e.service-generation-custody"
+        ],
+        "join_relations": [
+          "same-live-connection",
+          "same-profile",
+          "same-daemon-generation",
+          "same-protocol-revision",
+          "at-least-256-bits-CSPRNG-entropy",
+          "expected-state-ISSUED"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.transport-peer-observation",
+          "e.service-generation-custody"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.authorization-challenge",
+      "identity": {
+        "alias_law": "challenges alias only under the same profile, protocol, connection, generation, 256-bit nonce, canonical digest, time interval, and state revision",
+        "generation_fields": [
+          "protocol_revision",
+          "connection_ref",
+          "daemon_generation",
+          "challenge_nonce",
+          "challenge_digest",
+          "issued_at",
+          "expires_at",
+          "state_revision"
+        ],
+        "stable_fields": [
+          "profile_ref",
+          "challenge_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "ISSUE",
+          "CONSUME",
+          "EXPIRE",
+          "INVALIDATE_BY_RESTART"
+        ],
+        "initial_state": "UNISSUED",
+        "states": [
+          "UNISSUED",
+          "ISSUED",
+          "CONSUMED",
+          "EXPIRED",
+          "INVALIDATED_BY_RESTART"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one closed AuthorizationChallenge row and its exact issue, consume, expire, or restart-invalidate transition",
+        "population_owner": "direct-semantic-authority-owner"
+      },
+      "surface_refs": [
+        "source.authority-challenge-channel",
+        "object.authorization-challenge",
+        "operation.issue-authorization-challenge",
+        "mutation.authorization-challenge-consumption",
+        "clock.authorization-time"
+      ],
+      "time": {
+        "mode": "INTERVAL",
+        "relations": [
+          "issue<=validation<expiry"
+        ],
+        "roles": [
+          "issue",
+          "validation",
+          "expiry"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-authority-owner",
+        "root": "direct-semantic-canonical-proof-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "authority before signature/currentness validation",
+          "alternate encoding equivalence",
+          "unknown-field tolerance"
+        ],
+        "predicate": "one closed AuthorizationProof has one domain-separated, versioned, canonical, explicitly length-delimited Ed25519 transcript digest bound to the exact challenge, request, operation, scope, and authority lineage"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "e.authorization-challenge",
+          "e.daemon-authority-lineage",
+          "e.transport-peer-observation"
+        ],
+        "join_relations": [
+          "fixed-domain-DirectSemanticService.AuthorizationProof.v1",
+          "u32be-length-delimited-canonical-components",
+          "same-challenge-protocol-expiry",
+          "same-request-operation-purpose-object-scope",
+          "same-current-authority-lineage",
+          "Ed25519-only"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.authorization-challenge",
+          "e.daemon-authority-lineage",
+          "e.transport-peer-observation"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.authorization-proof",
+      "identity": {
+        "alias_law": "proofs alias only under the exact fixed domain, schema, length-delimited canonical components, challenge/protocol/expiry, request authority tuple, Ed25519 signature, and proof digest",
+        "generation_fields": [
+          "transcript_domain",
+          "transcript_schema_revision",
+          "protocol_revision",
+          "challenge_digest",
+          "challenge_expires_at",
+          "request_digest",
+          "operation",
+          "purpose_scope_digest",
+          "object_scope_digest",
+          "principal_lineage_revision",
+          "verifier_revision",
+          "issuer_revision",
+          "registry_revision_set_digest",
+          "revocation_epoch",
+          "signature_algorithm",
+          "signed_transcript_digest",
+          "proof_digest"
+        ],
+        "stable_fields": [
+          "challenge_ref",
+          "verifier_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "PARSE",
+          "CANONICALIZE",
+          "VERIFY",
+          "REJECT"
+        ],
+        "initial_state": "UNPARSED",
+        "states": [
+          "UNPARSED",
+          "CANONICAL",
+          "VERIFIED",
+          "REJECTED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one closed proof object with zero unknown or duplicate fields and the exact canonical signed transcript",
+        "population_owner": "direct-semantic-authority-owner"
+      },
+      "surface_refs": [
+        "interface.authorization-proof",
+        "object.authorization-proof-digest",
+        "operation.resolve-daemon-credential",
+        "policy.dss02-implementation-contract"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-authority-owner",
+        "root": "direct-semantic-daemon-verifier-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "transport identity equivalence",
+          "DSS-0.1 projection authority",
+          "result truth",
+          "credential transfer",
+          "future-request authority"
+        ],
+        "predicate": "one current daemon principal lineage proved possession of one admitted verifier private key using the exact closed proof and atomically consumed challenge for one request, operation, purpose, and bounded object scope"
+      },
+      "claim_target": "D",
+      "composition": {
+        "input_families": [
+          "e.transport-peer-observation",
+          "e.service-generation-custody",
+          "e.daemon-authority-lineage",
+          "e.authorization-challenge",
+          "e.authorization-proof"
+        ],
+        "join_relations": [
+          "same-profile-connection-daemon-protocol",
+          "single-use-unexpired-challenge",
+          "domain-separated-versioned-length-delimited-canonical-proof",
+          "signature-covers-request-operation-purpose-object-scope-and-lineage",
+          "current-principal-verifier-registry-revocation-lineage",
+          "same-challenge-consumption-and-receipt-transaction"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.transport-peer-observation",
+          "e.service-generation-custody",
+          "e.daemon-authority-lineage",
+          "e.authorization-challenge",
+          "e.authorization-proof"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "AUTHORIZED",
+          "DENIED",
+          "EXPIRED"
+        ]
+      },
+      "id": "d.request-authorization",
+      "identity": {
+        "alias_law": "authorization aliases only under the exact domain/schema, protocol, current lineage, verifier, one-use unexpired challenge, proof digest, daemon generation, connection, request, operation, scopes, and validation receipt",
+        "generation_fields": [
+          "transcript_domain",
+          "transcript_schema_revision",
+          "protocol_revision",
+          "challenge_ref",
+          "challenge_nonce",
+          "challenge_digest",
+          "challenge_expires_at",
+          "proof_digest",
+          "purpose_scope_digest",
+          "object_scope_digest",
+          "principal_lineage_revision",
+          "verifier_revision",
+          "issuer_revision",
+          "registry_revision_refs",
+          "revocation_epoch",
+          "daemon_generation",
+          "connection_ref",
+          "validation_time",
+          "authorization_receipt_digest"
+        ],
+        "stable_fields": [
+          "principal_lineage_ref",
+          "verifier_ref",
+          "operation",
+          "request_digest"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "AUTHORIZE",
+          "CONSUME_CHALLENGE",
+          "DENY",
+          "REVOKE",
+          "INVALIDATE"
+        ],
+        "initial_state": "PENDING",
+        "states": [
+          "PENDING",
+          "AUTHORIZED",
+          "DENIED",
+          "REVOKED",
+          "STALE",
+          "CHALLENGE_CONSUMED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "POLICY_COVERAGE",
+        "membership_predicate": "all canonical transcript, signature, challenge state/expiry/protocol, principal, issuer, operation, purpose, object, revocation, registry, daemon-generation, and connection predicates",
+        "population_owner": "direct-semantic-authority-owner"
+      },
+      "surface_refs": [
+        "source.authority-challenge-channel",
+        "interface.authorization-proof",
+        "object.authorization-challenge",
+        "object.request-authorization-receipt",
+        "object.authorization-proof-digest",
+        "grant.semantic-request-operation",
+        "grant.daemon-operation-credential",
+        "operation.resolve-daemon-credential",
+        "mutation.authorization-challenge-consumption",
+        "policy.dss01-authority-foundation"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-job-custody-owner",
+        "root": "direct-semantic-store-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "receipt authority",
+          "mutable-head authority",
+          "cross-principal aliasing"
+        ],
+        "predicate": "one authorized principal-lineage, operation, and idempotency key is immutably bound to one request digest, service-issued job, authority revision, and admission event"
+      },
+      "claim_target": "D",
+      "composition": {
+        "input_families": [
+          "d.request-authorization",
+          "e.service-generation-custody"
+        ],
+        "join_relations": [
+          "same-principal-lineage-operation-key",
+          "same-request-digest",
+          "same-admission-transaction"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "d.request-authorization",
+          "e.service-generation-custody"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.idempotency-binding",
+      "identity": {
+        "alias_law": "an idempotency tuple aliases only under the exact request digest, job, verifier revision, admission event, and creation sequence",
+        "generation_fields": [
+          "request_digest",
+          "job_ref",
+          "verifier_revision",
+          "admission_event_digest",
+          "creation_global_sequence"
+        ],
+        "stable_fields": [
+          "principal_lineage_ref",
+          "operation",
+          "idempotency_key"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "RESERVE",
+          "BIND",
+          "CONFLICT",
+          "BLOCK"
+        ],
+        "initial_state": "UNRESERVED",
+        "states": [
+          "UNRESERVED",
+          "BOUND",
+          "CONFLICT",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one immutable binding and its exact admission event",
+        "population_owner": "direct-semantic-job-custody-owner"
+      },
+      "surface_refs": [
+        "object.idempotency-binding",
+        "mutation.idempotency-admission",
+        "mutation.sqlite-immediate-transaction"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-job-custody-owner",
+        "root": "direct-semantic-store-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "compilation occurred",
+          "worker executed",
+          "semantic result exists",
+          "job completed"
+        ],
+        "predicate": "the exact authorized request was durably admitted once under its immutable idempotency binding"
+      },
+      "claim_target": "D",
+      "composition": {
+        "input_families": [
+          "e.transport-peer-observation",
+          "d.request-authorization",
+          "e.idempotency-binding"
+        ],
+        "join_relations": [
+          "same-connection-request",
+          "same-principal-operation-scope",
+          "same-idempotency-admission-transaction"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.transport-peer-observation",
+          "d.request-authorization",
+          "e.idempotency-binding"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.durable-job-admission",
+      "identity": {
+        "alias_law": "job identity is service-issued and exact replay requires the same binding, request digest, authority revision, and admission event",
+        "generation_fields": [
+          "request_digest",
+          "idempotency_binding_ref",
+          "authorization_receipt_ref",
+          "admission_event_digest"
+        ],
+        "stable_fields": [
+          "job_ref",
+          "admitted_principal_lineage_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "ADMIT",
+          "REJECT",
+          "CANCEL",
+          "HANDOFF",
+          "RECOVERY_BLOCK"
+        ],
+        "initial_state": "UNSEEN",
+        "states": [
+          "UNSEEN",
+          "ADMITTED",
+          "REJECTED",
+          "CANCELLED_BEFORE_DISPATCH",
+          "HANDOFF_COMMITTED",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one authorized request, immutable idempotency binding, admission event, and durable receipt",
+        "population_owner": "direct-semantic-job-custody-owner"
+      },
+      "surface_refs": [
+        "object.semantic-job-request",
+        "object.semantic-job-receipt",
+        "object.idempotency-binding",
+        "operation.admit-durable-job",
+        "mutation.idempotency-admission",
+        "mutation.sqlite-immediate-transaction",
+        "policy.dss-v0-constitution"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-event-ledger-owner",
+        "root": "direct-semantic-store-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "COMPOSITE",
+        "non_claims": [
+          "materialized head authority",
+          "semantic completion",
+          "artifact integrity without read verification"
+        ],
+        "predicate": "one complete immutable global history contains every service event and every contiguous per-job subhistory under one authenticated custody chain"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "e.custody-key-lineage"
+        ],
+        "join_relations": [
+          "same-global-predecessor",
+          "contiguous-per-job-subhistories",
+          "effective-key-range"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.custody-key-lineage"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.job-event-history",
+      "identity": {
+        "alias_law": "no alias across the global head, service-event population, per-job histories, event digests, or custody generation",
+        "generation_fields": [
+          "global_sequence_head",
+          "global_custody_digest",
+          "service_event_inventory_digest",
+          "job_history_inventory_digest",
+          "custody_key_revision_ref"
+        ],
+        "stable_fields": [
+          "profile_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "APPEND",
+          "VERIFY",
+          "DETECT_GAP",
+          "BLOCK"
+        ],
+        "initial_state": "EMPTY",
+        "states": [
+          "EMPTY",
+          "CONTIGUOUS",
+          "CORRUPT",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "HISTORICAL_MEMBERSHIP",
+        "membership_predicate": "every committed service event and every job event from genesis through the selected contiguous global head, with each job-local sequence contiguous",
+        "population_owner": "direct-semantic-event-ledger-owner"
+      },
+      "surface_refs": [
+        "object.job-event-ledger",
+        "clock.sqlite-global-sequence",
+        "operation.append-authenticated-event",
+        "mutation.sqlite-immediate-transaction"
+      ],
+      "time": {
+        "mode": "EVENT_TIME",
+        "relations": [
+          "event<=recording",
+          "prior_global_sequence<global_sequence"
+        ],
+        "roles": [
+          "event",
+          "recording",
+          "global_order"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-reducer-owner",
+        "root": "direct-semantic-event-ledger-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "LATEST",
+        "non_claims": [
+          "independent mutable truth",
+          "semantic result",
+          "completion"
+        ],
+        "predicate": "the current job and delivery heads equal deterministic replay of the authenticated event prefix"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "e.job-event-history"
+        ],
+        "join_relations": [
+          "exact-event-prefix",
+          "exact-reducer-revision"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.job-event-history"
+        ],
+        "mutable": false,
+        "reverse_impact": "NONE"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.job-derived-state",
+      "identity": {
+        "alias_law": "a projection aliases another only under equal reducer revision and event head",
+        "generation_fields": [
+          "event_head_digest",
+          "projection_digest"
+        ],
+        "stable_fields": [
+          "job_ref",
+          "reducer_revision"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "REBUILD",
+          "COMPARE",
+          "DETECT_DRIFT",
+          "BLOCK"
+        ],
+        "initial_state": "UNBUILT",
+        "states": [
+          "UNBUILT",
+          "CURRENT",
+          "DRIFTED",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "RECEIVED_PREFIX",
+        "membership_predicate": "all events in the exact authenticated prefix consumed once in order",
+        "population_owner": "direct-semantic-reducer-owner"
+      },
+      "surface_refs": [
+        "object.job-derived-heads",
+        "operation.rebuild-derived-state"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-cas-owner",
+        "root": "direct-semantic-profile-storage-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "semantic truth",
+          "authorization",
+          "model output admission"
+        ],
+        "predicate": "one canonical artifact is durably published at its verified digest before any committed reference"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "d.request-authorization"
+        ],
+        "join_relations": [
+          "same-authorized-job-or-service-operation"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "d.request-authorization"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.cas-artifact-custody",
+      "identity": {
+        "alias_law": "only digest-equal verified regular-file bytes alias",
+        "generation_fields": [
+          "canonicalization_revision",
+          "byte_length",
+          "publication_receipt"
+        ],
+        "stable_fields": [
+          "sha256_digest"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "PUBLISH",
+          "REFERENCE",
+          "VERIFY",
+          "ORPHAN",
+          "BLOCK"
+        ],
+        "initial_state": "ABSENT",
+        "states": [
+          "ABSENT",
+          "PUBLISHED",
+          "REFERENCED",
+          "CORRUPT",
+          "ORPHAN"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one regular digest-addressed object with verified bytes and publication receipt",
+        "population_owner": "direct-semantic-cas-owner"
+      },
+      "surface_refs": [
+        "object.cas-artifact",
+        "operation.publish-cas-artifact",
+        "mutation.cas-publish-before-reference"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-quarantine-owner",
+        "root": "direct-semantic-profile-quarantine-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "canonical artifact",
+          "admitted result",
+          "ordinary read visibility"
+        ],
+        "predicate": "one raw or invalid object is isolated under separate owner-only custody with bounded ordinary diagnostics"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "d.request-authorization"
+        ],
+        "join_relations": [
+          "same-authorized-capture-boundary"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "d.request-authorization"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.quarantine-custody",
+      "identity": {
+        "alias_law": "quarantine references never alias normal CAS references",
+        "generation_fields": [
+          "content_digest",
+          "retention_policy_revision",
+          "capture_time"
+        ],
+        "stable_fields": [
+          "quarantine_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "CAPTURE",
+          "EXPIRE",
+          "DESTROY",
+          "BLOCK"
+        ],
+        "initial_state": "ABSENT",
+        "states": [
+          "ABSENT",
+          "QUARANTINED",
+          "EXPIRED",
+          "DESTROYED",
+          "CORRUPT"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one isolated raw object and its bounded diagnostic metadata",
+        "population_owner": "direct-semantic-quarantine-owner"
+      },
+      "surface_refs": [
+        "object.quarantined-artifact",
+        "operation.quarantine-artifact"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-custody-key-owner",
+        "root": "direct-semantic-profile-bootstrap-and-service-admin-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "COMPOSITE",
+        "non_claims": [
+          "resistance to full account compromise",
+          "semantic truth of payload",
+          "authority beyond service custody",
+          "ordinary service-admin authority before bootstrap"
+        ],
+        "predicate": "the exact owner-authorized bootstrap transaction established the first custody key and every later global event is authenticated under one non-overlapping service-admin-rotated revision connected by valid dual-tag bridges"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "d.bootstrap-authorization",
+          "e.service-generation-custody"
+        ],
+        "join_relations": [
+          "same-owner-bootstrap-authorization",
+          "single-bootstrap-key-exception",
+          "service-admin-authority-after-bootstrap",
+          "contiguous-effective-range",
+          "dual-key-bridge"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "d.bootstrap-authorization",
+          "e.service-generation-custody"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.custody-key-lineage",
+      "identity": {
+        "alias_law": "key revision identity requires matching bootstrap authorization or service-admin authority, fingerprint, predecessor, effective boundary, and authorization",
+        "generation_fields": [
+          "bootstrap_authorization_receipt_digest",
+          "bootstrap_key_revision_ref",
+          "active_key_revision_ref",
+          "effective_sequence_range",
+          "rotation_bridge_digest"
+        ],
+        "stable_fields": [
+          "profile_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "BOOTSTRAP_INITIALIZE",
+          "ROTATE",
+          "VERIFY",
+          "BLOCK"
+        ],
+        "initial_state": "UNINITIALIZED",
+        "states": [
+          "UNINITIALIZED",
+          "CURRENT",
+          "ROTATING",
+          "BROKEN",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "HISTORICAL_MEMBERSHIP",
+        "membership_predicate": "the exact owner-authorized bootstrap key revision and all later revisions and rotation bridges needed to verify the retained global event history",
+        "population_owner": "direct-semantic-custody-key-owner"
+      },
+      "surface_refs": [
+        "object.bootstrap-authorization-receipt",
+        "object.custody-key-revision",
+        "object.custody-key-rotation",
+        "grant.daemon-credential-bootstrap",
+        "grant.service-administration",
+        "operation.bootstrap-daemon-authority",
+        "operation.rotate-custody-key",
+        "mutation.custody-key-rotation"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-lease-owner",
+        "root": "direct-semantic-daemon-generation-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "worker execution authority",
+          "semantic standing",
+          "silent restart renewal"
+        ],
+        "predicate": "one durable JobMutationLease gives one daemon generation with the current fencing token authority for one bounded mutation class before expiry"
+      },
+      "claim_target": "D",
+      "composition": {
+        "input_families": [
+          "e.job-derived-state",
+          "e.service-generation-custody"
+        ],
+        "join_relations": [
+          "same-subject",
+          "current-daemon-generation",
+          "latest-fencing-token",
+          "same-persisted-lease-revision"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.job-derived-state",
+          "e.service-generation-custody"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "AUTHORIZED",
+          "DENIED",
+          "EXPIRED"
+        ]
+      },
+      "id": "d.job-mutation-lease",
+      "identity": {
+        "alias_law": "no alias across subject, operation, daemon generation, fencing token, acquisition event, expiry, or state revision",
+        "generation_fields": [
+          "daemon_generation",
+          "fencing_token",
+          "acquisition_event_digest",
+          "expiry",
+          "lease_state_revision"
+        ],
+        "stable_fields": [
+          "lease_ref",
+          "subject_ref",
+          "operation_class"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "ACQUIRE",
+          "RENEW",
+          "RELEASE",
+          "EXPIRE",
+          "ABANDON"
+        ],
+        "initial_state": "UNISSUED",
+        "states": [
+          "UNISSUED",
+          "ACTIVE",
+          "EXPIRED",
+          "RELEASED",
+          "ABANDONED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact persisted JobMutationLease and its acquisition/release/expiry lineage",
+        "population_owner": "direct-semantic-lease-owner"
+      },
+      "surface_refs": [
+        "object.job-mutation-lease",
+        "grant.job-mutation-lease",
+        "clock.daemon-generation",
+        "operation.acquire-job-lease"
+      ],
+      "time": {
+        "mode": "INTERVAL",
+        "relations": [
+          "acquisition<=publication<expiry"
+        ],
+        "roles": [
+          "acquisition",
+          "expiry",
+          "publication"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-wait-slot-owner",
+        "root": "direct-semantic-daemon-generation-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "COMPOSITE",
+        "non_claims": [
+          "durable job mutation",
+          "delivery cursor mutation",
+          "standing after release or restart",
+          "semantic priority"
+        ],
+        "predicate": "one daemon-generation wait-slot gate owns the exact active waiter-token population and linearizable reserve/release revision at one connection boundary"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "e.service-generation-custody",
+          "e.transport-peer-observation"
+        ],
+        "join_relations": [
+          "same-daemon-generation",
+          "same-live-connection",
+          "same-policy-revision-and-waiter-limit",
+          "linearization-lock",
+          "exact-active-token-set",
+          "reserve-before-visible",
+          "release-exactly-once"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.service-generation-custody",
+          "e.transport-peer-observation"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.waiter-population-observation",
+      "identity": {
+        "alias_law": "waiter observations alias only under the same generation, policy, configured limit, exact active token set, count, gate revision, and observation time",
+        "generation_fields": [
+          "wait_slot_policy_revision",
+          "waiter_limit",
+          "active_waiter_set_digest",
+          "waiter_count",
+          "population_revision",
+          "observation_time"
+        ],
+        "stable_fields": [
+          "profile_ref",
+          "daemon_generation"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "RESERVE",
+          "REJECT_AT_LIMIT",
+          "RELEASE_RESPONSE",
+          "RELEASE_TIMEOUT",
+          "RELEASE_DISCONNECT",
+          "RELEASE_CANCEL",
+          "INVALIDATE_RESTART"
+        ],
+        "initial_state": "EMPTY",
+        "states": [
+          "EMPTY",
+          "AVAILABLE",
+          "AT_LIMIT",
+          "RESTART_INVALIDATED"
+        ]
+      },
+      "persistence": "BOUNDARY_LOCAL",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SNAPSHOT_ENUMERATION",
+        "membership_predicate": "the configured waiter limit and every live reservation token binding connection, wait request, deadline, and exactly-once release state in the current daemon generation",
+        "population_owner": "direct-semantic-wait-slot-owner"
+      },
+      "surface_refs": [
+        "source.concurrent-waiter-population",
+        "object.backpressure-observation",
+        "operation.reserve-waiter-slot",
+        "operation.release-waiter-slot",
+        "mutation.waiter-slot-transition",
+        "clock.daemon-generation"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-capacity-owner",
+        "root": "service-admin-policy-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "U",
+      "claim": {
+        "kind": "BOUND",
+        "non_claims": [
+          "semantic priority",
+          "authority grant",
+          "execution standing",
+          "partial counter or waiter reservation"
+        ],
+        "predicate": "one complete checked durable-counter plus exact boundary-local waiter-population and limit-policy vector permits or defers one otherwise authorized boundary"
+      },
+      "claim_target": "O",
+      "composition": {
+        "input_families": [
+          "e.job-event-history",
+          "e.job-derived-state",
+          "e.durable-job-admission",
+          "e.delivery-subscription",
+          "e.delivery-offer",
+          "e.delivery-acknowledgment",
+          "e.waiter-population-observation"
+        ],
+        "join_relations": [
+          "same-profile",
+          "same-limit-policy-revision",
+          "same-authenticated-counter-event-head",
+          "same-linearizable-waiter-population-revision",
+          "complete-counter-vector",
+          "checked-safe-integers"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.job-event-history",
+          "e.job-derived-state",
+          "e.durable-job-admission",
+          "e.delivery-subscription",
+          "e.delivery-offer",
+          "e.delivery-acknowledgment",
+          "e.waiter-population-observation"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "U"
+        ],
+        "allowed_postures": [
+          "AVAILABLE",
+          "BACKPRESSURED",
+          "REMANDED"
+        ]
+      },
+      "id": "u.service-capacity-posture",
+      "identity": {
+        "alias_law": "capacity postures alias only under the same complete limits, durable counters, exact waiter population revision/token-set digest, policy, event head, and observation boundary",
+        "generation_fields": [
+          "limit_policy_revision",
+          "open_job_limit",
+          "request_byte_limit",
+          "projection_byte_limit",
+          "subscription_limit_per_job",
+          "outstanding_offer_limit",
+          "waiter_limit",
+          "open_job_count",
+          "request_bytes",
+          "projection_bytes",
+          "subscription_count",
+          "outstanding_offer_count",
+          "waiter_count",
+          "waiter_population_revision",
+          "active_waiter_set_digest",
+          "counter_event_head",
+          "observation_time"
+        ],
+        "stable_fields": [
+          "profile_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "OBSERVE",
+          "ALLOW",
+          "DEFER",
+          "REJECT",
+          "OVERFLOW",
+          "BLOCK"
+        ],
+        "initial_state": "UNKNOWN",
+        "states": [
+          "UNKNOWN",
+          "AVAILABLE",
+          "BACKPRESSURED",
+          "OVERFLOW_BLOCKED",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "POLICY_COVERAGE",
+        "membership_predicate": "all six configured limits, five durable outcome-changing counters, and the exact boundary-local active waiter-token population",
+        "population_owner": "direct-semantic-capacity-owner"
+      },
+      "surface_refs": [
+        "object.backpressure-observation",
+        "source.concurrent-waiter-population",
+        "policy.dss02-implementation-contract",
+        "operation.apply-backpressure",
+        "mutation.capacity-counter-update",
+        "mutation.waiter-slot-transition"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-dispatch-owner",
+        "root": "direct-semantic-event-ledger-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "worker execution",
+          "running attempt",
+          "semantic completion",
+          "cancellation after handoff"
+        ],
+        "predicate": "one admitted job is either exactly pre-dispatch or has one irrevocable fenced handoff committed to a named later-tranche revision"
+      },
+      "claim_target": "D",
+      "composition": {
+        "input_families": [
+          "e.durable-job-admission",
+          "e.job-event-history",
+          "d.job-mutation-lease",
+          "e.service-generation-custody"
+        ],
+        "join_relations": [
+          "same-job",
+          "same-current-event-head",
+          "current-daemon-generation",
+          "latest-fencing-token",
+          "one-way-handoff"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.durable-job-admission",
+          "e.job-event-history",
+          "d.job-mutation-lease",
+          "e.service-generation-custody"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.later-tranche-dispatch-boundary",
+      "identity": {
+        "alias_law": "dispatch boundaries alias only under the same job, event head, generation, fencing token, target tranche, and handoff event",
+        "generation_fields": [
+          "dispatch_boundary_revision",
+          "job_event_head",
+          "daemon_generation",
+          "fencing_token",
+          "target_tranche_revision",
+          "handoff_event_digest"
+        ],
+        "stable_fields": [
+          "job_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "ESTABLISH",
+          "HANDOFF",
+          "DETECT_AMBIGUITY",
+          "BLOCK"
+        ],
+        "initial_state": "NOT_DISPATCHED",
+        "states": [
+          "NOT_DISPATCHED",
+          "HANDOFF_COMMITTED",
+          "AMBIGUOUS",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact dispatch boundary derived from the authenticated job history",
+        "population_owner": "direct-semantic-dispatch-owner"
+      },
+      "surface_refs": [
+        "object.later-tranche-dispatch-boundary",
+        "operation.handoff-later-tranche",
+        "mutation.dispatch-boundary-transition"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-cancellation-owner",
+        "root": "direct-semantic-daemon-verifier-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "D",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "history deletion",
+          "running-attempt signaling",
+          "partial authorization",
+          "execution cancellation",
+          "authority under committed or ambiguous dispatch"
+        ],
+        "predicate": "an authorized DSS-0.2 cancellation with no running-attempt references lawfully classifies the exact NOT_DISPATCHED job boundary"
+      },
+      "claim_target": "D",
+      "composition": {
+        "input_families": [
+          "d.request-authorization",
+          "e.job-derived-state",
+          "e.later-tranche-dispatch-boundary",
+          "e.service-generation-custody"
+        ],
+        "join_relations": [
+          "same-job",
+          "same-event-head",
+          "same-dispatch-boundary-revision",
+          "state-is-NOT_DISPATCHED",
+          "empty-running-attempt-refs",
+          "cancel-operation-authority",
+          "current-daemon-generation"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "d.request-authorization",
+          "e.job-derived-state",
+          "e.later-tranche-dispatch-boundary",
+          "e.service-generation-custody"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "D"
+        ],
+        "allowed_postures": [
+          "AUTHORIZED",
+          "DENIED",
+          "REMANDED"
+        ]
+      },
+      "id": "d.cancellation-decision",
+      "identity": {
+        "alias_law": "cancellation identity is job, request, current authority, daemon generation, event head, and exact dispatch boundary specific",
+        "generation_fields": [
+          "job_event_head",
+          "dispatch_boundary_revision",
+          "cancel_authorization_receipt_ref",
+          "daemon_generation",
+          "decision_digest"
+        ],
+        "stable_fields": [
+          "cancellation_request_ref",
+          "job_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "REQUEST",
+          "AUTHORIZE_BEFORE_DISPATCH",
+          "REJECT",
+          "BLOCK"
+        ],
+        "initial_state": "PENDING",
+        "states": [
+          "PENDING",
+          "AUTHORIZED_BEFORE_DISPATCH",
+          "REJECTED",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one narrowed DSS-0.2 cancellation request with an empty running-attempt set against one exact NOT_DISPATCHED job head",
+        "population_owner": "direct-semantic-cancellation-owner"
+      },
+      "surface_refs": [
+        "object.cancellation-decision",
+        "object.later-tranche-dispatch-boundary",
+        "operation.decide-cancellation"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-delivery-owner",
+        "root": "direct-semantic-daemon-verifier-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "payload delivered",
+          "acknowledgment",
+          "verifier permanence"
+        ],
+        "predicate": "one principal lineage holds one currently authorized bounded subscription revision for one job"
+      },
+      "claim_target": "D",
+      "composition": {
+        "input_families": [
+          "d.request-authorization",
+          "e.daemon-authority-lineage",
+          "e.durable-job-admission"
+        ],
+        "join_relations": [
+          "same-job",
+          "read-authority-covers-job-and-projection",
+          "current-principal-verifier-lineage"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "d.request-authorization",
+          "e.daemon-authority-lineage",
+          "e.durable-job-admission"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.delivery-subscription",
+      "identity": {
+        "alias_law": "subscription revisions do not alias across principal lineage, verifier generation, filter, projection, or cursor",
+        "generation_fields": [
+          "read_verifier_revision",
+          "issuer_revision",
+          "registry_revision_refs",
+          "revocation_epoch",
+          "event_filter",
+          "projection_ref",
+          "starting_cursor"
+        ],
+        "stable_fields": [
+          "subscription_ref",
+          "job_ref",
+          "subscriber_principal_lineage_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "CREATE",
+          "PAUSE",
+          "SUPERSEDE"
+        ],
+        "initial_state": "UNCREATED",
+        "states": [
+          "UNCREATED",
+          "ACTIVE",
+          "PAUSED",
+          "SUPERSEDED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact subscription revision",
+        "population_owner": "direct-semantic-delivery-owner"
+      },
+      "surface_refs": [
+        "object.delivery-subscription",
+        "operation.create-delivery-subscription"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-delivery-owner",
+        "root": "direct-semantic-event-ledger-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "acknowledgment",
+          "exactly-once delivery",
+          "authority after revocation",
+          "underlying result admission"
+        ],
+        "predicate": "one bounded projection over a contiguous event interval was offered under the exact current read-authorization generation bound to the subscriber"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "e.delivery-subscription",
+          "e.job-event-history",
+          "d.request-authorization",
+          "d.job-mutation-lease"
+        ],
+        "join_relations": [
+          "same-job",
+          "after-durable-acknowledged-cursor",
+          "exact-current-read-authorization-generation",
+          "reverse-invalidate-on-authority-change"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.delivery-subscription",
+          "e.job-event-history",
+          "d.request-authorization",
+          "d.job-mutation-lease"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.delivery-offer",
+      "identity": {
+        "alias_law": "offers alias only under the exact subscription, interval, projection, and complete current read-authorization generation",
+        "generation_fields": [
+          "read_authorization_receipt_ref",
+          "principal_lineage_revision",
+          "verifier_revision",
+          "issuer_revision",
+          "registry_revision_refs",
+          "revocation_epoch",
+          "event_interval",
+          "projection_digest",
+          "offer_deadline"
+        ],
+        "stable_fields": [
+          "delivery_attempt_ref",
+          "subscription_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "OFFER",
+          "INVALIDATE_AUTHORITY",
+          "EXPIRE",
+          "ACKNOWLEDGE"
+        ],
+        "initial_state": "UNPREPARED",
+        "states": [
+          "UNPREPARED",
+          "OFFERED",
+          "AUTHORITY_INVALIDATED",
+          "EXPIRED_UNACKNOWLEDGED",
+          "ACKNOWLEDGED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "EVENT_INTERVAL",
+        "membership_predicate": "the next authorized contiguous events after the durable acknowledged cursor under the exact current read authority",
+        "population_owner": "direct-semantic-delivery-owner"
+      },
+      "surface_refs": [
+        "object.delivery-attempt",
+        "operation.offer-delivery",
+        "mutation.delivery-cursor-advance"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-delivery-owner",
+        "root": "direct-semantic-daemon-verifier-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "non_claims": [
+          "payload truth",
+          "history deletion",
+          "authority after revocation",
+          "semantic admission"
+        ],
+        "predicate": "the bound subscriber acknowledged the exact offered projection digest and contiguous interval under the same still-current read-authorization generation"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "e.delivery-offer",
+          "d.request-authorization"
+        ],
+        "join_relations": [
+          "same-delivery-attempt",
+          "same-subscriber-lineage",
+          "same-current-read-authorization-generation",
+          "exact-projection-digest"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.delivery-offer",
+          "d.request-authorization"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.delivery-acknowledgment",
+      "identity": {
+        "alias_law": "acknowledgment cannot alias across delivery, principal lineage, current authority generation, or projection digest",
+        "generation_fields": [
+          "subscriber_principal_lineage_ref",
+          "read_authorization_receipt_ref",
+          "revocation_epoch",
+          "projection_digest",
+          "acknowledged_at"
+        ],
+        "stable_fields": [
+          "acknowledgment_ref",
+          "delivery_attempt_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "ACKNOWLEDGE",
+          "INVALIDATE_AUTHORITY",
+          "REJECT"
+        ],
+        "initial_state": "ABSENT",
+        "states": [
+          "ABSENT",
+          "ACKNOWLEDGED",
+          "AUTHORITY_INVALIDATED",
+          "REJECTED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact current-authority acknowledgment of one immutable offer",
+        "population_owner": "direct-semantic-delivery-owner"
+      },
+      "surface_refs": [
+        "object.delivery-acknowledgment",
+        "operation.acknowledge-delivery",
+        "mutation.delivery-cursor-advance"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-delivery-owner",
+        "root": "direct-semantic-event-ledger-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "LATEST",
+        "non_claims": [
+          "offered-position authority",
+          "exactly-once delivery",
+          "advance after authority invalidation"
+        ],
+        "predicate": "one subscription revision has one durable contiguous acknowledged event position derived only from exact current-authority acknowledgments"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "e.delivery-subscription",
+          "e.delivery-offer",
+          "e.delivery-acknowledgment",
+          "d.request-authorization",
+          "e.job-event-history"
+        ],
+        "join_relations": [
+          "same-subscription-revision",
+          "exact-current-authority-acknowledgment",
+          "contiguous-next-interval",
+          "same-acknowledgment-transaction"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.delivery-subscription",
+          "e.delivery-offer",
+          "e.delivery-acknowledgment",
+          "d.request-authorization",
+          "e.job-event-history"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.delivery-cursor",
+      "identity": {
+        "alias_law": "delivery cursors alias only under the same subscription revision, contiguous sequence, exact acknowledgment, and event head",
+        "generation_fields": [
+          "subscription_revision",
+          "acknowledged_sequence",
+          "acknowledgment_digest",
+          "cursor_event_head"
+        ],
+        "stable_fields": [
+          "job_ref",
+          "subscription_ref"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "INITIALIZE",
+          "ADVANCE",
+          "DETECT_GAP",
+          "BLOCK"
+        ],
+        "initial_state": "AT_START",
+        "states": [
+          "AT_START",
+          "CURRENT",
+          "GAPPED",
+          "RECOVERY_BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "RECEIVED_PREFIX",
+        "membership_predicate": "all acknowledged contiguous delivery intervals from subscription start through the current cursor",
+        "population_owner": "direct-semantic-delivery-owner"
+      },
+      "surface_refs": [
+        "object.delivery-cursor",
+        "object.delivery-acknowledgment",
+        "mutation.delivery-cursor-advance"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-projection-owner",
+        "root": "direct-semantic-daemon-verifier-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "COMPOSITE",
+        "non_claims": [
+          "raw payload exposure",
+          "quarantine access",
+          "semantic completion",
+          "authority transfer",
+          "standing after authority change"
+        ],
+        "predicate": "one bounded client response is a lawful projection of the authenticated job history under the exact current read-authorization generation"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "d.request-authorization",
+          "e.daemon-authority-lineage",
+          "e.job-event-history",
+          "e.job-derived-state"
+        ],
+        "join_relations": [
+          "same-job",
+          "current-event-head",
+          "exact-current-read-authorization-generation",
+          "read-scope-covers-projection"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "d.request-authorization",
+          "e.daemon-authority-lineage",
+          "e.job-event-history",
+          "e.job-derived-state"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.authorized-safe-projection",
+      "identity": {
+        "alias_law": "projection identity binds job, exact event interval, policy revision, complete current authority generation, event head, and projection digest",
+        "generation_fields": [
+          "read_authorization_receipt_ref",
+          "principal_lineage_revision",
+          "verifier_revision",
+          "issuer_revision",
+          "registry_revision_refs",
+          "revocation_epoch",
+          "event_head_digest",
+          "projection_digest"
+        ],
+        "stable_fields": [
+          "job_ref",
+          "projection_ref",
+          "event_interval"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "BUILD",
+          "AUTHORIZE",
+          "DENY",
+          "INVALIDATE_AUTHORITY",
+          "INVALIDATE_HEAD"
+        ],
+        "initial_state": "UNBUILT",
+        "states": [
+          "UNBUILT",
+          "AUTHORIZED",
+          "DENIED",
+          "STALE",
+          "AUTHORITY_INVALIDATED"
+        ]
+      },
+      "persistence": "BOUNDARY_LOCAL",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "EVENT_INTERVAL",
+        "membership_predicate": "only fields named by the exact projection policy for the authorized contiguous interval under current authority",
+        "population_owner": "direct-semantic-projection-owner"
+      },
+      "surface_refs": [
+        "object.authorized-safe-projection",
+        "operation.project-authorized-job-view",
+        "interface.direct-semantic-cli",
+        "consumer.cli-electron-codex-clients"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    },
+    {
+      "authority": {
+        "owner": "direct-semantic-recovery-owner",
+        "root": "direct-semantic-store-root"
+      },
+      "canonical_construct": false,
+      "carrier_lane": "E",
+      "claim": {
+        "kind": "COMPOSITE",
+        "non_claims": [
+          "silent retry",
+          "orphan attachment by guess",
+          "generic digest substitution for typed populations",
+          "semantic completion",
+          "corruption repair"
+        ],
+        "predicate": "one new daemon generation explicitly enumerated, authenticated, bijectively reconciled, reconstructed, compared, and classified every durable authority, admitted job, and incomplete boundary before readiness"
+      },
+      "claim_target": "E",
+      "composition": {
+        "input_families": [
+          "e.owner-bootstrap-trust-root",
+          "e.owner-bootstrap-commitment",
+          "d.bootstrap-authorization",
+          "e.service-generation-custody",
+          "e.daemon-authority-lineage",
+          "e.authorization-challenge",
+          "d.request-authorization",
+          "e.idempotency-binding",
+          "e.durable-job-admission",
+          "e.job-event-history",
+          "e.job-derived-state",
+          "e.cas-artifact-custody",
+          "e.quarantine-custody",
+          "e.custody-key-lineage",
+          "d.job-mutation-lease",
+          "u.service-capacity-posture",
+          "e.waiter-population-observation",
+          "e.delivery-subscription",
+          "e.delivery-offer",
+          "e.delivery-acknowledgment",
+          "e.delivery-cursor",
+          "e.later-tranche-dispatch-boundary"
+        ],
+        "join_relations": [
+          "same-installed-owner-root-pin",
+          "same-transactionally-frozen-store-global-head",
+          "same-daemon-generation",
+          "complete-population-enumeration",
+          "population-specific-inventory-digests",
+          "bijective-job-idempotency-admission-event-derived-head-reconciliation",
+          "expire-old-generation-challenges",
+          "reset-waiter-population-zero",
+          "zero-missing-extra-orphan-duplicate-forked-stale-or-unacknowledged-members"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.owner-bootstrap-trust-root",
+          "e.owner-bootstrap-commitment",
+          "d.bootstrap-authorization",
+          "e.service-generation-custody",
+          "e.daemon-authority-lineage",
+          "e.authorization-challenge",
+          "d.request-authorization",
+          "e.idempotency-binding",
+          "e.durable-job-admission",
+          "e.job-event-history",
+          "e.job-derived-state",
+          "e.cas-artifact-custody",
+          "e.quarantine-custody",
+          "e.custody-key-lineage",
+          "d.job-mutation-lease",
+          "u.service-capacity-posture",
+          "e.waiter-population-observation",
+          "e.delivery-subscription",
+          "e.delivery-offer",
+          "e.delivery-acknowledgment",
+          "e.delivery-cursor",
+          "e.later-tranche-dispatch-boundary"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "OBSERVED",
+          "REMANDED"
+        ]
+      },
+      "id": "e.recovery-disposition",
+      "identity": {
+        "alias_law": "recovery dispositions alias only for the same generation, installed owner-root pin, every typed population-specific inventory digest including admitted jobs and quarantine, authenticated global head, and committed recovery event head",
+        "generation_fields": [
+          "schema_lineage_digest",
+          "owner_root_inventory_digest",
+          "bootstrap_inventory_digest",
+          "authority_inventory_digest",
+          "authorization_challenge_inventory_digest",
+          "authorization_receipt_inventory_digest",
+          "idempotency_inventory_digest",
+          "job_inventory_digest",
+          "verified_global_head",
+          "reducer_inventory_digest",
+          "artifact_inventory_digest",
+          "quarantine_inventory_digest",
+          "lease_inventory_digest",
+          "capacity_inventory_digest",
+          "subscription_inventory_digest",
+          "offer_inventory_digest",
+          "acknowledgment_inventory_digest",
+          "cursor_inventory_digest",
+          "dispatch_inventory_digest",
+          "custody_key_inventory_digest",
+          "complete_inventory_digest",
+          "recovery_event_head"
+        ],
+        "stable_fields": [
+          "daemon_generation"
+        ]
+      },
+      "lifecycle": {
+        "events": [
+          "START",
+          "ENUMERATE",
+          "RECONCILE_JOBS",
+          "VERIFY",
+          "CLASSIFY",
+          "READY",
+          "BLOCK"
+        ],
+        "initial_state": "UNSTARTED",
+        "states": [
+          "UNSTARTED",
+          "ENUMERATING",
+          "RECONCILING_JOBS",
+          "VERIFYING",
+          "READY",
+          "BLOCKED"
+        ]
+      },
+      "persistence": "DURABLE",
+      "quantity": null,
+      "scope": {
+        "closure_kind": "SNAPSHOT_ENUMERATION",
+        "membership_predicate": "every installed owner-root pin, schema revision, daemon generation, bootstrap commitment/attempt/authorization receipt, principal lineage, verifier record, authorization challenge/receipt, registry revision, idempotency binding, admitted job, event, artifact reference, quarantined object, projection head, persisted lease, capacity observation, subscription, offer, acknowledgment, delivery cursor, dispatch boundary, and custody-key revision in the transactionally frozen store",
+        "population_owner": "direct-semantic-recovery-owner"
+      },
+      "surface_refs": [
+        "object.recovery-disposition",
+        "object.owner-bootstrap-root-pin",
+        "object.schema-migration-revision",
+        "object.daemon-generation",
+        "object.owner-bootstrap-commitment",
+        "object.bootstrap-attempt-receipt",
+        "object.bootstrap-authorization-receipt",
+        "object.semantic-principal-lineage",
+        "object.capability-verifier-record",
+        "object.authorization-challenge",
+        "object.request-authorization-receipt",
+        "object.idempotency-binding",
+        "object.semantic-job-receipt",
+        "object.quarantined-artifact",
+        "object.job-mutation-lease",
+        "object.backpressure-observation",
+        "object.delivery-cursor",
+        "object.later-tranche-dispatch-boundary",
+        "clock.daemon-generation",
+        "operation.recover-service-generation"
+      ],
+      "time": {
+        "mode": "BOUNDARY",
+        "relations": [
+          "observation<=recording"
+        ],
+        "roles": [
+          "observation",
+          "recording"
+        ]
+      }
+    }
+  ],
+  "operations": [
+    {
+      "atomicity": "derive one peer observation before parsing semantic authority claims",
+      "canonical_construct": false,
+      "events": [
+        "OBSERVE",
+        "REJECT"
+      ],
+      "id": "observe-transport-peer",
+      "inputs": [],
+      "output_cases": [
+        "OBSERVED",
+        "REJECTED"
+      ],
+      "outputs": [
+        "e.transport-peer-observation"
+      ],
+      "owner": "direct-semantic-transport-owner",
+      "replay": "a connection receives one immutable observation; reconnect creates a new connection identity",
+      "surface_refs": [
+        "operation.observe-transport-peer",
+        "source.unix-peer-credentials"
+      ]
+    },
+    {
+      "atomicity": "compare the one immutable installed pin, algorithm, configuration revision, and installation-event digest; removal, substitution, unreadability, or mismatch emits BROKEN and no successor root",
+      "canonical_construct": false,
+      "events": [
+        "VERIFY",
+        "DETECT_BREAKAGE",
+        "BLOCK"
+      ],
+      "id": "verify-owner-bootstrap-root-pin",
+      "inputs": [
+        "e.owner-bootstrap-trust-root"
+      ],
+      "output_cases": [
+        "PINNED",
+        "BROKEN"
+      ],
+      "outputs": [
+        "e.owner-bootstrap-trust-root"
+      ],
+      "owner": "direct-semantic-installation-owner",
+      "replay": "the same installed bytes and observation boundary reproduce PINNED; any change produces BROKEN and cannot be normalized into rotation or retirement",
+      "surface_refs": [
+        "operation.verify-owner-bootstrap-root-pin",
+        "source.owner-bootstrap-trust-root",
+        "object.owner-bootstrap-root-pin"
+      ]
+    },
+    {
+      "atomicity": "under the verified immutable root observe the exact profile as absent and bind one offline process, profile, daemon/protocol revisions, protected descriptor policy, nonce, and decision time",
+      "canonical_construct": false,
+      "events": [
+        "OBSERVE_ABSENT_PROFILE",
+        "AUTHORIZE_ONCE",
+        "DENY"
+      ],
+      "id": "authorize-owner-profile-provisioning",
+      "inputs": [
+        "e.owner-bootstrap-trust-root"
+      ],
+      "output_cases": [
+        "AUTHORIZED_ONCE",
+        "PROFILE_EXISTS",
+        "ROOT_BROKEN",
+        "DENIED"
+      ],
+      "outputs": [
+        "d.owner-profile-provisioning"
+      ],
+      "owner": "direct-semantic-installation-owner",
+      "replay": "a changed root, existing profile, decision nonce, revision, or descriptor policy never aliases the original one-use decision",
+      "surface_refs": [
+        "operation.authorize-owner-profile-provisioning",
+        "source.owner-bootstrap-trust-root",
+        "object.owner-bootstrap-root-pin",
+        "grant.owner-profile-provisioning"
+      ]
+    },
+    {
+      "atomicity": "consume the offline installed-root provisioning decision, prove the profile is absent, generate a 256-bit secret/salt/nonce, sign the closed profile commitment, atomically no-replace publish and fsync the genesis, and return the secret only through the decision-bound inherited protected descriptor",
+      "canonical_construct": false,
+      "events": [
+        "CONSUME",
+        "PROVISION",
+        "GENERATE",
+        "SIGN",
+        "PUBLISH",
+        "REJECT"
+      ],
+      "id": "provision-bootstrap-commitment",
+      "inputs": [
+        "d.owner-profile-provisioning"
+      ],
+      "output_cases": [
+        "PROVISIONED",
+        "PROFILE_EXISTS",
+        "OWNER_ROOT_UNAVAILABLE",
+        "PUBLICATION_FAILED"
+      ],
+      "outputs": [
+        "d.owner-profile-provisioning",
+        "e.owner-bootstrap-commitment"
+      ],
+      "owner": "direct-semantic-installation-owner",
+      "replay": "provisioning has no successful replay for the same profile; an existing profile, genesis, commitment, consumed decision, or nonce rejects",
+      "surface_refs": [
+        "operation.provision-bootstrap-commitment",
+        "source.owner-bootstrap-trust-root",
+        "object.owner-bootstrap-root-pin",
+        "object.owner-bootstrap-commitment",
+        "grant.owner-profile-provisioning",
+        "interface.protected-credential-fd"
+      ]
+    },
+    {
+      "atomicity": "under the exclusive profile lock verify or append checksum-pinned monotonic migrations and create one durable daemon generation before the ordinary listener or any client connection",
+      "canonical_construct": false,
+      "events": [
+        "MIGRATE",
+        "OPEN",
+        "REJECT",
+        "BLOCK"
+      ],
+      "id": "open-service-generation",
+      "inputs": [],
+      "output_cases": [
+        "OPEN",
+        "MIGRATED_AND_OPEN",
+        "SECOND_WRITER",
+        "UNKNOWN_SCHEMA",
+        "BLOCKED"
+      ],
+      "outputs": [
+        "e.service-generation-custody"
+      ],
+      "owner": "direct-semantic-store-owner",
+      "replay": "an existing daemon generation is never reused; the same schema lineage must verify while every successful restart creates a new generation",
+      "surface_refs": [
+        "operation.open-service-generation",
+        "object.schema-migration-revision",
+        "object.daemon-generation",
+        "mutation.sqlite-immediate-transaction"
+      ]
+    },
+    {
+      "atomicity": "verify the pinned owner-root signature and exact profile/daemon/protocol/descriptor/expiry commitment, atomically claim and fsync the sole attempt before caller administrator bytes, compare the 256-bit secret commitment in constant time, consume the commitment on every claimed attempt, and emit one immutable authorization or blocked receipt",
+      "canonical_construct": false,
+      "events": [
+        "VERIFY_COMMITMENT",
+        "CLAIM_ATTEMPT",
+        "CONSUME",
+        "AUTHORIZE_ONCE",
+        "DENY_AND_BLOCK",
+        "EXPIRE",
+        "BLOCK"
+      ],
+      "id": "authorize-bootstrap",
+      "inputs": [
+        "e.owner-bootstrap-commitment",
+        "e.service-generation-custody"
+      ],
+      "output_cases": [
+        "AUTHORIZED_ONCE",
+        "DENIED_AND_BLOCKED",
+        "EXPIRED",
+        "ALREADY_ATTEMPTED"
+      ],
+      "outputs": [
+        "e.owner-bootstrap-commitment",
+        "d.bootstrap-authorization"
+      ],
+      "owner": "direct-semantic-installation-owner",
+      "replay": "no proof attempt replays successfully; the commitment and attempt claim are consumed on success, denial, malformed key, interruption, or expiry",
+      "surface_refs": [
+        "operation.authorize-bootstrap",
+        "object.owner-bootstrap-commitment",
+        "object.bootstrap-attempt-receipt",
+        "object.bootstrap-authorization-receipt",
+        "mutation.bootstrap-attempt-claim",
+        "clock.authorization-time"
+      ]
+    },
+    {
+      "atomicity": "consume the exact one-attempt owner-root bootstrap authorization and commit its attempt/authorization digests with the first custody key, principal lineage, Ed25519 verifier, and authenticated bootstrap event in one initialization transaction before the ordinary listener is ready",
+      "canonical_construct": false,
+      "events": [
+        "BOOTSTRAP",
+        "BOOTSTRAP_INITIALIZE",
+        "BOOTSTRAP_KEY",
+        "BOOTSTRAP_AUTHORITY",
+        "CONSUME",
+        "CONSUME_AUTHORIZATION",
+        "REJECT",
+        "BLOCK"
+      ],
+      "id": "bootstrap-daemon-authority",
+      "inputs": [
+        "d.bootstrap-authorization",
+        "e.service-generation-custody"
+      ],
+      "output_cases": [
+        "BOOTSTRAPPED",
+        "ALREADY_INITIALIZED",
+        "AUTHORIZATION_CONSUMED",
+        "PARTIAL_INITIALIZATION",
+        "BLOCKED"
+      ],
+      "outputs": [
+        "d.bootstrap-authorization",
+        "e.custody-key-lineage",
+        "e.daemon-authority-lineage",
+        "e.job-event-history"
+      ],
+      "owner": "direct-semantic-authority-owner",
+      "replay": "bootstrap has no successful replay; any consumed authorization, existing key, authority object, event, mismatched attempt digest, or partial state rejects",
+      "surface_refs": [
+        "operation.bootstrap-daemon-authority",
+        "object.bootstrap-attempt-receipt",
+        "object.bootstrap-authorization-receipt",
+        "object.custody-key-revision",
+        "grant.daemon-credential-bootstrap",
+        "mutation.authority-lineage-transaction"
+      ]
+    },
+    {
+      "atomicity": "under current service-admin authority append one immutable principal/verifier revision and its exact issuer, registry, scope, expiry, and revocation bindings in one service-event transaction",
+      "canonical_construct": false,
+      "events": [
+        "ISSUE",
+        "SUPERSEDE",
+        "DENY",
+        "CONFLICT"
+      ],
+      "id": "issue-daemon-credential",
+      "inputs": [
+        "d.request-authorization",
+        "e.daemon-authority-lineage",
+        "e.job-event-history"
+      ],
+      "output_cases": [
+        "ISSUED",
+        "SUPERSEDED",
+        "DENIED",
+        "CONFLICT"
+      ],
+      "outputs": [
+        "e.daemon-authority-lineage",
+        "e.job-event-history"
+      ],
+      "owner": "direct-semantic-authority-owner",
+      "replay": "the same issuance identity observes the original verifier; changed public key, scope, lineage, or expiry conflicts",
+      "surface_refs": [
+        "operation.issue-daemon-credential",
+        "object.semantic-principal-lineage",
+        "object.capability-verifier-record",
+        "mutation.authority-lineage-transaction"
+      ]
+    },
+    {
+      "atomicity": "generate at least 256 bits of CSPRNG entropy and persist one closed profile/protocol/connection/generation/issue/expiry-bound challenge before returning it",
+      "canonical_construct": false,
+      "events": [
+        "ISSUE",
+        "REJECT"
+      ],
+      "id": "issue-authorization-challenge",
+      "inputs": [
+        "e.transport-peer-observation",
+        "e.service-generation-custody"
+      ],
+      "output_cases": [
+        "ISSUED",
+        "CSPRNG_FAILURE",
+        "BACKPRESSURED",
+        "REJECTED"
+      ],
+      "outputs": [
+        "e.authorization-challenge"
+      ],
+      "owner": "direct-semantic-authority-owner",
+      "replay": "challenge issuance always creates a fresh nonce/reference; an issuance identity never reuses entropy or state",
+      "surface_refs": [
+        "operation.issue-authorization-challenge",
+        "object.authorization-challenge",
+        "source.authority-challenge-channel",
+        "clock.authorization-time"
+      ]
+    },
+    {
+      "atomicity": "validate the closed fixed-domain/versioned/u32-length-delimited canonical Ed25519 proof over profile, protocol, connection, generation, challenge expiry, request, operation, purpose/object scope, and full authority lineage, then expected-revision consume the challenge and append one authorization receipt in the same immediate transaction whether accepted or denied",
+      "canonical_construct": false,
+      "events": [
+        "PARSE",
+        "CANONICALIZE",
+        "VERIFY",
+        "VERIFY_TRANSCRIPT",
+        "AUTHORIZE",
+        "DENY",
+        "REJECT",
+        "CONSUME",
+        "CONSUME_CHALLENGE",
+        "EXPIRE",
+        "INVALIDATE"
+      ],
+      "id": "resolve-daemon-credential",
+      "inputs": [
+        "e.transport-peer-observation",
+        "e.service-generation-custody",
+        "e.daemon-authority-lineage",
+        "e.authorization-challenge",
+        "e.authorization-proof"
+      ],
+      "output_cases": [
+        "AUTHORIZED",
+        "DENIED_AND_CONSUMED",
+        "EXPIRED",
+        "STALE",
+        "REPLAYED_OR_CONCURRENT_CHALLENGE"
+      ],
+      "outputs": [
+        "e.authorization-proof",
+        "d.request-authorization",
+        "e.authorization-challenge"
+      ],
+      "owner": "direct-semantic-authority-owner",
+      "replay": "a consumed, expired, concurrent, foreign, or restart-invalidated challenge never authorizes; any transcript field or encoding change requires a new canonical proof and challenge",
+      "surface_refs": [
+        "operation.resolve-daemon-credential",
+        "source.authority-challenge-channel",
+        "interface.authorization-proof",
+        "object.authorization-challenge",
+        "object.authorization-proof-digest",
+        "object.request-authorization-receipt",
+        "mutation.authorization-challenge-consumption",
+        "grant.daemon-operation-credential"
+      ]
+    },
+    {
+      "atomicity": "under current service-admin authority advance the exact verifier or principal revocation epoch and append its immutable revocation event at one global boundary",
+      "canonical_construct": false,
+      "events": [
+        "REVOKE",
+        "REPLAY",
+        "DENY"
+      ],
+      "id": "revoke-daemon-credential",
+      "inputs": [
+        "d.request-authorization",
+        "e.daemon-authority-lineage",
+        "e.job-event-history"
+      ],
+      "output_cases": [
+        "REVOKED",
+        "EXACT_REPLAY",
+        "DENIED",
+        "UNKNOWN_WITHOUT_DISCLOSURE"
+      ],
+      "outputs": [
+        "d.request-authorization",
+        "e.daemon-authority-lineage",
+        "e.job-event-history"
+      ],
+      "owner": "direct-semantic-authority-owner",
+      "replay": "the same revocation observes the original event; a changed target or epoch conflicts",
+      "surface_refs": [
+        "operation.revoke-daemon-credential",
+        "object.capability-verifier-record",
+        "mutation.authority-lineage-transaction"
+      ]
+    },
+    {
+      "atomicity": "enumerate and replay every authenticated bootstrap, principal, verifier, issuer, registry, supersession, and revocation event before comparing persisted authority accelerators",
+      "canonical_construct": false,
+      "events": [
+        "ENUMERATE",
+        "RECOVER",
+        "COMPARE",
+        "BLOCK"
+      ],
+      "id": "recover-authority-lineage",
+      "inputs": [
+        "e.service-generation-custody",
+        "e.job-event-history",
+        "e.custody-key-lineage",
+        "e.daemon-authority-lineage"
+      ],
+      "output_cases": [
+        "CURRENT",
+        "MISMATCH",
+        "BROKEN",
+        "BLOCKED"
+      ],
+      "outputs": [
+        "e.daemon-authority-lineage"
+      ],
+      "owner": "direct-semantic-authority-owner",
+      "replay": "the same authenticated authority event prefix and schema revision reconstruct the same complete lineage digest",
+      "surface_refs": [
+        "operation.recover-authority-lineage",
+        "object.semantic-principal-lineage",
+        "object.capability-verifier-record"
+      ]
+    },
+    {
+      "atomicity": "reserve and bind the immutable scoped idempotency identity, create the service-issued job and its NOT_DISPATCHED boundary, update every affected checked capacity counter, append admission, and publish the receipt reference in one immediate transaction",
+      "canonical_construct": false,
+      "events": [
+        "RESERVE",
+        "BIND",
+        "ESTABLISH",
+        "ADMIT",
+        "REPLAY",
+        "CONFLICT",
+        "REJECT"
+      ],
+      "id": "admit-durable-job",
+      "inputs": [
+        "e.transport-peer-observation",
+        "d.request-authorization",
+        "e.idempotency-binding",
+        "u.service-capacity-posture"
+      ],
+      "output_cases": [
+        "ADMITTED",
+        "EXACT_REPLAY",
+        "CONFLICT",
+        "BACKPRESSURED",
+        "REJECTED"
+      ],
+      "outputs": [
+        "e.idempotency-binding",
+        "e.durable-job-admission",
+        "e.later-tranche-dispatch-boundary",
+        "e.job-event-history",
+        "u.service-capacity-posture"
+      ],
+      "owner": "direct-semantic-job-custody-owner",
+      "replay": "same principal lineage, operation, key, request digest, and authority revision returns the original receipt without a second event or counter reservation",
+      "surface_refs": [
+        "operation.admit-durable-job",
+        "object.idempotency-binding",
+        "object.later-tranche-dispatch-boundary",
+        "mutation.idempotency-admission",
+        "mutation.capacity-counter-update",
+        "mutation.sqlite-immediate-transaction"
+      ]
+    },
+    {
+      "atomicity": "allocate job and global contiguous sequences, verify and reference any already-published CAS artifact, compute both chains and custody tag, insert one event, and update derived indexes in one immediate transaction",
+      "canonical_construct": false,
+      "events": [
+        "REFERENCE",
+        "APPEND",
+        "REJECT",
+        "BLOCK"
+      ],
+      "id": "append-authenticated-event",
+      "inputs": [
+        "e.job-event-history",
+        "e.custody-key-lineage",
+        "d.job-mutation-lease",
+        "e.cas-artifact-custody"
+      ],
+      "output_cases": [
+        "APPENDED",
+        "STALE_HEAD",
+        "STALE_LEASE",
+        "CUSTODY_BLOCKED"
+      ],
+      "outputs": [
+        "e.job-event-history",
+        "e.cas-artifact-custody"
+      ],
+      "owner": "direct-semantic-event-ledger-owner",
+      "replay": "an already committed event digest and artifact reference are observed, never appended twice",
+      "surface_refs": [
+        "operation.append-authenticated-event",
+        "object.cas-artifact",
+        "mutation.sqlite-immediate-transaction"
+      ]
+    },
+    {
+      "atomicity": "replay one authenticated prefix under one reducer revision before comparing or publishing its head",
+      "canonical_construct": false,
+      "events": [
+        "REBUILD",
+        "COMPARE",
+        "DETECT_DRIFT"
+      ],
+      "id": "rebuild-derived-state",
+      "inputs": [
+        "e.job-event-history",
+        "e.job-derived-state"
+      ],
+      "output_cases": [
+        "CURRENT",
+        "DRIFTED",
+        "INVALID_HISTORY"
+      ],
+      "outputs": [
+        "e.job-derived-state"
+      ],
+      "owner": "direct-semantic-reducer-owner",
+      "replay": "the same event prefix and reducer revision produce the same canonical projection digest",
+      "surface_refs": [
+        "operation.rebuild-derived-state",
+        "object.job-derived-heads"
+      ]
+    },
+    {
+      "atomicity": "fsync and atomically publish verified bytes before any SQLite reference transaction",
+      "canonical_construct": false,
+      "events": [
+        "PUBLISH",
+        "VERIFY",
+        "ORPHAN",
+        "REJECT"
+      ],
+      "id": "publish-cas-artifact",
+      "inputs": [
+        "d.request-authorization",
+        "e.cas-artifact-custody"
+      ],
+      "output_cases": [
+        "PUBLISHED",
+        "ALREADY_PRESENT_VERIFIED",
+        "ORPHANED",
+        "REJECTED"
+      ],
+      "outputs": [
+        "e.cas-artifact-custody"
+      ],
+      "owner": "direct-semantic-cas-owner",
+      "replay": "same digest is accepted only after content and length verification",
+      "surface_refs": [
+        "operation.publish-cas-artifact",
+        "mutation.cas-publish-before-reference"
+      ]
+    },
+    {
+      "atomicity": "capture bytes and bounded diagnostics in separate owner-only custody without normal CAS visibility",
+      "canonical_construct": false,
+      "events": [
+        "CAPTURE",
+        "REJECT"
+      ],
+      "id": "quarantine-artifact",
+      "inputs": [
+        "d.request-authorization"
+      ],
+      "output_cases": [
+        "QUARANTINED",
+        "REJECTED"
+      ],
+      "outputs": [
+        "e.quarantine-custody"
+      ],
+      "owner": "direct-semantic-quarantine-owner",
+      "replay": "same capture identity does not create a second ordinary reference",
+      "surface_refs": [
+        "operation.quarantine-artifact",
+        "object.quarantined-artifact"
+      ]
+    },
+    {
+      "atomicity": "under current service-admin authority expected-revision mark the exact quarantine object expired or destroyed without admitting bytes to CAS or deleting authenticated history",
+      "canonical_construct": false,
+      "events": [
+        "EXPIRE",
+        "DESTROY",
+        "BLOCK"
+      ],
+      "id": "dispose-quarantined-artifact",
+      "inputs": [
+        "d.request-authorization",
+        "e.quarantine-custody"
+      ],
+      "output_cases": [
+        "EXPIRED",
+        "DESTROYED",
+        "STALE_REVISION",
+        "DENIED"
+      ],
+      "outputs": [
+        "e.quarantine-custody"
+      ],
+      "owner": "direct-semantic-quarantine-owner",
+      "replay": "the same target revision and disposition observes the first record; changed authority, revision, or disposition conflicts",
+      "surface_refs": [
+        "operation.dispose-quarantined-artifact",
+        "object.quarantined-artifact"
+      ]
+    },
+    {
+      "atomicity": "admit the next revision and exact effective boundary with outgoing and incoming HMAC tags in one service-event transaction",
+      "canonical_construct": false,
+      "events": [
+        "ROTATE",
+        "DENY",
+        "BLOCK"
+      ],
+      "id": "rotate-custody-key",
+      "inputs": [
+        "d.request-authorization",
+        "e.custody-key-lineage"
+      ],
+      "output_cases": [
+        "ROTATED",
+        "DENIED",
+        "BROKEN_LINEAGE"
+      ],
+      "outputs": [
+        "e.custody-key-lineage",
+        "e.job-event-history"
+      ],
+      "owner": "direct-semantic-custody-key-owner",
+      "replay": "same authorized rotation record is idempotent; different next key or boundary conflicts",
+      "surface_refs": [
+        "operation.rotate-custody-key",
+        "mutation.custody-key-rotation"
+      ]
+    },
+    {
+      "atomicity": "persist the next fencing token for one subject, operation, current daemon generation, acquisition or renewal event, and expiry in one transaction",
+      "canonical_construct": false,
+      "events": [
+        "ACQUIRE",
+        "RENEW",
+        "DENY",
+        "EXPIRE"
+      ],
+      "id": "acquire-job-lease",
+      "inputs": [
+        "e.job-derived-state",
+        "e.service-generation-custody",
+        "d.job-mutation-lease"
+      ],
+      "output_cases": [
+        "AUTHORIZED",
+        "RENEWED",
+        "EXPIRED",
+        "DENIED",
+        "BACKPRESSURED"
+      ],
+      "outputs": [
+        "d.job-mutation-lease"
+      ],
+      "owner": "direct-semantic-lease-owner",
+      "replay": "a current identical holder observes its persisted lease; renewal advances the fencing token and revision, while a new generation or expired lease requires an explicit new identity",
+      "surface_refs": [
+        "operation.acquire-job-lease",
+        "object.job-mutation-lease",
+        "grant.job-mutation-lease"
+      ]
+    },
+    {
+      "atomicity": "expected-revision record release or abandonment of the exact current-generation lease and fencing token in one transaction",
+      "canonical_construct": false,
+      "events": [
+        "RELEASE",
+        "ABANDON"
+      ],
+      "id": "release-job-lease",
+      "inputs": [
+        "d.job-mutation-lease",
+        "e.service-generation-custody"
+      ],
+      "output_cases": [
+        "RELEASED",
+        "ABANDONED",
+        "EXACT_REPLAY",
+        "STALE_LEASE"
+      ],
+      "outputs": [
+        "d.job-mutation-lease"
+      ],
+      "owner": "direct-semantic-lease-owner",
+      "replay": "duplicate disposition observes the first record; foreign-generation, stale-token, or changed-disposition requests mutate nothing",
+      "surface_refs": [
+        "operation.release-job-lease",
+        "object.job-mutation-lease",
+        "grant.job-mutation-lease"
+      ]
+    },
+    {
+      "atomicity": "under one wait-slot linearization lock compare the exact population revision and limit, then either insert one connection/request/deadline token before visibility or reject without mutation",
+      "canonical_construct": false,
+      "events": [
+        "RESERVE",
+        "REJECT_AT_LIMIT",
+        "REJECT_STALE"
+      ],
+      "id": "reserve-waiter-slot",
+      "inputs": [
+        "e.transport-peer-observation",
+        "e.service-generation-custody",
+        "e.waiter-population-observation"
+      ],
+      "output_cases": [
+        "RESERVED",
+        "AT_LIMIT",
+        "STALE_POPULATION",
+        "REJECTED"
+      ],
+      "outputs": [
+        "e.waiter-population-observation"
+      ],
+      "owner": "direct-semantic-wait-slot-owner",
+      "replay": "the same reservation token observes its slot; duplicate or stale requests never reserve twice",
+      "surface_refs": [
+        "operation.reserve-waiter-slot",
+        "source.concurrent-waiter-population",
+        "mutation.waiter-slot-transition"
+      ]
+    },
+    {
+      "atomicity": "under the wait-slot lock remove the exact token once for response, timeout, disconnect, cancelled wait, or shutdown without mutating job/event/cursor/acknowledgment state",
+      "canonical_construct": false,
+      "events": [
+        "RELEASE_RESPONSE",
+        "RELEASE_TIMEOUT",
+        "RELEASE_DISCONNECT",
+        "RELEASE_CANCEL",
+        "INVALIDATE_RESTART"
+      ],
+      "id": "release-waiter-slot",
+      "inputs": [
+        "e.waiter-population-observation"
+      ],
+      "output_cases": [
+        "RELEASED",
+        "EXACT_REPLAY",
+        "FOREIGN_TOKEN",
+        "RESTART_INVALIDATED"
+      ],
+      "outputs": [
+        "e.waiter-population-observation"
+      ],
+      "owner": "direct-semantic-wait-slot-owner",
+      "replay": "duplicate release observes the first release; foreign and prior-generation tokens release nothing",
+      "surface_refs": [
+        "operation.release-waiter-slot",
+        "source.concurrent-waiter-population",
+        "mutation.waiter-slot-transition"
+      ]
+    },
+    {
+      "atomicity": "at one boundary read and record the exact limit-policy revision, all six limits, five durable counters, exact waiter token-set digest/count/revision, and authenticated counter event head; waiter admission uses the same wait-slot linearization lock",
+      "canonical_construct": false,
+      "events": [
+        "OBSERVE",
+        "ALLOW",
+        "DEFER",
+        "REJECT",
+        "OVERFLOW",
+        "BLOCK"
+      ],
+      "id": "apply-backpressure",
+      "inputs": [
+        "e.job-event-history",
+        "e.job-derived-state",
+        "e.durable-job-admission",
+        "e.delivery-subscription",
+        "e.delivery-offer",
+        "e.delivery-acknowledgment",
+        "e.waiter-population-observation",
+        "u.service-capacity-posture"
+      ],
+      "output_cases": [
+        "AVAILABLE",
+        "BACKPRESSURED",
+        "OVERFLOW_BLOCKED",
+        "RECOVERY_BLOCKED"
+      ],
+      "outputs": [
+        "u.service-capacity-posture"
+      ],
+      "owner": "direct-semantic-capacity-owner",
+      "replay": "the same complete counter/limit/waiter vector, policy revision, event head, and population revision reconstruct the same posture; any one-dimension change creates a distinct identity",
+      "surface_refs": [
+        "operation.apply-backpressure",
+        "object.backpressure-observation",
+        "source.concurrent-waiter-population",
+        "mutation.capacity-counter-update",
+        "mutation.waiter-slot-transition",
+        "policy.dss02-implementation-contract"
+      ]
+    },
+    {
+      "atomicity": "require the narrowed DSS-0.2 decision with an empty running-attempt set, bind current cancel authority, daemon generation, event head, and exact NOT_DISPATCHED boundary, then append request and decision without deleting history",
+      "canonical_construct": false,
+      "events": [
+        "REQUEST",
+        "AUTHORIZE_BEFORE_DISPATCH",
+        "CANCEL",
+        "REJECT",
+        "BLOCK"
+      ],
+      "id": "decide-cancellation",
+      "inputs": [
+        "d.request-authorization",
+        "e.job-derived-state",
+        "e.durable-job-admission",
+        "e.later-tranche-dispatch-boundary",
+        "e.service-generation-custody"
+      ],
+      "output_cases": [
+        "AUTHORIZED_BEFORE_DISPATCH",
+        "REJECTED",
+        "RECOVERY_BLOCKED"
+      ],
+      "outputs": [
+        "d.cancellation-decision",
+        "e.durable-job-admission",
+        "e.job-event-history"
+      ],
+      "owner": "direct-semantic-cancellation-owner",
+      "replay": "same scoped cancellation key, body, authority generation, and dispatch boundary returns the original decision",
+      "surface_refs": [
+        "operation.decide-cancellation",
+        "object.cancellation-decision",
+        "object.later-tranche-dispatch-boundary"
+      ]
+    },
+    {
+      "atomicity": "from the exact NOT_DISPATCHED boundary commit one target-tranche revision, current daemon generation, latest fencing token, and immutable handoff event in one transaction",
+      "canonical_construct": false,
+      "events": [
+        "HANDOFF",
+        "REPLAY",
+        "REJECT",
+        "BLOCK"
+      ],
+      "id": "handoff-later-tranche",
+      "inputs": [
+        "d.request-authorization",
+        "e.durable-job-admission",
+        "e.job-event-history",
+        "e.later-tranche-dispatch-boundary",
+        "d.job-mutation-lease",
+        "e.service-generation-custody"
+      ],
+      "output_cases": [
+        "HANDOFF_COMMITTED",
+        "EXACT_REPLAY",
+        "STALE_LEASE",
+        "ALREADY_CANCELLED",
+        "BLOCKED"
+      ],
+      "outputs": [
+        "e.durable-job-admission",
+        "e.later-tranche-dispatch-boundary",
+        "e.job-event-history"
+      ],
+      "owner": "direct-semantic-dispatch-owner",
+      "replay": "the same handoff identity observes the committed boundary; changed target, generation, token, or job head conflicts",
+      "surface_refs": [
+        "operation.handoff-later-tranche",
+        "object.later-tranche-dispatch-boundary",
+        "mutation.dispatch-boundary-transition"
+      ]
+    },
+    {
+      "atomicity": "bind the exact current read-verifier generation, principal lineage, job, filter, projection, and starting cursor while updating subscription capacity in one event transaction",
+      "canonical_construct": false,
+      "events": [
+        "CREATE",
+        "INITIALIZE",
+        "DENY",
+        "SUPERSEDE"
+      ],
+      "id": "create-delivery-subscription",
+      "inputs": [
+        "d.request-authorization",
+        "e.daemon-authority-lineage",
+        "e.durable-job-admission",
+        "u.service-capacity-posture",
+        "e.delivery-subscription"
+      ],
+      "output_cases": [
+        "ACTIVE",
+        "BACKPRESSURED",
+        "DENIED"
+      ],
+      "outputs": [
+        "e.delivery-subscription",
+        "e.delivery-cursor",
+        "e.job-event-history",
+        "u.service-capacity-posture"
+      ],
+      "owner": "direct-semantic-delivery-owner",
+      "replay": "same subscription request and authority generation is idempotent; authority change requires a new revision",
+      "surface_refs": [
+        "operation.create-delivery-subscription",
+        "object.delivery-subscription",
+        "object.delivery-cursor",
+        "mutation.capacity-counter-update"
+      ]
+    },
+    {
+      "atomicity": "bind the exact current read-authorization generation, build one bounded contiguous projection after the durable cursor, persist its artifact, append the immutable offer or explicit subscription pause, and update projection-byte/outstanding-offer counters before returning bytes",
+      "canonical_construct": false,
+      "events": [
+        "OFFER",
+        "PAUSE",
+        "REPLAY",
+        "INVALIDATE_AUTHORITY",
+        "DENY"
+      ],
+      "id": "offer-delivery",
+      "inputs": [
+        "e.delivery-subscription",
+        "e.delivery-cursor",
+        "e.job-event-history",
+        "d.request-authorization",
+        "d.job-mutation-lease",
+        "u.service-capacity-posture"
+      ],
+      "output_cases": [
+        "OFFERED",
+        "NO_NEW_EVENTS",
+        "SUBSCRIPTION_PAUSED",
+        "AUTHORITY_INVALIDATED",
+        "BACKPRESSURED",
+        "DENIED"
+      ],
+      "outputs": [
+        "e.delivery-subscription",
+        "e.delivery-offer",
+        "e.authorized-safe-projection",
+        "u.service-capacity-posture"
+      ],
+      "owner": "direct-semantic-delivery-owner",
+      "replay": "an immutable old offer remains evidence but bytes replay only through a newly authorized offer revision after current authority revalidation; revoked or changed authority invalidates disclosure",
+      "surface_refs": [
+        "operation.offer-delivery",
+        "object.delivery-subscription",
+        "object.delivery-attempt",
+        "mutation.capacity-counter-update"
+      ]
+    },
+    {
+      "atomicity": "revalidate the offer's exact read-authorization generation, verify delivery, principal, projection digest, and contiguous cursor, then append the acknowledgment, mark the offer acknowledged, advance the durable cursor, and update outstanding-offer/projection-byte counters in one transaction",
+      "canonical_construct": false,
+      "events": [
+        "ACKNOWLEDGE",
+        "ADVANCE",
+        "REPLAY",
+        "INVALIDATE_AUTHORITY",
+        "REJECT"
+      ],
+      "id": "acknowledge-delivery",
+      "inputs": [
+        "e.delivery-offer",
+        "d.request-authorization",
+        "e.delivery-cursor",
+        "u.service-capacity-posture"
+      ],
+      "output_cases": [
+        "ACKNOWLEDGED",
+        "EXACT_REPLAY",
+        "AUTHORITY_INVALIDATED",
+        "REJECTED"
+      ],
+      "outputs": [
+        "e.delivery-offer",
+        "e.delivery-acknowledgment",
+        "e.delivery-cursor",
+        "e.job-event-history",
+        "u.service-capacity-posture"
+      ],
+      "owner": "direct-semantic-delivery-owner",
+      "replay": "same exact acknowledgment under unchanged authority observes the original record; changed digest, authority, cursor, or counters conflicts",
+      "surface_refs": [
+        "operation.acknowledge-delivery",
+        "object.delivery-attempt",
+        "object.delivery-cursor",
+        "mutation.delivery-cursor-advance",
+        "mutation.capacity-counter-update"
+      ]
+    },
+    {
+      "atomicity": "bind current read authority, projection policy, event interval, and event head before rendering; a changed head explicitly invalidates the boundary-local view",
+      "canonical_construct": false,
+      "events": [
+        "BUILD",
+        "AUTHORIZE",
+        "DENY",
+        "INVALIDATE_HEAD"
+      ],
+      "id": "project-authorized-job-view",
+      "inputs": [
+        "d.request-authorization",
+        "e.job-event-history",
+        "e.job-derived-state"
+      ],
+      "output_cases": [
+        "AUTHORIZED",
+        "DENIED",
+        "NO_NEW_EVENTS",
+        "STALE_HEAD"
+      ],
+      "outputs": [
+        "e.authorized-safe-projection"
+      ],
+      "owner": "direct-semantic-projection-owner",
+      "replay": "same authority receipt, event interval, and projection revision yield the same digest",
+      "surface_refs": [
+        "operation.project-authorized-job-view",
+        "interface.direct-semantic-cli"
+      ]
+    },
+    {
+      "atomicity": "at one frozen global head verify the immutable installed owner-root pin, obtain every typed population digest including admitted jobs, bijectively reconcile jobs with idempotency/admission-event/derived-head populations, verify custody, replay lineages, expire old challenges and offers, reset waiters to zero, classify every incomplete member, and commit readiness against the same inventory",
+      "canonical_construct": false,
+      "events": [
+        "START",
+        "VERIFY_OWNER_ROOT",
+        "ENUMERATE",
+        "RECONCILE_JOBS",
+        "VERIFY",
+        "DETECT_GAP",
+        "DETECT_AMBIGUITY",
+        "INVALIDATE_BY_RESTART",
+        "EXPIRE",
+        "RECOVERY_BLOCK",
+        "EXPIRE_CHALLENGES",
+        "RESET_WAITERS",
+        "CLASSIFY",
+        "READY",
+        "BLOCK"
+      ],
+      "id": "recover-service-generation",
+      "inputs": [
+        "e.owner-bootstrap-trust-root",
+        "e.owner-bootstrap-commitment",
+        "d.bootstrap-authorization",
+        "e.service-generation-custody",
+        "e.daemon-authority-lineage",
+        "e.authorization-challenge",
+        "d.request-authorization",
+        "e.idempotency-binding",
+        "e.durable-job-admission",
+        "e.job-event-history",
+        "e.job-derived-state",
+        "e.cas-artifact-custody",
+        "e.quarantine-custody",
+        "e.custody-key-lineage",
+        "d.job-mutation-lease",
+        "u.service-capacity-posture",
+        "e.waiter-population-observation",
+        "e.delivery-subscription",
+        "e.delivery-offer",
+        "e.delivery-acknowledgment",
+        "e.delivery-cursor",
+        "e.later-tranche-dispatch-boundary"
+      ],
+      "output_cases": [
+        "READY",
+        "RECOVERY_EVENTS_APPENDED",
+        "BLOCKED"
+      ],
+      "outputs": [
+        "e.recovery-disposition",
+        "e.service-generation-custody",
+        "e.authorization-challenge",
+        "e.idempotency-binding",
+        "e.durable-job-admission",
+        "e.job-event-history",
+        "e.job-derived-state",
+        "e.cas-artifact-custody",
+        "e.quarantine-custody",
+        "e.custody-key-lineage",
+        "u.service-capacity-posture",
+        "e.waiter-population-observation",
+        "e.delivery-subscription",
+        "e.delivery-offer",
+        "e.delivery-cursor",
+        "e.later-tranche-dispatch-boundary"
+      ],
+      "owner": "direct-semantic-recovery-owner",
+      "replay": "the same immutable installed owner root, complete frozen typed populations, event head, schema, and recovery implementation produce the same classifications; generic digests cannot substitute for job inventory and each daemon generation remains distinct",
+      "surface_refs": [
+        "operation.recover-service-generation",
+        "object.owner-bootstrap-root-pin",
+        "object.recovery-disposition",
+        "object.authorization-challenge",
+        "object.semantic-job-receipt",
+        "object.quarantined-artifact",
+        "object.job-mutation-lease",
+        "object.delivery-attempt",
+        "object.delivery-cursor",
+        "object.later-tranche-dispatch-boundary",
+        "source.concurrent-waiter-population"
+      ]
+    }
+  ]
+}

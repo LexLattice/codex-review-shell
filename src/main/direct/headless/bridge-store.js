@@ -13,6 +13,30 @@ const HEADLESS_TURN_PACKET_SCHEMA = "headless_turn_packet@1";
 const REDUCED_RESULT_SCHEMA = "headless_reduced_result@1";
 const HUMAN_DECISION_PACKET_SCHEMA = "human_decision_packet@1";
 const HUMAN_DECISION_REPLY_SCHEMA = "human_decision_reply@1";
+const PROVIDER_AFFORDANCE_CLAIM_SCHEMA = "headless_provider_affordance_claim@1";
+const MAX_EVIDENCE_REFS = 32;
+const MAX_EVIDENCE_REF_DEPTH = 1;
+const MAX_EVIDENCE_REF_FIELD_LENGTH = 256;
+const MAX_EVIDENCE_REF_LABEL_LENGTH = 160;
+const SAFE_EVIDENCE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const SAFE_EVIDENCE_DIGEST_PATTERN = /^(?:sha256:[a-f0-9]{64}|[A-Za-z0-9][A-Za-z0-9._:-]{0,255})$/;
+const EVIDENCE_URI_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+const EVIDENCE_PATH_PATTERN = /(?:^|[\\/])(?:\.\.?(?:[\\/]|$)|[^\\/]*[\\/])/;
+const EVIDENCE_BARE_FILE_PATTERN = /^[^\\/\s]+\.[A-Za-z0-9]{1,16}$/;
+const EVIDENCE_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
+const EVIDENCE_SECRET_PATTERN = /(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|secret|bearer|private[_ -]?key|authorization|client[_ -]?secret|(?:token|key)\s*[:=]|sk-[a-z0-9]|ghp_[a-z0-9]|github_pat_|xox[baprs]-|akia[0-9a-z]{12,}|aiza[0-9a-z_-]{20,})/i;
+const SAFE_EVIDENCE_REF_KEYS = new Set([
+  "kind",
+  "id",
+  "digest",
+  "rendererSafeLabel",
+  "artifactId",
+  "artifactDigest",
+  "projectId",
+  "refId",
+  "evidenceKey",
+  "source",
+]);
 
 function normalizeString(value, fallback = "") {
   const text = typeof value === "string" ? value.trim() : "";
@@ -68,6 +92,69 @@ function evidenceRef(kind, label, extra = {}) {
     rendererSafeLabel: label,
     ...extra,
   };
+}
+
+function evidenceRefDepth(value, depth = 0) {
+  if (!value || typeof value !== "object") return depth;
+  if (depth > MAX_EVIDENCE_REF_DEPTH) return depth;
+  const values = Array.isArray(value) ? value : Object.values(value);
+  return values.reduce((max, child) => Math.max(max, evidenceRefDepth(child, depth + 1)), depth);
+}
+
+function validateEvidenceRefs(input) {
+  if (input === undefined) return { ok: true, refs: [] };
+  if (!Array.isArray(input)) return { ok: false, errorCode: "invalid_evidence_refs" };
+  if (input.length > MAX_EVIDENCE_REFS) return { ok: false, errorCode: "evidence_refs_limit_exceeded" };
+  const refs = [];
+  for (const candidate of input) {
+    if (!isPlainObject(candidate) || evidenceRefDepth(candidate) > MAX_EVIDENCE_REF_DEPTH) {
+      return { ok: false, errorCode: "invalid_evidence_refs" };
+    }
+    const keys = Object.keys(candidate);
+    if (!keys.length || keys.some((key) => !SAFE_EVIDENCE_REF_KEYS.has(key))) {
+      return { ok: false, errorCode: "invalid_evidence_refs" };
+    }
+    const safe = {};
+    for (const key of keys) {
+      if (typeof candidate[key] !== "string") return { ok: false, errorCode: "invalid_evidence_refs" };
+      const value = candidate[key];
+      if (!value || value !== value.trim() || value.length > MAX_EVIDENCE_REF_FIELD_LENGTH) {
+        return { ok: false, errorCode: "invalid_evidence_refs" };
+      }
+      const isIdentifier = ["kind", "id", "artifactId", "projectId", "refId", "evidenceKey"].includes(key);
+      const isDigest = ["digest", "artifactDigest"].includes(key);
+      if (isIdentifier && !SAFE_EVIDENCE_IDENTIFIER_PATTERN.test(value)) {
+        return { ok: false, errorCode: "invalid_evidence_refs" };
+      }
+      if (isDigest && !SAFE_EVIDENCE_DIGEST_PATTERN.test(value)) {
+        return { ok: false, errorCode: "invalid_evidence_refs" };
+      }
+      if (["rendererSafeLabel", "source"].includes(key)) {
+        if (
+          value.length > MAX_EVIDENCE_REF_LABEL_LENGTH ||
+          EVIDENCE_CONTROL_PATTERN.test(value) ||
+          EVIDENCE_URI_PATTERN.test(value) ||
+          EVIDENCE_PATH_PATTERN.test(value) ||
+          EVIDENCE_BARE_FILE_PATTERN.test(value) ||
+          EVIDENCE_SECRET_PATTERN.test(value)
+        ) {
+          return { ok: false, errorCode: "invalid_evidence_refs" };
+        }
+      }
+      if (value) safe[key] = value;
+    }
+    if (!safe.kind || !(
+      safe.id ||
+      safe.refId ||
+      safe.evidenceKey ||
+      safe.artifactId ||
+      safe.rendererSafeLabel
+    )) {
+      return { ok: false, errorCode: "invalid_evidence_refs" };
+    }
+    refs.push(safe);
+  }
+  return { ok: true, refs };
 }
 
 function routeDigest(route = {}) {
@@ -171,6 +258,7 @@ function normalizeWorkThread(input = {}) {
 function safeEventProjection(row) {
   if (!row) return null;
   const event = parseJson(row.event_json, {});
+  const validatedEvidence = validateEvidenceRefs(event.evidenceRefs);
   return {
     schema: EVENT_ENVELOPE_SCHEMA,
     envelopeId: row.envelope_id,
@@ -190,7 +278,7 @@ function safeEventProjection(row) {
     payloadDigest: row.payload_digest,
     rawPayloadIncluded: false,
     routeDecisionId: row.route_decision_id || "",
-    evidenceRefs: Array.isArray(event.evidenceRefs) ? event.evidenceRefs : [],
+    evidenceRefs: validatedEvidence.ok ? validatedEvidence.refs : [],
   };
 }
 
@@ -330,6 +418,21 @@ class DirectHeadlessBridgeStore {
         created_at text not null,
         updated_at text not null
       );
+      create table if not exists direct_bridge_provider_affordance_claims (
+        claim_id text primary key,
+        client_id text not null,
+        route_id text not null,
+        route_version text not null,
+        route_digest text not null,
+        idempotency_key text not null,
+        input_digest text not null,
+        status text not null,
+        result_json text,
+        created_at text not null,
+        updated_at text not null
+      );
+      create unique index if not exists idx_direct_bridge_provider_affordance_identity
+        on direct_bridge_provider_affordance_claims(client_id, route_id, route_version, route_digest, idempotency_key);
     `);
     this.db.prepare("create table if not exists direct_bridge_meta (key text primary key, value_json text not null)").run();
     this.db.prepare(`
@@ -337,6 +440,23 @@ class DirectHeadlessBridgeStore {
       values ('schema', ?)
       on conflict(key) do update set value_json = excluded.value_json
     `).run(safeJson({ schema: HEADLESS_BRIDGE_STORE_SCHEMA }));
+    this.reconcileProviderAffordanceClaims();
+    this.reconcileTurnPacketClaims();
+  }
+
+  reconcileProviderAffordanceClaims() {
+    const interruptedAt = nowIso();
+    const result = safeJson({
+      schema: "headless_provider_affordance_interrupted_unknown@1",
+      status: "interrupted_unknown",
+      blockerCode: "provider_affordance_interrupted_unknown",
+      providerRequestStarted: false,
+      rawPayloadIncluded: false,
+      rawPromptIncluded: false,
+      rawProviderPayloadIncluded: false,
+      rawProviderFrameIncluded: false,
+    });
+    this.db.prepare("update direct_bridge_provider_affordance_claims set status='interrupted_unknown', result_json=?, updated_at=? where status='in_progress'").run(result, interruptedAt);
   }
 
   seed({ clients = [], routes = [], workThreads = [] } = {}) {
@@ -420,9 +540,84 @@ class DirectHeadlessBridgeStore {
       "direct_bridge_outbox_actions",
       "direct_bridge_delivery_receipts",
       "direct_bridge_human_decisions",
+      "direct_bridge_provider_affordance_claims",
     ]);
     if (!allowed.has(tableName)) throw new Error(`headless_bridge_count_table_invalid:${tableName}`);
     return Number(this.db.prepare(`select count(*) as count from ${tableName}`).get()?.count || 0);
+  }
+
+  providerAffordanceIngressCount() {
+    return Number(this.db.prepare("select count(*) as count from direct_bridge_provider_affordance_claims").get()?.count || 0);
+  }
+
+  providerAffordanceRecord(row, inputDigest = "") {
+    return {
+      schema: PROVIDER_AFFORDANCE_CLAIM_SCHEMA,
+      claimId: row.claim_id,
+      clientId: row.client_id,
+      routeId: row.route_id,
+      routeVersion: row.route_version,
+      routeDigest: row.route_digest,
+      idempotencyKey: row.idempotency_key,
+      inputDigest: row.input_digest,
+      status: row.status,
+      result: parseJson(row.result_json, null),
+      replay: true,
+      conflict: row.input_digest !== inputDigest,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  providerAffordanceIdentity(input = {}) {
+    const identity = {
+      claimId: normalizeString(input.claimId, ""),
+      clientId: normalizeString(input.clientId, ""),
+      routeId: normalizeString(input.routeId, ""),
+      routeVersion: normalizeString(input.routeVersion, ""),
+      routeDigest: normalizeString(input.routeDigest, ""),
+      idempotencyKey: normalizeString(input.idempotencyKey, ""),
+      inputDigest: normalizeString(input.inputDigest, ""),
+    };
+    if (!identity.claimId || !identity.clientId || !identity.routeId || !identity.routeVersion || !identity.routeDigest || !identity.idempotencyKey || !identity.inputDigest) throw new Error("headless_provider_affordance_claim_invalid");
+    return identity;
+  }
+
+  readProviderAffordance(input = {}) {
+    const identity = this.providerAffordanceIdentity(input);
+    const row = this.db.prepare("select * from direct_bridge_provider_affordance_claims where client_id=? and route_id=? and route_version=? and route_digest=? and idempotency_key=?").get(identity.clientId, identity.routeId, identity.routeVersion, identity.routeDigest, identity.idempotencyKey);
+    return row ? this.providerAffordanceRecord(row, identity.inputDigest) : null;
+  }
+
+  claimProviderAffordance(input = {}) {
+    const identity = this.providerAffordanceIdentity(input);
+    const { claimId, clientId, routeId, routeVersion, routeDigest, idempotencyKey, inputDigest } = identity;
+    const at = normalizeString(input.createdAt, nowIso());
+    this.db.exec("begin immediate");
+    try {
+      const existing = this.db.prepare("select * from direct_bridge_provider_affordance_claims where client_id=? and route_id=? and route_version=? and route_digest=? and idempotency_key=?").get(clientId, routeId, routeVersion, routeDigest, idempotencyKey);
+      if (existing) {
+        this.db.exec("commit");
+        return this.providerAffordanceRecord(existing, inputDigest);
+      }
+      this.db.prepare("insert into direct_bridge_provider_affordance_claims (claim_id, client_id, route_id, route_version, route_digest, idempotency_key, input_digest, status, result_json, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, 'in_progress', null, ?, ?)").run(claimId, clientId, routeId, routeVersion, routeDigest, idempotencyKey, inputDigest, at, at);
+      this.db.exec("commit");
+      return { schema: PROVIDER_AFFORDANCE_CLAIM_SCHEMA, claimId, clientId, routeId, routeVersion, routeDigest, idempotencyKey, inputDigest, status: "in_progress", result: null, replay: false, conflict: false, createdAt: at, updatedAt: at };
+    } catch (error) {
+      try { this.db.exec("rollback"); } catch (_) {}
+      throw error;
+    }
+  }
+
+  completeProviderAffordance(claimId = "", input = {}) {
+    const safeClaimId = normalizeString(claimId, "");
+    const status = normalizeString(input.status, "failed");
+    const result = isPlainObject(input.result) ? input.result : { status, blockerCode: normalizeString(input.blockerCode, "provider_affordance_failed") };
+    const at = normalizeString(input.updatedAt, nowIso());
+    const row = this.db.prepare("select claim_id from direct_bridge_provider_affordance_claims where claim_id=?").get(safeClaimId);
+    if (!row) throw new Error("headless_provider_affordance_claim_missing");
+    this.db.prepare("update direct_bridge_provider_affordance_claims set status=?, result_json=?, updated_at=? where claim_id=? and status='in_progress'").run(status, safeJson(result), at, safeClaimId);
+    return result;
   }
 
   statusProjection(extra = {}) {
@@ -452,6 +647,7 @@ class DirectHeadlessBridgeStore {
       lastEventAt: normalizeString(lastEventRow?.at, ""),
       lastErrorClass: normalizeString(extra.lastErrorClass, ""),
       providerRequestsStarted: 0,
+      providerAffordanceClaims: this.providerAffordanceIngressCount(),
       rawSecretsExposed: false,
       rawPayloadsExposed: false,
       rawProviderFramesExposed: false,
@@ -590,6 +786,98 @@ class DirectHeadlessBridgeStore {
   readTurnPacket(packetId = "") {
     const row = this.db.prepare("select packet_json from direct_bridge_turn_packets where packet_id = ?").get(normalizeString(packetId, ""));
     return row ? parseJson(row.packet_json, null) : null;
+  }
+
+  listTurnPackets(options = {}) {
+    const rows = this.db.prepare(
+      "select packet_json from direct_bridge_turn_packets order by created_at asc, packet_id asc",
+    ).all();
+    const states = Array.isArray(options.states) ? new Set(options.states.map((state) => normalizeString(state, ""))) : null;
+    return rows
+      .map((row) => parseJson(row.packet_json, null))
+      .filter((packet) => packet && (!states || states.has(normalizeString(packet.state, ""))));
+  }
+
+  claimTurnPacket(packetId = "", options = {}) {
+    const safePacketId = normalizeString(packetId, "");
+    const runtimeId = normalizeString(options.runtimeId, "headless_runtime");
+    if (!safePacketId) return { claimed: false, reason: "missing_packet_id", packet: null };
+    this.db.exec("begin immediate");
+    try {
+      const packet = this.readTurnPacket(safePacketId);
+      if (!packet) {
+        this.db.exec("commit");
+        return { claimed: false, reason: "packet_missing", packet: null };
+      }
+      if (["provider_completed", "failed", "handoff_unknown", "replay_unsafe"].includes(packet.state)) {
+        this.db.exec("commit");
+        return { claimed: false, reason: "packet_terminal", packet };
+      }
+      const existingClaim = isPlainObject(packet.executionClaim) ? packet.executionClaim : null;
+      if (existingClaim && ["in_progress", "settled", "reconciled_unknown"].includes(existingClaim.status)) {
+        this.db.exec("commit");
+        return { claimed: false, reason: existingClaim.status === "in_progress" ? "packet_claimed" : "packet_claim_closed", packet };
+      }
+      const at = normalizeString(options.now, nowIso(options.nowMs));
+      const claimId = `headless_packet_claim_${sha256(`${safePacketId}:${runtimeId}`).slice(7, 31)}`;
+      const claimed = {
+        ...packet,
+        executionClaim: {
+          schema: "headless_turn_packet_execution_claim@1",
+          claimId,
+          runtimeId,
+          status: "in_progress",
+          claimedAt: at,
+          updatedAt: at,
+        },
+        updatedAt: at,
+      };
+      this.db.prepare("update direct_bridge_turn_packets set packet_json=? where packet_id=?").run(safeJson(claimed), safePacketId);
+      this.db.exec("commit");
+      return { claimed: true, reason: "claimed", packet: claimed };
+    } catch (error) {
+      try { this.db.exec("rollback"); } catch (_) {}
+      throw error;
+    }
+  }
+
+  reconcileTurnPacketClaims(options = {}) {
+    const at = normalizeString(options.now, nowIso(options.nowMs));
+    const packets = this.listTurnPackets();
+    let reconciled = 0;
+    this.db.exec("begin immediate");
+    try {
+      for (const packet of packets) {
+        const claim = isPlainObject(packet.executionClaim) ? packet.executionClaim : null;
+        if (!claim || claim.status !== "in_progress") continue;
+        const next = {
+          ...packet,
+          state: "failed",
+          blockerCode: "headless_turn_restart_in_progress_unknown",
+          replayState: "replay_unsafe",
+          providerCompleted: false,
+          terminalTurnState: "transport_handoff_unknown",
+          executionClaim: {
+            ...claim,
+            status: "reconciled_unknown",
+            reconciledAt: at,
+            updatedAt: at,
+          },
+          updatedAt: at,
+          statusHistory: [
+            ...(Array.isArray(packet.statusHistory) ? packet.statusHistory : []),
+            { state: "failed", at, reason: "headless_turn_restart_in_progress_unknown" },
+          ],
+        };
+        this.db.prepare("update direct_bridge_turn_packets set packet_json=? where packet_id=?").run(safeJson(next), packet.packetId);
+        reconciled += 1;
+      }
+      this.db.exec("commit");
+      return { reconciled };
+    } catch (error) {
+      try { this.db.exec("rollback"); } catch (_) {}
+      throw error;
+    }
   }
 
   readTurnPacketForEnvelope(envelopeId = "") {
@@ -863,6 +1151,17 @@ class DirectHeadlessBridgeStore {
   submitEvent(input = {}, options = {}) {
     const at = nowIso(options.nowMs);
     const validation = this.validateIngress(input, options);
+    if (validation.validationFailedWithoutWrite) {
+      return {
+        ok: false,
+        duplicate: false,
+        status: validation.lifecycle,
+        error: validation.errorCode,
+        event: null,
+        routeDecision: null,
+        rawPayloadIncluded: false,
+      };
+    }
     const processingIdentity = validation.processingIdentity || `invalid:${sha256(`${at}:${validation.errorCode}:${stableStringify(input)}`).slice(7, 31)}`;
     const duplicate = this.duplicateEventForProcessingIdentity(processingIdentity);
     if (duplicate) return duplicate;
@@ -1005,10 +1304,8 @@ class DirectHeadlessBridgeStore {
     const payloadStorageRef = isPlainObject(input.payloadStorageRef || input.payloadRef || input.payload_ref)
       ? (input.payloadStorageRef || input.payloadRef || input.payload_ref)
       : null;
-    const evidenceRefs = [
-      evidenceRef("bridge_ingress", "Headless bridge ingress validation"),
-      ...(Array.isArray(input.evidenceRefs) ? input.evidenceRefs : []),
-    ];
+    const evidenceValidation = validateEvidenceRefs(input.evidenceRefs);
+    const evidenceRefs = evidenceValidation.ok ? evidenceValidation.refs : [];
     const base = {
       ok: false,
       clientId,
@@ -1031,7 +1328,16 @@ class DirectHeadlessBridgeStore {
       routeDecision: null,
       lifecycle: "blocked_ingress",
       errorCode: "",
+      validationFailedWithoutWrite: !evidenceValidation.ok,
     };
+    if (!evidenceValidation.ok) {
+      return {
+        ...base,
+        errorCode: evidenceValidation.errorCode,
+        lifecycle: "blocked_ingress",
+        validationFailedWithoutWrite: true,
+      };
+    }
     if (rawPayloadIncluded) return { ...base, errorCode: "raw_payload_included", lifecycle: "blocked_ingress" };
     if (!clientId) return { ...base, errorCode: "missing_client", lifecycle: "blocked_ingress" };
     if (!idempotencyKey) return { ...base, errorCode: "missing_idempotency_key", lifecycle: "blocked_ingress" };
@@ -1085,11 +1391,7 @@ class DirectHeadlessBridgeStore {
       processingIdentity,
       lifecycle: "route_resolved",
       errorCode: "",
-      evidenceRefs: [
-        ...evidenceRefs,
-        evidenceRef("bridge_route_binding", "Route binding resolved", { artifactDigest: route.routeDigest }),
-        evidenceRef("work_thread", "WorkThread resolved", { artifactId: workThreadId }),
-      ],
+      evidenceRefs,
     };
   }
 
@@ -1131,6 +1433,7 @@ module.exports = {
   ROUTE_BINDING_SCHEMA,
   clientCapabilityTokenDigest,
   digestFor,
+  validateEvidenceRefs,
   normalizeClient,
   normalizeRoute,
   normalizeString,

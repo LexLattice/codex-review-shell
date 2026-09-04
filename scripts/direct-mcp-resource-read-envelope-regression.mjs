@@ -149,6 +149,7 @@ const binary = buildMcpResourceReadEnvelope({
   serverIdentityId: "mcp_server_project_fixture",
   resourceUri: "mcp://fixture/resource/image",
   mimeType: "image/png",
+  payload: Buffer.alloc(2048),
   byteCount: 2048,
   status: "completed",
   callId: "call_binary_fixture",
@@ -213,6 +214,37 @@ assert.equal(digestMismatch.status, "blocked", "URI digest mismatch should block
 assert(digestMismatch.blockerCodes.includes("resource_uri_digest_mismatch"), "digest mismatch should cite blocker");
 validateMcpResourceReadEnvelope(digestMismatch);
 
+const prebuiltIdentity = buildMcpResourceIdentity({
+  serverIdentityId: "mcp_server_project_fixture",
+  resourceUri: "mcp://fixture/resource/alpha",
+});
+const prebuiltIdentityMismatch = buildMcpResourceReadEnvelope({
+  profile,
+  resourceIdentity: prebuiltIdentity,
+  serverIdentityId: "mcp_server_project_fixture",
+  resourceUri: "mcp://fixture/resource/beta",
+  mimeType: "text/plain",
+  payload: "safe",
+  callId: "call_prebuilt_identity_mismatch_fixture",
+});
+assert.equal(prebuiltIdentityMismatch.status, "blocked", "prebuilt identity URI mismatch should block read envelope");
+assert(prebuiltIdentityMismatch.blockerCodes.includes("resource_identity_uri_digest_mismatch"), "prebuilt identity mismatch should cite URI digest blocker");
+validateMcpResourceReadEnvelope(prebuiltIdentityMismatch);
+
+const byteCountMismatch = buildMcpResourceReadEnvelope({
+  profile,
+  serverIdentityId: "mcp_server_project_fixture",
+  resourceUri: "mcp://fixture/resource/byte-count-mismatch",
+  mimeType: "text/plain",
+  payload: "λ",
+  byteCount: 1,
+  callId: "call_byte_count_mismatch_fixture",
+});
+assert.equal(byteCountMismatch.status, "blocked", "payload byte-count mismatch should block read envelope");
+assert(byteCountMismatch.blockerCodes.includes("mcp_resource_byte_count_mismatch"), "byte-count mismatch should cite blocker");
+assert.equal(byteCountMismatch.byteCount, Buffer.byteLength("λ", "utf8"), "envelope must record computed UTF-8 payload bytes");
+validateMcpResourceReadEnvelope(byteCountMismatch);
+
 const malformedSelector = clone(completed);
 malformedSelector.serverSelector = null;
 expectThrows(() => validateMcpResourceReadEnvelope(malformedSelector), "mcp_resource_read_missing_server_selector");
@@ -245,6 +277,8 @@ const serialized = JSON.stringify({
   blockedServer,
   blockedScheme,
   digestMismatch,
+  prebuiltIdentityMismatch,
+  byteCountMismatch,
 });
 for (const forbidden of [
   "\"rawResourcePayloadIncluded\":true",

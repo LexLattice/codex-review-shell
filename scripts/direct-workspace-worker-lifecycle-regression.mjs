@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -1052,6 +1052,35 @@ try {
     return true;
   });
   assert.equal(failedWriteTransport.pendingRequestCount(), 0);
+
+  const oversizedFrameTransport = new NdjsonTransport(new FakeChild());
+  const oversizedFrameRequest = oversizedFrameTransport.request("hello", {}, 2_000);
+  oversizedFrameTransport.handleData("x".repeat(2 * 1024 * 1024 + 1));
+  await assert.rejects(
+    oversizedFrameRequest,
+    (error) => error.code === "workspace_backend_ndjson_frame_too_large",
+    "partial backend stdout frames must fail closed before unbounded buffering",
+  );
+  assert.equal(oversizedFrameTransport.pendingRequestCount(), 0);
+
+  const boundaryTransport = new NdjsonTransport(new FakeChild());
+  const boundaryMessages = [];
+  boundaryTransport.handleLine = (line) => boundaryMessages.push(JSON.parse(line));
+  const boundaryPayload = Buffer.from(
+    '{"id":"utf8","result":{"text":"€"}}\n{"id":"small","result":{"ok":true}}\n',
+    "utf8",
+  );
+  const euroOffset = boundaryPayload.indexOf(Buffer.from("€", "utf8"));
+  boundaryTransport.handleData(boundaryPayload.subarray(0, euroOffset + 1));
+  boundaryTransport.handleData(boundaryPayload.subarray(euroOffset + 1));
+  assert.deepEqual(
+    boundaryMessages,
+    [
+      { id: "utf8", result: { text: "€" } },
+      { id: "small", result: { ok: true } },
+    ],
+    "NDJSON frames must be admitted as raw bytes before decoding, preserving split UTF-8 and multiple lines",
+  );
 
   const windowsTreeChild = new EventEmitter();
   windowsTreeChild.pid = 4242;
@@ -3043,6 +3072,22 @@ try {
     'spawn(process.execPath, ["late-descendant.js"], { detached: true, stdio: "ignore" }).unref();',
     "setInterval(() => {}, 1000);",
   ].join("\n"));
+  const runGitFixtureCommand = (args) => {
+    const result = spawnSync("git", args, {
+      cwd: liveBackendRoot,
+      env: process.env,
+      stdio: "pipe",
+    });
+    assert.equal(result.status, 0, `git fixture command failed: git ${args.join(" ")}`);
+  };
+  const digestOverflowFile = path.join(liveBackendRoot, "digest-overflow.txt");
+  fs.writeFileSync(digestOverflowFile, "seed\n");
+  runGitFixtureCommand(["init", "--quiet"]);
+  runGitFixtureCommand(["config", "user.email", "fixture@example.invalid"]);
+  runGitFixtureCommand(["config", "user.name", "Fixture"]);
+  runGitFixtureCommand(["add", "digest-overflow.txt"]);
+  runGitFixtureCommand(["commit", "--quiet", "-m", "digest fixture"]);
+  fs.writeFileSync(digestOverflowFile, `${"x".repeat(17 * 1024 * 1024)}\n`);
   const probeRaceChild = spawn(process.execPath, [
     path.resolve("src/backend/wsl-agent.js"),
     "--root",
@@ -3056,8 +3101,25 @@ try {
     env: process.env,
     stdio: ["pipe", "pipe", "pipe"],
   });
+  const probeRaceStdinWrite = probeRaceChild.stdin.write.bind(probeRaceChild.stdin);
+  probeRaceChild.stdin.write = (chunk, encoding, callback) => {
+    const done = typeof encoding === "function" ? encoding : callback;
+    const payload = Buffer.isBuffer(chunk)
+      ? chunk
+      : Buffer.from(String(chunk), typeof encoding === "string" ? encoding : "utf8");
+    const euroOffset = payload.indexOf(Buffer.from("€", "utf8"));
+    if (euroOffset < 0) {
+      return typeof encoding === "function"
+        ? probeRaceStdinWrite(chunk, encoding)
+        : probeRaceStdinWrite(chunk, encoding, callback);
+    }
+    const splitAt = euroOffset + 1;
+    probeRaceStdinWrite(payload.subarray(0, splitAt));
+    probeRaceStdinWrite(payload.subarray(splitAt), done);
+    return true;
+  };
   const probeRaceTransport = new NdjsonTransport(probeRaceChild);
-  const firstProbeHello = probeRaceTransport.request("hello", {}, 8_000);
+  const firstProbeHello = probeRaceTransport.request("hello", { marker: "€" }, 8_000);
   const firstProbeRequestId = [...probeRaceTransport.pending.values()]
     .find((pending) => pending.method === "hello")?.requestId;
   assert.ok(firstProbeRequestId, "the first containment probe request is addressable for cancellation");
@@ -3090,6 +3152,50 @@ try {
   assert.equal(liveTestProfile.available, true);
   assert.equal(liveTestProfile.substrateCapabilities.processContainmentGuaranteed, true);
   assert.equal(liveTestProfile.substrateCapabilities.processContainmentKind, "linux_pid_namespace");
+  const backendOversizedPatchFile = path.join(liveBackendRoot, "backend-oversized-patch-target.txt");
+  const backendOversizedPatchSize = 384 * 1024 + 1;
+  fs.writeFileSync(backendOversizedPatchFile, "oversized-prefix");
+  fs.truncateSync(backendOversizedPatchFile, backendOversizedPatchSize);
+  const backendOversizedPatch = [
+    "--- a/backend-oversized-patch-target.txt",
+    "+++ b/backend-oversized-patch-target.txt",
+    "@@ -1,1 +1,1 @@",
+    "-oversized-prefix",
+    "+should-not-apply",
+    "",
+  ].join("\n");
+  for (const mode of ["dryRun", "apply"]) {
+    await assert.rejects(
+      liveSession.request("applyPatch", { mode, patch: backendOversizedPatch }, 8_000),
+      (error) => error?.code === "direct_full_access_patch_target_oversized",
+      "backend patch targets must be bounded before planning or mutation",
+    );
+    assert.equal(fs.statSync(backendOversizedPatchFile).size, backendOversizedPatchSize);
+  }
+  const backendMonotonicPatchFile = path.join(liveBackendRoot, "backend-monotonic-patch.txt");
+  fs.writeFileSync(backendMonotonicPatchFile, "repeat\nmiddle\ntail\n");
+  const backendMonotonicPatch = [
+    "--- a/backend-monotonic-patch.txt",
+    "+++ b/backend-monotonic-patch.txt",
+    "@@ -1,1 +1,1 @@",
+    "-repeat",
+    "+first",
+    "@@ -1,1 +1,1 @@",
+    "-repeat",
+    "+second",
+    "",
+  ].join("\n");
+  await assert.rejects(
+    liveSession.request("applyPatch", { mode: "dryRun", patch: backendMonotonicPatch }, 8_000),
+    (error) => error?.workspaceBackendRequest === true,
+    "backend patch hunk matching must never move before the prior hunk cursor",
+  );
+  assert.equal(fs.readFileSync(backendMonotonicPatchFile, "utf8"), "repeat\nmiddle\ntail\n");
+  await assert.rejects(
+    liveSession.request("directEpistemicRepositoryObservation", {}, 60_000),
+    (error) => error?.code === "workspace_backend_process_output_limit_exceeded",
+    "aggregate digest capture overflow must terminate and reject without reporting a complete digest",
+  );
   const livePublicSnapshot = liveSession.publicSnapshot();
   assert.equal(livePublicSnapshot.rawWorkspacePathIncluded, false);
   assert.equal(livePublicSnapshot.hello.root, undefined);
@@ -3144,6 +3250,17 @@ try {
     fs.existsSync(escapedDescendantMarker),
     false,
     "the legacy runCommand route must use the same Linux containment gate",
+  );
+
+  await assert.rejects(
+    liveSession.request("runCommand", {
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('o'.repeat(300 * 1024))"],
+      cwdRelPath: "",
+      timeoutMs: 5_000,
+    }, 8_000),
+    (error) => error?.code === "workspace_backend_process_output_limit_exceeded",
+    "generic process capture must stop and report bounded stdout overflow",
   );
 
   const shadowDir = path.join(liveBackendRoot, "launcher-shadow");

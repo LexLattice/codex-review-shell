@@ -552,6 +552,82 @@ try {
   assert.equal(appendWindowGap.observedEventCount, 1);
   assert.equal(appendWindowGap.observedPrefixDigest, recoveredAppendWindow.capture.eventPrefixDigest);
 
+  const boundedEventStore = new DirectSessionStore({
+    rootDir: path.join(rootDir, "bounded-event-sessions"),
+    maxNormalizedEventBytesPerTurn: 180_000,
+    maxNormalizedEventCountPerTurn: 2,
+  });
+  const boundedEventSession = boundedEventStore.createSession({
+    sessionId: "session_bounded_events",
+    projectId: captureInput.projectId,
+    nativeDirectSession: true,
+  });
+  const boundedEventTurn = boundedEventStore.createTurn(boundedEventSession.sessionId, {
+    turnId: "turn_bounded_events",
+    state: "streaming",
+  });
+  const utf8EventText = "😀".repeat(40_000);
+  boundedEventStore.appendNormalizedEvent(boundedEventSession.sessionId, boundedEventTurn.turnId, {
+    type: "message_delta",
+    sequence: 0,
+    text: utf8EventText,
+  });
+  const boundedEventPath = boundedEventStore.eventPath(boundedEventSession.sessionId, boundedEventTurn.turnId);
+  const boundedEventBytesBeforeReject = fs.statSync(boundedEventPath).size;
+  const originalReadFileSync = fs.readFileSync;
+  let eventReadFileSyncCalls = 0;
+  fs.readFileSync = (filePath, ...args) => {
+    if (filePath === boundedEventPath) eventReadFileSyncCalls += 1;
+    return originalReadFileSync(filePath, ...args);
+  };
+  const boundedEvents = boundedEventStore.readNormalizedEvents(boundedEventSession.sessionId, boundedEventTurn.turnId);
+  fs.readFileSync = originalReadFileSync;
+  assert.equal(boundedEvents[0].text, utf8EventText, "incremental event reads must preserve UTF-8 across chunks");
+  assert.equal(eventReadFileSyncCalls, 0, "normalized event reads must not materialize the event log with readFileSync");
+  assert.throws(
+    () => boundedEventStore.appendNormalizedEvent(boundedEventSession.sessionId, boundedEventTurn.turnId, {
+      type: "message_delta",
+      sequence: 1,
+      text: "x".repeat(40_000),
+    }),
+    (error) => error?.code === "direct_normalized_event_bytes_exceeded",
+  );
+  assert.equal(fs.statSync(boundedEventPath).size, boundedEventBytesBeforeReject, "byte-bound rejection must precede durable append");
+  assert.throws(
+    () => boundedEventStore.appendNormalizedEvents(boundedEventSession.sessionId, boundedEventTurn.turnId, [
+      { type: "response_created", sequence: 1 },
+      { type: "response_completed", sequence: 2 },
+    ]),
+    (error) => error?.code === "direct_normalized_event_count_exceeded",
+  );
+  assert.equal(fs.statSync(boundedEventPath).size, boundedEventBytesBeforeReject, "event-count rejection must precede durable append");
+
+  const oversizedLogStore = new DirectSessionStore({
+    rootDir: path.join(rootDir, "oversized-log-sessions"),
+    maxNormalizedEventBytesPerTurn: 1_024,
+    maxNormalizedEventCountPerTurn: 2,
+  });
+  const oversizedLogSession = oversizedLogStore.createSession({
+    sessionId: "session_oversized_log",
+    projectId: captureInput.projectId,
+    nativeDirectSession: true,
+  });
+  const oversizedLogTurn = oversizedLogStore.createTurn(oversizedLogSession.sessionId, {
+    turnId: "turn_oversized_log",
+    state: "streaming",
+  });
+  const oversizedLogPath = oversizedLogStore.eventPath(oversizedLogSession.sessionId, oversizedLogTurn.turnId);
+  fs.mkdirSync(path.dirname(oversizedLogPath), { recursive: true });
+  fs.writeFileSync(oversizedLogPath, `${JSON.stringify({ at: new Date().toISOString(), event: { type: "message_delta", sequence: 0, text: "legacy oversized 😀".repeat(200) } })}\n`, "utf8");
+  const oversizedInspection = oversizedLogStore.inspectNormalizedEventLog(oversizedLogSession.sessionId, oversizedLogTurn.turnId);
+  assert.equal(oversizedInspection.complete, false);
+  assert.equal(oversizedInspection.errorCode, "direct_normalized_event_bytes_exceeded");
+  assert(oversizedInspection.byteCount > 1_024 && oversizedInspection.byteCount <= 1_025, "oversized inspection must stop at the bounded byte probe");
+  assert.throws(
+    () => oversizedLogStore.readNormalizedEvents(oversizedLogSession.sessionId, oversizedLogTurn.turnId),
+    (error) => error?.code === "direct_normalized_event_bytes_exceeded",
+  );
+
   const partialLogStore = new DirectSessionStore({
     rootDir: path.join(rootDir, "partial-log-sessions"),
   });
@@ -698,6 +774,9 @@ try {
     completeActiveRecoveryVerified: true,
     forgedCompleteCaptureRejected: true,
     appendMetadataWindowRecoveredFromO: true,
+    boundedNormalizedEventAppend: true,
+    boundedNormalizedEventRead: true,
+    oversizedNormalizedEventLogFailedClosed: true,
     partialEventLogFailedClosed: true,
     fragmentedSseLineEndings: ["LF", "CRLF", "CR"],
     legacyCaptureAdopted: true,

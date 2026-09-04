@@ -16,6 +16,11 @@ const {
   PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA,
   PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA,
 } = require("../provider/hosted-tools");
+const {
+  authorizeDirectThreadHarnessCapability,
+  capabilityNames: harnessGrantCapabilityNames,
+  validateDirectThreadHarnessGrant,
+} = require("../authority/direct-thread-harness-grant");
 
 const DIRECT_ROLE_LANE_REGISTRY_SCHEMA = "direct_role_lane_registry@1";
 const DIRECT_ROLE_LANE_SELECTION_SCHEMA = "direct_role_lane_selection@1";
@@ -137,6 +142,24 @@ const TOOL_METADATA = Object.freeze({
     targetScopePolicyId: "direct_command_execution_scope_policy@1",
     resultEnvelopePolicyId: "direct_run_command_result_envelope@1",
     contextAdmissionPolicyId: "direct_run_command_context_admission@1",
+  },
+  exec_command: {
+    capabilityId: "direct.exec_command",
+    toolFamily: "workspace_process_authority",
+    implementedState: "full_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_stateful_exec_scope_policy@1",
+    resultEnvelopePolicyId: "direct_stateful_exec_result_envelope@1",
+    contextAdmissionPolicyId: "direct_stateful_exec_context_admission@1",
+  },
+  write_stdin: {
+    capabilityId: "direct.write_stdin",
+    toolFamily: "workspace_process_authority",
+    implementedState: "full_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_stateful_stdin_scope_policy@1",
+    resultEnvelopePolicyId: "direct_stateful_stdin_result_envelope@1",
+    contextAdmissionPolicyId: "direct_stateful_stdin_context_admission@1",
   },
   get_context_remaining: {
     capabilityId: "direct.get_context_remaining",
@@ -622,6 +645,7 @@ function buildDirectRoleLaneSelection(input = {}) {
     normalizedLaneRequestRef: input.normalizedLaneRequestRef ? normalizeEvidenceRef(input.normalizedLaneRequestRef, "normalized_lane_request", "normalized_lane_request") : undefined,
     objectiveRef: input.objectiveRef ? normalizeEvidenceRef(input.objectiveRef, "objective", "objective") : undefined,
     authorityBoundaryRef: normalizeEvidenceRef(input.authorityBoundaryRef, "authority_boundary", "direct_authority_boundary"),
+    executionEnvironmentDigest: normalizeString(input.executionEnvironmentDigest, ""),
     laneLawRefs: (Array.isArray(lane?.laneLawRefs) ? lane.laneLawRefs : []).map((ref, index) => normalizeEvidenceRef(ref, "lane_law", `${lane?.laneId || laneKind}_law_${index + 1}`)),
     selectedAt: normalizeString(input.selectedAt, nowIso(input.nowMs)),
   };
@@ -642,6 +666,11 @@ function buildComposerInput(input = {}) {
   const laneSelection = isPlainObject(input.laneSelection) ? input.laneSelection : buildDirectRoleLaneSelection(input);
   const externalSourceIdentity = externalSourceIdentityState(input);
   const providerHostedToolState = providerHostedState(input);
+  const harnessGrant = isPlainObject(input.harnessGrant)
+    ? input.harnessGrant
+    : isPlainObject(input.directThreadHarnessGrant)
+      ? input.directThreadHarnessGrant
+      : null;
   const composerInput = {
     schema: DIRECT_TOOL_BUNDLE_COMPOSER_INPUT_SCHEMA,
     compositionId: normalizeString(input.compositionId, `direct_tool_bundle_composition_${digestFor("direct-tool-bundle-composer-input-source@1", {
@@ -682,6 +711,8 @@ function buildComposerInput(input = {}) {
     providerHostedActivationSnapshotRef: providerHostedToolState.activationSnapshot
       ? evidenceRef("provider_hosted_activation_snapshot", providerHostedToolState.activationSnapshot.activationDigest || providerHostedToolState.activationSnapshot.activationId, "Provider-hosted activation snapshot")
       : undefined,
+    executionEnvironmentDigest: normalizeString(input.executionEnvironmentDigest || laneSelection.executionEnvironmentDigest, ""),
+    harnessGrant,
     observedAt: normalizeString(input.observedAt, nowIso(input.nowMs)),
   };
   composerInput.inputDigest = digestFor("direct-tool-bundle-composer-input@1", composerInput);
@@ -932,23 +963,37 @@ function providerSchemaFor(toolName) {
   return isPlainObject(schema) ? schema : null;
 }
 
-function declaredToolRow(toolName, laneSelection, activationRef) {
+function declaredToolRow(toolName, laneSelection, activationRef, harnessGrant = null) {
   const metadata = toolMetadata(toolName);
   const authorityTemplate = authorityTemplateFor(toolName, laneSelection);
   const providerToolSchema = providerSchemaFor(toolName);
+  const grantAuthorization = harnessGrant
+    ? authorizeDirectThreadHarnessCapability(harnessGrant, toolName, {
+        taskId: laneSelection.threadId,
+        threadId: laneSelection.threadId,
+        projectId: laneSelection.projectId,
+      })
+    : { authorized: false, reason: "no_current_task_grant" };
   const row = {
     toolName,
     capabilityId: metadata.capabilityId,
     toolFamily: metadata.toolFamily,
     declarationDigest: digestFor("direct-declared-tool-row-declaration@1", { toolName, providerToolSchema, laneId: laneSelection.laneId }),
-    perCallAuthorityRequired: true,
+    perCallAuthorityRequired: !grantAuthorization.authorized,
+    authorityMode: grantAuthorization.authorized ? "durable_task_grant" : "per_call",
+    grantId: grantAuthorization.authorized ? grantAuthorization.grantId : "",
+    grantRevision: grantAuthorization.authorized ? grantAuthorization.grantRevision : 0,
+    grantState: grantAuthorization.authorized ? "granted" : "not_granted",
     declarationAuthorityTemplateRef: authorityTemplate.templateId,
     declarationAuthorityTemplateDigest: authorityTemplate.templateDigest,
     laneScope: laneSelection.laneKind,
     providerSupported: Boolean(providerToolSchema),
     activationRef: activationRef.id,
     policyDecisionRef: `policy_decision_${laneSelection.laneId}_${toolName}`,
-    axes: axesFor(toolName),
+    axes: axesFor(toolName, {
+      declarationState: "declared_callable",
+      currentRequestStatus: "callable_now",
+    }),
     providerToolSchema,
     authorityTemplate,
   };
@@ -970,6 +1015,11 @@ function catalogueRow(toolName, status, reason, patch = {}) {
       ...patch.axes,
     }),
     callableInCurrentRequest: safeStatus === "declared_callable",
+    cataloguedState: "catalogued",
+    declaredState: safeStatus === "declared_callable" ? "declared" : "not_declared",
+    grantedState: normalizeString(patch.grantedState, "not_granted"),
+    callableState: safeStatus === "declared_callable" ? "callable" : "not_callable",
+    enactedState: "not_enacted",
     reason: normalizeString(reason, safeStatus),
     nextEnablementClass: normalizeString(patch.nextEnablementClass, safeStatus === "declared_callable" ? "not_enableable" : "policy_change"),
     nonOmittable: patch.nonOmittable === true,
@@ -988,17 +1038,34 @@ function omittedCounts(rows = []) {
   };
 }
 
-function buildResidentCapabilityCatalogue({ compositionId, laneSelection, declaredRows, unavailableRows, observedAt }) {
+function buildResidentCapabilityCatalogue({ compositionId, laneSelection, declaredRows, unavailableRows, observedAt, harnessGrant = null }) {
   const callableNow = declaredRows.map((row) => catalogueRow(row.toolName, "declared_callable", "Declared callable in this request.", {
     evidenceRefs: [evidenceRef("declared_tool", row.rowDigest, row.toolName)],
+    grantedState: row.grantState || "not_granted",
+    grantId: row.grantId || "",
+    grantRevision: row.grantRevision || 0,
   }));
-  const knownUnavailable = unavailableRows;
+  const grantedNames = new Set(harnessGrantCapabilityNames(harnessGrant || {}));
+  const knownUnavailable = unavailableRows.map((row) => {
+    if (!grantedNames.has(row.toolName)) return row;
+    const enriched = {
+      ...row,
+      grantedState: "granted",
+      grantId: normalizeString(harnessGrant?.grantId, ""),
+      grantRevision: Number(harnessGrant?.grantRevision || 0),
+    };
+    enriched.rowDigest = digestFor("resident-capability-row@1", enriched);
+    return enriched;
+  });
   const catalogue = {
     schema: RESIDENT_CAPABILITY_CATALOGUE_SCHEMA,
     catalogueId: `resident_capability_catalogue_${digestFor("resident-capability-catalogue-id@1", { compositionId, laneId: laneSelection.laneId }).slice(7, 31)}`,
     laneId: laneSelection.laneId,
     roleId: laneSelection.roleId,
     callableNow,
+    catalogued: [...callableNow, ...knownUnavailable],
+    declared: callableNow,
+    grantedNow: callableNow.filter((row) => row.grantedState === "granted"),
     knownUnavailable,
     omittedCount: knownUnavailable.length,
     omittedByClass: omittedCounts(knownUnavailable),
@@ -1020,6 +1087,8 @@ function buildProviderDeclaredToolBundle({ compositionId, laneSelection, declare
     laneId: laneSelection.laneId,
     roleId: laneSelection.roleId,
     workThreadId: laneSelection.workThreadId,
+    harnessGrantId: normalizeString(composerInput.harnessGrant?.grantId, ""),
+    harnessGrantRevision: Number(composerInput.harnessGrant?.grantRevision || 0),
     declaredToolNames: declaredRows.map((row) => row.toolName),
     toolDeclarations,
     activationSnapshotRefs: composerInput.activationSnapshotRefs,
@@ -1157,7 +1226,7 @@ function classifyToolDeclarationCandidates(toolNames = [], lane, laneSelection, 
       }
     }
 
-    const row = declaredToolRow(toolName, laneSelection, activationRef);
+    const row = declaredToolRow(toolName, laneSelection, activationRef, composerInput.harnessGrant);
     if (row.providerSupported) {
       declaredRows.push(row);
     } else {
@@ -1187,9 +1256,28 @@ function composeDirectToolBundle(input = {}) {
   const laneSelection = composerInput.laneSelection;
   const registry = isPlainObject(input?.registry) ? input.registry : buildDirectRoleLaneRegistry(input);
   const lane = laneFor(laneSelection, registry);
+  const harnessGrant = isPlainObject(composerInput.harnessGrant) ? composerInput.harnessGrant : null;
+  if (harnessGrant) {
+    const grantErrors = validateDirectThreadHarnessGrant(harnessGrant, {
+      taskId: laneSelection.threadId,
+      threadId: laneSelection.threadId,
+      projectId: laneSelection.projectId,
+      executionEnvironmentDigest: normalizeString(composerInput.executionEnvironmentDigest, ""),
+      requireCurrent: true,
+    });
+    if (grantErrors.length) {
+      const error = new Error(`Direct full-access task grant rejected: ${grantErrors.join(", ")}.`);
+      error.code = "direct_thread_harness_grant_rejected";
+      error.validationErrors = grantErrors;
+      throw error;
+    }
+  }
   const explicitToolNames = normalizeStringList(composerInput.toolNames);
-  const toolNames = explicitToolNames.length
-    ? explicitToolNames
+  const grantToolNames = harnessGrant ? harnessGrantCapabilityNames(harnessGrant) : [];
+  const toolNames = grantToolNames.length
+    ? grantToolNames
+    : explicitToolNames.length
+      ? explicitToolNames
     : composerInput.useLaneDefaultTools === false ? [] : normalizeStringList(lane?.defaultToolNames);
   const groundingMissing = composerInput.requireRequestGrounding && !composerInput.normalizedLaneRequestRef;
   const classifiedRows = groundingMissing
@@ -1209,6 +1297,7 @@ function composeDirectToolBundle(input = {}) {
     declaredRows,
     unavailableRows,
     observedAt: composerInput.observedAt,
+    harnessGrant,
   });
   const omittedReasonRows = unavailableRows.map((row) => ({
     toolName: row.toolName,
@@ -1221,6 +1310,9 @@ function composeDirectToolBundle(input = {}) {
     compositionId: composerInput.compositionId,
     laneId: laneSelection.laneId,
     roleId: laneSelection.roleId,
+    harnessGrantId: normalizeString(harnessGrant?.grantId, ""),
+    harnessGrantRevision: Number(harnessGrant?.grantRevision || 0),
+    authorityMode: harnessGrant ? "durable_task_grant" : "per_call",
     sourceMessageRef: composerInput.sourceMessageRef,
     semanticParseRef: composerInput.semanticParseRef,
     normalizedLaneRequestRef: composerInput.normalizedLaneRequestRef,

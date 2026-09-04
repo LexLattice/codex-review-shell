@@ -63,6 +63,7 @@ const {
   evaluateDirectExperimentalProjectActivation,
 } = require("../src/main/direct/runtime/project-activation");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
+const { MAX_RENDERER_PROJECTION_ITEMS } = require("../src/main/direct/thread/renderer-transcript-projection");
 const {
   COMPACT_TRANSCRIPT_PROJECTION_KIND,
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
@@ -1074,6 +1075,53 @@ try {
       nowMs: 1_700_000_016_100,
     });
     assert(reusedRendererProjection.reused === true, "Expected unchanged renderer projection rebuild to reuse current projection.");
+
+    const rendererBoundedSession = reloadedSessionStore.createSession({
+      sessionId: "session_renderer_bounded",
+      projectId: "project_fixture",
+      workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+      title: "Renderer bounded event fixture",
+      model: "gpt-5.4",
+      nativeDirectSession: true,
+    }, { nowMs: 1_700_000_016_110 });
+    const rendererBoundedTurn = reloadedSessionStore.createTurn(rendererBoundedSession.sessionId, {
+      turnId: "turn_renderer_bounded",
+      state: "streaming",
+      input: [{ role: "user", text: "bounded renderer event fixture" }],
+    }, { nowMs: 1_700_000_016_111 });
+    reloadedSessionStore.appendNormalizedEvents(rendererBoundedSession.sessionId, rendererBoundedTurn.turnId,
+      Array.from({ length: MAX_RENDERER_PROJECTION_ITEMS + 1 }, (_, index) => ({
+        type: "message_delta",
+        sequence: index,
+        text: "x",
+      })), { nowMs: 1_700_000_016_112 });
+    directThreadStore.indexFromSessionStore(reloadedSessionStore, { nowMs: 1_700_000_016_113 });
+    const rendererBoundedEventPath = reloadedSessionStore.eventPath(rendererBoundedSession.sessionId, rendererBoundedTurn.turnId);
+    const rendererReadFileSync = fs.readFileSync;
+    let rendererEventReadFileSyncCalls = 0;
+    let rendererBoundedBuild;
+    try {
+      fs.readFileSync = (filePath, ...args) => {
+        if (filePath === rendererBoundedEventPath) rendererEventReadFileSyncCalls += 1;
+        return rendererReadFileSync(filePath, ...args);
+      };
+      rendererBoundedBuild = directThreadStore.buildRendererTranscriptProjection(rendererBoundedSession.sessionId, {
+        sessionStore: reloadedSessionStore,
+        force: true,
+        nowMs: 1_700_000_016_114,
+      });
+    } finally {
+      fs.readFileSync = rendererReadFileSync;
+    }
+    nodeAssert.equal(rendererEventReadFileSyncCalls, 0, "renderer event ingestion must not materialize the event log with readFileSync");
+    nodeAssert.equal(rendererBoundedBuild.status, "valid", "oversized renderer event logs should yield a bounded safe projection");
+    const rendererBoundedRead = directThreadStore.readRendererTranscriptProjection(rendererBoundedSession.sessionId);
+    const rendererBoundedEventLog = rendererBoundedRead.caps.normalizedEventLogBounds?.[0] || {};
+    nodeAssert.equal(rendererBoundedRead.caps.truncated, true, "renderer projection must expose event-log truncation");
+    nodeAssert.equal(rendererBoundedEventLog.truncated, true, "renderer projection must retain bounded event-log metadata");
+    nodeAssert.equal(rendererBoundedEventLog.errorCode, "renderer_normalized_event_count_exceeded");
+    assert(rendererBoundedEventLog.observedEventCount <= MAX_RENDERER_PROJECTION_ITEMS, "renderer must cap event materialization before projection assembly");
+
     const contextProjection = directThreadStore.buildContextRecentDialogueProjection(session.sessionId, {
       nowMs: 1_700_000_016_150,
     });
@@ -2518,11 +2566,10 @@ try {
     turnId: liveAck.turn.id,
   });
   assert(liveCompletedInterrupt.status === "completed_already", "Expected abort after completion to preserve completed terminal state.");
-  await assertRejects(
-    () => liveSurface.request("thread/resume", { threadId: liveThread.thread.id }),
-    "Expected unsupported live text methods to fail visibly.",
-  );
-  assert(liveFetchCalls === 1, "Unsupported live text methods must not be forwarded to provider transport.");
+  const liveResume = await liveSurface.request("thread/resume", { threadId: liveThread.thread.id });
+  assert(liveResume.resumed === true, "Expected Direct live text to resume its durable thread.");
+  assert(liveResume.thread.id === liveThread.thread.id, "Expected Direct resume to preserve the exact thread identity.");
+  assert(liveFetchCalls === 1, "Thread lifecycle methods must not be forwarded to provider transport.");
 
   const liveThreadStore = new DirectThreadStore({
     rootDir: path.join(liveTextControllerParent, "direct-sessions"),
@@ -4059,12 +4106,27 @@ assert(currentResponsesLifecycleEvents.unknown.length === 0, "Expected known Res
 assert(currentResponsesLifecycleEvents.normalized.some((event) => event.type === "message_delta"), "Expected current Responses lifecycle sample to preserve assistant text.");
 
 function textResponse(text, status = 200, headers = {}) {
+  const bytes = new TextEncoder().encode(text);
+  let offset = 0;
   return {
     ok: status >= 200 && status < 300,
     status,
     statusText: status >= 200 && status < 300 ? "OK" : "Error",
     headers: {
       get: (name) => headers[String(name || "").toLowerCase()] || "",
+    },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (offset >= bytes.length) return { done: true, value: undefined };
+            const value = bytes.slice(offset);
+            offset = bytes.length;
+            return { done: false, value };
+          },
+          cancel() {},
+        };
+      },
     },
     text: async () => text,
   };
@@ -4086,6 +4148,48 @@ function asyncIteratorTextResponse(text, splitAt, status = 200, headers = {}) {
       async *[Symbol.asyncIterator]() {
         for (const chunk of chunks) yield chunk;
       },
+    },
+  };
+}
+
+function readerTextResponse(chunks, status = 200, headers = {}) {
+  const state = { index: 0, cancelled: false };
+  const encoded = chunks.map((chunk) => chunk instanceof Uint8Array ? chunk : new TextEncoder().encode(String(chunk)));
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status >= 200 && status < 300 ? "OK" : "Error",
+    headers: {
+      get: (name) => headers[String(name || "").toLowerCase()] || "",
+    },
+    state,
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (state.index >= encoded.length) return { done: true, value: undefined };
+            return { done: false, value: encoded[state.index++] };
+          },
+          cancel() {
+            state.cancelled = true;
+          },
+        };
+      },
+    },
+  };
+}
+
+function textOnlyNoBodyResponse(status = 200) {
+  const state = { textCalls: 0 };
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status >= 200 && status < 300 ? "OK" : "Error",
+    headers: { get: () => "" },
+    state,
+    text: async () => {
+      state.textCalls += 1;
+      throw new Error("text-only fallback must not be invoked");
     },
   };
 }
@@ -4194,6 +4298,178 @@ const utf8ProbeText = utf8Probe.normalizedEvents
   .join("");
 assert(utf8ProbeText === "héllo direct", "Expected async iterator response decoding to preserve split UTF-8 characters.");
 
+const oversizedChunkResponse = readerTextResponse(["x".repeat(128)], 200, { "content-type": "text/event-stream" });
+const oversizedChunkTrace = [];
+const oversizedChunkProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "oversized_chunk_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "oversized chunk probe",
+  maxRawResponseBytes: 32,
+  onTransportTrace: (event) => oversizedChunkTrace.push(event.stage),
+  fetchImpl: async () => oversizedChunkResponse,
+});
+nodeAssert.equal(oversizedChunkProbe.ok, false);
+nodeAssert.equal(oversizedChunkProbe.error.code, "max_output");
+nodeAssert.equal(oversizedChunkResponse.state.cancelled, true, "Raw-byte breach must cancel the response reader.");
+nodeAssert.equal(oversizedChunkProbe.response.redactedTextPreview, "", "An over-limit chunk must not enter retained diagnostics.");
+nodeAssert.equal(oversizedChunkTrace.includes("raw_bytes_rejected"), true, "Oversized chunks must be rejected at the raw-byte reservation boundary.");
+nodeAssert.equal(oversizedChunkTrace.includes("before_decode"), false, "Oversized chunks must not reach the decoder after raw-byte refusal.");
+
+const rawEventCapacityTrace = [];
+const rawEventCapacitySse = [
+  "event: response.created",
+  `data: ${JSON.stringify({ response: { id: "resp_raw_capacity_1", model: "gpt-5.4" } })}`,
+  "",
+  "event: response.created",
+  `data: ${JSON.stringify({ response: { id: "resp_raw_capacity_2", model: "gpt-5.4" } })}`,
+  "",
+].join("\n");
+const rawEventCapacityProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "raw_event_capacity_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "raw event capacity probe",
+  maxRawEventCount: 1,
+  onTransportTrace: (event) => rawEventCapacityTrace.push(event.stage),
+  fetchImpl: async () => readerTextResponse([rawEventCapacitySse], 200, { "content-type": "text/event-stream" }),
+});
+nodeAssert.equal(rawEventCapacityProbe.ok, false);
+nodeAssert.equal(rawEventCapacityProbe.error.code, "max_output");
+nodeAssert.equal(rawEventCapacityTrace.filter((stage) => stage === "before_parse").length, 1, "Raw-event refusal must prevent a second parser invocation.");
+nodeAssert.equal(rawEventCapacityTrace.includes("raw_event_capacity_rejected"), true, "Raw-event capacity must be refused before parsing the excess frame.");
+nodeAssert.equal(rawEventCapacityTrace.indexOf("raw_event_capacity_rejected") > rawEventCapacityTrace.indexOf("before_parse"), true, "Raw-event capacity trace must preserve reserve-before-parse ordering.");
+
+const normalizedCapacityTrace = [];
+const normalizedCapacitySse = [
+  "event: response.created",
+  `data: ${JSON.stringify({ response: { id: "resp_normalized_capacity_1", model: "gpt-5.4" } })}`,
+  "",
+  "event: response.created",
+  `data: ${JSON.stringify({ response: { id: "resp_normalized_capacity_2", model: "gpt-5.4" } })}`,
+  "",
+].join("\n");
+const normalizedCapacityProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "normalized_capacity_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "normalized capacity probe",
+  maxNormalizedEventCount: 1,
+  onTransportTrace: (event) => normalizedCapacityTrace.push(event.stage),
+  fetchImpl: async () => readerTextResponse([normalizedCapacitySse], 200, { "content-type": "text/event-stream" }),
+});
+nodeAssert.equal(normalizedCapacityProbe.ok, false);
+nodeAssert.equal(normalizedCapacityProbe.error.code, "max_output");
+nodeAssert.equal(normalizedCapacityTrace.filter((stage) => stage === "before_normalize").length, 1, "Normalized-event refusal must prevent a second normalizer invocation.");
+nodeAssert.equal(normalizedCapacityTrace.includes("normalized_event_capacity_rejected"), true, "Normalized-event capacity must be refused before normalization.");
+nodeAssert.equal(normalizedCapacityTrace.indexOf("normalized_event_capacity_rejected") > normalizedCapacityTrace.indexOf("before_normalize"), true, "Normalized-event capacity trace must preserve reserve-before-normalize ordering.");
+
+const providerOutputCapacityTrace = [];
+const providerOutputCapacitySse = [
+  "event: response.output_text.delta",
+  `data: ${JSON.stringify({ item_id: "msg_provider_capacity", delta: "too long" })}`,
+  "",
+].join("\n");
+const providerOutputCapacityProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "provider_output_capacity_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "provider output capacity probe",
+  maxProviderOutputChars: 2,
+  onTransportTrace: (event) => providerOutputCapacityTrace.push(event.stage),
+  fetchImpl: async () => readerTextResponse([providerOutputCapacitySse], 200, { "content-type": "text/event-stream" }),
+});
+nodeAssert.equal(providerOutputCapacityProbe.ok, false);
+nodeAssert.equal(providerOutputCapacityProbe.error.code, "max_output");
+nodeAssert.equal(providerOutputCapacityTrace.includes("provider_output_capacity_rejected"), true, "Provider-output capacity must be refused before normalization.");
+nodeAssert.equal(providerOutputCapacityTrace.includes("before_normalize"), false, "Provider-output refusal must prevent normalizer invocation.");
+
+const oversizedFrameResponse = readerTextResponse([
+  `data: ${JSON.stringify({ event: "response.output_text.delta", data: { delta: "unterminated" } })}`.repeat(20),
+], 200, { "content-type": "text/event-stream" });
+const oversizedFrameProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "oversized_frame_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "oversized frame probe",
+  maxRawResponseBytes: 10_000,
+  maxSseFrameBytes: 64,
+  fetchImpl: async () => oversizedFrameResponse,
+});
+nodeAssert.equal(oversizedFrameProbe.ok, false);
+nodeAssert.equal(oversizedFrameProbe.error.code, "max_output");
+nodeAssert.equal(oversizedFrameResponse.state.cancelled, true, "An unterminated frame breach must cancel the response reader.");
+assert(oversizedFrameProbe.normalizedEvents.length <= 1, "An over-limit frame must not publish a normalized event population.");
+
+const manyTinyEvents = Array.from({ length: 8 }, (_, index) => [
+  "event: response.created",
+  `data: ${JSON.stringify({ response: { id: `resp_many_${index}`, model: "gpt-5.4" } })}`,
+  "",
+].join("\n")).join("\n");
+const manyEventsResponse = readerTextResponse([manyTinyEvents], 200, { "content-type": "text/event-stream" });
+const manyEventsProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "many_events_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "many events probe",
+  maxRawResponseBytes: 10_000,
+  maxRawEventCount: 2,
+  maxNormalizedEventCount: 2,
+  fetchImpl: async () => manyEventsResponse,
+});
+nodeAssert.equal(manyEventsProbe.ok, false);
+nodeAssert.equal(manyEventsProbe.error.code, "max_output");
+nodeAssert.equal(manyEventsResponse.state.cancelled, true, "Raw-event breach must cancel the response reader.");
+assert(manyEventsProbe.rawEvents.length <= 2, "Raw-event retention must remain bounded after an event-count breach.");
+assert(manyEventsProbe.normalizedEvents.length <= 2, "Normalized-event retention must remain bounded after an event-count breach.");
+
+const hugeErrorResponse = readerTextResponse([new Uint8Array(128).fill(120)], 502, { "content-type": "text/plain" });
+const hugeErrorProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "huge_error_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "huge error body probe",
+  maxErrorBodyBytes: 32,
+  fetchImpl: async () => hugeErrorResponse,
+});
+nodeAssert.equal(hugeErrorProbe.ok, false);
+nodeAssert.equal(hugeErrorProbe.error.code, "max_output");
+nodeAssert.equal(hugeErrorResponse.state.cancelled, true, "An oversized HTTP error body must cancel the response reader.");
+nodeAssert.equal(hugeErrorProbe.response.redactedTextPreview, "", "An oversized HTTP error body must not enter retained diagnostics.");
+
+const unreadableSuccessResponse = textOnlyNoBodyResponse(200);
+const unreadableSuccessProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "unreadable_success_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "unreadable success probe",
+  fetchImpl: async () => unreadableSuccessResponse,
+});
+nodeAssert.equal(unreadableSuccessProbe.ok, false);
+nodeAssert.equal(unreadableSuccessProbe.error.code, "max_output");
+nodeAssert.equal(unreadableSuccessResponse.state.textCalls, 0, "Unreadable success bodies must fail closed without calling text().");
+
+const unreadableErrorResponse = textOnlyNoBodyResponse(502);
+const unreadableErrorProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "unreadable_error_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "unreadable error probe",
+  fetchImpl: async () => unreadableErrorResponse,
+});
+nodeAssert.equal(unreadableErrorProbe.ok, false);
+nodeAssert.equal(unreadableErrorProbe.error.code, "max_output");
+nodeAssert.equal(unreadableErrorResponse.state.textCalls, 0, "Unreadable error bodies must fail closed without calling text().");
+
 const expiringAuthStore = createDirectAuthStore({ mode: "memory" });
 expiringAuthStore.writeCredentials({
   accessToken: "expiring_probe_access_token_secret_1234567890",
@@ -4279,6 +4555,16 @@ const streamFailedProbe = await runTextOnlyDirectProbe({
       status: 200,
       statusText: "OK",
       headers: { get: () => "text/event-stream" },
+      body: {
+        getReader() {
+          return {
+            async read() {
+              throw Object.assign(new Error("synthetic stream read failure"), { code: "ECONNRESET" });
+            },
+            cancel() {},
+          };
+        },
+      },
       text: async () => {
         throw Object.assign(new Error("synthetic stream read failure"), { code: "ECONNRESET" });
       },

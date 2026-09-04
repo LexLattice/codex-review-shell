@@ -1312,6 +1312,10 @@ function openCodeProcessLaunchDescriptor(input = {}, options = {}) {
 
 function spawnOpenCodeProcess(input = {}, options = {}) {
   const spawnImpl = options.spawnImpl || spawn;
+  const requestedTerminationGraceMs = Number(options.terminationGraceMs);
+  const terminationGraceMs = Number.isFinite(requestedTerminationGraceMs)
+    ? Math.min(60_000, Math.max(1, Math.floor(requestedTerminationGraceMs)))
+    : 2_000;
   return new Promise((resolve, reject) => {
     throwIfAborted(input.signal);
     let journal;
@@ -1337,6 +1341,7 @@ function spawnOpenCodeProcess(input = {}, options = {}) {
     let stderrChars = 0;
     let settled = false;
     let terminationTimer = null;
+    let terminalError = null;
     const cleanup = () => {
       input.signal?.removeEventListener?.("abort", abort);
       if (terminationTimer) clearTimeout(terminationTimer);
@@ -1348,18 +1353,32 @@ function spawnOpenCodeProcess(input = {}, options = {}) {
       cleanup();
       handler(value);
     };
-    const abort = () => {
+    const requestTermination = (error) => {
+      if (terminalError) return;
+      terminalError = error;
       try { child.kill("SIGTERM"); } catch {}
       terminationTimer = setTimeout(() => {
         try { child.kill("SIGKILL"); } catch {}
-      }, 2_000);
+      }, terminationGraceMs);
+    };
+    const abort = () => {
+      requestTermination(abortError());
     };
     input.signal?.addEventListener?.("abort", abort, { once: true });
     child.stdout?.setEncoding?.("utf8");
     child.stderr?.setEncoding?.("utf8");
     child.stdout?.on("data", (chunk) => {
-      stdout += chunk;
-      journalBuffer += chunk;
+      if (terminalError || settled) return;
+      const textChunk = String(chunk);
+      const maxStdoutChars = Number.isFinite(Number(input.maxStdoutChars))
+        ? Math.max(0, Number(input.maxStdoutChars))
+        : Number.POSITIVE_INFINITY;
+      if (stdout.length + textChunk.length > maxStdoutChars) {
+        requestTermination(safeError("direct_opencode_output_limit"));
+        return;
+      }
+      stdout += textChunk;
+      journalBuffer += textChunk;
       const lines = journalBuffer.split(/\r?\n/);
       journalBuffer = lines.pop() || "";
       try {
@@ -1370,23 +1389,23 @@ function spawnOpenCodeProcess(input = {}, options = {}) {
           journal.append(parsed);
         }
       } catch (error) {
-        try { child.kill("SIGTERM"); } catch {}
-        finish(reject, error?.code?.startsWith("direct_opencode_event_journal_")
+        requestTermination(error?.code?.startsWith("direct_opencode_event_journal_")
           ? error
           : safeError("direct_opencode_event_journal_write_failed"));
         return;
       }
-      if (stdout.length > input.maxStdoutChars) {
-        try { child.kill("SIGTERM"); } catch {}
-        finish(reject, safeError("direct_opencode_output_limit"));
-      }
     });
-    child.stderr?.on("data", (chunk) => { stderrChars += String(chunk).length; });
+    child.stderr?.on("data", (chunk) => { if (!terminalError && !settled) stderrChars += String(chunk).length; });
     child.on("error", (error) => {
+      if (terminalError) return;
       if (input.signal?.aborted || error?.name === "AbortError") finish(reject, abortError());
       else finish(reject, safeError("direct_opencode_process_failed"));
     });
     child.on("close", (code, signal) => {
+      if (terminalError) {
+        finish(reject, terminalError);
+        return;
+      }
       if (input.signal?.aborted) {
         finish(reject, abortError());
         return;

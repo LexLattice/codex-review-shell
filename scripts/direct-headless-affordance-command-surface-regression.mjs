@@ -12,6 +12,7 @@ const { DirectHeadlessBridgeDaemon } = require("../src/main/direct/headless/brid
 const { DirectHeadlessTextRuntime } = require("../src/main/direct/headless/text-runtime.js");
 const {
   normalizeCommand,
+  providerAffordanceClaimInput,
   sanitizeBridgeResult,
   sanitizeTurnPacket,
 } = require("../src/main/direct/headless/affordance-command-surface.js");
@@ -382,6 +383,171 @@ try {
   assert.equal(providerChild.body.rawPromptIncluded, false);
   assert.equal(providerChild.body.rawProviderPayloadIncluded, false);
 
+  const replayedProviderChild = await command(baseUrl, {
+    commandKind: "spawn_provider_backed_sub_agent",
+    commandId: "cmd_provider_child_replay",
+    idempotencyKey: "affordance-provider-child-1",
+    childAgentId: "headless_provider_child",
+    displayLabel: "Headless provider child",
+    role: "worker",
+    noInterferencePolicy: "sealed_audit",
+    text: childPrompt,
+    model: "gpt-5.4-mini",
+    reasoningEffort: "high",
+  });
+  assert.equal(replayedProviderChild.response.status, 202);
+  assert.equal(replayedProviderChild.body.status, "completed");
+  assert.equal(replayedProviderChild.body.replayed, true);
+  assert.equal(providerBackedSubAgentCalls.length, 1);
+
+  const conflictingProviderChild = await command(baseUrl, {
+    commandKind: "spawn_provider_backed_sub_agent",
+    commandId: "cmd_provider_child_conflict",
+    idempotencyKey: "affordance-provider-child-1",
+    childAgentId: "headless_provider_child_changed",
+    displayLabel: "Headless provider child",
+    role: "worker",
+    noInterferencePolicy: "sealed_audit",
+    text: childPrompt,
+    model: "gpt-5.4-mini",
+    reasoningEffort: "high",
+  });
+  assert.equal(conflictingProviderChild.response.status, 400);
+  assert.equal(conflictingProviderChild.body.blockerCode, "provider_affordance_idempotency_conflict");
+  assert.equal(providerBackedSubAgentCalls.length, 1);
+
+  const pause = await requestJson(baseUrl, "/v1/bridge/control", {
+    method: "POST",
+    body: JSON.stringify({ clientId: "affordance_client", action: "pause_intake" }),
+  });
+  assert.equal(pause.response.status, 202);
+  const pausedReplay = await command(baseUrl, {
+    commandKind: "spawn_provider_backed_sub_agent",
+    commandId: "cmd_provider_child_paused_replay",
+    idempotencyKey: "affordance-provider-child-1",
+    childAgentId: "headless_provider_child",
+    displayLabel: "Headless provider child",
+    role: "worker",
+    noInterferencePolicy: "sealed_audit",
+    text: childPrompt,
+    model: "gpt-5.4-mini",
+    reasoningEffort: "high",
+  });
+  assert.equal(pausedReplay.response.status, 202);
+  assert.equal(pausedReplay.body.status, "completed");
+  assert.equal(pausedReplay.body.replayed, true);
+  assert.equal(providerBackedSubAgentCalls.length, 1);
+  const pausedConflict = await command(baseUrl, {
+    commandKind: "spawn_provider_backed_sub_agent",
+    commandId: "cmd_provider_child_paused_conflict",
+    idempotencyKey: "affordance-provider-child-1",
+    childAgentId: "headless_provider_child_changed_again",
+    text: childPrompt,
+  });
+  assert.equal(pausedConflict.response.status, 400);
+  assert.equal(pausedConflict.body.blockerCode, "provider_affordance_idempotency_conflict");
+  assert.equal(providerBackedSubAgentCalls.length, 1);
+  const resume = await requestJson(baseUrl, "/v1/bridge/control", {
+    method: "POST",
+    body: JSON.stringify({ clientId: "affordance_client", action: "resume_intake" }),
+  });
+  assert.equal(resume.response.status, 202);
+  const priorMaxInboxEvents = daemon.maxInboxEvents;
+  daemon.maxInboxEvents = 0;
+  try {
+    const fullReplay = await command(baseUrl, {
+      commandKind: "spawn_provider_backed_sub_agent",
+      commandId: "cmd_provider_child_full_replay",
+      idempotencyKey: "affordance-provider-child-1",
+      childAgentId: "headless_provider_child",
+      displayLabel: "Headless provider child",
+      role: "worker",
+      noInterferencePolicy: "sealed_audit",
+      text: childPrompt,
+      model: "gpt-5.4-mini",
+      reasoningEffort: "high",
+    });
+    assert.equal(fullReplay.response.status, 202);
+    assert.equal(fullReplay.body.status, "completed");
+    assert.equal(fullReplay.body.replayed, true);
+    assert.equal(providerBackedSubAgentCalls.length, 1);
+  } finally {
+    daemon.maxInboxEvents = priorMaxInboxEvents;
+  }
+
+  const interruptedCommand = normalizeCommand({
+    clientId: "affordance_client",
+    commandKind: "spawn_provider_backed_sub_agent",
+    commandId: "cmd_provider_child_interrupted_seed",
+    idempotencyKey: "affordance-provider-child-interrupted",
+    requestedRouteId: "route_text",
+    routeVersion: "v1",
+    workThreadId: "wt_affordance",
+    childAgentId: "headless_provider_child_interrupted",
+    displayLabel: "Interrupted provider child",
+    role: "worker",
+    noInterferencePolicy: "sealed_audit",
+    text: "UNIQUE_INTERRUPTED_HEADLESS_PROVIDER_CHILD_PROMPT",
+    model: "gpt-5.4-mini",
+    reasoningEffort: "high",
+  });
+  const interruptedValidation = daemon.store.validateIngress({
+    clientId: interruptedCommand.clientId,
+    idempotencyKey: interruptedCommand.idempotencyKey,
+    eventSchema: interruptedCommand.eventSchema,
+    eventClass: interruptedCommand.eventClass,
+    eventKind: interruptedCommand.eventKind,
+    sourceSystem: interruptedCommand.sourceSystem,
+    requestedRouteId: interruptedCommand.requestedRouteId,
+    routeVersion: interruptedCommand.routeVersion,
+    declaredWorkThreadId: interruptedCommand.workThreadId,
+  });
+  assert.equal(interruptedValidation.ok, true);
+  const interruptedClaim = daemon.store.claimProviderAffordance(providerAffordanceClaimInput(interruptedCommand, interruptedValidation));
+  assert.equal(interruptedClaim.status, "in_progress");
+
+  const restartedDaemon = new DirectHeadlessBridgeDaemon(fixtureConfig(rootDir));
+  const restartedAddress = await restartedDaemon.listen();
+  const restartedBaseUrl = `http://${restartedAddress.host}:${restartedAddress.port}`;
+  try {
+    const restartReplay = await command(restartedBaseUrl, {
+      commandKind: "spawn_provider_backed_sub_agent",
+      commandId: "cmd_provider_child_restart_replay",
+      idempotencyKey: "affordance-provider-child-1",
+      childAgentId: "headless_provider_child",
+      displayLabel: "Headless provider child",
+      role: "worker",
+      noInterferencePolicy: "sealed_audit",
+      text: childPrompt,
+      model: "gpt-5.4-mini",
+      reasoningEffort: "high",
+    });
+    assert.equal(restartReplay.response.status, 202);
+    assert.equal(restartReplay.body.status, "completed");
+    assert.equal(restartReplay.body.replayed, true);
+    assert.equal(providerBackedSubAgentCalls.length, 1);
+
+    const interruptedReplay = await command(restartedBaseUrl, {
+      commandKind: "spawn_provider_backed_sub_agent",
+      commandId: "cmd_provider_child_interrupted_replay",
+      idempotencyKey: "affordance-provider-child-interrupted",
+      childAgentId: "headless_provider_child_interrupted",
+      displayLabel: "Interrupted provider child",
+      role: "worker",
+      noInterferencePolicy: "sealed_audit",
+      text: "UNIQUE_INTERRUPTED_HEADLESS_PROVIDER_CHILD_PROMPT",
+      model: "gpt-5.4-mini",
+      reasoningEffort: "high",
+    });
+    assert.equal(interruptedReplay.response.status, 400);
+    assert.equal(interruptedReplay.body.status, "interrupted_unknown");
+    assert.equal(interruptedReplay.body.result.blockerCode, "provider_affordance_interrupted_unknown");
+    assert.equal(interruptedReplay.body.replayed, true);
+    assert.equal(providerBackedSubAgentCalls.length, 1);
+  } finally {
+    await restartedDaemon.close();
+  }
+
   const duplicateProviderChild = await command(baseUrl, {
     commandKind: "spawn_provider_backed_sub_agent",
     commandId: "cmd_provider_child_duplicate",
@@ -593,14 +759,14 @@ try {
   assert.equal(badRuntime.body.result.turnPacket.state, "failed");
   assert.equal(badRuntime.body.result.turnPacket.promptText, undefined);
 
-  const pause = await command(baseUrl, {
+  const pauseAfterReplay = await command(baseUrl, {
     commandKind: "pause_intake",
     commandId: "cmd_pause",
   });
-  assert.equal(pause.response.status, 202);
-  assert.equal(pause.body.result.control.intakeState, "paused");
-  assert.equal(pause.body.result.routeAuthorityMutable, false);
-  assert.equal(pause.body.result.providerRequestStarted, false);
+  assert.equal(pauseAfterReplay.response.status, 202);
+  assert.equal(pauseAfterReplay.body.result.control.intakeState, "paused");
+  assert.equal(pauseAfterReplay.body.result.routeAuthorityMutable, false);
+  assert.equal(pauseAfterReplay.body.result.providerRequestStarted, false);
 
   const blockedSubmit = await command(baseUrl, {
     commandKind: "submit_text_turn",
@@ -624,12 +790,12 @@ try {
   assert.equal(providerBackedSubAgentCalls.length, 1);
   assert.equal(JSON.stringify(blockedProviderChildWhilePaused.body).includes("UNIQUE_PAUSED_HEADLESS_PROVIDER_CHILD_PROMPT"), false);
 
-  const resume = await command(baseUrl, {
+  const resumeAfterReplay = await command(baseUrl, {
     commandKind: "resume_intake",
     commandId: "cmd_resume",
   });
-  assert.equal(resume.response.status, 202);
-  assert.equal(resume.body.result.control.intakeState, "accepting");
+  assert.equal(resumeAfterReplay.response.status, 202);
+  assert.equal(resumeAfterReplay.body.result.control.intakeState, "accepting");
 
   const unauthenticated = await requestJson(baseUrl, "/v1/bridge/affordance-commands", {
     method: "POST",

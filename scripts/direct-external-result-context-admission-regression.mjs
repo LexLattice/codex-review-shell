@@ -161,6 +161,7 @@ const binaryEnvelope = buildMcpResourceReadEnvelope({
   serverIdentityId: "mcp_server_project_fixture",
   resourceUri: "mcp://fixture/resource/image",
   mimeType: "image/png",
+  payload: Buffer.alloc(512),
   byteCount: 512,
   callId: "call_context_admission_binary_fixture",
 });

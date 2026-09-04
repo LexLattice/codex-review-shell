@@ -340,6 +340,28 @@ assert.equal(urgent.deliveries.length, 1);
 assert.equal(urgent.deliveries[0].boundedProjection.withheldEvidenceCount, 1);
 assert.equal(urgent.deliveries[0].boundedProjection.entries[0].protectedNoticeOnly, true);
 
+const terminalStanding = buildNotificationStanding({
+  ...standing,
+  standingId: "standing_terminal_bypass",
+  standingDigest: undefined,
+  epistemicPostures: ["closure_submitted"],
+  deliveryPolicy: "coalesced_digest",
+  operationalPolicy: {
+    ...standing.operationalPolicy,
+    debounceWindowMs: 120_000,
+  },
+}, { now });
+const terminalBroker = new DirectLedgerSubscriptionBroker({
+  standings: [terminalStanding],
+  now,
+});
+const terminalRoute = terminalBroker.routeEvents([ledgerEvent(21, {
+  epistemicPosture: "closure_submitted",
+  terminal: true,
+  materiality: "normal",
+})]);
+assert.equal(terminalRoute.deliveries.length, 1);
+
 const delivery = urgent.deliveries[0];
 const hydrationRequest = buildLedgerContextHydrationRequest({
   delivery,

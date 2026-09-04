@@ -552,6 +552,13 @@ const FAR_HUNK_PATCH = `diff --git a/src/alpha.txt b/src/alpha.txt
 +still missing
 `;
 
+const CONCURRENT_CREATE_PATCH = `diff --git a/src/concurrent.txt b/src/concurrent.txt
+--- /dev/null
++++ b/src/concurrent.txt
+@@ -0,0 +1,1 @@
++created once
+`;
+
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "direct-patch-tool-loop-"));
   const workspaceRoot = path.join(root, "workspace");
@@ -754,11 +761,107 @@ async function main() {
     }
     assert(farHunkBlocked, "patch with hunk start beyond file length must fail before approval/apply");
 
+    const replay = await executeApprovedPatchApplyObligation({
+      sessionStore,
+      sessionId: session.sessionId,
+      turnId: turn.turnId,
+      obligationId: editObligations[0].obligationId,
+      workspaceRequest,
+      projectId: session.projectId,
+    });
+    assert(replay.reused === true && replay.result?.resultId === edit.result.resultId, "matching terminal patch retry must replay its stored result");
+    assert(counters.applyPatchCalls === 2, "terminal patch replay must not apply the patch again");
+
+    const concurrentObligation = sessionStore.addToolObligations(session.sessionId, turn.turnId, [patchEvent({
+      itemId: "item_patch_concurrent",
+      callId: "call_patch_concurrent",
+      patch: CONCURRENT_CREATE_PATCH,
+      sequence: 6,
+      responseId: "resp_continuation_patch_loop_5",
+    })], {
+      parentResponseId: "resp_continuation_patch_loop_5",
+      parentResponseSource: "native_direct_tool_continuation_stream",
+      toolLoopId: edit.continuationRequest.toolLoop?.toolLoopId,
+      stepOrdinal: 6,
+    }).obligations[0];
+    await planPatchApplyObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: concurrentObligation.obligationId, workspaceRequest, projectId: session.projectId });
+    approvePatchApplyObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: concurrentObligation.obligationId, projectId: session.projectId });
+    const delayedWorkspaceRequest = async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return workspaceRequest(...args);
+    };
+    const concurrentResults = await Promise.all([1, 2].map(() => executeApprovedPatchApplyObligation({
+      sessionStore,
+      sessionId: session.sessionId,
+      turnId: turn.turnId,
+      obligationId: concurrentObligation.obligationId,
+      workspaceRequest: delayedWorkspaceRequest,
+      projectId: session.projectId,
+    })));
+    assert(concurrentResults.filter((entry) => entry.result?.status === "applied").length === 1, "concurrent patch retries must have one executor");
+    assert(concurrentResults.filter((entry) => entry.active === true).length === 1, "losing patch retry must observe the active claim");
+    assert(counters.applyPatchCalls === 3, "concurrent patch retries must apply the patch once");
+
+    const interruptedObligation = sessionStore.addToolObligations(session.sessionId, turn.turnId, [patchEvent({
+      itemId: "item_patch_restart_interrupted",
+      callId: "call_patch_restart_interrupted",
+      patch: CONCURRENT_CREATE_PATCH.replaceAll("concurrent.txt", "restart.txt").replace("created once", "restart once"),
+      sequence: 7,
+      responseId: "resp_continuation_patch_loop_6",
+    })], {
+      parentResponseId: "resp_continuation_patch_loop_6",
+      parentResponseSource: "native_direct_tool_continuation_stream",
+      toolLoopId: edit.continuationRequest.toolLoop?.toolLoopId,
+      stepOrdinal: 7,
+    }).obligations[0];
+    await planPatchApplyObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: interruptedObligation.obligationId, workspaceRequest, projectId: session.projectId });
+    approvePatchApplyObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: interruptedObligation.obligationId, projectId: session.projectId });
+    const interruptedApproved = sessionStore.findToolObligation(session.sessionId, turn.turnId, interruptedObligation.obligationId).obligation;
+    await sessionStore.claimToolObligation(session.sessionId, turn.turnId, interruptedObligation.obligationId, {
+      operationDigest: interruptedApproved.approvedOperationDigest,
+      approvedStatus: "patch_approved",
+      executingStatus: "patch_executing",
+      ambiguousStatus: "patch_execution_ambiguous",
+    });
+    const restartedStore = new DirectSessionStore({ rootDir: path.join(storeRoot, "sessions") });
+    restartedStore.ensure();
+    const recoveredInterrupted = restartedStore.findToolObligation(session.sessionId, turn.turnId, interruptedObligation.obligationId).obligation;
+    assert(recoveredInterrupted.status === "patch_execution_ambiguous" && recoveredInterrupted.result?.error?.code === "execution_interrupted_restart", "restart must reconcile an executing patch as ambiguous without replay");
+    assert(recoveredInterrupted.effectOutcome === "unknown" && recoveredInterrupted.result.effectOutcome === "unknown" && recoveredInterrupted.result.sideEffectMayHaveExecuted === true && recoveredInterrupted.result.sideEffectExecutionProven === false, "restart patch reconciliation must preserve unknown effect truth");
+
+    const throwAfterEffectObligation = sessionStore.addToolObligations(session.sessionId, turn.turnId, [patchEvent({
+      itemId: "item_patch_throw_after_effect",
+      callId: "call_patch_throw_after_effect",
+      patch: CONCURRENT_CREATE_PATCH.replaceAll("concurrent.txt", "throw-after-effect.txt").replace("created once", "created before throw"),
+      sequence: 8,
+      responseId: "resp_continuation_patch_loop_7",
+    })], {
+      parentResponseId: "resp_continuation_patch_loop_7",
+      parentResponseSource: "native_direct_tool_continuation_stream",
+      toolLoopId: edit.continuationRequest.toolLoop?.toolLoopId,
+      stepOrdinal: 8,
+    }).obligations[0];
+    await planPatchApplyObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: throwAfterEffectObligation.obligationId, workspaceRequest, projectId: session.projectId });
+    approvePatchApplyObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: throwAfterEffectObligation.obligationId, projectId: session.projectId });
+    const throwAfterEffect = await executeApprovedPatchApplyObligation({
+      sessionStore,
+      sessionId: session.sessionId,
+      turnId: turn.turnId,
+      obligationId: throwAfterEffectObligation.obligationId,
+      workspaceRequest: async (...args) => {
+        await workspaceRequest(...args);
+        throw Object.assign(new Error("fixture threw after patch effect"), { code: "fixture_throw_after_effect", effectPhase: "after_effect" });
+      },
+      projectId: session.projectId,
+    });
+    assert(throwAfterEffect.ambiguous === true && throwAfterEffect.result.status === "patch_execution_ambiguous", "throw-after-effect patch must be ambiguous");
+    assert(throwAfterEffect.obligation.effectOutcome === "unknown" && throwAfterEffect.result.effectOutcome === "unknown" && throwAfterEffect.result.sideEffectMayHaveExecuted === true && throwAfterEffect.result.sideEffectExecutionProven === false, "ambiguous patch must expose unknown effect truth");
+
     const finalTurn = sessionStore.readTurn(session.sessionId, turn.turnId);
     assert((finalTurn.toolResults || []).length >= 2, "turn must persist patch result evidence");
     assert((finalTurn.continuationRequests || []).length >= 2, "turn must persist patch continuation evidence");
-    assert(counters.dryRunCalls === 5, "each patch proposal should dry-run exactly once");
-    assert(counters.applyPatchCalls === 2, "only approved valid patches should apply");
+    assert(counters.dryRunCalls === 8, "each patch proposal should dry-run exactly once");
+    assert(counters.applyPatchCalls === 4, "only one concurrent patch retry should apply");
     assert(counters.runCommandCalls === 0, "patch loop regression must not execute commands");
 
     console.log(JSON.stringify({
@@ -773,6 +876,10 @@ async function main() {
         "workspace_effect_summary_rendered",
         "patch_continuation_context_built",
         "no_command_execution",
+        "terminal_patch_replay_is_idempotent",
+        "concurrent_patch_claim_is_single_winner",
+        "restart_patch_claim_becomes_ambiguous",
+        "throw_after_patch_effect_is_ambiguous",
       ],
       evidence: {
         toolLoopId: edit.continuationRequest.toolLoop?.toolLoopId,

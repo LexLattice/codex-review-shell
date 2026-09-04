@@ -76,7 +76,7 @@ const readyCapabilities = {
   account: { canRead: true, canStartLogin: true },
   config: { canRead: true },
   configRequirements: { canRead: true },
-  usage: { canReadRateLimits: true },
+  usage: { canReadRateLimits: true, canReadTokenUsage: true },
   model: { canList: true },
   threads: { canStart: true, canResume: true, canRead: true, canList: true, canRollback: true },
   turns: { canStart: true, canSteer: true, canInterrupt: true },
@@ -84,6 +84,7 @@ const readyCapabilities = {
 assert.equal(codexClientRequestDecision("turn/start", readyCapabilities).ok, true);
 assert.equal(codexClientRequestDecision("thread/list", readyCapabilities).ok, true);
 assert.equal(codexClientRequestDecision("account/rateLimits/read", readyCapabilities).ok, true);
+assert.equal(codexClientRequestDecision("account/usage/read", readyCapabilities).ok, true);
 assert.equal(codexClientRequestDecision("config/read", readyCapabilities).ok, true);
 assert.equal(
   codexClientRequestDecision("config/read", { configRequirements: { canRead: true } }).reason,

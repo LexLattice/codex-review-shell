@@ -537,6 +537,7 @@ function matchSubscriptionToEvent(subscription, event, options = {}) {
     material,
     terminal: eventIsTerminal(event),
     bypassCoalescing: event.bypassCoalescing === true ||
+      eventIsTerminal(event) ||
       ["critical", "high"].includes(text(event.materiality, "")) ||
       ["challenge", "authorization", "admission"].includes(text(event.actClass, "")),
     deliveryPolicy: subscription.deliveryPolicy,
@@ -621,6 +622,12 @@ function buildLedgerDeliveryEnvelope(input = {}, options = {}) {
     .slice()
     .sort((left, right) => left.globalSequence - right.globalSequence);
   if (!matches.length) fail("ledger_delivery_matches_missing");
+  const projectionMatches = (Array.isArray(input.projectionMatches)
+    ? input.projectionMatches
+    : matches)
+    .slice()
+    .sort((left, right) => left.globalSequence - right.globalSequence);
+  if (!projectionMatches.length) fail("ledger_delivery_projection_matches_missing");
   const first = matches[0];
   const subscription = input.subscription;
   const subscriptionExactRef = first.subscriptionRef;
@@ -634,7 +641,7 @@ function buildLedgerDeliveryEnvelope(input = {}, options = {}) {
   const recipient = typeof options.recipientResolver === "function"
     ? options.recipientResolver({ subscription, matches }) || {}
     : {};
-  const projection = visibilityProjectionFor(matches, subscription, options);
+  const projection = visibilityProjectionFor(projectionMatches, subscription, options);
   const eventRefs = uniqueRefs(matches.map((match) => match.ledgerEventRef));
   const hydrationRequirementRef = projection.visibleObjectRefs.length || projection.visibleEvidenceRefs.length
     ? exactRef({
@@ -1011,6 +1018,9 @@ class DirectLedgerSubscriptionBroker {
       const max = policy.maximumEventsPerDelivery;
       const consumed = pending.matches.slice(0, max);
       const selected = applySupersession(consumed, policy.supersessionBehavior);
+      // Supersession controls the bounded projection, while the delivery
+      // retains every consumed exact event ref. This keeps durable outbox
+      // seeds reconcilable and preserves monotonic cursor order.
       const consumedIds = new Set(consumed.map((match) => match.matchId));
       pending.matches = pending.matches.filter((match) => !consumedIds.has(match.matchId));
       if (!selected.length) {
@@ -1020,7 +1030,8 @@ class DirectLedgerSubscriptionBroker {
       const cursor = this.cursorFor(subscription);
       const delivery = buildLedgerDeliveryEnvelope({
         subscription,
-        matches: selected,
+        matches: consumed,
+        projectionMatches: selected,
         cursorBefore: cursor.acknowledgedSequence,
       }, {
         now: nowMs,

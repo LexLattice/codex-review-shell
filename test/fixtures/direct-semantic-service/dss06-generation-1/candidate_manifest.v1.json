@@ -1,0 +1,147 @@
+{
+  "schema": "direct-semantic-service-dss06-generation-manifest.v1",
+  "status": "FROZEN_SEMANTIC_CONSTRUCTION_IMPLEMENTATION_WITHHELD",
+  "subject": "Direct Semantic Service DSS-0.6 Direct/Electron and institutional handoff semantic slice",
+  "generation": 1,
+  "moduleId": "direct.semantic-service.dss06.direct-electron-handoff.generation-1",
+  "semanticCandidateCommit": "d5327f6acde40c13c8d0db1f9df0ac9cc928d7a0",
+  "semanticModuleDigest": "sha256:bf8f9271c49cbf3b57dc9962f85cf650a66a12670d1c4b2525925cac7331fa73",
+  "predecessor": {
+    "moduleId": "direct.semantic-service.dss05.real-closed-page.generation-1",
+    "moduleDigest": "sha256:70f1b66394f19d3de5fc32925c858f8dcfcf2bc28e5d7c00f307744ec9f7350a",
+    "combinedFreezeDigest": "sha256:0d29f80d9c66f9f1c5aae0e39139fb4c6add536b3468099070894664454b82ac",
+    "manifest": "docs/audits/direct-semantic-service-dss05-generation-1/candidate_manifest.v1.json",
+    "implementationSource": "edb589ec248fcec1f116944ffa84ed6feec5b8a3",
+    "implementationClosure": "0889369",
+    "focusedAcceptanceReceipt": "sha256:54f3210e94458149ba8275ff57d270cad94d7dd435e07830f28fefcf6b7bfde2"
+  },
+  "compilerCommit": "2dec60ee75178b98b9ae517a576002519e1f0f81",
+  "compilerTree": "e164a47da90001899f1e15ecb2f9b35b56968814",
+  "combinedFreezeDigest": "sha256:2de4267457d29179038857c42ff1873e05f4dee6d56d5182f5e5ba226a1ba0d3",
+  "combinedFreezeDigestLaw": "Dss06.Generation1.FrozenSubject.v1 over exact contract/declaration/compiler/neighbor/intervention/custody/preflight artifacts; semantic candidate is fixed to an immutable ancestor and later local closure commits never rebind it",
+  "artifacts": [
+    {
+      "path": "docs/DIRECT_SEMANTIC_SERVICE_DSS06_IMPLEMENTATION_CONTRACT.md",
+      "role": "NORMATIVE_CONTRACT",
+      "sha256": "715b87a2e28c83df704738ce3206bb43a01144497304cdcd2914e8466c2ce318",
+      "byteLength": 12105
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/module.v0.json",
+      "role": "SEMANTIC_DECLARATION",
+      "sha256": "bf8f9271c49cbf3b57dc9962f85cf650a66a12670d1c4b2525925cac7331fa73",
+      "byteLength": 193118
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/tests_first_contract.v1.json",
+      "role": "TESTS_FIRST_CONTRACT",
+      "sha256": "59d4e3441f5555929427b91ad4c92ba25ac2a0115c03cb08f142c5e4ee7c17a3",
+      "byteLength": 32964
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/critical_neighbor_matrix.v1.json",
+      "role": "CRITICAL_NEIGHBOR_MATRIX",
+      "sha256": "a97ffc6d452985af482e75847fc37d4ec02d401db0b0dd4295cf57ad2caa2b8a",
+      "byteLength": 10560
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/intervention_matrix.v1.json",
+      "role": "INTERVENTION_MATRIX",
+      "sha256": "862468a428a8d41c4c70ee3d44654287c68698301726f28b47bc75cf2fe85ed0",
+      "byteLength": 7386
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/surface_reconciliation.v1.json",
+      "role": "SURFACE_RECONCILIATION",
+      "sha256": "f29458e83aed6c0fc42731e747ae186ab2e2ac7c33e9e4e85e35e1aabb56c02b",
+      "byteLength": 3154
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/noncritical_risk_ledger.v1.json",
+      "role": "NONCRITICAL_RISK_LEDGER",
+      "sha256": "5c5109ae7739fe2c46b35e8272a5751f2e3bbf6db27675197a8e4686850c706d",
+      "byteLength": 1615
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/construction_input.v1.json",
+      "role": "CONSTRUCTION_INPUT",
+      "sha256": "4e0ad57767da570429f4e5f67b4855e5a7648af826f71a8b0765d468bce7ea06",
+      "byteLength": 1961
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/compiler_pin.v1.json",
+      "role": "EXTERNAL_COMPILER_PIN",
+      "sha256": "6b839128230c62a6f67c56f180c702e3184e88818c4d580da196ab1d35e3f00e",
+      "byteLength": 3924
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/compilation.v0.json",
+      "role": "BASE_COMPILATION",
+      "sha256": "ac00b3e9b59b892bb72893e57d9d8848fadc3876d41785445ac94930f0c52b9d",
+      "byteLength": 440121
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/compilation.learning.v1.json",
+      "role": "LEARNED_COMPILATION",
+      "sha256": "0597eb2c1b97957ff502d7b584ed60fcd004ef21a72f352c4c4def8da7cabcf9",
+      "byteLength": 845167
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/compiler_custody_receipt.v1.json",
+      "role": "EXTERNAL_COMPILER_CUSTODY_RECEIPT",
+      "sha256": "dbe44d1a8090aaf8cdf444959293617d72077df733837bdac40282bdaa92c384",
+      "byteLength": 1987
+    },
+    {
+      "path": "docs/audits/direct-semantic-service-dss06-generation-1/critical_preflight_receipt.v1.json",
+      "role": "CRITICAL_PREFLIGHT_RECEIPT",
+      "sha256": "3413a13f14e42dcaada8cb2c008037474854fac74576e08b547a309284bd22ae",
+      "byteLength": 3013
+    },
+    {
+      "path": "scripts/build-direct-semantic-service-dss06-semantic-construction.mjs",
+      "role": "DECLARATION_BUILDER",
+      "sha256": "866444ca0a8a5513feb186e4660bbaef7c39bbad5545030367ff322a00cdc343",
+      "byteLength": 63778
+    },
+    {
+      "path": "scripts/freeze-direct-semantic-service-dss06-semantic-construction.mjs",
+      "role": "FAIL_CLOSED_FREEZE_VERIFIER",
+      "sha256": "12947cd49919b17ee6a16f959aa7940dddcff27a7200b722fcf4cbed16b446b5",
+      "byteLength": 28885
+    }
+  ],
+  "populations": {
+    "carriers": 17,
+    "operations": 17,
+    "qualifiedTransitions": 66,
+    "projectSurfaces": 68,
+    "baseObligations": 465,
+    "learnedObligations": 878,
+    "staticRemands": 0,
+    "criticalNeighbors": 16,
+    "interventions": 16
+  },
+  "authority": {
+    "effect": "NONE",
+    "granted": [
+      "one bounded semantic construction and freeze for project-owner critical review"
+    ],
+    "withheld": [
+      "runtime implementation",
+      "provider/network/credential use",
+      "repository/filesystem/tool access",
+      "project/WorldManager truth mutation",
+      "authority bridge",
+      "companion audit",
+      "merge",
+      "push",
+      "promotion",
+      "commissioning",
+      "activation",
+      "DSS-0.7 or later semantic tranche",
+      "compiler/kernel modification",
+      "Electron/CLI execution custody"
+    ]
+  }
+}

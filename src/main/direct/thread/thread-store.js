@@ -131,6 +131,9 @@ const DIRECT_THREAD_OPERATION_TYPES = new Set([
   "merge_threads",
   "prune_thread",
   "fork_thread",
+  "resume_thread",
+  "rollback_thread",
+  "steer_turn",
   "start_fork_turn",
   "bridge_threads",
   "unlink_bridge",
@@ -2964,7 +2967,7 @@ class DirectThreadStore {
       if (!session) throw new Error(`Direct session not found for projection: ${safeThreadId}`);
       const turns = sessionStore.listTurnIdsFromDisk(safeThreadId)
         .map((turnId) => sessionStore.readTurn(safeThreadId, turnId))
-        .filter(Boolean);
+        .filter((turn) => turn && turn.rolledBack !== true);
       const rollout = this.db.prepare("select * from direct_rollouts where thread_id = ? order by updated_at desc limit 1").get(safeThreadId) || {};
       const operationManifest = this.readOperationManifest();
       const buildResult = buildRendererTranscriptProjection({

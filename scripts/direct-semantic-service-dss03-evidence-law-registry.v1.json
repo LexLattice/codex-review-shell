@@ -1,0 +1,290 @@
+{
+  "schema": "direct-semantic-service-dss03-evidence-law-registry.v1",
+  "classificationLaw": "Exact evidence-kind membership only. Substring, token, regex, and fallback classification are forbidden. Missing, duplicate, ambiguous, and extraneous entries fail closed.",
+  "classificationMode": "EXACT_KIND_ONLY",
+  "evaluators": [
+    {
+      "id": "surface.registry-closure",
+      "family": "SURFACE_DISCOVERY",
+      "evidenceKinds": [
+        "canonical-construct-register",
+        "executable-root-and-language-enumeration",
+        "frozen-project-file-inventory",
+        "sealed-project-surface"
+      ]
+    },
+    {
+      "id": "surface.reverse-discovery",
+      "family": "SURFACE_DISCOVERY",
+      "evidenceKinds": [
+        "contact-to-occurrence-reverse-map",
+        "declaration-to-surface-map",
+        "discovery-independence-graph",
+        "effect-derived-call-and-launch-graph"
+      ]
+    },
+    {
+      "id": "surface.partition-and-exclusion",
+      "family": "SURFACE_DISCOVERY",
+      "evidenceKinds": [
+        "exclusion-counterexample-search",
+        "mapping-or-exclusion-receipt",
+        "occurrence-level-disjoint-partition",
+        "owner-ratified-exclusion-theorems"
+      ]
+    },
+    {
+      "id": "identity.seal-and-source-binding",
+      "family": "IDENTITY",
+      "evidenceKinds": [
+        "content-seal",
+        "identity-seal",
+        "source-seal"
+      ]
+    },
+    {
+      "id": "identity.sensitivity-and-rebinding",
+      "family": "IDENTITY",
+      "evidenceKinds": [
+        "changed-content-negative-basis",
+        "identity-sensitivity-mutations",
+        "key-value-rebinding-proof",
+        "semantic-input-field-inventory"
+      ]
+    },
+    {
+      "id": "authority.root-provenance",
+      "family": "AUTHORITY",
+      "evidenceKinds": [
+        "closed-root-population",
+        "exact-root-resolution-trace",
+        "external-root-installation-receipt",
+        "owner-genesis-trace",
+        "owner-root",
+        "root-state-event-outcome-table",
+        "root-substitution-negative-basis"
+      ]
+    },
+    {
+      "id": "authority.grant-and-meet",
+      "family": "AUTHORITY",
+      "evidenceKinds": [
+        "authority-meet",
+        "authority-meet-proof",
+        "current-authority-dependencies",
+        "grant-contract"
+      ]
+    },
+    {
+      "id": "authority.nonconstitution",
+      "family": "AUTHORITY",
+      "evidenceKinds": [
+        "caller-nonconstitution-proof",
+        "zero-authority-conflict-proof",
+        "zero-descendant-proof"
+      ]
+    },
+    {
+      "id": "authority.exclusive-owner",
+      "family": "AUTHORITY",
+      "evidenceKinds": [
+        "exclusive-operation-owner",
+        "positive-owner-trace",
+        "separate-decision-owner"
+      ]
+    },
+    {
+      "id": "scope.entitlement-and-impact",
+      "family": "SCOPE",
+      "evidenceKinds": [
+        "disjoint-impact-proof",
+        "owner-issued-scope-proof",
+        "scope-entitlement-index",
+        "scope-impact-index",
+        "scope-proof"
+      ]
+    },
+    {
+      "id": "temporal.boundary-order",
+      "family": "TEMPORAL",
+      "evidenceKinds": [
+        "boundary-heads",
+        "clock-partial-order",
+        "declared-boundary-relation",
+        "effective-time-proof",
+        "no-backdating-proof",
+        "sequence-generation"
+      ]
+    },
+    {
+      "id": "temporal.currentness-and-continuity",
+      "family": "TEMPORAL",
+      "evidenceKinds": [
+        "current-dependencies",
+        "historical-standing-continuity-law",
+        "native-continuity-or-finality-proof",
+        "standing-generation",
+        "time-proof"
+      ]
+    },
+    {
+      "id": "policy.decision-law",
+      "family": "POLICY",
+      "evidenceKinds": [
+        "policy-proof",
+        "separate-utility-model"
+      ]
+    },
+    {
+      "id": "lifecycle.qualified-transition",
+      "family": "LIFECYCLE",
+      "evidenceKinds": [
+        "carrier-qualified-transition-table",
+        "qualified-transition-declaration",
+        "state-event-outcome-table",
+        "transition-field-completeness-check",
+        "transition-to-outcome-table"
+      ]
+    },
+    {
+      "id": "lifecycle.exact-owner-and-source",
+      "family": "LIFECYCLE",
+      "evidenceKinds": [
+        "cross-output-negative-fixture",
+        "event-owner-bijection",
+        "explicit-only-binding-validator",
+        "missing-binding-negative-fixture",
+        "non-executable-event-theorems",
+        "prior-state-source-proof",
+        "transition-owner"
+      ]
+    },
+    {
+      "id": "lifecycle.event-totality",
+      "family": "LIFECYCLE",
+      "evidenceKinds": [
+        "repeated-event-outcome",
+        "stale-state-negative-fixture",
+        "transition-outcome-population-reconciliation"
+      ]
+    },
+    {
+      "id": "outcome.polarity-and-terminal-effect",
+      "family": "OUTCOME",
+      "evidenceKinds": [
+        "cross-front-differential-corpus",
+        "standing-polarity-table",
+        "terminal-effect-witnesses"
+      ]
+    },
+    {
+      "id": "outcome.totality-and-failure-owner",
+      "family": "OUTCOME",
+      "evidenceKinds": [
+        "earliest-failure-proof",
+        "exhaustiveness-proof",
+        "fallback-mutation-kill",
+        "rejected-blocked-corrupt-gap-negative-basis",
+        "typed-failure-owner-trace"
+      ]
+    },
+    {
+      "id": "composition.closed-join",
+      "family": "COMPOSITION",
+      "evidenceKinds": [
+        "closed-parent-domain",
+        "complete-input-receipt",
+        "disjointness-proof",
+        "join-identity-proof",
+        "least-fixed-point-receipt",
+        "reverse-dependency-index"
+      ]
+    },
+    {
+      "id": "atomicity.transaction-and-linearization",
+      "family": "ATOMICITY",
+      "evidenceKinds": [
+        "atomic-closure-transaction",
+        "commit-and-projection-transaction-proof",
+        "linearization-point-proof",
+        "record-transaction-output-bijection",
+        "serialization-domain-map",
+        "single-effect-and-reservation-proof"
+      ]
+    },
+    {
+      "id": "atomicity.adversarial-interleaving",
+      "family": "ATOMICITY",
+      "evidenceKinds": [
+        "adversarial-check-commit-interleavings",
+        "cross-key-race-witnesses"
+      ]
+    },
+    {
+      "id": "replay.convergence-and-conflict",
+      "family": "REPLAY",
+      "evidenceKinds": [
+        "conflicting-work-rejection-test",
+        "exact-retry-trace",
+        "identical-work-convergence-test",
+        "replay-law",
+        "restart-replay-and-conflict-tests"
+      ]
+    },
+    {
+      "id": "recovery.authenticated-custody",
+      "family": "RECOVERY",
+      "evidenceKinds": [
+        "authenticated-joint-cut",
+        "authenticated-reverse-index",
+        "chain-integrity-negative-basis",
+        "closed-durable-population",
+        "durable-binding-bijection",
+        "fork-law",
+        "population-bijection-proof"
+      ]
+    },
+    {
+      "id": "recovery.loss-and-rebuild",
+      "family": "RECOVERY",
+      "evidenceKinds": [
+        "crash-point-reconstruction-traces",
+        "deterministic-projection",
+        "partial-recovery-negative-traces",
+        "projection-derivation-function",
+        "projection-loss-rebuild-test"
+      ]
+    },
+    {
+      "id": "recovery.readiness-and-availability",
+      "family": "RECOVERY",
+      "evidenceKinds": [
+        "availability-proof",
+        "fail-closed-readiness-gate",
+        "missing-and-extraneous-population-games"
+      ]
+    },
+    {
+      "id": "odeu.claim-and-observation-boundary",
+      "family": "ODEU_LAW",
+      "evidenceKinds": [
+        "explicit-non-claims",
+        "observation-or-inference-bridge"
+      ]
+    }
+  ],
+  "classifierNegativeFixtures": [
+    {
+      "fixtureId": "project-is-not-projection",
+      "left": "project",
+      "right": "projection",
+      "mustResolveDifferently": true
+    },
+    {
+      "fixtureId": "race-is-not-trace-or-traces",
+      "left": "race",
+      "right": "trace|traces",
+      "mustResolveDifferently": true
+    }
+  ]
+}

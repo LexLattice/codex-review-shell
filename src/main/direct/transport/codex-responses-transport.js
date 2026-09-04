@@ -48,6 +48,12 @@ const DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS = [
 ].join(" ");
 const DEFAULT_PRE_STREAM_REFRESH_MS = 120_000;
 const DEFAULT_PRE_STREAM_RETRIES = 1;
+const DEFAULT_TRANSPORT_OUTPUT_CHARS = 256_000;
+const DEFAULT_TRANSPORT_RAW_BYTES = 2 * 1024 * 1024;
+const DEFAULT_TRANSPORT_FRAME_BYTES = 512 * 1024;
+const DEFAULT_TRANSPORT_RAW_EVENTS = 10_000;
+const DEFAULT_TRANSPORT_NORMALIZED_EVENTS = 10_000;
+const DEFAULT_TRANSPORT_ERROR_BYTES = 64 * 1024;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -170,6 +176,7 @@ function buildTextOnlyProbeRequest(options = {}) {
   const instructions = normalizeString(options.instructions, DEFAULT_TEXT_PROBE_INSTRUCTIONS);
   const model = normalizeString(options.model, modelFromProfile(options.profileDoc));
   const reasoningEffort = normalizeString(options.reasoningEffort || options.reasoning_effort || options.effort, "");
+  const serviceTier = normalizeString(options.serviceTier || options.service_tier, "");
   const requestBody = {
     model,
     stream: true,
@@ -188,6 +195,7 @@ function buildTextOnlyProbeRequest(options = {}) {
     ],
   };
   if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
+  if (serviceTier) requestBody.service_tier = serviceTier;
   const outputSchema =
     isPlainObject(options.outputSchema)
       ? options.outputSchema
@@ -257,8 +265,51 @@ function directImplementationToolSchemas(toolNames = []) {
         additionalProperties: false,
       },
     },
+    exec_command: {
+      type: "function",
+      name: "exec_command",
+      description: "Start one bounded plain-pipe process session in the exact selected local environment. Use cmd for the ordinary shell command-string interface, or command plus args for structured execution.",
+      parameters: {
+        type: "object",
+        properties: {
+          cmd: { type: "string", description: "Bounded ordinary command string executed with local shell semantics under the exact full-access task grant." },
+          command: { type: "string", description: "Structured executable name; retained for compatibility." },
+          args: { type: "array", items: { type: "string" } },
+          cwd: { type: "string", description: "Working directory in the selected local environment; relative, parent, and absolute paths are accepted only for the exact full-access task grant." },
+          env: { type: "object", additionalProperties: { type: "string" } },
+          stdinPolicy: { type: "string", enum: ["disabled", "line_input", "eof_only", "blocked_until_policy"] },
+          idleTimeoutMs: { type: "number" },
+          hardTimeoutMs: { type: "number" },
+        },
+        anyOf: [
+          { required: ["cmd"] },
+          { required: ["command", "args"] },
+        ],
+        additionalProperties: false,
+      },
+    },
+    write_stdin: {
+      type: "function",
+      name: "write_stdin",
+      description: "Write bounded input or EOF to one exact live exec_command session.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionId: { type: "string" },
+          session_id: { type: "string", description: "Vanilla app-server alias for sessionId." },
+          input: { type: "string" },
+          chars: { type: "string", description: "Vanilla app-server alias for input." },
+          eof: { type: "boolean" },
+        },
+        anyOf: [
+          { required: ["session_id"] },
+          { required: ["sessionId"] },
+        ],
+        additionalProperties: false,
+      },
+    },
   };
-  const ordered = ["read_file", "apply_patch", "run_command"].filter((name) => requested.has(name));
+  const ordered = ["read_file", "apply_patch", "run_command", "exec_command", "write_stdin"].filter((name) => requested.has(name));
   return ordered.map((name) => schemas[name]).filter(Boolean);
 }
 
@@ -267,6 +318,7 @@ function buildImplementationToolInitialRequest(options = {}) {
   const instructions = normalizeString(options.instructions, DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS);
   const model = normalizeString(options.model, modelFromProfile(options.profileDoc));
   const reasoningEffort = normalizeString(options.reasoningEffort || options.reasoning_effort || options.effort, "");
+  const serviceTier = normalizeString(options.serviceTier || options.service_tier, "");
   const tools = Array.isArray(options.tools)
     ? options.tools.filter(Boolean)
     : directImplementationToolSchemas(options.toolNames || ["read_file", "apply_patch", "run_command"]);
@@ -293,6 +345,7 @@ function buildImplementationToolInitialRequest(options = {}) {
     requestBody.tool_choice = normalizeString(options.toolChoicePolicy, "auto") === "required" ? "required" : "auto";
   }
   if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
+  if (serviceTier) requestBody.service_tier = serviceTier;
   return requestBody;
 }
 
@@ -419,6 +472,7 @@ function requestShapeForDiagnostic(requestBody = {}) {
     toolCount: Array.isArray(requestBody.tools) ? requestBody.tools.length : 0,
     parallelToolCalls: requestBody.parallel_tool_calls === true,
     reasoningEffort: normalizeString(requestBody.reasoning?.effort || requestBody.reasoning_effort, ""),
+    serviceTier: normalizeString(requestBody.service_tier || requestBody.serviceTier, ""),
     ...(isPlainObject(requestBody.text?.format)
       ? {
           textFormatType: normalizeString(
@@ -449,15 +503,69 @@ function decodeTextChunk(decoder, chunk) {
   return decoder.decode(chunk, { stream: true });
 }
 
-async function responseText(response) {
-  if (response && typeof response.text === "function") return response.text();
+function sourceByteLength(chunk) {
+  if (typeof chunk === "string") return Buffer.byteLength(chunk, "utf8");
+  if (chunk && Number.isSafeInteger(chunk.byteLength) && chunk.byteLength >= 0) return chunk.byteLength;
+  if (chunk == null) return 0;
+  return Buffer.byteLength(String(chunk), "utf8");
+}
+
+function outputLimitError(message = "Direct provider output exceeded the bounded transport limit.") {
+  const error = new Error(message);
+  error.code = "max_output";
+  return error;
+}
+
+function transportLimits(options = {}) {
+  const positive = (value, fallback) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
+  };
+  const outputChars = positive(options.maxProviderOutputChars || options.maxAssistantChars, DEFAULT_TRANSPORT_OUTPUT_CHARS);
+  return {
+    maxProviderOutputChars: outputChars,
+    maxRawResponseBytes: positive(options.maxRawResponseBytes || options.maxTransportBytes, Math.max(DEFAULT_TRANSPORT_RAW_BYTES, outputChars * 8)),
+    maxSseFrameBytes: positive(options.maxSseFrameBytes || options.maxFrameBytes, DEFAULT_TRANSPORT_FRAME_BYTES),
+    maxRawEventCount: positive(options.maxRawEventCount, DEFAULT_TRANSPORT_RAW_EVENTS),
+    maxNormalizedEventCount: positive(options.maxNormalizedEventCount, DEFAULT_TRANSPORT_NORMALIZED_EVENTS),
+    maxErrorBodyBytes: positive(options.maxErrorBodyBytes, DEFAULT_TRANSPORT_ERROR_BYTES),
+  };
+}
+
+function cancelResponseBody(response, reader) {
+  try {
+    const cancellation = reader?.cancel?.();
+    cancellation?.catch?.(() => {});
+  } catch {}
+  try {
+    const cancellation = response?.body?.cancel?.();
+    cancellation?.catch?.(() => {});
+  } catch {}
+}
+
+function notifyTransportTrace(callback, stage, details = {}) {
+  if (typeof callback !== "function") return;
+  try {
+    callback({ stage, ...details });
+  } catch {}
+}
+
+async function responseText(response, options = {}) {
+  const limit = transportLimits(options).maxErrorBodyBytes;
   if (response?.body && typeof response.body.getReader === "function") {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let text = "";
+    let bytesRead = 0;
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      const chunkBytes = value?.byteLength ?? Buffer.byteLength(String(value ?? ""), "utf8");
+      if (bytesRead + chunkBytes > limit) {
+        cancelResponseBody(response, reader);
+        throw outputLimitError("Direct provider error body exceeded the bounded transport limit.");
+      }
+      bytesRead += chunkBytes;
       text += decoder.decode(value, { stream: true });
     }
     text += decoder.decode();
@@ -466,11 +574,23 @@ async function responseText(response) {
   if (response?.body && typeof response.body[Symbol.asyncIterator] === "function") {
     const decoder = new TextDecoder();
     let text = "";
-    for await (const chunk of response.body) text += decodeTextChunk(decoder, chunk);
+    let bytesRead = 0;
+    for await (const chunk of response.body) {
+      const chunkBytes = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk ?? ""), "utf8");
+      if (bytesRead + chunkBytes > limit) {
+        cancelResponseBody(response);
+        throw outputLimitError("Direct provider error body exceeded the bounded transport limit.");
+      }
+      bytesRead += chunkBytes;
+      text += decodeTextChunk(decoder, chunk);
+    }
     text += decoder.decode();
     return text;
   }
-  return "";
+  // A text-only response API has already materialized the complete body
+  // before this boundary can inspect it. Fail closed without invoking it;
+  // callers retain only the typed bounded-transport terminal outcome.
+  throw outputLimitError("Direct provider response body is not incrementally readable.");
 }
 
 function sseNewlineLengthAt(value, index) {
@@ -572,6 +692,7 @@ async function commitNormalizedEvents(callback, events, details = {}) {
 }
 
 async function readStreamingSseResponse(response, options = {}, requestBody = {}) {
+  const limits = transportLimits(options);
   const rawEvents = [];
   const normalizedEvents = [];
   const unknownRawTypes = [];
@@ -586,15 +707,98 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
   const onLifecycle = options.onLifecycle;
   const onNormalizedEvents = options.onNormalizedEvents;
   const onNormalizedEventsCommitted = options.onNormalizedEventsCommitted;
+  const onTransportTrace = options.onTransportTrace;
   let rawText = "";
   let buffer = "";
+  let rawBytes = 0;
+  let reservedRawBytes = 0;
+  let reservedRawEvents = 0;
+  let reservedNormalizedEvents = 0;
+  let reservedProviderOutputChars = 0;
+  let providerOutputChars = 0;
+  let activeReader = null;
   let error = null;
   let commitError = null;
+  const reserveRawBytes = (chunkBytes) => {
+    const amount = Number(chunkBytes);
+    if (!Number.isSafeInteger(amount) || amount < 0 || rawBytes + reservedRawBytes + amount > limits.maxRawResponseBytes) {
+      notifyTransportTrace(onTransportTrace, "raw_bytes_rejected", {
+        requested: amount,
+        rawBytes,
+        reservedRawBytes,
+        limit: limits.maxRawResponseBytes,
+      });
+      throw outputLimitError("Direct provider response exceeded the bounded transport limit.");
+    }
+    reservedRawBytes += amount;
+    notifyTransportTrace(onTransportTrace, "raw_bytes_reserved", {
+      requested: amount,
+      rawBytes: rawBytes + reservedRawBytes,
+      limit: limits.maxRawResponseBytes,
+    });
+    return amount;
+  };
+  const rawTypeForTransport = (rawEvent) => {
+    if (!isPlainObject(rawEvent)) return "";
+    return normalizeString(rawEvent.event || rawEvent.type || rawEvent.data?.type, "").toLowerCase();
+  };
+  const rawDataForTransport = (rawEvent) => {
+    if (!isPlainObject(rawEvent)) return {};
+    return isPlainObject(rawEvent.data) ? rawEvent.data : rawEvent;
+  };
+  const normalizedEventUpperBound = (rawEvent) => {
+    const rawType = rawTypeForTransport(rawEvent);
+    if (!rawType || rawType === "[done]") return 0;
+    if ([
+      "response.content_part.added",
+      "response.content_part.done",
+      "response.output_text.done",
+      "response.refusal.done",
+      "response.refusal.delta",
+    ].includes(rawType)) return 0;
+    if (rawType === "response.output_item.added" || rawType === "response.output_item.done") {
+      const data = rawDataForTransport(rawEvent);
+      const item = data.item || data.output_item || data.response?.output?.[0] || data;
+      return ["function_call", "custom_tool_call"].includes(normalizeString(item?.type, "")) ? 1 : 0;
+    }
+    if (rawType === "response.completed") {
+      const data = rawDataForTransport(rawEvent);
+      const response = data.response || data;
+      const usage = response?.usage || response?.output?.usage;
+      return isPlainObject(usage) ? 2 : 1;
+    }
+    return 1;
+  };
+  const providerOutputUpperBound = (rawEvent) => {
+    const rawType = rawTypeForTransport(rawEvent);
+    if (rawType !== "response.output_text.delta" && rawType !== "response.message.delta") return 0;
+    const data = rawDataForTransport(rawEvent);
+    return String(data.delta ?? data.text ?? "").length;
+  };
   const consumeFrame = async (frame) => {
+    if (!String(frame || "").trim()) return;
+    if (rawEvents.length + reservedRawEvents >= limits.maxRawEventCount) {
+      notifyTransportTrace(onTransportTrace, "raw_event_capacity_rejected", {
+        rawEventCount: rawEvents.length,
+        reservedRawEvents,
+        limit: limits.maxRawEventCount,
+      });
+      throw outputLimitError("Direct provider raw-event count exceeded the bounded transport limit.");
+    }
+    reservedRawEvents += 1;
+    notifyTransportTrace(onTransportTrace, "raw_event_capacity_reserved", {
+      rawEventCount: rawEvents.length,
+      limit: limits.maxRawEventCount,
+    });
+    notifyTransportTrace(onTransportTrace, "before_parse", {
+      rawEventCount: rawEvents.length,
+    });
     const rawEvent = parseSingleSseFrame(frame);
+    reservedRawEvents -= 1;
     if (!rawEvent) return;
     const rawIndex = rawEvents.length;
     rawEvents.push(rawEvent);
+    notifyTransportTrace(onTransportTrace, "raw_event_parsed", { rawIndex });
     timing.rawEventCount = rawEvents.length;
     if (!timing.firstSseFrameAt) {
       timing.firstSseFrameAt = nowIso();
@@ -602,11 +806,52 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
         rawIndex,
       });
     }
+    const normalizedUpperBound = normalizedEventUpperBound(rawEvent);
+    const providerOutputUpper = providerOutputUpperBound(rawEvent);
+    if (normalizedUpperBound > 0 && normalizedEvents.length + reservedNormalizedEvents + normalizedUpperBound > limits.maxNormalizedEventCount) {
+      notifyTransportTrace(onTransportTrace, "normalized_event_capacity_rejected", {
+        normalizedEventCount: normalizedEvents.length,
+        reservedNormalizedEvents,
+        requested: normalizedUpperBound,
+        limit: limits.maxNormalizedEventCount,
+      });
+      throw outputLimitError("Direct provider normalized-event count exceeded the bounded transport limit.");
+    }
+    if (providerOutputUpper > 0 && providerOutputChars + reservedProviderOutputChars + providerOutputUpper > limits.maxProviderOutputChars) {
+      notifyTransportTrace(onTransportTrace, "provider_output_capacity_rejected", {
+        providerOutputChars,
+        reservedProviderOutputChars,
+        requested: providerOutputUpper,
+        limit: limits.maxProviderOutputChars,
+      });
+      throw outputLimitError("Direct provider output exceeded the bounded transport limit.");
+    }
+    reservedNormalizedEvents += normalizedUpperBound;
+    reservedProviderOutputChars += providerOutputUpper;
+    notifyTransportTrace(onTransportTrace, "normalized_capacity_reserved", {
+      normalizedEventCount: normalizedEvents.length,
+      requested: normalizedUpperBound,
+      providerOutputChars,
+      providerOutputRequested: providerOutputUpper,
+      limit: limits.maxNormalizedEventCount,
+    });
+    notifyTransportTrace(onTransportTrace, "before_normalize", { rawIndex });
     const normalizedResult = normalizeLiveRawEvent(rawEvent, rawIndex, requestBody);
+    reservedNormalizedEvents -= normalizedUpperBound;
+    reservedProviderOutputChars -= providerOutputUpper;
+    if (normalizedResult.normalized.length > normalizedUpperBound) {
+      throw outputLimitError("Direct provider normalized-event count exceeded the bounded transport limit.");
+    }
     if (normalizedResult.unknown.length) {
       unknownRawTypes.push(...normalizedResult.unknown.map((event) => event.rawType));
     }
     if (normalizedResult.normalized.length) {
+      const deltaChars = normalizedResult.normalized.reduce((sum, event) =>
+        sum + (event.type === "message_delta" ? String(event.text || "").length : 0), 0);
+      if (deltaChars > providerOutputUpper || providerOutputChars + deltaChars > limits.maxProviderOutputChars) {
+        throw outputLimitError("Direct provider output exceeded the bounded transport limit.");
+      }
+      providerOutputChars += deltaChars;
       const normalizedOffset = normalizedEvents.length;
       if (!timing.firstNormalizedEventAt) {
         timing.firstNormalizedEventAt = nowIso();
@@ -633,29 +878,51 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
       });
     }
   };
-  const consumeText = async (text) => {
-    rawText += text;
-    buffer += text;
+  const consumeText = async (text, sourceByteLength = undefined, alreadyReserved = false) => {
+    const textValue = String(text ?? "");
+    const chunkBytes = Number.isSafeInteger(sourceByteLength) && sourceByteLength >= 0
+      ? sourceByteLength
+      : Buffer.byteLength(textValue, "utf8");
+    if (!alreadyReserved) reserveRawBytes(chunkBytes);
+    reservedRawBytes -= chunkBytes;
+    rawBytes += chunkBytes;
+    rawText += textValue;
+    buffer += textValue;
     const split = splitCompleteSseFrames(buffer);
     buffer = split.remaining;
-    for (const frame of split.frames) await consumeFrame(frame);
+    if (Buffer.byteLength(buffer, "utf8") > limits.maxSseFrameBytes) throw outputLimitError("Direct provider SSE frame exceeded the bounded transport limit.");
+    for (const frame of split.frames) {
+      if (Buffer.byteLength(frame, "utf8") > limits.maxSseFrameBytes) throw outputLimitError("Direct provider SSE frame exceeded the bounded transport limit.");
+      await consumeFrame(frame);
+    }
   };
   try {
     if (response?.body && typeof response.body.getReader === "function") {
       const reader = response.body.getReader();
+      activeReader = reader;
       const decoder = new TextDecoder();
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        await consumeText(decoder.decode(value, { stream: true }));
+        const chunkBytes = sourceByteLength(value);
+        reserveRawBytes(chunkBytes);
+        notifyTransportTrace(onTransportTrace, "before_decode", { chunkBytes, rawBytes });
+        await consumeText(decoder.decode(value, { stream: true }), chunkBytes, true);
       }
       await consumeText(decoder.decode());
     } else if (response?.body && typeof response.body[Symbol.asyncIterator] === "function") {
       const decoder = new TextDecoder();
-      for await (const chunk of response.body) await consumeText(decodeTextChunk(decoder, chunk));
+      for await (const chunk of response.body) {
+        const chunkBytes = sourceByteLength(chunk);
+        reserveRawBytes(chunkBytes);
+        notifyTransportTrace(onTransportTrace, "before_decode", { chunkBytes, rawBytes });
+        await consumeText(decodeTextChunk(decoder, chunk), chunkBytes, true);
+      }
       await consumeText(decoder.decode());
-    } else if (response && typeof response.text === "function") {
-      await consumeText(await response.text());
+    } else {
+      // Calling response.text() here would allow an unbounded body to escape
+      // before the transport budget can constrain materialization.
+      throw outputLimitError("Direct provider response body is not incrementally readable.");
     }
     if (buffer.trim()) {
       await consumeFrame(buffer);
@@ -663,6 +930,7 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     }
   } catch (caught) {
     error = caught;
+    cancelResponseBody(response, activeReader);
   }
   timing.streamCompletedAt = nowIso();
   return {
@@ -735,6 +1003,7 @@ function isAbortError(error) {
 
 function errorCodeFromCaught(error, streamStarted = false) {
   if (isAbortError(error)) return "aborted";
+  if (error?.code === "max_output") return "max_output";
   if (error?.code === "direct_auth_expired") return "direct_auth_expired";
   if (error?.code === "direct_auth_refresh_failed" || error?.code === "direct_auth_refresh_unavailable") return "auth_error";
   if (
@@ -813,6 +1082,7 @@ function terminalStateFromNormalizedEvents(normalizedEvents = []) {
 }
 
 async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, resultOptions = {}) {
+  const limits = transportLimits(options);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("Direct Codex streaming request requires fetch.");
   const endpoint = normalizeString(options.endpoint, DEFAULT_CODEX_RESPONSES_ENDPOINT);
@@ -875,7 +1145,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
         });
       }
       if (!ok) {
-        rawText = await responseText(response);
+        rawText = await responseText(response, options);
         rawEvents = [errorRawEvent(response.status, rawText || response.statusText || "HTTP request failed.")];
       } else {
         const streamed = await readStreamingSseResponse(response, options, requestBody);
@@ -902,9 +1172,11 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
           const errorEvent = aborted
             ? { event: "aborted", data: { reason: error.message } }
             : errorRawEvent(0, error.message, error.code);
+          if (rawEvents.length >= limits.maxRawEventCount) rawEvents = rawEvents.slice(0, Math.max(0, limits.maxRawEventCount - 1));
           const rawIndex = rawEvents.length;
           rawEvents.push(errorEvent);
           const normalizedError = normalizeLiveRawEvent(errorEvent, rawIndex, requestBody);
+          if (normalizedEvents.length + normalizedError.normalized.length > limits.maxNormalizedEventCount) normalizedEvents = normalizedEvents.slice(0, Math.max(0, limits.maxNormalizedEventCount - normalizedError.normalized.length));
           normalizedEvents.push(...normalizedError.normalized);
           unknownRawTypes.push(...normalizedError.unknown.map((event) => event.rawType));
           timing.rawEventCount = rawEvents.length;
@@ -944,6 +1216,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
       rawEvents = aborted
         ? [{ event: "aborted", data: { reason: error.message } }]
         : [errorRawEvent(0, error.message, error.code)];
+      if (rawEvents.length > limits.maxRawEventCount) rawEvents = rawEvents.slice(0, limits.maxRawEventCount);
       break;
     }
   }
@@ -951,7 +1224,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
   if (!normalizedEvents.length && rawEvents.length) {
     const replayed = rawEvents.map((rawEvent, rawIndex) =>
       normalizeLiveRawEvent(rawEvent, rawIndex, requestBody));
-    normalizedEvents = replayed.flatMap((result) => result.normalized);
+    normalizedEvents = replayed.flatMap((result) => result.normalized).slice(0, limits.maxNormalizedEventCount);
     unknownRawTypes = replayed.flatMap((result) => result.unknown.map((event) => event.rawType));
   }
   const committedNormalizedEventCount = Math.max(0, Number(timing.committedNormalizedEventCount || 0));
@@ -1018,7 +1291,10 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
 }
 
 async function runTextOnlyDirectProbe(options = {}) {
-  return runDirectCodexStreamingRequest(options, buildTextOnlyProbeRequest(options), {
+  const requestBody = isPlainObject(options.requestBody)
+    ? options.requestBody
+    : buildTextOnlyProbeRequest(options);
+  return runDirectCodexStreamingRequest(options, requestBody, {
     schema: DIRECT_TEXT_PROBE_RESULT_SCHEMA,
     kind: "text_probe",
   });

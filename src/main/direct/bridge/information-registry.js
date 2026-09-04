@@ -1853,8 +1853,11 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     implementationState: "partial",
     directPathPosture: "keep_gated",
     sourceFiles: [
+      "src/main/direct/authority/direct-thread-harness-grant.js",
       "src/main/direct/bridge/role-lane-tool-bundle-composer.js",
+      "src/main/direct/controller/live-text-controller.js",
       "scripts/direct-role-lane-tool-bundle-composer-regression.mjs",
+      "scripts/direct-full-access-authority-regression.mjs",
       "docs/DIRECT_ROLE_LANE_TOOL_BUNDLE_COMPOSER_SPEC.md",
       "docs/ODEU_ROLE_LANE_MULTI_AGENT_ARCHITECTURE_SPEC.md",
       "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
@@ -1868,6 +1871,9 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
         "resident_capability_catalogue",
         "direct_tool_bundle_composition_witness",
         "tool_declaration_authority_template",
+        "direct_thread_harness_grant",
+        "direct_owner_full_access_act",
+        "direct_harness_grant_inheritance",
       ],
       "harness",
       {
@@ -1875,8 +1881,8 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
         schema: "direct_tool_bundle_composition_witness@1",
       }
     ),
-    bridgeFit: "Adds the PR 120 request-time compiler substrate that binds role lanes to existing AgentClassSpec/route/request evidence and emits a first-class provider bundle, resident capability catalogue, and composition witness.",
-    realignment: "The composer is now live on Direct implementation requests, but declaration eligibility remains distinct from concrete per-call authority and enactment. Missing normalized request grounding still blocks declarations, provider-hosted and external tools remain evidence-gated, and role-ledger supplements retain an independent identity at the request boundary.",
+    bridgeFit: "Adds the PR 120 request-time compiler substrate plus the bounded owner-issued DirectThreadHarnessGrant that binds a full-access task profile to exact task, project, environment, runtime-admitted capabilities, and restartable authority evidence.",
+    realignment: "The composer is now live on Direct implementation requests. Without a current task grant, declaration eligibility remains distinct from concrete per-call authority and enactment; with a current owner-issued grant, only runtime-admitted declarations lose the per-call gate. Missing normalized request grounding still blocks declarations, provider-hosted and external tools remain evidence-gated, and role-ledger supplements retain an independent identity at the request boundary.",
   },
   {
     id: "ic61.direct-self-constitution",

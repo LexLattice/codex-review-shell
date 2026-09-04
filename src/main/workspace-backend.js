@@ -19,6 +19,7 @@ const fs = require("node:fs");
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const ATTACH_TIMEOUT_MS = 30_000;
 const MIN_ATTACH_TIMEOUT_MS = 250;
+const MAX_NDJSON_FRAME_BYTES = 2 * 1024 * 1024;
 const MUTATION_COMMIT_KINDS_BY_METHOD = Object.freeze({
   applyPatch: new Set(["apply_patch_files"]),
   applyWorkspaceWorkerPatch: new Set(["apply_patch_files"]),
@@ -471,14 +472,16 @@ class NdjsonTransport extends EventEmitter {
   constructor(child) {
     super();
     this.child = child;
-    this.buffer = "";
+    this.buffer = Buffer.alloc(0);
+    this.bufferBytes = 0;
     this.pending = new Map();
     this.closed = false;
 
-    child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => this.handleData(chunk));
-    child.stderr.setEncoding("utf8");
+    child.stdout.on("error", (error) => this.failProtocol(error, "workspace_backend_stdout_read_failed"));
     child.stderr.on("data", (chunk) => this.emit("stderr", chunk));
+    child.stderr.on("error", (error) => this.failProtocol(error, "workspace_backend_stderr_read_failed"));
+    child.stdin?.on?.("error", (error) => this.failPendingWrites(error));
     child.on("error", (error) => this.close(error));
     child.on("exit", (code, signal) => {
       const error = new Error(`Workspace backend exited: code=${code ?? "null"} signal=${signal ?? "null"}`);
@@ -490,14 +493,73 @@ class NdjsonTransport extends EventEmitter {
   }
 
   handleData(chunk) {
-    this.buffer += chunk;
-    let newlineIndex = this.buffer.indexOf("\n");
-    while (newlineIndex >= 0) {
-      const line = this.buffer.slice(0, newlineIndex).trim();
-      this.buffer = this.buffer.slice(newlineIndex + 1);
+    const source = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk || ""), "utf8");
+    let offset = 0;
+    while (offset < source.length) {
+      const newlineIndex = source.indexOf(0x0a, offset);
+      const segmentEnd = newlineIndex >= 0 ? newlineIndex : source.length;
+      const segmentBytes = segmentEnd - offset;
+      if (this.bufferBytes + segmentBytes > MAX_NDJSON_FRAME_BYTES) {
+        this.failProtocol(
+          new Error("Workspace backend NDJSON frame exceeded the bounded transport limit."),
+          "workspace_backend_ndjson_frame_too_large",
+        );
+        return;
+      }
+      if (segmentBytes > 0) {
+        this.buffer = Buffer.concat([
+          this.buffer,
+          Buffer.from(source.subarray(offset, segmentEnd)),
+        ], this.bufferBytes + segmentBytes);
+        this.bufferBytes += segmentBytes;
+      }
+      if (newlineIndex < 0) return;
+      const line = this.buffer.toString("utf8").trim();
+      this.buffer = Buffer.alloc(0);
+      this.bufferBytes = 0;
       if (line) this.handleLine(line);
-      newlineIndex = this.buffer.indexOf("\n");
+      offset = newlineIndex + 1;
     }
+  }
+
+  failProtocol(error, fallbackCode) {
+    if (this.closed) return;
+    const failure = error instanceof Error ? error : new Error(String(error || "Workspace backend transport failed."));
+    failure.code = normalizeString(failure.code, fallbackCode);
+    this.close(failure);
+    try {
+      if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill("SIGTERM");
+    } catch {}
+  }
+
+  failPendingWrites(error) {
+    if (this.closed) return;
+    const failure = error instanceof Error ? error : new Error(String(error || "Workspace backend request write failed."));
+    const writes = [...this.pending.values()].filter((pending) => pending.kind === "request" && pending.writePending);
+    if (!writes.length) {
+      this.failProtocol(failure, "workspace_backend_stdin_write_failed");
+      return;
+    }
+    for (const pending of writes) this.handleWriteFailure(pending.requestId, failure);
+    this.failProtocol(failure, "workspace_backend_stdin_write_failed");
+  }
+
+  handleWriteFailure(id, error) {
+    const pending = this.clearPending(id);
+    if (!pending || pending.clientSettled) return;
+    const failureCode = publicBackendErrorCode(error?.code, "workspace_backend_request_write_failed");
+    const mutationOutcome = indeterminateBackendMutationOutcome(pending, failureCode);
+    const wrapped = error instanceof Error ? error : new Error(String(error || "Workspace backend request write failed."));
+    wrapped.code = failureCode;
+    wrapped.requestId = pending.requestId;
+    wrapped.backendQuiesced = false;
+    wrapped.cancellationAcknowledged = false;
+    wrapped.backendRequestCompleted = false;
+    wrapped.workspaceBackendRequest = true;
+    wrapped.mutationOutcome = mutationOutcome;
+    wrapped.partialMutationPossible = mutationOutcome?.partialMutationPossible === true;
+    pending.clientSettled = true;
+    pending.reject(wrapped);
   }
 
   handleLine(line) {
@@ -745,15 +807,26 @@ class NdjsonTransport extends EventEmitter {
       timer: null,
       signal: null,
       abortListener: null,
+      writePending: true,
     });
-    this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
-      if (!error) return;
+    try {
+      this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
+        const cancelPending = this.pending.get(cancelRequestId);
+        if (cancelPending) cancelPending.writePending = false;
+        if (!error) return;
+        this.clearPending(cancelRequestId);
+        pending.cancellationControlError = normalizeString(
+          error?.code,
+          "workspace_backend_cancel_write_failed",
+        );
+      });
+    } catch (error) {
       this.clearPending(cancelRequestId);
       pending.cancellationControlError = normalizeString(
         error?.code,
         "workspace_backend_cancel_write_failed",
       );
-    });
+    }
   }
 
   request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, options = {}) {
@@ -804,6 +877,7 @@ class NdjsonTransport extends EventEmitter {
         clientSettled: false,
         cancelRequestId: "",
         cancellationControlError: "",
+        writePending: true,
       };
       if (signal?.addEventListener) {
         pending.abortListener = () => {
@@ -818,24 +892,20 @@ class NdjsonTransport extends EventEmitter {
         signal.addEventListener("abort", pending.abortListener, { once: true });
       }
       this.pending.set(id, pending);
-      this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
-        if (!error) return;
-        const failedPending = this.clearPending(id);
+      try {
+        this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
+          const sentPending = this.pending.get(id);
+          if (sentPending) sentPending.writePending = false;
+          if (!error) return;
+          const failedPending = this.pending.get(id);
+          if (failedPending?.cancelRequestId) this.clearPending(failedPending.cancelRequestId);
+          this.handleWriteFailure(id, error);
+        });
+      } catch (error) {
+        const failedPending = this.pending.get(id);
         if (failedPending?.cancelRequestId) this.clearPending(failedPending.cancelRequestId);
-        if (!failedPending || failedPending.clientSettled) return;
-        const failureCode = publicBackendErrorCode(error?.code, "workspace_backend_request_write_failed");
-        const mutationOutcome = indeterminateBackendMutationOutcome(failedPending, failureCode);
-        error.code = failureCode;
-        error.requestId = failedPending.requestId;
-        error.backendQuiesced = false;
-        error.cancellationAcknowledged = false;
-        error.backendRequestCompleted = false;
-        error.workspaceBackendRequest = true;
-        error.mutationOutcome = mutationOutcome;
-        error.partialMutationPossible = mutationOutcome?.partialMutationPossible === true;
-        failedPending.clientSettled = true;
-        failedPending.reject(error);
-      });
+        this.handleWriteFailure(id, error);
+      }
     });
   }
 

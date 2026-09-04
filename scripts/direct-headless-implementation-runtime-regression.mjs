@@ -130,6 +130,111 @@ function event(idempotencyKey, routeId) {
   };
 }
 
+class PendingImplementationController {
+  constructor() {
+    this.activeRuns = new Map();
+    this.turns = new Map();
+    this.sessionStore = {
+      readTurn: (sessionId, turnId) => this.turns.get(`${sessionId}:${turnId}`) || null,
+      updateTurnState: (sessionId, turnId, state, patch = {}) => {
+        const current = this.turns.get(`${sessionId}:${turnId}`) || { turnId, sessionId };
+        const next = { ...current, ...patch, state, status: state, updatedAt: new Date().toISOString() };
+        this.turns.set(`${sessionId}:${turnId}`, next);
+        return next;
+      },
+    };
+  }
+
+  async handleRequest(method, params = {}) {
+    if (method === "thread/start") return { thread: { id: params.sessionId || params.threadId } };
+    if (method === "turn/start") {
+      const sessionId = params.sessionId || params.threadId;
+      const turnId = "pending_turn";
+      const turn = { turnId, id: turnId, state: "streaming", status: "inProgress", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      this.turns.set(`${sessionId}:${turnId}`, turn);
+      return { turn, reused: false };
+    }
+    if (method === "turn/interrupt" || method === "turn/abort") return this.interruptTurn(params);
+    throw new Error(`unsupported fixture method: ${method}`);
+  }
+
+  interruptTurn(params = {}) {
+    const sessionId = params.sessionId || params.threadId;
+    const turn = this.sessionStore.updateTurnState(sessionId, params.turnId, "aborted", {
+      error: { code: "headless_implementation_settle_timeout", message: "bounded fixture timeout" },
+    });
+    return { turn, status: "aborted" };
+  }
+}
+
+class UnresolvedImplementationController {
+  constructor() {
+    this.activeRuns = new Map();
+    this.turns = new Map();
+    this.turnStarts = 0;
+    this.firstSessionId = "";
+    this.firstTurnId = "";
+    this.resolveFirst = null;
+    this.sessionStore = {
+      readTurn: (sessionId, turnId) => this.turns.get(`${sessionId}:${turnId}`) || null,
+      updateTurnState: (sessionId, turnId, state, patch = {}) => {
+        const current = this.turns.get(`${sessionId}:${turnId}`) || { turnId, sessionId };
+        const next = { ...current, ...patch, state, status: state, updatedAt: new Date().toISOString() };
+        this.turns.set(`${sessionId}:${turnId}`, next);
+        return next;
+      },
+    };
+  }
+
+  async handleRequest(method, params = {}) {
+    if (method === "thread/start") return { thread: { id: params.sessionId || params.threadId } };
+    if (method === "turn/start") {
+      const sessionId = params.sessionId || params.threadId;
+      const turnId = `unresolved_turn_${++this.turnStarts}`;
+      const turn = {
+        turnId,
+        id: turnId,
+        state: this.turnStarts === 1 ? "streaming" : "failed",
+        status: this.turnStarts === 1 ? "inProgress" : "failed",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      this.turns.set(`${sessionId}:${turnId}`, turn);
+      if (this.turnStarts === 1) {
+        this.firstSessionId = sessionId;
+        this.firstTurnId = turnId;
+        const promise = new Promise((resolve) => { this.resolveFirst = resolve; });
+        this.activeRuns.set(turnId, { promise });
+        promise.then(
+          () => this.activeRuns.delete(turnId),
+          () => this.activeRuns.delete(turnId),
+        );
+      }
+      return { turn, reused: false };
+    }
+    if (method === "turn/interrupt" || method === "turn/abort") return this.interruptTurn(params);
+    throw new Error(`unsupported unresolved fixture method: ${method}`);
+  }
+
+  interruptTurn(params = {}) {
+    const sessionId = params.sessionId || params.threadId;
+    const turn = this.sessionStore.updateTurnState(sessionId, params.turnId, "streaming", {
+      cancellationRequested: true,
+    });
+    return { turn, status: "abort_requested" };
+  }
+
+  releaseFirstTurn() {
+    if (!this.resolveFirst) return;
+    const turn = this.sessionStore.updateTurnState(this.firstSessionId, this.firstTurnId, "aborted", {
+      error: { code: "headless_implementation_settle_timeout", message: "released unresolved fixture" },
+    });
+    const resolve = this.resolveFirst;
+    this.resolveFirst = null;
+    resolve({ turn });
+  }
+}
+
 async function requestJson(baseUrl, pathName, options = {}) {
   const response = await fetch(`${baseUrl}${pathName}`, {
     ...options,
@@ -283,11 +388,174 @@ try {
   assert.equal(terminal.headlessImplementationDecisions[0].decision, "approve");
   assert.equal(terminal.headlessImplementationDecisions[0].method, "direct/tool/readOnly/requestApproval");
 
+  const pendingController = new PendingImplementationController();
+  const pendingPacket = daemon.store.writeTurnPacket({
+    packetId: "headless_pending_timeout_packet",
+    envelopeId: "headless_pending_timeout_envelope",
+    routeId: "route_impl",
+    routeVersion: "v1",
+    targetThreadId: "direct_session_headless_impl_timeout",
+    runtimePath: "direct-implementation",
+    state: "queued",
+    promptText: "pending implementation fixture",
+    promptDigest: "sha256:pending-implementation-fixture",
+    clientTurnRequestId: "headless_pending_timeout_request",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  const reductionCountBeforeTimeout = daemon.store.reducedResultSummary().total;
+  const pendingRuntime = new DirectHeadlessTextRuntime({
+    store: daemon.store,
+    controller: pendingController,
+    project,
+    implementationSettleTimeoutMs: 500,
+  });
+  const timedOut = await waitForPacket(
+    baseUrl,
+    pendingPacket.packetId,
+    (packet) => packet.state === "failed",
+    "pending implementation timeout",
+  );
+  assert.equal(timedOut.providerCompleted, false);
+  assert.equal(timedOut.blockerCode, "headless_implementation_settle_timeout");
+  assert.equal(timedOut.boundedWaitExpired, true);
+  assert.equal(pendingController.sessionStore.readTurn("direct_session_headless_impl_timeout", "pending_turn").state, "aborted");
+  assert.equal(daemon.store.reducedResultSummary().total, reductionCountBeforeTimeout);
+  assert.equal(pendingRuntime.statusProjection().activeTurns, 0);
+
+  const unresolvedController = new UnresolvedImplementationController();
+  const unresolvedThreadId = "direct_session_headless_impl_unresolved";
+  const unresolvedPackets = ["first", "second"].map((suffix, index) => daemon.store.writeTurnPacket({
+    packetId: `headless_unresolved_${suffix}_packet`,
+    envelopeId: `headless_unresolved_${suffix}_envelope`,
+    routeId: "route_impl",
+    routeVersion: "v1",
+    targetThreadId: unresolvedThreadId,
+    runtimePath: "direct-implementation",
+    state: "queued",
+    promptText: `unresolved implementation fixture ${index + 1}`,
+    promptDigest: `sha256:unresolved-implementation-${suffix}`,
+    clientTurnRequestId: `headless_unresolved_${suffix}_request`,
+    createdAt: `2026-01-01T00:00:0${index}.000Z`,
+  }));
+  const reductionCountBeforeUnresolved = daemon.store.reducedResultSummary().total;
+  const unresolvedRuntime = new DirectHeadlessTextRuntime({
+    store: daemon.store,
+    controller: unresolvedController,
+    project,
+    implementationSettleTimeoutMs: 500,
+  });
+  const cancellationPending = await waitForPacket(
+    baseUrl,
+    unresolvedPackets[0].packetId,
+    (packet) => packet.state === "cancellation_pending",
+    "unresolved implementation cancellation pending",
+  );
+  assert.equal(cancellationPending.providerCompleted, false);
+  assert.equal(cancellationPending.cancellationSettled, false);
+  assert.equal(unresolvedController.sessionStore.readTurn(unresolvedThreadId, unresolvedController.firstTurnId).state, "streaming");
+  assert.equal(daemon.store.readTurnPacket(unresolvedPackets[1].packetId).state, "queued");
+  assert.equal(daemon.store.reducedResultSummary().total, reductionCountBeforeUnresolved);
+  assert.equal(unresolvedRuntime.statusProjection().activeTurns, 1);
+  const recoveryStartedAt = Date.now();
+  const recoveryRequired = await waitForPacket(
+    baseUrl,
+    unresolvedPackets[0].packetId,
+    (packet) => packet.state === "recovery_required",
+    "unresolved implementation bounded recovery",
+  );
+  assert.ok(Date.now() - recoveryStartedAt < 1500, "unresolved implementation recovery must remain bounded");
+  assert.equal(recoveryRequired.providerCompleted, false);
+  assert.equal(recoveryRequired.terminationSettled, false);
+  assert.equal(recoveryRequired.recoveryRequired, true);
+  assert.equal(daemon.store.readTurnPacket(unresolvedPackets[0].packetId).state, "recovery_required");
+  assert.equal(daemon.store.readTurnPacket(unresolvedPackets[1].packetId).state, "queued");
+  assert.equal(daemon.store.reducedResultSummary().total, reductionCountBeforeUnresolved);
+  unresolvedController.releaseFirstTurn();
+  const unresolvedFirstTerminal = await waitForPacket(
+    baseUrl,
+    unresolvedPackets[0].packetId,
+    (packet) => packet.state === "failed",
+    "unresolved implementation settlement",
+  );
+  assert.equal(unresolvedFirstTerminal.cancellationSettled, true);
+  const unresolvedSecondTerminal = await waitForPacket(
+    baseUrl,
+    unresolvedPackets[1].packetId,
+    (packet) => packet.state === "failed",
+    "next implementation dispatch after settlement",
+  );
+  assert.equal(unresolvedSecondTerminal.providerCompleted, false);
+  assert.equal(unresolvedController.turnStarts, 2);
+  assert.equal(unresolvedRuntime.statusProjection().activeTurns, 0);
+
+  const restartRecoveryThreadId = "direct_session_headless_impl_restart_recovery";
+  const restartRecoveryPacket = daemon.store.writeTurnPacket({
+    packetId: "headless_restart_recovery_packet",
+    envelopeId: "headless_restart_recovery_envelope",
+    routeId: "route_impl",
+    routeVersion: "v1",
+    targetThreadId: restartRecoveryThreadId,
+    runtimePath: "direct-implementation",
+    state: "recovery_required",
+    promptText: "restart recovery fixture",
+    promptDigest: "sha256:restart-recovery-fixture",
+    clientTurnRequestId: "headless_restart_recovery_request",
+    turnId: "missing_after_restart_turn",
+    providerCompleted: false,
+    recoveryRequired: true,
+    terminationSettled: false,
+    createdAt: "2026-01-01T00:01:00.000Z",
+  });
+  daemon.store.claimTurnPacket(restartRecoveryPacket.packetId, { runtimeId: "crashed-runtime" });
+  const restartQueuedPacket = daemon.store.writeTurnPacket({
+    packetId: "headless_restart_recovery_queued_packet",
+    envelopeId: "headless_restart_recovery_queued_envelope",
+    routeId: "route_impl",
+    routeVersion: "v1",
+    targetThreadId: restartRecoveryThreadId,
+    runtimePath: "direct-implementation",
+    state: "queued",
+    promptText: "queued after restart recovery",
+    promptDigest: "sha256:queued-after-restart-recovery",
+    clientTurnRequestId: "headless_restart_recovery_queued_request",
+    createdAt: "2026-01-01T00:01:01.000Z",
+  });
+  const restartController = new PendingImplementationController();
+  const reductionCountBeforeRestartRecovery = daemon.store.reducedResultSummary().total;
+  const restartRuntime = new DirectHeadlessTextRuntime({
+    store: daemon.store,
+    controller: restartController,
+    project,
+    implementationSettleTimeoutMs: 500,
+  });
+  daemon.textRuntime = restartRuntime;
+  const reconciledRestartRecovery = await waitForPacket(
+    baseUrl,
+    restartRecoveryPacket.packetId,
+    (packet) => packet.state === "failed",
+    "restart recovery reconciliation",
+  );
+  assert.equal(reconciledRestartRecovery.providerCompleted, false);
+  assert.equal(reconciledRestartRecovery.blockerCode, "headless_implementation_restart_recovery_unknown");
+  assert.equal(reconciledRestartRecovery.terminationSettled, false);
+  assert.equal(reconciledRestartRecovery.executionClaim.status, "reconciled_unknown");
+  const restartedQueuedTerminal = await waitForPacket(
+    baseUrl,
+    restartQueuedPacket.packetId,
+    (packet) => packet.state === "failed",
+    "queued packet after restart recovery",
+  );
+  assert.equal(restartedQueuedTerminal.providerCompleted, false);
+  assert.equal(restartController.turns.size, 1);
+  assert.equal(daemon.store.reducedResultSummary().total, reductionCountBeforeRestartRecovery);
+  assert.equal(restartRuntime.statusProjection().activeTurns, 0);
+
   const persistedTurn = sessionStore.readTurn("direct_session_headless_impl", terminal.turnId);
   assert.equal(persistedTurn.state, "completed");
   const expectedInitialToolNames = [
     "get_context_remaining",
     "inspect_agent",
+    "inspect_self_constitution",
     "list_agents",
     "read_file",
     "request_user_input",

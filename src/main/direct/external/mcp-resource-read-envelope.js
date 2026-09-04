@@ -200,6 +200,12 @@ function byteLengthFor(value = "") {
   return Buffer.byteLength(String(value), "utf8");
 }
 
+function payloadByteLength(value, renderedText = "") {
+  if (Buffer.isBuffer(value)) return value.byteLength;
+  if (value instanceof Uint8Array) return value.byteLength;
+  return byteLengthFor(renderedText);
+}
+
 function redactionScan(text = "") {
   const source = String(text);
   if (!source) return { state: "not_scanned", text: "", secretDetected: false };
@@ -313,7 +319,15 @@ function validateMcpResourceIdentity(identity = {}) {
   if (!identity.serverIdentityId) errors.push("mcp_resource_identity_missing_server_identity");
   if (!identity.resourceUriDigest) errors.push("mcp_resource_identity_missing_uri_digest");
   if (!URI_SCHEME_CLASSES.has(identity.uriSchemeClass)) errors.push(`mcp_resource_identity_bad_uri_scheme_class:${identity.uriSchemeClass || ""}`);
-  if (identity.rawResourceUriIncluded !== false) errors.push("mcp_resource_identity_raw_uri_leak");
+  if (identity.rawResourceUriIncluded !== false || Object.prototype.hasOwnProperty.call(identity, "resourceUri") || Object.prototype.hasOwnProperty.call(identity, "uri")) {
+    errors.push("mcp_resource_identity_raw_uri_leak");
+  }
+  if (identity.identityDigest) {
+    const { identityDigest, ...identityCore } = identity;
+    if (identityDigest !== digestFor("mcp-resource-identity@1", identityCore)) {
+      errors.push("mcp_resource_identity_digest_mismatch");
+    }
+  }
   if (errors.length) {
     const error = new Error(errors[0]);
     error.validationErrors = errors;
@@ -365,11 +379,28 @@ function buildMcpResourceReadEnvelope(input = {}) {
   if (identity.serverIdentityId !== serverIdentityId) blockerCodes.push("resource_uri_server_mismatch");
   if (!uri) blockerCodes.push("resource_uri_missing");
   if (uriHasBlockedScheme(uri)) blockerCodes.push("resource_uri_scheme_blocked");
+  const actualResourceUriDigest = uri ? digestFor("mcp-resource-uri@1", uri) : "";
+  if (source.resourceIdentity?.schema === MCP_RESOURCE_IDENTITY_SCHEMA &&
+      (!actualResourceUriDigest || identity.resourceUriDigest !== actualResourceUriDigest)) {
+    blockerCodes.push("resource_identity_uri_digest_mismatch");
+  }
+  if (actualResourceUriDigest && identity.resourceUriEvidenceKey &&
+      identity.resourceUriEvidenceKey !== `mcp_resource_uri_${actualResourceUriDigest.slice(0, 24)}`) {
+    blockerCodes.push("resource_identity_uri_evidence_mismatch");
+  }
+  if (actualResourceUriDigest && identity.uriSchemeClass !== classifyUriScheme(uri)) {
+    blockerCodes.push("resource_identity_uri_scheme_mismatch");
+  }
   if (source.resourceUriDigest && source.resourceUriDigest !== identity.resourceUriDigest) blockerCodes.push("resource_uri_digest_mismatch");
 
   const suppliedPayload = source.payload ?? source.content ?? source.text ?? "";
   const payloadText = payloadToText(suppliedPayload);
-  const byteCount = Number.isFinite(Number(source.byteCount)) ? Number(source.byteCount) : byteLengthFor(payloadText);
+  const actualByteCount = payloadByteLength(suppliedPayload, payloadText);
+  if (Object.prototype.hasOwnProperty.call(source, "byteCount") &&
+      (!Number.isFinite(Number(source.byteCount)) || Number(source.byteCount) !== actualByteCount)) {
+    blockerCodes.push("mcp_resource_byte_count_mismatch");
+  }
+  const byteCount = actualByteCount;
   const mimeKind = inferMimeKind(source);
   const policy = contentPolicyFor({
     mimeKind,

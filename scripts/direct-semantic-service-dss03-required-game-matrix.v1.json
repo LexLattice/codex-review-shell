@@ -1,0 +1,1688 @@
+{
+  "schema": "direct-semantic-service-dss03-required-game-matrix@3",
+  "candidateCommit": "45ca7736afbb6701d60abcdb6b0dc9888d2741b6",
+  "requiredGameCount": 31,
+  "games": [
+    {
+      "number": 1,
+      "requirement": "stale, foreign, changed, duplicate, cancelled, and ambiguous DSS-0.2 handoffs reject;",
+      "testCases": [
+        {
+          "testId": "dss03.game.01.stale",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game01.stale",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "BLOCKED",
+              "generationState": "BLOCKED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "acceptDss02Handoff"
+        },
+        {
+          "testId": "dss03.game.01.foreign",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game01.foreign",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREDECESSOR_HANDOFF_UNVERIFIED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "acceptDss02Handoff"
+        },
+        {
+          "testId": "dss03.game.01.changed",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game01.changed",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREDECESSOR_HANDOFF_MISMATCH"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "acceptDss02Handoff"
+        },
+        {
+          "testId": "dss03.game.01.duplicate",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game01.duplicate",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "EXACT_REPLAY"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "acceptDss02Handoff"
+        },
+        {
+          "testId": "dss03.game.01.cancelled",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game01.cancelled",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREDECESSOR_HANDOFF_UNVERIFIED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "acceptDss02Handoff"
+        },
+        {
+          "testId": "dss03.game.01.ambiguous",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game01.ambiguous",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREDECESSOR_HANDOFF_UNVERIFIED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "acceptDss02Handoff"
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "requirement": "caller-constituted, foreign-root, replaced, mutable-path, and undeclared fixtures reject;",
+      "testCases": [
+        {
+          "testId": "dss03.game.02.caller-constituted",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game02.caller-constituted",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_CALLER_FIXTURE_FORBIDDEN"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "fixtureRegistryOrCapsuleBoundary"
+        },
+        {
+          "testId": "dss03.game.02.foreign-root",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game02.foreign-root",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "BLOCKED",
+              "code": "DSS03_FIXTURE_OWNER_MISMATCH"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "fixtureRegistryOrCapsuleBoundary"
+        },
+        {
+          "testId": "dss03.game.02.replaced",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game02.replaced",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_CALLER_FIXTURE_FORBIDDEN"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "fixtureRegistryOrCapsuleBoundary"
+        },
+        {
+          "testId": "dss03.game.02.mutable-path",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game02.mutable-path",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "BLOCKED",
+              "code": null
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "fixtureRegistryOrCapsuleBoundary"
+        },
+        {
+          "testId": "dss03.game.02.undeclared",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game02.undeclared",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_SCENARIO_UNDECLARED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "fixtureRegistryOrCapsuleBoundary"
+        }
+      ]
+    },
+    {
+      "number": 3,
+      "requirement": "plan expected cells exactly reproduce edge/replicate populations;",
+      "testCases": [
+        {
+          "testId": "dss03.game.03.population-reproduction",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runPositive:game03.population-reproduction",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "REPRODUCED",
+              "expectedCells": 2,
+              "edgeOccurrences": 1,
+              "replicateCount": 2
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "instantiateExecutionPlan"
+        }
+      ]
+    },
+    {
+      "number": 4,
+      "requirement": "partial coverage cannot claim exhaustive and exhaustive drift rejects;",
+      "testCases": [
+        {
+          "testId": "dss03.game.04.partial-coverage",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game04.partial-coverage",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "OPEN",
+              "cellCount": 1
+            },
+            "adjudication": "BOUNDARY"
+          },
+          "operation": "reconcileTerminalCoverage"
+        },
+        {
+          "testId": "dss03.game.04.exhaustive-drift",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game04.exhaustive-drift",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "REJECTED",
+              "selected": 1,
+              "compiled": 1
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "reconcileTerminalCoverage"
+        }
+      ]
+    },
+    {
+      "number": 5,
+      "requirement": "policy mutation after first allocation rejects;",
+      "testCases": [
+        {
+          "testId": "dss03.game.05.policy-mutation-after-allocation",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game05.policy-mutation-after-allocation",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_FROZEN_POLICY_DRIFT"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "acquireAttemptLease"
+        }
+      ]
+    },
+    {
+      "number": 6,
+      "requirement": "known insufficiency remands every affected slot with zero attempts and one exact remand witness;",
+      "testCases": [
+        {
+          "testId": "dss03.game.06.known-insufficiency-remand",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game06.known-insufficiency-remand",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "KNOWN_INSUFFICIENT_REMAND",
+              "attempts": 0,
+              "cellState": "EXPLICIT_REMAND"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "performPreexecutionAssurance"
+        }
+      ]
+    },
+    {
+      "number": 7,
+      "requirement": "isolation, credential, network, model, and output-boundary violations reject preflight;",
+      "testCases": [
+        {
+          "testId": "dss03.game.07.isolation",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game07.isolation",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREFLIGHT_ISOLATION_VIOLATION"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "performPreexecutionAssurance"
+        },
+        {
+          "testId": "dss03.game.07.credential",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game07.credential",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREFLIGHT_ISOLATION_VIOLATION"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "performPreexecutionAssurance"
+        },
+        {
+          "testId": "dss03.game.07.network",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game07.network",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREFLIGHT_ISOLATION_VIOLATION"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "performPreexecutionAssurance"
+        },
+        {
+          "testId": "dss03.game.07.model",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game07.model",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREFLIGHT_ISOLATION_VIOLATION"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "performPreexecutionAssurance"
+        },
+        {
+          "testId": "dss03.game.07.output-boundary",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game07.output-boundary",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "ENFORCED",
+              "outputByteLimit": 65536
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "performPreexecutionAssurance"
+        }
+      ]
+    },
+    {
+      "number": 8,
+      "requirement": "allocation and lease races admit one current fenced attempt;",
+      "testCases": [
+        {
+          "testId": "dss03.game.08.fenced-allocation-and-lease",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game08.fenced-allocation-and-lease",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "ONE_CURRENT_FENCE_PER_ATTEMPT",
+              "attempts": 2,
+              "activeLeases": 2,
+              "fencingTokens": [
+                7,
+                7
+              ]
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "allocateAttemptAndAcquireAttemptLease"
+        }
+      ]
+    },
+    {
+      "number": 9,
+      "requirement": "retryable failures create visible attempts only within the frozen per-slot bound, while non-retryable failure and exhaustion terminalize exactly one slot;",
+      "testCases": [
+        {
+          "testId": "dss03.game.09.retry-bound",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game09.retry-bound",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "TERMINAL_FAILURE",
+              "attemptOrdinals": [
+                1,
+                2
+              ]
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "recordRuntimeTerminalAndAllocateAttempt"
+        },
+        {
+          "testId": "dss03.game.09.non-retryable-and-exhaustion",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game09.non-retryable-and-exhaustion",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "TERMINAL_FAILURE",
+              "exhaustedCode": "DSS03_CELL_TERMINAL",
+              "cellState": "TERMINAL_FAILURE"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "recordRuntimeTerminalAndAllocateAttempt"
+        }
+      ]
+    },
+    {
+      "number": 10,
+      "requirement": "admitted support, refute, inconclusive, and remand are never retried;",
+      "testCases": [
+        {
+          "testId": "dss03.game.10.support-not-retried",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game10.support-not-retried",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_ADMITTED_RESULT_NOT_RETRYABLE",
+              "admittedStatus": "ADMITTED_NO_CANDIDATE",
+              "attemptState": "RESULT_ADMITTED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "allocateAttempt"
+        },
+        {
+          "testId": "dss03.game.10.refute-not-retried",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game10.refute-not-retried",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_ADMITTED_RESULT_NOT_RETRYABLE",
+              "admittedStatus": "ADMITTED_NO_CANDIDATE",
+              "attemptState": "RESULT_ADMITTED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "allocateAttempt"
+        },
+        {
+          "testId": "dss03.game.10.inconclusive-not-retried",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game10.inconclusive-not-retried",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_ADMITTED_RESULT_NOT_RETRYABLE",
+              "admittedStatus": "ADMITTED_NO_CANDIDATE",
+              "attemptState": "RESULT_ADMITTED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "allocateAttempt"
+        },
+        {
+          "testId": "dss03.game.10.remand-not-retried",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game10.remand-not-retried",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_ADMITTED_RESULT_NOT_RETRYABLE",
+              "admittedStatus": "ADMITTED_NO_CANDIDATE",
+              "attemptState": "RESULT_ADMITTED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "allocateAttempt"
+        }
+      ]
+    },
+    {
+      "number": 11,
+      "requirement": "malformed, oversized, misbound, partial, and post-interruption raw output stays quarantined;",
+      "testCases": [
+        {
+          "testId": "dss03.game.11.malformed",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runStructuralRawBoundaries:game11.malformed",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_RAW_SCHEMA_REJECTED",
+              "state": "RETRYABLE_FAILURE"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "captureRawResultToQuarantineOrAdmitMicroresult"
+        },
+        {
+          "testId": "dss03.game.11.oversized",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runStructuralRawBoundaries:game11.oversized",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_RAW_OUTPUT_OVERSIZED",
+              "quarantined": true
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "captureRawResultToQuarantineOrAdmitMicroresult"
+        },
+        {
+          "testId": "dss03.game.11.misbound",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runStructuralRawBoundaries:game11.misbound",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_RAW_BINDING_REJECTED",
+              "quarantined": true
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "captureRawResultToQuarantineOrAdmitMicroresult"
+        },
+        {
+          "testId": "dss03.game.11.partial",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runStructuralRawBoundaries:game11.partial",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_RAW_DIGEST_MISMATCH",
+              "quarantined": true
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "captureRawResultToQuarantineOrAdmitMicroresult"
+        },
+        {
+          "testId": "dss03.game.11.post-interruption",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runStructuralRawBoundaries:game11.post-interruption",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "INTERRUPTED_UNKNOWN",
+              "quarantined": true
+            },
+            "adjudication": "BOUNDARY"
+          },
+          "operation": "captureRawResultToQuarantineOrAdmitMicroresult"
+        }
+      ]
+    },
+    {
+      "number": 12,
+      "requirement": "crash after raw capture resumes admission without re-execution;",
+      "testCases": [
+        {
+          "testId": "dss03.game.12.capture-crash-recovery",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game12.capture-crash-recovery",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "RECOVERED",
+              "custody": 3
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "recoverDss03Generation"
+        }
+      ]
+    },
+    {
+      "number": 13,
+      "requirement": "prestart cancellation succeeds without an attempt or lease only with exact current inherited authorization, while the unauthorized neighbor has zero durable effects;",
+      "testCases": [
+        {
+          "testId": "dss03.game.13.allocated-prestart",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game13.allocated-prestart",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PRESTART_CANCEL_ATTEMPT_EXISTS",
+              "attemptState": "ALLOCATED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "requestPrestartCancellation"
+        },
+        {
+          "testId": "dss03.game.13.leased-prestart",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game13.leased-prestart",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PRESTART_CANCEL_ATTEMPT_EXISTS",
+              "attemptState": "ALLOCATED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "requestPrestartCancellation"
+        },
+        {
+          "testId": "dss03.game.13.no-attempt-prestart",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game13.no-attempt-prestart",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "PRESTART_CANCELLED",
+              "attempts": 0,
+              "leases": 0,
+              "cellState": "AUTHORIZED_CANCELLATION"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "requestPrestartCancellation"
+        },
+        {
+          "testId": "dss03.game.13.unauthorized-zero-effects",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game13.unauthorized-zero-effects",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "durableEffects": 0,
+              "eventCount": 7
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "requestPrestartCancellation"
+        },
+        {
+          "testId": "dss03.game.13.exact-replay",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game13.exact-replay",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "EXACT_REPLAY",
+              "durableEffects": 0,
+              "cellState": "AUTHORIZED_CANCELLATION"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "requestPrestartCancellation"
+        },
+        {
+          "testId": "dss03.game.13.changed-input",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game13.changed-input",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_INHERITED_AUTHORIZATION_INVALID",
+              "durableEffects": 0,
+              "cellState": "AUTHORIZED_CANCELLATION"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "requestPrestartCancellation"
+        },
+        {
+          "testId": "dss03.game.13.wrong-authority",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game13.wrong-authority",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_AUTHORIZATION_REQUIRED",
+              "durableEffects": 0,
+              "cellState": "AUTHORIZED_CANCELLATION"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "requestPrestartCancellation"
+        },
+        {
+          "testId": "dss03.game.13.wrong-scope",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game13.wrong-scope",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_CANCEL_SCOPE",
+              "durableEffects": 0,
+              "cellState": "OPEN"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "requestPrestartCancellation"
+        }
+      ]
+    },
+    {
+      "number": 14,
+      "requirement": "running cancellation acknowledgment, raw-win, terminal-win, and lost-contact races preserve history;",
+      "testCases": [
+        {
+          "testId": "dss03.game.14.acknowledgment",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game14.acknowledgment",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "CANCEL_ACKNOWLEDGED",
+              "cellState": "AUTHORIZED_CANCELLATION"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "recordRuntimeTerminalOrAdjudicateCancellationRace"
+        },
+        {
+          "testId": "dss03.game.14.raw-win",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game14.raw-win",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "RAW_OR_TERMINAL_WON",
+              "cellState": "OPEN"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "recordRuntimeTerminalOrAdjudicateCancellationRace"
+        },
+        {
+          "testId": "dss03.game.14.terminal-win",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game14.terminal-win",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "RAW_OR_TERMINAL_WON",
+              "terminalEvent": "running_cancellation_raw_or_terminal_won"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "recordRuntimeTerminalOrAdjudicateCancellationRace"
+        },
+        {
+          "testId": "dss03.game.14.lost-contact",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game14.lost-contact",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "INTERRUPTED_UNKNOWN",
+              "cellState": "OPEN"
+            },
+            "adjudication": "BOUNDARY"
+          },
+          "operation": "recordRuntimeTerminalOrAdjudicateCancellationRace"
+        },
+        {
+          "testId": "dss03.game.14.lost-contact-closure",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game14.lost-contact-closure",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "INTERRUPTED_UNKNOWN",
+              "attemptState": "INTERRUPTED_UNKNOWN",
+              "leaseState": "RELEASED",
+              "terminalAt": true,
+              "siblingState": "OPEN"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "adjudicateCancellationRace"
+        },
+        {
+          "testId": "dss03.game.14.lost-contact-closed-lease",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game14.lost-contact-closed-lease",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_LEASE_NOT_ACTIVE",
+              "durableEffects": 0,
+              "attemptState": "INTERRUPTED_UNKNOWN"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "adjudicateCancellationRace"
+        }
+      ]
+    },
+    {
+      "number": 15,
+      "requirement": "cancellation never terminalizes an unacknowledged running attempt or sibling slot;",
+      "testCases": [
+        {
+          "testId": "dss03.game.15.unacknowledged-no-terminal",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game15.unacknowledged-no-terminal",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "REJECTED",
+              "attemptState": "STARTED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "adjudicateCancellationRace"
+        },
+        {
+          "testId": "dss03.game.15.sibling-protection",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game15.sibling-protection",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "OPEN"
+            },
+            "adjudication": "BOUNDARY"
+          },
+          "operation": "adjudicateCancellationRace"
+        }
+      ]
+    },
+    {
+      "number": 16,
+      "requirement": "ordinary admitted output creates no candidate, and each candidate subtype creates exactly its declared refs;",
+      "testCases": [
+        {
+          "testId": "dss03.game.16.ordinary-no-candidate",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runStructuralRawBoundaries:game16.ordinary-no-candidate",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "ADMITTED_NO_CANDIDATE",
+              "candidateCount": 0
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "admitMicroresult"
+        },
+        {
+          "testId": "dss03.game.16.page-subtype",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runStructuralRawBoundaries:game16.page-subtype",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "ADMITTED_PAGE_FAULT_CANDIDATE",
+              "candidateRef": null
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "admitMicroresult"
+        },
+        {
+          "testId": "dss03.game.16.novel-subtype",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runStructuralRawBoundaries:game16.novel-subtype",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "ADMITTED_NOVEL_EDGE_CANDIDATE",
+              "candidateRef": null
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "admitMicroresult"
+        },
+        {
+          "testId": "dss03.game.16.both-subtype",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runStructuralRawBoundaries:game16.both-subtype",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "ADMITTED_BOTH_CANDIDATES"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "admitMicroresult"
+        }
+      ]
+    },
+    {
+      "number": 17,
+      "requirement": "page workers cannot validate faults, legislate novel edges, or widen evidence;",
+      "testCases": [
+        {
+          "testId": "dss03.game.17.candidate-authority",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game17.candidate-authority",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "BOUNDED",
+              "candidates": 0
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "admitMicroresult"
+        },
+        {
+          "testId": "dss03.game.17.candidate-legislation",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game17.candidate-legislation",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_RAW_SCHEMA_REJECTED",
+              "attemptState": "TERMINAL_FAILURE"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "admitMicroresult"
+        },
+        {
+          "testId": "dss03.game.17.candidate-evidence-widening",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game17.candidate-evidence-widening",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_RAW_SCHEMA_REJECTED",
+              "attemptState": "TERMINAL_FAILURE"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "admitMicroresult"
+        }
+      ]
+    },
+    {
+      "number": 18,
+      "requirement": "independence fails when only names differ or required lineage dimensions remain shared;",
+      "testCases": [
+        {
+          "testId": "dss03.game.18.names-only-shared-lineage",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game18.names-only-shared-lineage",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "DOES_NOT_SATISFY",
+              "sharedDimensions": [
+                "principalRoot",
+                "backendRoot",
+                "kernelRoot",
+                "routeRoot",
+                "materializationRoot",
+                "dataRoot",
+                "runtimeRoot",
+                "oracleRoot",
+                "authorityRoot"
+              ]
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "assessResultIndependence"
+        },
+        {
+          "testId": "dss03.game.18.required-dimension-shared",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game18.required-dimension-shared",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "DOES_NOT_SATISFY",
+              "sharedDimensions": [
+                "principalRoot",
+                "backendRoot",
+                "kernelRoot",
+                "routeRoot",
+                "materializationRoot",
+                "dataRoot",
+                "runtimeRoot",
+                "oracleRoot",
+                "authorityRoot"
+              ]
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "assessResultIndependence"
+        }
+      ]
+    },
+    {
+      "number": 19,
+      "requirement": "result evaluation consumes all result-branch replicates, dissent, failures, and attestations;",
+      "testCases": [
+        {
+          "testId": "dss03.game.19.replicates",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runPositive:game19.replicates",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "EVALUATED",
+              "evaluationCount": 2
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "evaluateExpectedCell"
+        },
+        {
+          "testId": "dss03.game.19.dissent",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runPositive:game19.dissent",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "CONSUMED",
+              "resultStatuses": [
+                "support",
+                "support"
+              ]
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "evaluateExpectedCell"
+        },
+        {
+          "testId": "dss03.game.19.failures",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runPositive:game19.failures",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "CONSUMED",
+              "attemptCount": 2,
+              "terminalStates": [
+                "RESULT_ADMITTED",
+                "RESULT_ADMITTED"
+              ]
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "evaluateExpectedCell"
+        },
+        {
+          "testId": "dss03.game.19.attestations",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runPositive:game19.attestations",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "CONSUMED",
+              "attestationCount": 1
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "evaluateExpectedCell"
+        }
+      ]
+    },
+    {
+      "number": 20,
+      "requirement": "non-result terminal branches close without fabricated MicroResult, Attestation, or Evaluation objects;",
+      "testCases": [
+        {
+          "testId": "dss03.game.20.non-result-no-fabricated-artifacts",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game20.non-result-no-fabricated-artifacts",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "microresults": 0,
+              "evaluations": 0
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "reconcileTerminalCoverage"
+        }
+      ]
+    },
+    {
+      "number": 21,
+      "requirement": "missing any branch-applicable artifact, disposition, or terminal witness prevents sealing;",
+      "testCases": [
+        {
+          "testId": "dss03.game.21.missing-branch-artifact",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game21.missing-branch-artifact",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_REBUILD_DRIFT"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "rebuildExecutionStateOrSealJobResults"
+        },
+        {
+          "testId": "dss03.game.21.missing-disposition",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game21.missing-disposition",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_REBUILD_DRIFT"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "rebuildExecutionStateOrSealJobResults"
+        },
+        {
+          "testId": "dss03.game.21.missing-terminal-witness",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game21.missing-terminal-witness",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_REBUILD_DRIFT"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "rebuildExecutionStateOrSealJobResults"
+        }
+      ]
+    },
+    {
+      "number": 22,
+      "requirement": "duplicate, missing, or unclassified terminal witnesses prevent coverage closure;",
+      "testCases": [
+        {
+          "testId": "dss03.game.22.duplicate-witness",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game22.duplicate-witness",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_REBUILD_DRIFT"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "rebuildExecutionStateOrReconcileCoverage"
+        },
+        {
+          "testId": "dss03.game.22.missing-witness",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game22.missing-witness",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "OPEN"
+            },
+            "adjudication": "BOUNDARY"
+          },
+          "operation": "rebuildExecutionStateOrReconcileCoverage"
+        },
+        {
+          "testId": "dss03.game.22.unclassified-witness",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game22.unclassified-witness",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "OPEN"
+            },
+            "adjudication": "BOUNDARY"
+          },
+          "operation": "rebuildExecutionStateOrReconcileCoverage"
+        }
+      ]
+    },
+    {
+      "number": 23,
+      "requirement": "completion consumes a durable SEALED predecessor and follows publish-before-reference and the exact terminal sequence;",
+      "testCases": [
+        {
+          "testId": "dss03.game.23.sealed-predecessor",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runPositive:game23.sealed-predecessor",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "COMPLETED"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "sealJobResultsOrCompleteJobResults"
+        },
+        {
+          "testId": "dss03.game.23.publish-before-reference",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runPositive:game23.publish-before-reference",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "REFERENCED",
+              "artifactCount": 9
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "sealJobResultsOrCompleteJobResults"
+        },
+        {
+          "testId": "dss03.game.23.terminal-sequence",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runPositive:game23.terminal-sequence",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "COMPLETED",
+              "sealState": "COMPLETED"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "sealJobResultsOrCompleteJobResults"
+        }
+      ]
+    },
+    {
+      "number": 24,
+      "requirement": "every crash boundary recovers explicitly without silent retry or false completion;",
+      "testCases": [
+        {
+          "testId": "dss03.game.24.crash-recovery",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game24.crash-recovery",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "READY",
+              "recovery": "EXPLICIT"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "recoverDss03GenerationOrCompleteJobResults"
+        },
+        {
+          "testId": "dss03.game.24.no-silent-retry",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game24.no-silent-retry",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "NO_SILENT_RETRY",
+              "attemptCount": 1
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "recoverDss03GenerationOrCompleteJobResults"
+        },
+        {
+          "testId": "dss03.game.24.no-false-completion",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game24.no-false-completion",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "prior": "SEALED",
+              "observed": "COMPLETED",
+              "state": "COMPLETED"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "recoverDss03GenerationOrCompleteJobResults"
+        },
+        {
+          "testId": "dss03.game.24.lost-contact-recovery",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runRetryAndRaceBoundaries:game24.lost-contact-recovery",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "READY",
+              "attemptState": "INTERRUPTED_UNKNOWN",
+              "leaseState": "RELEASED",
+              "classification": "INTERRUPTED_UNKNOWN",
+              "siblingState": "OPEN"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "recoverDss03Generation"
+        }
+      ]
+    },
+    {
+      "number": 25,
+      "requirement": "missing/extra/orphan durable populations and event/CAS/quarantine corruption block readiness;",
+      "testCases": [
+        {
+          "testId": "dss03.game.25.missing-population",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game25.missing-population",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "BLOCKED",
+              "code": null
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "rebuildExecutionStateOrRecover"
+        },
+        {
+          "testId": "dss03.game.25.extra-population",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game25.extra-population",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "BLOCKED",
+              "code": null
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "rebuildExecutionStateOrRecover"
+        },
+        {
+          "testId": "dss03.game.25.orphan-population",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game25.orphan-population",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_REBUILD_DRIFT"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "rebuildExecutionStateOrRecover"
+        },
+        {
+          "testId": "dss03.game.25.event-corruption",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game25.event-corruption",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_EVENT_DIGEST_INVALID"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "rebuildExecutionStateOrRecover"
+        },
+        {
+          "testId": "dss03.game.25.cas-corruption",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game25.cas-corruption",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "BLOCKED",
+              "code": null
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "rebuildExecutionStateOrRecover"
+        },
+        {
+          "testId": "dss03.game.25.quarantine-corruption",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runReplayAndCustodyBoundaries:game25.quarantine-corruption",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "BLOCKED",
+              "reason": "DSS03_FIXTURE_OWNER_MISMATCH"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "rebuildExecutionStateOrRecover"
+        }
+      ]
+    },
+    {
+      "number": 26,
+      "requirement": "zero model calls, network calls, credentials, repository reads, and project mutations occur;",
+      "testCases": [
+        {
+          "testId": "dss03.game.26.isolation-no-side-effects",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game26.isolation-no-side-effects",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "status": "NONE",
+              "events": 9
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "performPreexecutionAssurance"
+        },
+        {
+          "testId": "dss03.game.26.credential-no-side-effects",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game26.credential-no-side-effects",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREFLIGHT_ISOLATION_VIOLATION",
+              "durableEffects": 0
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "performPreexecutionAssurance"
+        },
+        {
+          "testId": "dss03.game.26.network-no-side-effects",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game26.network-no-side-effects",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREFLIGHT_ISOLATION_VIOLATION",
+              "durableEffects": 0
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "performPreexecutionAssurance"
+        },
+        {
+          "testId": "dss03.game.26.model-no-side-effects",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game26.model-no-side-effects",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREFLIGHT_ISOLATION_VIOLATION",
+              "durableEffects": 0
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "performPreexecutionAssurance"
+        },
+        {
+          "testId": "dss03.game.26.project-no-side-effects",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runBoundaries:game26.project-no-side-effects",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_PREFLIGHT_ISOLATION_VIOLATION",
+              "durableEffects": 0
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "performPreexecutionAssurance"
+        }
+      ]
+    },
+    {
+      "number": 27,
+      "requirement": "result projections disclose no quarantine bytes, private paths, credentials, or unknown fields;",
+      "testCases": [
+        {
+          "testId": "dss03.game.27.projection-redaction",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runPositive:game27.projection-redaction",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "rawBytes": false,
+              "privatePaths": false,
+              "state": "COMPLETED"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "projectResults"
+        }
+      ]
+    },
+    {
+      "number": 28,
+      "requirement": "every learned discovery, trust-root, serialization, idempotency, reconstruction, lifecycle-ownership, and outcome-compatibility obligation has exact evidence;",
+      "testCases": [
+        {
+          "testId": "dss03.game.28.learned-discovery",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game28.learned-discovery",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "passed": 1859,
+              "expected": 1859,
+              "actual": 1859
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "generation9EvidenceReproducer"
+        },
+        {
+          "testId": "dss03.game.28.trust-root",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game28.trust-root",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "identityChecks": {
+                "obligationPopulation": true,
+                "uniqueObligations": true,
+                "candidateBinding": true,
+                "interventionCaseDigest": true,
+                "namedEvidenceInstancePopulation": true,
+                "uniqueNamedEvidenceInstanceIds": true,
+                "exactEvidenceRegistry": true,
+                "classifierCounterexamplesClosed": true,
+                "prestartAuthorityBoundary": true
+              }
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "generation9EvidenceReproducer"
+        },
+        {
+          "testId": "dss03.game.28.serialization",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game28.serialization",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "materializations": 1859,
+              "serializationDigest": null
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "generation9EvidenceReproducer"
+        },
+        {
+          "testId": "dss03.game.28.idempotency",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game28.idempotency",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "passed": 36,
+              "expected": 36
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "generation9EvidenceReproducer"
+        },
+        {
+          "testId": "dss03.game.28.reconstruction",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game28.reconstruction",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "verdict": "PASS"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "generation9EvidenceReproducer"
+        },
+        {
+          "testId": "dss03.game.28.lifecycle-ownership",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game28.lifecycle-ownership",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "passed": 36,
+              "expected": 36
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "generation9EvidenceReproducer"
+        },
+        {
+          "testId": "dss03.game.28.outcome-compatibility",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game28.outcome-compatibility",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "verdict": "PASS",
+              "candidateCommit": "45ca7736afbb6701d60abcdb6b0dc9888d2741b6"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "generation9EvidenceReproducer"
+        }
+      ]
+    },
+    {
+      "number": 29,
+      "requirement": "each known-edge row has independent applicability facts and a positive lawful-use witness;",
+      "testCases": [
+        {
+          "testId": "dss03.game.29.known-edge-applicability",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runPositive:game29.known-edge-applicability",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "witnessCount": 2,
+              "edgeCount": 1
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "evaluateExpectedCell"
+        }
+      ]
+    },
+    {
+      "number": 30,
+      "requirement": "every drafting intervention mutation executes independently and reproduces its typed rejection;",
+      "testCases": [
+        {
+          "testId": "dss03.game.30.intervention-mutation",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game30.intervention-mutation",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "passed": 36,
+              "expected": 36
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "generation9InterventionReproducer"
+        }
+      ]
+    },
+    {
+      "number": 31,
+      "requirement": "evidence-binding focus targets the exact candidate and rejects component-only, related, stale, wrong-generation, wrong-scope, or unsealed evidence as satisfaction.",
+      "testCases": [
+        {
+          "testId": "dss03.game.31.exact-candidate",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game31.exact-candidate",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "candidateCommit": "45ca7736afbb6701d60abcdb6b0dc9888d2741b6",
+              "verdict": "PASS"
+            },
+            "adjudication": "ACCEPTED"
+          },
+          "operation": "evidenceBindingVerifier"
+        },
+        {
+          "testId": "dss03.game.31.component-only-reject",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game31.component-only-reject",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_EVIDENCE_SCOPE_REJECTED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "evidenceBindingVerifier"
+        },
+        {
+          "testId": "dss03.game.31.related-reject",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game31.related-reject",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_EVIDENCE_SCOPE_REJECTED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "evidenceBindingVerifier"
+        },
+        {
+          "testId": "dss03.game.31.stale-reject",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game31.stale-reject",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_EVIDENCE_STALE"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "evidenceBindingVerifier"
+        },
+        {
+          "testId": "dss03.game.31.wrong-generation-reject",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game31.wrong-generation-reject",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_EVIDENCE_GENERATION_MISMATCH"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "evidenceBindingVerifier"
+        },
+        {
+          "testId": "dss03.game.31.wrong-scope-or-unsealed-reject",
+          "file": "scripts/direct-semantic-service-dss03-regression.mjs",
+          "locator": "runEvidenceBindingChecks:game31.wrong-scope-or-unsealed-reject",
+          "expected": {
+            "mode": "return",
+            "fields": {
+              "code": "DSS03_EVIDENCE_SCOPE_REJECTED"
+            },
+            "adjudication": "REJECTED"
+          },
+          "operation": "evidenceBindingVerifier"
+        }
+      ]
+    }
+  ]
+}
