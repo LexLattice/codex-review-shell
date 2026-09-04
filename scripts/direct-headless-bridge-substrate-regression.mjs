@@ -186,6 +186,32 @@ try {
   assert.equal(duplicate.body.duplicate, true);
   assert.equal(duplicate.body.event.envelopeId, accepted.body.event.envelopeId);
 
+  const callerEvidence = {
+    kind: "operator_note",
+    id: "note-1",
+    digest: "sha256:note-1",
+    rendererSafeLabel: "Operator note",
+  };
+  const evidenceAccepted = await postEvent(baseUrl, event({
+    idempotencyKey: "idem-valid-evidence",
+    evidenceRefs: [callerEvidence],
+  }));
+  assert.equal(evidenceAccepted.response.status, 202);
+  assert.deepEqual(evidenceAccepted.body.event.evidenceRefs, [callerEvidence]);
+  assert.deepEqual(evidenceAccepted.body.routeDecision.evidenceRefs, [callerEvidence]);
+  const evidenceCountBeforeMixed = daemon.store.count("direct_bridge_inbox_events");
+  const mixedEvidence = await postEvent(baseUrl, event({
+    idempotencyKey: "idem-mixed-invalid-evidence",
+    evidenceRefs: [callerEvidence, {
+      kind: "malicious",
+      id: "bad-1",
+      nested: { rawPayload: "must be rejected" },
+    }],
+  }));
+  assert.equal(mixedEvidence.response.status, 400);
+  assert.equal(mixedEvidence.body.error, "invalid_evidence_refs");
+  assert.equal(daemon.store.count("direct_bridge_inbox_events"), evidenceCountBeforeMixed);
+
   const stored = await requestJson(baseUrl, `/v1/bridge/events/${encodeURIComponent(accepted.body.event.envelopeId)}`);
   assert.equal(stored.response.status, 200);
   assert.equal(stored.body.ok, true);
@@ -250,8 +276,8 @@ try {
   assert.equal(statusAfter.body.rawPayloadsExposed, false);
   assert.equal(statusAfter.body.rawProviderFramesExposed, false);
   assert.equal(statusAfter.body.rawPathsExposed, false);
-  assert.equal(statusAfter.body.inboxEvents, 7);
-  assert.equal(statusAfter.body.lifecycle.route_resolved, 1);
+  assert.equal(statusAfter.body.inboxEvents, 8);
+  assert.equal(statusAfter.body.lifecycle.route_resolved, 2);
   assert.equal(statusAfter.body.lifecycle.blocked_ingress, 2);
   assert.equal(statusAfter.body.lifecycle.route_blocked, 4);
 

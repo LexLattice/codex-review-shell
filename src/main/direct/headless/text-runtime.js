@@ -33,6 +33,17 @@ const IMPLEMENTATION_AUTO_APPROVE_METHODS = new Set([
   "direct/tool/patchApply/requestApproval",
   "direct/tool/command/requestApproval",
 ]);
+const IMPLEMENTATION_TERMINAL_TURN_STATES = new Set([
+  "completed",
+  "failed",
+  "aborted",
+  "tool_call_blocked_text_only",
+  "transport_handoff_unknown",
+  "response_incomplete",
+  "content_filter_terminal",
+  "max_output_terminal",
+  "empty_output_terminal",
+]);
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -136,11 +147,10 @@ function safeError(error) {
 
 function terminalStateForTurn(turn = {}) {
   const state = normalizeString(turn.state || turn.status, "");
-  if (state === "completed") return "provider_completed";
-  if (state === "tool_waiting" || state === "authority_waiting") return "authority_waiting";
+  if (state === "completed" && turn.settled !== false) return "provider_completed";
   if (state === "transport_handoff_unknown") return "handoff_unknown";
-  if (!state) return "failed";
-  return state === "failed" || state.endsWith("_terminal") || state.includes("blocked") ? "failed" : "provider_completed";
+  if (IMPLEMENTATION_TERMINAL_TURN_STATES.has(state)) return "failed";
+  return "failed";
 }
 
 class HeadlessSurfaceSession extends EventEmitter {
@@ -175,6 +185,15 @@ class DirectHeadlessTextRuntime {
     this.activeTurnRetryDelayMs = Math.max(100, Number(options.activeTurnRetryDelayMs) || 1000);
     this.implementationSettleTimeoutMs = Math.max(500, Number(options.implementationSettleTimeoutMs) || 5000);
     this.artifactRoot = normalizeString(options.artifactRoot, "");
+    this.runtimeId = normalizeString(options.runtimeId, `headless_runtime_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`);
+    this.recoverPersistedPackets();
+  }
+
+  recoverPersistedPackets() {
+    if (typeof this.store.listTurnPackets !== "function") return;
+    const packets = this.store.listTurnPackets({ states: ["queued"] });
+    for (const packet of packets) this.queuePacket(packet);
+    for (const threadId of this.queueByThread.keys()) this.processNext(threadId);
   }
 
   statusProjection() {
@@ -353,7 +372,8 @@ class DirectHeadlessTextRuntime {
   queuePacket(packet = {}) {
     const threadId = normalizeString(packet.targetThreadId, "");
     if (!this.queueByThread.has(threadId)) this.queueByThread.set(threadId, []);
-    this.queueByThread.get(threadId).push(packet.packetId);
+    const queue = this.queueByThread.get(threadId);
+    if (!queue.includes(packet.packetId)) queue.push(packet.packetId);
   }
 
   scheduleRetry(threadId = "") {
@@ -368,6 +388,11 @@ class DirectHeadlessTextRuntime {
 
   startPacket(packet = {}) {
     if (packet.state === "failed") return packet;
+    const claim = typeof this.store.claimTurnPacket === "function"
+      ? this.store.claimTurnPacket(packet.packetId, { runtimeId: this.runtimeId })
+      : { claimed: true, packet };
+    if (!claim.claimed) return claim.packet || packet;
+    packet = claim.packet || packet;
     const threadId = normalizeString(packet.targetThreadId, "");
     this.activeByThread.set(threadId, packet.packetId);
     this.runPacket(packet).finally(() => {
@@ -484,25 +509,98 @@ class DirectHeadlessTextRuntime {
 
   async waitForImplementationSettled(surfaceSession, sessionId = "", turnId = "") {
     const deadline = Date.now() + this.implementationSettleTimeoutMs;
-    while (Date.now() < deadline) {
-      const pending = surfaceSession?.hasServerRequest?.() === true;
-      const turn = this.controller.sessionStore?.readTurn
-        ? this.controller.sessionStore.readTurn(sessionId, turnId)
-        : null;
-      const state = normalizeString(turn?.state, "");
-      if (!pending && state && !IMPLEMENTATION_PENDING_TURN_STATES.has(state)) return turn;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    return this.controller.sessionStore?.readTurn
+    const readTurn = () => this.controller.sessionStore?.readTurn
       ? this.controller.sessionStore.readTurn(sessionId, turnId)
       : null;
+    const isSettled = (turn) => {
+      const state = normalizeString(turn?.state || turn?.status, "");
+      return !surfaceSession?.hasServerRequest?.() && IMPLEMENTATION_TERMINAL_TURN_STATES.has(state);
+    };
+    while (Date.now() < deadline) {
+      const turn = readTurn();
+      if (isSettled(turn)) return turn;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const timeoutError = {
+      code: "headless_implementation_settle_timeout",
+      message: "Headless implementation turn did not settle before the bounded wait expired.",
+    };
+    try {
+      if (typeof this.controller.interruptTurn === "function") {
+        await this.controller.interruptTurn({ sessionId, threadId: sessionId, turnId }, {});
+      }
+    } catch (_) {}
+    const activeBeforeClose = this.controller.activeRuns?.get(turnId);
+    if (activeBeforeClose?.abortController && !activeBeforeClose.abortController.signal.aborted) {
+      try { activeBeforeClose.abortController.abort(timeoutError.message); } catch (_) {}
+    }
+    try {
+      await surfaceSession?.dispose?.({ silent: true, reason: timeoutError.code });
+    } catch (_) {}
+    for (const request of surfaceSession?.serverRequests?.values?.() || []) {
+      if (request?.status === "pending") {
+        request.status = "failed";
+        request.errorSummary = timeoutError.message;
+        request.updatedAt = nowIso();
+      }
+    }
+    const active = this.controller.activeRuns?.get(turnId);
+    if (active?.promise) {
+      await Promise.race([
+        Promise.resolve(active.promise).catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, Math.min(1000, this.implementationSettleTimeoutMs))),
+      ]);
+    }
+    let turn = readTurn();
+    const cleanupDeadline = Date.now() + Math.min(1000, this.implementationSettleTimeoutMs);
+    while (!isSettled(turn) && Date.now() < cleanupDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      turn = readTurn();
+    }
+    if (isSettled(turn)) {
+      return {
+        ...turn,
+        error: turn.error || timeoutError,
+        boundedWaitExpired: true,
+        cancellationSettled: true,
+      };
+    }
+    if (turn && typeof this.controller.sessionStore?.updateTurnState === "function") {
+      try {
+        turn = this.controller.sessionStore.updateTurnState(sessionId, turnId, "failed", {
+          error: timeoutError,
+          boundedWaitExpired: true,
+          cancellationSettled: true,
+        });
+      } catch (_) {}
+    }
+    return turn || {
+      state: "failed",
+      status: "failed",
+      error: timeoutError,
+      boundedWaitExpired: true,
+      cancellationSettled: true,
+    };
   }
 
   async runPacket(packet = {}) {
     const packetId = normalizeString(packet.packetId, "");
     const mark = (state, patch = {}) => {
+      const current = this.store.readTurnPacket(packetId) || packet;
+      const claim = isPlainObject(current.executionClaim) ? current.executionClaim : null;
+      const claimPatch = claim && TERMINAL_PACKET_STATES.has(state) && claim.status === "in_progress"
+        ? {
+          executionClaim: {
+            ...claim,
+            status: "settled",
+            settledAt: nowIso(),
+            updatedAt: nowIso(),
+          },
+        }
+        : {};
       return this.store.updateTurnPacket(packetId, {
         ...patch,
+        ...claimPatch,
         state,
         statusHistory: [{ state, at: nowIso(), reason: normalizeString(patch.reason, "") }],
       });
@@ -552,19 +650,23 @@ class DirectHeadlessTextRuntime {
         ? await surfaceSession.request("turn/start", startTurnParams)
         : await this.controller.startTurn(startTurnParams, context);
       const active = this.controller.activeRuns?.get(turnAck?.turn?.id);
-      if (active?.promise) await active.promise;
-      if (implementationRuntime) {
-        await this.waitForImplementationSettled(surfaceSession, packet.targetThreadId, turnAck?.turn?.id);
-      }
-      const finalTurn = this.controller.sessionStore?.readTurn
+      const finalTurn = implementationRuntime
+        ? await this.waitForImplementationSettled(surfaceSession, packet.targetThreadId, turnAck?.turn?.id)
+        : (active?.promise ? await active.promise : null);
+      const settledTurn = this.controller.sessionStore?.readTurn
         ? this.controller.sessionStore.readTurn(packet.targetThreadId, turnAck?.turn?.id)
         : null;
-      const terminalState = terminalStateForTurn(finalTurn || turnAck?.turn || {});
+      const terminalState = terminalStateForTurn(settledTurn || finalTurn || turnAck?.turn || {});
       const terminalPacket = mark(terminalState, {
         providerCompleted: terminalState === "provider_completed",
         turnId: turnAck?.turn?.id || "",
-        terminalTurnState: normalizeString(finalTurn?.state || turnAck?.turn?.state || turnAck?.turn?.status, ""),
-        error: isPlainObject(finalTurn?.error) ? finalTurn.error : null,
+        terminalTurnState: normalizeString(settledTurn?.state || finalTurn?.state || turnAck?.turn?.state || turnAck?.turn?.status, ""),
+        error: isPlainObject(settledTurn?.error || finalTurn?.error) ? (settledTurn?.error || finalTurn?.error) : null,
+        ...(finalTurn?.boundedWaitExpired ? {
+          blockerCode: "headless_implementation_settle_timeout",
+          boundedWaitExpired: true,
+          cancellationSettled: finalTurn.cancellationSettled === true,
+        } : {}),
       });
       if (terminalState === "provider_completed") {
         const reduction = reduceHeadlessTurnOutput({
@@ -595,6 +697,16 @@ class DirectHeadlessTextRuntime {
         reason: code || "headless_direct_text_failed",
         error: safeError(error),
         replayState: "replay_unsafe",
+        ...(code === "active_turn_exists" ? {
+          executionClaim: {
+            ...(isPlainObject((this.store.readTurnPacket(packetId) || packet).executionClaim)
+              ? (this.store.readTurnPacket(packetId) || packet).executionClaim
+              : {}),
+            status: "retry_pending",
+            releasedAt: nowIso(),
+            updatedAt: nowIso(),
+          },
+        } : {}),
       });
       if (code === "active_turn_exists") {
         const queued = this.store.readTurnPacket(packetId);

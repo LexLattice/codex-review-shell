@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { DirectHeadlessBridgeDaemon } = require("../src/main/direct/headless/bridge-daemon.js");
+const { DirectHeadlessBridgeStore } = require("../src/main/direct/headless/bridge-store.js");
 const { DirectHeadlessTextRuntime } = require("../src/main/direct/headless/text-runtime.js");
 
 const TOKEN = "fixture-token";
@@ -217,6 +218,61 @@ try {
   assert.equal(duplicate.body.turnPacket.packetId, first.body.turnPacket.packetId);
   assert.equal(duplicate.body.queued, false);
 
+  // A queued packet survives a runtime restart and is executed once in
+  // creation order. A second runtime cannot claim the same packet.
+  const restartPacket = daemon.store.writeTurnPacket({
+    packetId: "headless_restart_packet",
+    envelopeId: "headless_restart_envelope",
+    routeId: "route_text",
+    routeVersion: "v1",
+    targetThreadId: "direct_session_headless_text",
+    runtimePath: "direct-text",
+    state: "queued",
+    promptText: "recovered queued packet",
+    promptDigest: "sha256:recovered-queued-packet",
+    clientTurnRequestId: "headless_restart_request",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  const restartedRuntime = new DirectHeadlessTextRuntime({
+    store: daemon.store,
+    controller,
+    project: { id: "project_runtime", name: "Runtime fixture" },
+  });
+  const duplicateRuntime = new DirectHeadlessTextRuntime({
+    store: daemon.store,
+    controller,
+    project: { id: "project_runtime", name: "Runtime fixture" },
+  });
+  const recovered = await waitForPacket(
+    baseUrl,
+    restartPacket.packetId,
+    (packet) => packet.state === "provider_completed",
+    "recovered queued packet completion",
+  );
+  assert.equal(recovered.providerCompleted, true);
+  assert.equal(controller.turnOrdinal, 3);
+  assert.equal(restartedRuntime.statusProjection().activeTurns, 0);
+  assert.equal(duplicateRuntime.statusProjection().activeTurns, 0);
+
+  const ambiguityRoot = await fs.mkdtemp(path.join(os.tmpdir(), "direct-headless-restart-ambiguity-"));
+  const ambiguityStore = new DirectHeadlessBridgeStore({ rootDir: ambiguityRoot });
+  ambiguityStore.writeTurnPacket({
+    packetId: "headless_ambiguous_restart_packet",
+    envelopeId: "headless_ambiguous_restart_envelope",
+    state: "queued",
+    targetThreadId: "direct_session_headless_text",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  ambiguityStore.claimTurnPacket("headless_ambiguous_restart_packet", { runtimeId: "crashed-runtime" });
+  ambiguityStore.close();
+  const reconciledStore = new DirectHeadlessBridgeStore({ rootDir: ambiguityRoot });
+  const reconciledPacket = reconciledStore.readTurnPacket("headless_ambiguous_restart_packet");
+  assert.equal(reconciledPacket.state, "failed");
+  assert.equal(reconciledPacket.blockerCode, "headless_turn_restart_in_progress_unknown");
+  assert.equal(reconciledPacket.executionClaim.status, "reconciled_unknown");
+  reconciledStore.close();
+  await fs.rm(ambiguityRoot, { recursive: true, force: true });
+
   textRuntime.queueByThread.set("direct_session_headless_text", [
     "missing_packet_id",
     first.body.turnPacket.packetId,
@@ -228,8 +284,8 @@ try {
   assert.equal(status.response.status, 200);
   assert.equal(status.body.textRuntime.activeTurns, 0);
   assert.equal(status.body.textRuntime.queuedTurns, 0);
-  assert.equal(status.body.turnPackets.total, 2);
-  assert.equal(status.body.turnPackets.byState.provider_completed, 2);
+  assert.equal(status.body.turnPackets.total, 3);
+  assert.equal(status.body.turnPackets.byState.provider_completed, 3);
   assert.equal(status.body.providerRequestsStarted, 0);
   assert.equal(status.body.rawPayloadsExposed, false);
 } finally {

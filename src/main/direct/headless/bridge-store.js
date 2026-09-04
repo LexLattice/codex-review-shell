@@ -14,6 +14,21 @@ const REDUCED_RESULT_SCHEMA = "headless_reduced_result@1";
 const HUMAN_DECISION_PACKET_SCHEMA = "human_decision_packet@1";
 const HUMAN_DECISION_REPLY_SCHEMA = "human_decision_reply@1";
 const PROVIDER_AFFORDANCE_CLAIM_SCHEMA = "headless_provider_affordance_claim@1";
+const MAX_EVIDENCE_REFS = 32;
+const MAX_EVIDENCE_REF_DEPTH = 1;
+const MAX_EVIDENCE_REF_FIELD_LENGTH = 256;
+const SAFE_EVIDENCE_REF_KEYS = new Set([
+  "kind",
+  "id",
+  "digest",
+  "rendererSafeLabel",
+  "artifactId",
+  "artifactDigest",
+  "projectId",
+  "refId",
+  "evidenceKey",
+  "source",
+]);
 
 function normalizeString(value, fallback = "") {
   const text = typeof value === "string" ? value.trim() : "";
@@ -69,6 +84,49 @@ function evidenceRef(kind, label, extra = {}) {
     rendererSafeLabel: label,
     ...extra,
   };
+}
+
+function evidenceRefDepth(value, depth = 0) {
+  if (!value || typeof value !== "object") return depth;
+  if (depth > MAX_EVIDENCE_REF_DEPTH) return depth;
+  const values = Array.isArray(value) ? value : Object.values(value);
+  return values.reduce((max, child) => Math.max(max, evidenceRefDepth(child, depth + 1)), depth);
+}
+
+function validateEvidenceRefs(input) {
+  if (input === undefined) return { ok: true, refs: [] };
+  if (!Array.isArray(input)) return { ok: false, errorCode: "invalid_evidence_refs" };
+  if (input.length > MAX_EVIDENCE_REFS) return { ok: false, errorCode: "evidence_refs_limit_exceeded" };
+  const refs = [];
+  for (const candidate of input) {
+    if (!isPlainObject(candidate) || evidenceRefDepth(candidate) > MAX_EVIDENCE_REF_DEPTH) {
+      return { ok: false, errorCode: "invalid_evidence_refs" };
+    }
+    const keys = Object.keys(candidate);
+    if (!keys.length || keys.some((key) => !SAFE_EVIDENCE_REF_KEYS.has(key))) {
+      return { ok: false, errorCode: "invalid_evidence_refs" };
+    }
+    const safe = {};
+    for (const key of keys) {
+      if (typeof candidate[key] !== "string") return { ok: false, errorCode: "invalid_evidence_refs" };
+      const value = normalizeString(candidate[key], "");
+      if (value.length > MAX_EVIDENCE_REF_FIELD_LENGTH) {
+        return { ok: false, errorCode: "evidence_ref_field_too_long" };
+      }
+      if (value) safe[key] = value;
+    }
+    if (!safe.kind || !(
+      safe.id ||
+      safe.refId ||
+      safe.evidenceKey ||
+      safe.artifactId ||
+      safe.rendererSafeLabel
+    )) {
+      return { ok: false, errorCode: "invalid_evidence_refs" };
+    }
+    refs.push(safe);
+  }
+  return { ok: true, refs };
 }
 
 function routeDigest(route = {}) {
@@ -172,6 +230,7 @@ function normalizeWorkThread(input = {}) {
 function safeEventProjection(row) {
   if (!row) return null;
   const event = parseJson(row.event_json, {});
+  const validatedEvidence = validateEvidenceRefs(event.evidenceRefs);
   return {
     schema: EVENT_ENVELOPE_SCHEMA,
     envelopeId: row.envelope_id,
@@ -191,7 +250,7 @@ function safeEventProjection(row) {
     payloadDigest: row.payload_digest,
     rawPayloadIncluded: false,
     routeDecisionId: row.route_decision_id || "",
-    evidenceRefs: Array.isArray(event.evidenceRefs) ? event.evidenceRefs : [],
+    evidenceRefs: validatedEvidence.ok ? validatedEvidence.refs : [],
   };
 }
 
@@ -354,6 +413,7 @@ class DirectHeadlessBridgeStore {
       on conflict(key) do update set value_json = excluded.value_json
     `).run(safeJson({ schema: HEADLESS_BRIDGE_STORE_SCHEMA }));
     this.reconcileProviderAffordanceClaims();
+    this.reconcileTurnPacketClaims();
   }
 
   reconcileProviderAffordanceClaims() {
@@ -700,6 +760,98 @@ class DirectHeadlessBridgeStore {
     return row ? parseJson(row.packet_json, null) : null;
   }
 
+  listTurnPackets(options = {}) {
+    const rows = this.db.prepare(
+      "select packet_json from direct_bridge_turn_packets order by created_at asc, packet_id asc",
+    ).all();
+    const states = Array.isArray(options.states) ? new Set(options.states.map((state) => normalizeString(state, ""))) : null;
+    return rows
+      .map((row) => parseJson(row.packet_json, null))
+      .filter((packet) => packet && (!states || states.has(normalizeString(packet.state, ""))));
+  }
+
+  claimTurnPacket(packetId = "", options = {}) {
+    const safePacketId = normalizeString(packetId, "");
+    const runtimeId = normalizeString(options.runtimeId, "headless_runtime");
+    if (!safePacketId) return { claimed: false, reason: "missing_packet_id", packet: null };
+    this.db.exec("begin immediate");
+    try {
+      const packet = this.readTurnPacket(safePacketId);
+      if (!packet) {
+        this.db.exec("commit");
+        return { claimed: false, reason: "packet_missing", packet: null };
+      }
+      if (["provider_completed", "failed", "handoff_unknown", "replay_unsafe"].includes(packet.state)) {
+        this.db.exec("commit");
+        return { claimed: false, reason: "packet_terminal", packet };
+      }
+      const existingClaim = isPlainObject(packet.executionClaim) ? packet.executionClaim : null;
+      if (existingClaim && ["in_progress", "settled", "reconciled_unknown"].includes(existingClaim.status)) {
+        this.db.exec("commit");
+        return { claimed: false, reason: existingClaim.status === "in_progress" ? "packet_claimed" : "packet_claim_closed", packet };
+      }
+      const at = normalizeString(options.now, nowIso(options.nowMs));
+      const claimId = `headless_packet_claim_${sha256(`${safePacketId}:${runtimeId}`).slice(7, 31)}`;
+      const claimed = {
+        ...packet,
+        executionClaim: {
+          schema: "headless_turn_packet_execution_claim@1",
+          claimId,
+          runtimeId,
+          status: "in_progress",
+          claimedAt: at,
+          updatedAt: at,
+        },
+        updatedAt: at,
+      };
+      this.db.prepare("update direct_bridge_turn_packets set packet_json=? where packet_id=?").run(safeJson(claimed), safePacketId);
+      this.db.exec("commit");
+      return { claimed: true, reason: "claimed", packet: claimed };
+    } catch (error) {
+      try { this.db.exec("rollback"); } catch (_) {}
+      throw error;
+    }
+  }
+
+  reconcileTurnPacketClaims(options = {}) {
+    const at = normalizeString(options.now, nowIso(options.nowMs));
+    const packets = this.listTurnPackets();
+    let reconciled = 0;
+    this.db.exec("begin immediate");
+    try {
+      for (const packet of packets) {
+        const claim = isPlainObject(packet.executionClaim) ? packet.executionClaim : null;
+        if (!claim || claim.status !== "in_progress") continue;
+        const next = {
+          ...packet,
+          state: "failed",
+          blockerCode: "headless_turn_restart_in_progress_unknown",
+          replayState: "replay_unsafe",
+          providerCompleted: false,
+          terminalTurnState: "transport_handoff_unknown",
+          executionClaim: {
+            ...claim,
+            status: "reconciled_unknown",
+            reconciledAt: at,
+            updatedAt: at,
+          },
+          updatedAt: at,
+          statusHistory: [
+            ...(Array.isArray(packet.statusHistory) ? packet.statusHistory : []),
+            { state: "failed", at, reason: "headless_turn_restart_in_progress_unknown" },
+          ],
+        };
+        this.db.prepare("update direct_bridge_turn_packets set packet_json=? where packet_id=?").run(safeJson(next), packet.packetId);
+        reconciled += 1;
+      }
+      this.db.exec("commit");
+      return { reconciled };
+    } catch (error) {
+      try { this.db.exec("rollback"); } catch (_) {}
+      throw error;
+    }
+  }
+
   readTurnPacketForEnvelope(envelopeId = "") {
     const row = this.db.prepare("select packet_json from direct_bridge_turn_packets where envelope_id = ? order by created_at desc limit 1").get(normalizeString(envelopeId, ""));
     return row ? parseJson(row.packet_json, null) : null;
@@ -971,6 +1123,17 @@ class DirectHeadlessBridgeStore {
   submitEvent(input = {}, options = {}) {
     const at = nowIso(options.nowMs);
     const validation = this.validateIngress(input, options);
+    if (validation.validationFailedWithoutWrite) {
+      return {
+        ok: false,
+        duplicate: false,
+        status: validation.lifecycle,
+        error: validation.errorCode,
+        event: null,
+        routeDecision: null,
+        rawPayloadIncluded: false,
+      };
+    }
     const processingIdentity = validation.processingIdentity || `invalid:${sha256(`${at}:${validation.errorCode}:${stableStringify(input)}`).slice(7, 31)}`;
     const duplicate = this.duplicateEventForProcessingIdentity(processingIdentity);
     if (duplicate) return duplicate;
@@ -1113,10 +1276,8 @@ class DirectHeadlessBridgeStore {
     const payloadStorageRef = isPlainObject(input.payloadStorageRef || input.payloadRef || input.payload_ref)
       ? (input.payloadStorageRef || input.payloadRef || input.payload_ref)
       : null;
-    const evidenceRefs = [
-      evidenceRef("bridge_ingress", "Headless bridge ingress validation"),
-      ...(Array.isArray(input.evidenceRefs) ? input.evidenceRefs : []),
-    ];
+    const evidenceValidation = validateEvidenceRefs(input.evidenceRefs);
+    const evidenceRefs = evidenceValidation.ok ? evidenceValidation.refs : [];
     const base = {
       ok: false,
       clientId,
@@ -1139,7 +1300,16 @@ class DirectHeadlessBridgeStore {
       routeDecision: null,
       lifecycle: "blocked_ingress",
       errorCode: "",
+      validationFailedWithoutWrite: !evidenceValidation.ok,
     };
+    if (!evidenceValidation.ok) {
+      return {
+        ...base,
+        errorCode: evidenceValidation.errorCode,
+        lifecycle: "blocked_ingress",
+        validationFailedWithoutWrite: true,
+      };
+    }
     if (rawPayloadIncluded) return { ...base, errorCode: "raw_payload_included", lifecycle: "blocked_ingress" };
     if (!clientId) return { ...base, errorCode: "missing_client", lifecycle: "blocked_ingress" };
     if (!idempotencyKey) return { ...base, errorCode: "missing_idempotency_key", lifecycle: "blocked_ingress" };
@@ -1193,11 +1363,7 @@ class DirectHeadlessBridgeStore {
       processingIdentity,
       lifecycle: "route_resolved",
       errorCode: "",
-      evidenceRefs: [
-        ...evidenceRefs,
-        evidenceRef("bridge_route_binding", "Route binding resolved", { artifactDigest: route.routeDigest }),
-        evidenceRef("work_thread", "WorkThread resolved", { artifactId: workThreadId }),
-      ],
+      evidenceRefs,
     };
   }
 
@@ -1239,6 +1405,7 @@ module.exports = {
   ROUTE_BINDING_SCHEMA,
   clientCapabilityTokenDigest,
   digestFor,
+  validateEvidenceRefs,
   normalizeClient,
   normalizeRoute,
   normalizeString,

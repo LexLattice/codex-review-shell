@@ -130,6 +130,43 @@ function event(idempotencyKey, routeId) {
   };
 }
 
+class PendingImplementationController {
+  constructor() {
+    this.activeRuns = new Map();
+    this.turns = new Map();
+    this.sessionStore = {
+      readTurn: (sessionId, turnId) => this.turns.get(`${sessionId}:${turnId}`) || null,
+      updateTurnState: (sessionId, turnId, state, patch = {}) => {
+        const current = this.turns.get(`${sessionId}:${turnId}`) || { turnId, sessionId };
+        const next = { ...current, ...patch, state, status: state, updatedAt: new Date().toISOString() };
+        this.turns.set(`${sessionId}:${turnId}`, next);
+        return next;
+      },
+    };
+  }
+
+  async handleRequest(method, params = {}) {
+    if (method === "thread/start") return { thread: { id: params.sessionId || params.threadId } };
+    if (method === "turn/start") {
+      const sessionId = params.sessionId || params.threadId;
+      const turnId = "pending_turn";
+      const turn = { turnId, id: turnId, state: "streaming", status: "inProgress", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      this.turns.set(`${sessionId}:${turnId}`, turn);
+      return { turn, reused: false };
+    }
+    if (method === "turn/interrupt" || method === "turn/abort") return this.interruptTurn(params);
+    throw new Error(`unsupported fixture method: ${method}`);
+  }
+
+  interruptTurn(params = {}) {
+    const sessionId = params.sessionId || params.threadId;
+    const turn = this.sessionStore.updateTurnState(sessionId, params.turnId, "aborted", {
+      error: { code: "headless_implementation_settle_timeout", message: "bounded fixture timeout" },
+    });
+    return { turn, status: "aborted" };
+  }
+}
+
 async function requestJson(baseUrl, pathName, options = {}) {
   const response = await fetch(`${baseUrl}${pathName}`, {
     ...options,
@@ -283,11 +320,46 @@ try {
   assert.equal(terminal.headlessImplementationDecisions[0].decision, "approve");
   assert.equal(terminal.headlessImplementationDecisions[0].method, "direct/tool/readOnly/requestApproval");
 
+  const pendingController = new PendingImplementationController();
+  const pendingPacket = daemon.store.writeTurnPacket({
+    packetId: "headless_pending_timeout_packet",
+    envelopeId: "headless_pending_timeout_envelope",
+    routeId: "route_impl",
+    routeVersion: "v1",
+    targetThreadId: "direct_session_headless_impl_timeout",
+    runtimePath: "direct-implementation",
+    state: "queued",
+    promptText: "pending implementation fixture",
+    promptDigest: "sha256:pending-implementation-fixture",
+    clientTurnRequestId: "headless_pending_timeout_request",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  const reductionCountBeforeTimeout = daemon.store.reducedResultSummary().total;
+  const pendingRuntime = new DirectHeadlessTextRuntime({
+    store: daemon.store,
+    controller: pendingController,
+    project,
+    implementationSettleTimeoutMs: 500,
+  });
+  const timedOut = await waitForPacket(
+    baseUrl,
+    pendingPacket.packetId,
+    (packet) => packet.state === "failed",
+    "pending implementation timeout",
+  );
+  assert.equal(timedOut.providerCompleted, false);
+  assert.equal(timedOut.blockerCode, "headless_implementation_settle_timeout");
+  assert.equal(timedOut.boundedWaitExpired, true);
+  assert.equal(pendingController.sessionStore.readTurn("direct_session_headless_impl_timeout", "pending_turn").state, "aborted");
+  assert.equal(daemon.store.reducedResultSummary().total, reductionCountBeforeTimeout);
+  assert.equal(pendingRuntime.statusProjection().activeTurns, 0);
+
   const persistedTurn = sessionStore.readTurn("direct_session_headless_impl", terminal.turnId);
   assert.equal(persistedTurn.state, "completed");
   const expectedInitialToolNames = [
     "get_context_remaining",
     "inspect_agent",
+    "inspect_self_constitution",
     "list_agents",
     "read_file",
     "request_user_input",

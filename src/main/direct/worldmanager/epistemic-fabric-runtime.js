@@ -2798,54 +2798,65 @@ class DirectWorldManagerEpistemicFabricRuntime {
       let delivered = 0;
       let deferred = 0;
       const failures = [];
-      const queued = [...this.broker.deliveries.values()].filter(
-        (delivery) => delivery.deliveryPosture === "queued",
-      );
-      for (const delivery of queued) {
-        if (this.closed) {
-          deferred += 1;
-          continue;
-        }
-        const subscription = this.broker.subscriptions().find((candidate) => {
-          const candidateRef = subscriptionRef(candidate);
-          return candidateRef.id === delivery.subscriptionRef.id &&
-            candidateRef.digest === delivery.subscriptionRef.digest;
-        });
-        if (!subscription) {
-          deferred += 1;
-          continue;
-        }
-        const target = await this.deliveryTargetResolver({
-          delivery,
-          subscription,
-        });
-        if (this.closed) {
-          deferred += 1;
-          continue;
-        }
-        if (!target?.targetAgentRef) {
-          deferred += 1;
-          continue;
-        }
-        attempted += 1;
-        try {
-          const result = await this.importDeliveryContext(
-            delivery.deliveryId,
-            target,
-          );
-          if (["delivered", "acknowledged"].includes(
-            result.delivery?.deliveryPosture,
-          )) {
-            delivered += 1;
-          } else {
+      const processed = new Set();
+      // Take a fresh snapshot after each pass.  A delivery can be appended
+      // while an earlier context import is awaiting its target; limiting the
+      // drain to its first snapshot strands that later delivery indefinitely.
+      // Each identity is attempted at most once per drain, preserving the
+      // existing retry/backoff behaviour for deliveries that remain queued.
+      for (;;) {
+        const queued = [...this.broker.deliveries.values()].filter(
+          (delivery) => delivery.deliveryPosture === "queued" &&
+            !processed.has(delivery.deliveryId),
+        );
+        if (!queued.length) break;
+        for (const delivery of queued) {
+          processed.add(delivery.deliveryId);
+          if (this.closed) {
             deferred += 1;
+            continue;
           }
-        } catch (error) {
-          deferred += 1;
-          failures.push({
-            deliveryId: delivery.deliveryId,
-            errorCode: text(error?.code, "delivery_dispatch_failed"),
+          const subscription = this.broker.subscriptions().find((candidate) => {
+            const candidateRef = subscriptionRef(candidate);
+            return candidateRef.id === delivery.subscriptionRef.id &&
+              candidateRef.digest === delivery.subscriptionRef.digest;
           });
+          if (!subscription) {
+            deferred += 1;
+            continue;
+          }
+          const target = await this.deliveryTargetResolver({
+            delivery,
+            subscription,
+          });
+          if (this.closed) {
+            deferred += 1;
+            continue;
+          }
+          if (!target?.targetAgentRef) {
+            deferred += 1;
+            continue;
+          }
+          attempted += 1;
+          try {
+            const result = await this.importDeliveryContext(
+              delivery.deliveryId,
+              target,
+            );
+            if (["delivered", "acknowledged"].includes(
+              result.delivery?.deliveryPosture,
+            )) {
+              delivered += 1;
+            } else {
+              deferred += 1;
+            }
+          } catch (error) {
+            deferred += 1;
+            failures.push({
+              deliveryId: delivery.deliveryId,
+              errorCode: text(error?.code, "delivery_dispatch_failed"),
+            });
+          }
         }
       }
       return {

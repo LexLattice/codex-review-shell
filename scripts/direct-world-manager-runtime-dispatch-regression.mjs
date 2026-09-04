@@ -303,6 +303,47 @@ assert.equal(
 const replayDrain = await fabric.dispatchQueuedDeliveries();
 assert.equal(replayDrain.attempted, 0);
 assert.equal(providerRequestCount, 1);
+if (fabric.deliveryDrainPromise) await fabric.deliveryDrainPromise;
+
+// A delivery arriving while the first context import is in flight must be
+// picked up by the same drain when that import completes.
+const originalDeliveryDispatchAdapter = fabric.deliveryDispatchAdapter;
+let firstDispatchEntered;
+const firstDispatchEnteredPromise = new Promise((resolve) => {
+  firstDispatchEntered = resolve;
+});
+let releaseFirstDispatch;
+const firstDispatchRelease = new Promise((resolve) => {
+  releaseFirstDispatch = resolve;
+});
+let stalledDispatchCount = 0;
+fabric.deliveryDispatchAdapter = async (input) => {
+  stalledDispatchCount += 1;
+  if (stalledDispatchCount === 1) {
+    firstDispatchEntered();
+    await firstDispatchRelease;
+  }
+  return originalDeliveryDispatchAdapter(input);
+};
+tick += 3_000;
+appendBlocker(fabric, workerBundle, "runtime-dispatch-stalled-first", "stalled-first");
+const stalledFirstFlush = fabric.flushPendingOutbox();
+assert.equal(stalledFirstFlush.flushed, 0);
+assert.equal([...fabric.broker.deliveries.values()].filter((delivery) => delivery.deliveryPosture === "queued").length, 1);
+const stalledDrainPromise = fabric.dispatchQueuedDeliveries();
+await firstDispatchEnteredPromise;
+tick += 3_000;
+appendBlocker(fabric, workerBundle, "runtime-dispatch-queued-during-drain", "queued-during-drain");
+fabric.flushPendingOutbox();
+releaseFirstDispatch();
+const stalledDrain = await stalledDrainPromise;
+assert.equal(stalledDrain.delivered, 2);
+assert.equal(stalledDispatchCount, 2);
+assert.equal(
+  [...fabric.broker.deliveries.values()].filter((delivery) => delivery.deliveryPosture === "queued").length,
+  0,
+);
+fabric.deliveryDispatchAdapter = originalDeliveryDispatchAdapter;
 
 const controlledTimerEntries = [];
 const controlledScheduler = {
@@ -428,8 +469,8 @@ assert.equal(
   false,
 );
 assert.equal(providerRequestCount, providerCountBeforeTimer + 3);
-assert.ok(providerToolNames[3].includes("ledger_publish_observation"));
-assert.ok(!providerToolNames[3].includes("ledger_submit_audit_verdict"));
+assert.ok(providerToolNames[5].includes("ledger_publish_observation"));
+assert.ok(!providerToolNames[5].includes("ledger_submit_audit_verdict"));
 await controller.waitForTurnCompletion({
   sessionId: producerDispatch.receipt.workerSessionId,
   turnId: producerDispatch.receipt.workerTurnId,
@@ -478,8 +519,8 @@ assert.ok(auditDispatches.every((entry) =>
 assert.ok(auditDispatches.every((entry) =>
   !entry.authorization.boundedCapabilityNames.includes("apply_patch")));
 assert.equal(providerRequestCount, providerCountBeforeTimer + 5);
-assert.ok(providerToolNames[4].includes("ledger_submit_audit_verdict"));
-assert.ok(providerToolNames[5].includes("ledger_submit_audit_verdict"));
+assert.ok(providerToolNames[6].includes("ledger_submit_audit_verdict"));
+assert.ok(providerToolNames[7].includes("ledger_submit_audit_verdict"));
 for (const entry of auditDispatches) {
   await controller.waitForTurnCompletion({
     sessionId: entry.receipt.workerSessionId,
