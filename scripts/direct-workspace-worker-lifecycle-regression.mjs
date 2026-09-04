@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -3072,6 +3072,22 @@ try {
     'spawn(process.execPath, ["late-descendant.js"], { detached: true, stdio: "ignore" }).unref();',
     "setInterval(() => {}, 1000);",
   ].join("\n"));
+  const runGitFixtureCommand = (args) => {
+    const result = spawnSync("git", args, {
+      cwd: liveBackendRoot,
+      env: process.env,
+      stdio: "pipe",
+    });
+    assert.equal(result.status, 0, `git fixture command failed: git ${args.join(" ")}`);
+  };
+  const digestOverflowFile = path.join(liveBackendRoot, "digest-overflow.txt");
+  fs.writeFileSync(digestOverflowFile, "seed\n");
+  runGitFixtureCommand(["init", "--quiet"]);
+  runGitFixtureCommand(["config", "user.email", "fixture@example.invalid"]);
+  runGitFixtureCommand(["config", "user.name", "Fixture"]);
+  runGitFixtureCommand(["add", "digest-overflow.txt"]);
+  runGitFixtureCommand(["commit", "--quiet", "-m", "digest fixture"]);
+  fs.writeFileSync(digestOverflowFile, `${"x".repeat(17 * 1024 * 1024)}\n`);
   const probeRaceChild = spawn(process.execPath, [
     path.resolve("src/backend/wsl-agent.js"),
     "--root",
@@ -3136,6 +3152,50 @@ try {
   assert.equal(liveTestProfile.available, true);
   assert.equal(liveTestProfile.substrateCapabilities.processContainmentGuaranteed, true);
   assert.equal(liveTestProfile.substrateCapabilities.processContainmentKind, "linux_pid_namespace");
+  const backendOversizedPatchFile = path.join(liveBackendRoot, "backend-oversized-patch-target.txt");
+  const backendOversizedPatchSize = 384 * 1024 + 1;
+  fs.writeFileSync(backendOversizedPatchFile, "oversized-prefix");
+  fs.truncateSync(backendOversizedPatchFile, backendOversizedPatchSize);
+  const backendOversizedPatch = [
+    "--- a/backend-oversized-patch-target.txt",
+    "+++ b/backend-oversized-patch-target.txt",
+    "@@ -1,1 +1,1 @@",
+    "-oversized-prefix",
+    "+should-not-apply",
+    "",
+  ].join("\n");
+  for (const mode of ["dryRun", "apply"]) {
+    await assert.rejects(
+      liveSession.request("applyPatch", { mode, patch: backendOversizedPatch }, 8_000),
+      (error) => error?.code === "direct_full_access_patch_target_oversized",
+      "backend patch targets must be bounded before planning or mutation",
+    );
+    assert.equal(fs.statSync(backendOversizedPatchFile).size, backendOversizedPatchSize);
+  }
+  const backendMonotonicPatchFile = path.join(liveBackendRoot, "backend-monotonic-patch.txt");
+  fs.writeFileSync(backendMonotonicPatchFile, "repeat\nmiddle\ntail\n");
+  const backendMonotonicPatch = [
+    "--- a/backend-monotonic-patch.txt",
+    "+++ b/backend-monotonic-patch.txt",
+    "@@ -1,1 +1,1 @@",
+    "-repeat",
+    "+first",
+    "@@ -1,1 +1,1 @@",
+    "-repeat",
+    "+second",
+    "",
+  ].join("\n");
+  await assert.rejects(
+    liveSession.request("applyPatch", { mode: "dryRun", patch: backendMonotonicPatch }, 8_000),
+    (error) => error?.workspaceBackendRequest === true,
+    "backend patch hunk matching must never move before the prior hunk cursor",
+  );
+  assert.equal(fs.readFileSync(backendMonotonicPatchFile, "utf8"), "repeat\nmiddle\ntail\n");
+  await assert.rejects(
+    liveSession.request("directEpistemicRepositoryObservation", {}, 60_000),
+    (error) => error?.code === "workspace_backend_process_output_limit_exceeded",
+    "aggregate digest capture overflow must terminate and reject without reporting a complete digest",
+  );
   const livePublicSnapshot = liveSession.publicSnapshot();
   assert.equal(livePublicSnapshot.rawWorkspacePathIncluded, false);
   assert.equal(livePublicSnapshot.hello.root, undefined);

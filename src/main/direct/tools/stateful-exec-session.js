@@ -859,10 +859,12 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       completion: null,
       cancelKillTimer: null,
       stdinKillTimer: null,
+      failureKillTimer: null,
       settled: false,
       errorCode: "",
       stdinErrorCode: "",
       stdinWriteError: false,
+      failurePending: false,
     };
     let resolveCompletion;
     record.completion = new Promise((resolve) => { resolveCompletion = resolve; });
@@ -899,33 +901,19 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     record.child?.stdout?.on("data", (chunk) => onData("stdout", chunk));
     record.child?.stderr?.on("data", (chunk) => onData("stderr", chunk));
     record.child?.stdout?.on("error", (error) => {
-      if (record.settled || record.stdinWriteError) return;
-      this.flushOutput(record);
-      this.settle(record, {
-        sessionState: "failed",
-        errorCode: "direct_stateful_exec_stdout_read_failed",
-        spawnError: boundedString(error?.message || error, 500),
-      });
+      this.recordProcessFailure(record, "direct_stateful_exec_stdout_read_failed", error);
     });
     record.child?.stderr?.on("error", (error) => {
-      if (record.settled || record.stdinWriteError) return;
-      this.flushOutput(record);
-      this.settle(record, {
-        sessionState: "failed",
-        errorCode: "direct_stateful_exec_stderr_read_failed",
-        spawnError: boundedString(error?.message || error, 500),
-      });
+      this.recordProcessFailure(record, "direct_stateful_exec_stderr_read_failed", error);
     });
     record.child?.stdin?.on?.("error", (error) => this.handleStdinWriteError(record, error));
     record.child?.on?.("error", (error) => {
-      if (record.settled || record.stdinWriteError) return;
-      this.flushOutput(record);
-      this.settle(record, { sessionState: "failed", spawnError: boundedString(error?.message || error, 500) });
+      this.recordProcessFailure(record, "direct_stateful_exec_child_error", error);
     });
     record.child?.on?.("close", (exitCode, signal) => {
       if (record.settled) return;
       this.flushOutput(record);
-      if (record.stdinWriteError) {
+      if (record.failurePending || record.stdinWriteError) {
         this.settle(record, { sessionState: "failed", exitCode, signal });
         return;
       }
@@ -947,22 +935,36 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     this.recordOutput(record, "stderr", record.stderrDecoder?.end() || "");
   }
 
-  handleStdinWriteError(record, error) {
-    if (!error || !record || record.settled) return false;
-    if (record.stdinWriteError) return true;
-    record.stdinWriteError = true;
-    record.errorCode = "direct_stateful_exec_stdin_write_failed";
-    record.stdinErrorCode = boundedString(error?.code || "direct_stateful_exec_stdin_write_failed", 120);
+  recordProcessFailure(record, errorCode, error, stdinErrorCode = "") {
+    if (!record || record.settled) return false;
+    if (record.failurePending) return true;
+    record.failurePending = true;
+    record.errorCode = errorCode;
     record.spawnError = boundedString(error?.message || error, 500);
+    if (stdinErrorCode) {
+      record.stdinWriteError = true;
+      record.stdinErrorCode = stdinErrorCode;
+    }
     this.requestKill(record, "SIGTERM");
-    if (!record.stdinKillTimer) {
-      record.stdinKillTimer = setTimeout(() => {
-        record.stdinKillTimer = null;
-        if (!record.settled && record.stdinWriteError) this.requestKill(record, "SIGKILL");
+    if (!record.failureKillTimer) {
+      record.failureKillTimer = setTimeout(() => {
+        record.failureKillTimer = null;
+        if (!record.settled && record.failurePending) this.requestKill(record, "SIGKILL");
       }, DEFAULT_EXEC_CANCEL_ESCALATION_MS);
-      record.stdinKillTimer.unref?.();
+      record.failureKillTimer.unref?.();
     }
     return true;
+  }
+
+  handleStdinWriteError(record, error) {
+    if (!error || !record || record.settled) return false;
+    if (record.stdinWriteError || record.failurePending) return true;
+    return this.recordProcessFailure(
+      record,
+      "direct_stateful_exec_stdin_write_failed",
+      error,
+      boundedString(error?.code || "direct_stateful_exec_stdin_write_failed", 120),
+    );
   }
 
   armTimers(record) {
@@ -1060,11 +1062,13 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     if (record.forceKillTimer) clearTimeout(record.forceKillTimer);
     if (record.cancelKillTimer) clearTimeout(record.cancelKillTimer);
     if (record.stdinKillTimer) clearTimeout(record.stdinKillTimer);
+    if (record.failureKillTimer) clearTimeout(record.failureKillTimer);
     record.idleTimer = null;
     record.hardTimer = null;
     record.forceKillTimer = null;
     record.cancelKillTimer = null;
     record.stdinKillTimer = null;
+    record.failureKillTimer = null;
     Object.assign(record, update);
     if (!TERMINAL_SESSION_STATES.has(record.sessionState) && record.sessionState !== "recovery_required") {
       record.sessionState = "recovery_required";

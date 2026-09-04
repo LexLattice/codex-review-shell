@@ -62,12 +62,14 @@ const MAX_PATCH_FILES = 16;
 const MAX_PATCH_HUNKS = 128;
 const MAX_PATCH_LINES_CHANGED = 4000;
 const MAX_PATCH_FILE_PREVIEW_CHARS = 8000;
+const MAX_PATCH_TARGET_BYTES = 384 * 1024;
 const REPOSITORY_SEMANTIC_MANIFEST_LIMIT = 2000;
 const REPOSITORY_SEMANTIC_EVIDENCE_LIMIT = 18;
 const REPOSITORY_SEMANTIC_EXCERPT_BYTES = 6000;
 const REPOSITORY_SEMANTIC_TOTAL_EXCERPT_BYTES = 72 * 1024;
 const REPOSITORY_SEMANTIC_MAX_EVIDENCE_FILE_BYTES = 2 * 1024 * 1024;
 const DIRECT_EPISTEMIC_CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024;
+const DIRECT_EPISTEMIC_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
 const DIRECT_EPISTEMIC_UNTRACKED_FILE_LIMIT = 2000;
 const DIRECT_EPISTEMIC_UNTRACKED_FILE_BYTES = 16 * 1024 * 1024;
 const DIRECT_EPISTEMIC_UNTRACKED_TOTAL_BYTES = 128 * 1024 * 1024;
@@ -932,16 +934,47 @@ function parseUnifiedPatch(patchText) {
 }
 
 async function fileDigestIfExists(fullPath) {
+  let file;
   try {
-    const stat = await fs.lstat(fullPath);
-    if (stat.isSymbolicLink()) throw new Error("Symlink patch targets are unsupported.");
-    if (!stat.isFile()) throw new Error("Patch target is not a text file.");
-    const buffer = await fs.readFile(fullPath);
-    if (looksBinary(buffer)) throw new Error("Binary patch targets are unsupported.");
-    return { exists: true, text: buffer.toString("utf8"), digest: sha256(buffer.toString("utf8")), size: stat.size };
+    const requestedStat = await fs.lstat(fullPath);
+    if (requestedStat.isSymbolicLink()) throw new Error("Symlink patch targets are unsupported.");
+    const noFollow = Number(fsSync.constants.O_NOFOLLOW || 0);
+    file = await fs.open(fullPath, fsSync.constants.O_RDONLY | noFollow);
+    const initialStat = await file.stat();
+    if (!initialStat.isFile()) throw new Error("Patch target is not a text file.");
+    if (initialStat.size > MAX_PATCH_TARGET_BYTES) {
+      const error = new Error("Patch target exceeds the bounded patch input limit.");
+      error.code = "direct_full_access_patch_target_oversized";
+      throw error;
+    }
+    const buffer = Buffer.alloc(MAX_PATCH_TARGET_BYTES + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const result = await file.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (!result.bytesRead) break;
+      bytesRead += result.bytesRead;
+    }
+    const finalStat = await file.stat();
+    if (!finalStat.isFile()) throw new Error("Patch target is not a text file.");
+    if (
+      finalStat.size !== initialStat.size ||
+      finalStat.size > MAX_PATCH_TARGET_BYTES ||
+      bytesRead > MAX_PATCH_TARGET_BYTES ||
+      bytesRead !== finalStat.size
+    ) {
+      const error = new Error("Patch target changed during bounded validation.");
+      error.code = "direct_full_access_patch_target_changed";
+      throw error;
+    }
+    const content = buffer.subarray(0, bytesRead);
+    if (looksBinary(content)) throw new Error("Binary patch targets are unsupported.");
+    const text = content.toString("utf8");
+    return { exists: true, text, digest: sha256(text), size: finalStat.size };
   } catch (error) {
     if (error.code === "ENOENT") return { exists: false, text: "", digest: "", size: 0 };
     throw error;
+  } finally {
+    if (file) await file.close().catch(() => {});
   }
 }
 
@@ -995,8 +1028,8 @@ function hunkMatchesAt(beforeLines, hunk, startIndex) {
 }
 
 function locateHunkStart(beforeLines, hunk, preferredIndex, cursor) {
-  if (hunkMatchesAt(beforeLines, hunk, preferredIndex)) return preferredIndex;
   const start = Math.max(0, cursor);
+  if (preferredIndex >= start && hunkMatchesAt(beforeLines, hunk, preferredIndex)) return preferredIndex;
   const candidates = [];
   for (let index = start; index <= beforeLines.length; index += 1) {
     if (index !== preferredIndex) candidates.push(index);
@@ -1008,7 +1041,7 @@ function locateHunkStart(beforeLines, hunk, preferredIndex, cursor) {
   for (const index of candidates) {
     if (hunkMatchesAt(beforeLines, hunk, index)) return index;
   }
-  return preferredIndex;
+  return start;
 }
 
 async function resolvePatchTarget(relPath, options = {}) {
@@ -2418,6 +2451,9 @@ async function captureDigestProcess(command, args, options = {}) {
   const captureLimit = Number.isFinite(Number(options.captureLimit))
     ? Math.max(0, Number(options.captureLimit))
     : DIRECT_EPISTEMIC_CAPTURE_LIMIT_BYTES;
+  const outputLimit = Number.isFinite(Number(options.outputLimitBytes))
+    ? Math.min(DIRECT_EPISTEMIC_OUTPUT_LIMIT_BYTES, Math.max(0, Math.floor(Number(options.outputLimitBytes))))
+    : DIRECT_EPISTEMIC_OUTPUT_LIMIT_BYTES;
   return new Promise((resolve, reject) => {
     let spawned;
     try {
@@ -2436,12 +2472,25 @@ async function captureDigestProcess(command, args, options = {}) {
     let stdoutBytes = 0;
     let stdoutCapturedBytes = 0;
     let stderrTruncated = false;
+    let outputBytes = 0;
+    let failureError = null;
     let settled = false;
     const timer = setTimeout(() => {
       if (!settled) terminateChild(child);
     }, timeoutMs);
     child.stdout.on("data", (chunk) => {
-      const buffer = Buffer.from(chunk);
+      if (settled || failureError) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
+      if (outputBytes + buffer.length > outputLimit) {
+        failureError = new Error("Workspace backend digest capture exceeded the bounded aggregate output limit.");
+        failureError.code = "workspace_backend_process_output_limit_exceeded";
+        failureError.stream = "aggregate";
+        failureError.limitBytes = outputLimit;
+        failureError.outputBytes = outputBytes + buffer.length;
+        terminateChild(child);
+        return;
+      }
+      outputBytes += buffer.length;
       stdoutHash.update(buffer);
       stdoutBytes += buffer.length;
       if (stdoutCapturedBytes < captureLimit) {
@@ -2451,30 +2500,43 @@ async function captureDigestProcess(command, args, options = {}) {
       }
     });
     child.stderr.on("data", (chunk) => {
+      if (settled || failureError) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
+      if (outputBytes + buffer.length > outputLimit) {
+        failureError = new Error("Workspace backend digest capture exceeded the bounded aggregate output limit.");
+        failureError.code = "workspace_backend_process_output_limit_exceeded";
+        failureError.stream = "aggregate";
+        failureError.limitBytes = outputLimit;
+        failureError.outputBytes = outputBytes + buffer.length;
+        terminateChild(child);
+        return;
+      }
+      outputBytes += buffer.length;
       stderrTruncated = appendLimited(stderrChunks, chunk, 32 * 1024) || stderrTruncated;
     });
     child.stdout.on("error", (error) => {
       if (settled) return;
-      clearTimeout(timer);
-      settled = true;
-      reject(error);
+      if (!failureError) failureError = error;
+      terminateChild(child);
     });
     child.stderr.on("error", (error) => {
       if (settled) return;
-      clearTimeout(timer);
-      settled = true;
-      reject(error);
+      if (!failureError) failureError = error;
+      terminateChild(child);
     });
     child.on("error", (error) => {
       if (settled) return;
-      clearTimeout(timer);
-      settled = true;
-      reject(error);
+      if (!failureError) failureError = error;
+      terminateChild(child);
     });
     child.on("close", (exitCode, signal) => {
       if (settled) return;
       clearTimeout(timer);
       settled = true;
+      if (failureError) {
+        reject(failureError);
+        return;
+      }
       resolve({
         exitCode,
         signal,

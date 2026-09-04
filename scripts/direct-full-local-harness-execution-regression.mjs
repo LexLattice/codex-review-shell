@@ -432,6 +432,52 @@ async function main() {
   assert.equal(stdinCallbackResult.status, "failed", "stdin write callbacks must settle a failed session");
   assert.equal(stdinCallbackResult.stdinErrorCode, "EPIPE");
 
+  const processFailureCases = [
+    { stream: "stdout", errorCode: "direct_stateful_exec_stdout_read_failed" },
+    { stream: "stderr", errorCode: "direct_stateful_exec_stderr_read_failed" },
+    { stream: "child", errorCode: "direct_stateful_exec_child_error" },
+  ];
+  for (const failureCase of processFailureCases) {
+    const failureChild = new DeferredStdinChild();
+    const failureManager = new DirectStatefulExecSessionManager({
+      grantStore: store,
+      workspaceRootResolver: () => workspace,
+      spawnImpl: () => failureChild,
+    });
+    const failureSession = failureManager.start({
+      ...binding,
+      command: node,
+      args: ["-e", "setTimeout(() => {}, 1000)"],
+      stdinPolicy: "disabled",
+    });
+    let completionCount = 0;
+    failureManager.on("completed", () => { completionCount += 1; });
+    let failureWaitSettled = false;
+    const failureWait = failureManager.wait({ ...binding, sessionId: failureSession.sessionId }).then((result) => {
+      failureWaitSettled = true;
+      return result;
+    });
+    if (failureCase.stream === "child") {
+      failureChild.emit("error", new Error("fixture child error"));
+    } else {
+      failureChild[failureCase.stream].emit("error", new Error(`fixture ${failureCase.stream} error`));
+      failureChild.emit("error", new Error("fixture secondary child error"));
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(failureWaitSettled, false, `${failureCase.stream} errors must remain pending until child close`);
+    assert.deepEqual(failureChild.killSignals, ["SIGTERM"], `${failureCase.stream} errors must terminate the process tree`);
+    failureChild.exitCode = 1;
+    failureChild.signalCode = "SIGTERM";
+    failureChild.emit("close", 1, "SIGTERM");
+    const failureResult = await failureWait;
+    assert.equal(failureResult.status, "failed");
+    assert.equal(failureResult.errorCode, failureCase.errorCode);
+    failureChild.emit("close", 1, "SIGTERM");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(completionCount, 1, `${failureCase.stream} and close races must settle once`);
+    await failureManager.dispose(`process-${failureCase.stream}-failure-regression`);
+  }
+
   const interactive = manager.start({
     ...binding,
     command: node,
