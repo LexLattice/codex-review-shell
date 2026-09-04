@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
 const { spawn } = require("node:child_process");
+const { StringDecoder } = require("node:string_decoder");
 const {
   authorizeDirectThreadHarnessCapability,
   validateDirectThreadHarnessGrant,
@@ -365,13 +366,31 @@ function validateOutputFrameSequence(outputFrames = []) {
 function buildStatefulExecSessionSurface(input = {}) {
   const source = isPlainObject(input) ? input : {};
   const sessionPlan = buildStatefulExecSessionPlan(source.sessionPlan || source.session || source);
-  const outputFrames = arrayOrEmpty(source.outputFrames).map((frame) => buildStatefulExecOutputFrame({
-    ...frame,
-    sessionId: sessionPlan.sessionId,
-    outputBudgetChars: frame.outputBudgetChars ?? sessionPlan.outputBudgetChars,
-    providerResultBudgetChars: frame.providerResultBudgetChars ?? sessionPlan.providerResultBudgetChars,
-    nowMs: frame.nowMs ?? source.nowMs,
-  }));
+  let outputRemaining = sessionPlan.outputBudgetChars;
+  let providerRemaining = sessionPlan.providerResultBudgetChars;
+  const outputFrames = arrayOrEmpty(source.outputFrames).map((frame) => {
+    const normalized = buildStatefulExecOutputFrame({
+      ...frame,
+      sessionId: sessionPlan.sessionId,
+      outputBudgetChars: frame.outputBudgetChars ?? sessionPlan.outputBudgetChars,
+      providerResultBudgetChars: frame.providerResultBudgetChars ?? sessionPlan.providerResultBudgetChars,
+      nowMs: frame.nowMs ?? source.nowMs,
+    });
+    const previewChars = Math.min(normalized.previewChars, outputRemaining);
+    const providerIncludedChars = Math.min(normalized.providerIncludedChars, providerRemaining, previewChars);
+    outputRemaining -= previewChars;
+    providerRemaining -= providerIncludedChars;
+    if (previewChars === normalized.previewChars && providerIncludedChars === normalized.providerIncludedChars) {
+      return normalized;
+    }
+    return buildStatefulExecOutputFrame({
+      ...normalized,
+      previewChars,
+      providerIncludedChars,
+      outputBudgetChars: sessionPlan.outputBudgetChars,
+      providerResultBudgetChars: sessionPlan.providerResultBudgetChars,
+    });
+  });
   const stdinPlan = buildStatefulExecStdinPlan({
     ...(source.stdinPlan || {}),
     session: sessionPlan,
@@ -475,6 +494,16 @@ function assertStatefulExecSessionSurfaceSafe(surface = {}) {
     if (Number(frame.providerIncludedChars || 0) > Number(surface.providerResultBudgetChars || 0)) {
       throw new Error("direct_stateful_exec_output_frame_exceeds_provider_budget");
     }
+  }
+  const totalPreviewChars = arrayOrEmpty(surface.outputFrames)
+    .reduce((total, frame) => total + Number(frame.previewChars || 0), 0);
+  const totalProviderIncludedChars = arrayOrEmpty(surface.outputFrames)
+    .reduce((total, frame) => total + Number(frame.providerIncludedChars || 0), 0);
+  if (totalPreviewChars > Number(surface.outputBudgetChars || 0)) {
+    throw new Error("direct_stateful_exec_output_exceeds_output_budget");
+  }
+  if (totalProviderIncludedChars > Number(surface.providerResultBudgetChars || 0)) {
+    throw new Error("direct_stateful_exec_output_exceeds_provider_budget");
   }
   if (surface.writeStdinToolEnabledInThisPr === true && (surface.stdinPlan.canWrite !== true || surface.stdinPlan.writeStdinAuthorityBearing !== true)) {
     throw new Error("direct_stateful_exec_stdin_authority_invalid");
@@ -819,6 +848,9 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       stdoutPreview: "",
       stderrPreview: "",
       providerOutputChars: 0,
+      stdoutDecoder: new StringDecoder("utf8"),
+      stderrDecoder: new StringDecoder("utf8"),
+      outputDecodersFlushed: false,
       sequence: 0,
       child: null,
       idleTimer: null,
@@ -827,6 +859,8 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       completion: null,
       cancelKillTimer: null,
       settled: false,
+      errorCode: "",
+      stdinErrorCode: "",
     };
     let resolveCompletion;
     record.completion = new Promise((resolve) => { resolveCompletion = resolve; });
@@ -856,15 +890,39 @@ class DirectStatefulExecSessionManager extends EventEmitter {
   }
 
   attachProcess(record) {
-    const onData = (stream, chunk) => this.recordOutput(record, stream, chunk);
+    const onData = (stream, chunk) => {
+      const decoder = stream === "stdout" ? record.stdoutDecoder : record.stderrDecoder;
+      this.recordOutput(record, stream, decoder.write(chunk));
+    };
     record.child?.stdout?.on("data", (chunk) => onData("stdout", chunk));
     record.child?.stderr?.on("data", (chunk) => onData("stderr", chunk));
+    record.child?.stdout?.on("error", (error) => {
+      if (record.settled) return;
+      this.flushOutput(record);
+      this.settle(record, {
+        sessionState: "failed",
+        errorCode: "direct_stateful_exec_stdout_read_failed",
+        spawnError: boundedString(error?.message || error, 500),
+      });
+    });
+    record.child?.stderr?.on("error", (error) => {
+      if (record.settled) return;
+      this.flushOutput(record);
+      this.settle(record, {
+        sessionState: "failed",
+        errorCode: "direct_stateful_exec_stderr_read_failed",
+        spawnError: boundedString(error?.message || error, 500),
+      });
+    });
+    record.child?.stdin?.on?.("error", (error) => this.handleStdinWriteError(record, error));
     record.child?.on?.("error", (error) => {
       if (record.settled) return;
+      this.flushOutput(record);
       this.settle(record, { sessionState: "failed", spawnError: boundedString(error?.message || error, 500) });
     });
     record.child?.on?.("close", (exitCode, signal) => {
       if (record.settled) return;
+      this.flushOutput(record);
       const terminalState = record.cancellationRequested
         ? "cancelled"
         : record.timedOut
@@ -873,6 +931,25 @@ class DirectStatefulExecSessionManager extends EventEmitter {
             ? "completed"
             : "failed";
       this.settle(record, { sessionState: terminalState, exitCode, signal });
+    });
+  }
+
+  flushOutput(record) {
+    if (!record || record.outputDecodersFlushed) return;
+    record.outputDecodersFlushed = true;
+    this.recordOutput(record, "stdout", record.stdoutDecoder?.end() || "");
+    this.recordOutput(record, "stderr", record.stderrDecoder?.end() || "");
+  }
+
+  handleStdinWriteError(record, error) {
+    if (!error || !record || record.settled) return;
+    this.flushOutput(record);
+    this.requestKill(record, "SIGTERM");
+    this.settle(record, {
+      sessionState: "failed",
+      errorCode: "direct_stateful_exec_stdin_write_failed",
+      stdinErrorCode: boundedString(error?.code || "direct_stateful_exec_stdin_write_failed", 120),
+      spawnError: boundedString(error?.message || error, 500),
     });
   }
 
@@ -921,7 +998,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
 
   recordOutput(record, stream, chunk) {
     if (record.settled) return;
-    const text = Buffer.from(chunk || "").toString("utf8");
+    const text = typeof chunk === "string" ? chunk : Buffer.from(chunk || "").toString("utf8");
     if (!text) return;
     record.resetIdle?.();
     const originalChars = text.length;
@@ -932,11 +1009,12 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     if (remaining <= 0) return;
     const preview = text.slice(0, remaining);
     record.outputChars += Math.min(originalChars, remaining);
-    if (stream === "stdout") record.stdoutPreview += preview;
-    if (stream === "stderr") record.stderrPreview += preview;
     record.sequence += 1;
     const providerRemaining = Math.max(0, record.providerResultBudgetChars - record.providerOutputChars);
     const providerIncludedChars = Math.min(preview.length, providerRemaining);
+    const providerPreview = preview.slice(0, providerIncludedChars);
+    if (stream === "stdout") record.stdoutPreview += providerPreview;
+    if (stream === "stderr") record.stderrPreview += providerPreview;
     record.providerOutputChars += providerIncludedChars;
     const frame = buildStatefulExecOutputFrame({
       sessionId: record.sessionId,
@@ -957,7 +1035,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       taskId: record.taskId,
       projectId: record.projectId,
       frame,
-      textPreview: boundedString(preview, record.providerResultBudgetChars),
+      textPreview: providerPreview,
       rawOutputIncluded: false,
     });
   }
@@ -1013,9 +1091,13 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     if (input.eof === true && !["line_input", "eof_only"].includes(record.stdinPolicy)) {
       throw statefulExecError("direct_stateful_exec_stdin_policy_blocked", "The process command class does not permit stdin EOF.");
     }
-    if (text) record.child.stdin.write(text);
-    if (input.eof === true) record.child.stdin.end();
     record.sessionState = "stdin_waiting";
+    try {
+      if (text) record.child.stdin.write(text, (error) => this.handleStdinWriteError(record, error));
+      if (input.eof === true) record.child.stdin.end((error) => this.handleStdinWriteError(record, error));
+    } catch (error) {
+      this.handleStdinWriteError(record, error);
+    }
     return this.publicResult(record, { stdinAccepted: true, eofRequested: input.eof === true });
   }
 
@@ -1238,6 +1320,8 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       stdinPolicy: record.stdinPolicy || "blocked_until_policy",
       stdinAccepted: extra.stdinAccepted === true,
       eofRequested: extra.eofRequested === true,
+      errorCode: record.errorCode || "",
+      stdinErrorCode: record.stdinErrorCode || "",
       outputFrames: surface.outputFrames,
       outputFrameCount: surface.outputFrameCount,
       outputFrameSequenceValid: surface.outputFrameSequenceValid,

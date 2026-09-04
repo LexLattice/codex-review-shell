@@ -337,6 +337,64 @@ async function main() {
   const outputFloodResult = await manager.wait({ ...binding, sessionId: outputFlood.sessionId });
   assert.equal(outputFloodResult.status, "completed");
 
+  const aggregatePreview = manager.start({
+    ...binding,
+    command: node,
+    args: ["-e", "process.stdout.write('s'.repeat(90), () => process.stderr.write('e'.repeat(90)));"],
+    stdinPolicy: "disabled",
+    outputBudgetChars: 128,
+    providerResultBudgetChars: 128,
+  });
+  const aggregatePreviewResult = await manager.wait({ ...binding, sessionId: aggregatePreview.sessionId });
+  assert.equal(aggregatePreviewResult.status, "completed");
+  assert.equal(
+    aggregatePreviewResult.stdoutPreview.length + aggregatePreviewResult.stderrPreview.length,
+    128,
+    "stdout and stderr previews must share one aggregate provider budget",
+  );
+  assert.equal(aggregatePreviewResult.stdoutPreview, "s".repeat(90), "provider preview admission must preserve arrival ordering");
+  assert.equal(aggregatePreviewResult.stderrPreview, "e".repeat(38), "later stderr output must consume only the remaining provider budget");
+
+  const splitUtf8 = manager.start({
+    ...binding,
+    command: node,
+    args: ["-e", "process.stdout.write(Buffer.from([0xe2])); setImmediate(() => process.stdout.write(Buffer.from([0x82]))); setImmediate(() => { process.stdout.write(Buffer.from([0xac])); process.exit(0); });"],
+    stdinPolicy: "disabled",
+    outputBudgetChars: 32,
+    providerResultBudgetChars: 32,
+  });
+  const splitUtf8Result = await manager.wait({ ...binding, sessionId: splitUtf8.sessionId });
+  assert.equal(splitUtf8Result.stdoutPreview, "€", "split UTF-8 output must decode exactly across chunks");
+
+  const stdinError = manager.start({
+    ...binding,
+    command: node,
+    args: ["-e", "setTimeout(() => {}, 1000)"],
+    stdinPolicy: "line_input",
+  });
+  const stdinRecord = manager.sessions.get(stdinError.sessionId);
+  stdinRecord.child.stdin.emit("error", Object.assign(new Error("fixture EPIPE"), { code: "EPIPE" }));
+  const stdinErrorResult = await manager.wait({ ...binding, sessionId: stdinError.sessionId });
+  assert.equal(stdinErrorResult.status, "failed", "stdin stream errors must settle a failed session");
+  assert.equal(stdinErrorResult.errorCode, "direct_stateful_exec_stdin_write_failed");
+  assert.equal(stdinErrorResult.stdinErrorCode, "EPIPE");
+
+  const stdinCallbackError = manager.start({
+    ...binding,
+    command: node,
+    args: ["-e", "setTimeout(() => {}, 1000)"],
+    stdinPolicy: "line_input",
+  });
+  const stdinCallbackRecord = manager.sessions.get(stdinCallbackError.sessionId);
+  stdinCallbackRecord.child.stdin.write = (_text, callback) => {
+    callback(Object.assign(new Error("fixture callback EPIPE"), { code: "EPIPE" }));
+    return true;
+  };
+  manager.writeStdin({ ...binding, sessionId: stdinCallbackError.sessionId, chars: "fixture\n" });
+  const stdinCallbackResult = await manager.wait({ ...binding, sessionId: stdinCallbackError.sessionId });
+  assert.equal(stdinCallbackResult.status, "failed", "stdin write callbacks must settle a failed session");
+  assert.equal(stdinCallbackResult.stdinErrorCode, "EPIPE");
+
   const interactive = manager.start({
     ...binding,
     command: node,

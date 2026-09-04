@@ -1053,6 +1053,16 @@ try {
   });
   assert.equal(failedWriteTransport.pendingRequestCount(), 0);
 
+  const oversizedFrameTransport = new NdjsonTransport(new FakeChild());
+  const oversizedFrameRequest = oversizedFrameTransport.request("hello", {}, 2_000);
+  oversizedFrameTransport.handleData("x".repeat(2 * 1024 * 1024 + 1));
+  await assert.rejects(
+    oversizedFrameRequest,
+    (error) => error.code === "workspace_backend_ndjson_frame_too_large",
+    "partial backend stdout frames must fail closed before unbounded buffering",
+  );
+  assert.equal(oversizedFrameTransport.pendingRequestCount(), 0);
+
   const windowsTreeChild = new EventEmitter();
   windowsTreeChild.pid = 4242;
   windowsTreeChild.exitCode = null;
@@ -3144,6 +3154,17 @@ try {
     fs.existsSync(escapedDescendantMarker),
     false,
     "the legacy runCommand route must use the same Linux containment gate",
+  );
+
+  await assert.rejects(
+    liveSession.request("runCommand", {
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('o'.repeat(300 * 1024))"],
+      cwdRelPath: "",
+      timeoutMs: 5_000,
+    }, 8_000),
+    (error) => error?.code === "workspace_backend_process_output_limit_exceeded",
+    "generic process capture must stop and report bounded stdout overflow",
   );
 
   const shadowDir = path.join(liveBackendRoot, "launcher-shadow");

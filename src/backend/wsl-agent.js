@@ -19,6 +19,7 @@ const { AsyncLocalStorage } = require("node:async_hooks");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const { TextDecoder } = require("node:util");
+const { StringDecoder } = require("node:string_decoder");
 const {
   DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA,
   WORKSPACE_WORKER_TOOLS,
@@ -35,6 +36,9 @@ const {
 const { terminateWorkspaceProcessTree } = require("./workspace-process-tree");
 
 const PROTOCOL_VERSION = 1;
+// Keep the protocol line bounded while still admitting the largest supported
+// attachment/import base64 payload plus JSON framing.
+const MAX_NDJSON_REQUEST_BYTES = 72 * 1024 * 1024;
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
 const ATTACHMENT_STAGING_ROOT = ".codex/review-shell/attachments";
@@ -673,6 +677,36 @@ function safeAttachmentSegment(value, label) {
   return text;
 }
 
+function decodeBase64WithinLimit(value, maxBytes, label) {
+  const encoded = typeof value === "string" ? value : String(value || "");
+  const maxEncodedChars = Math.ceil(maxBytes / 3) * 4;
+  if (encoded.length > maxEncodedChars) {
+    const error = new Error(`${label} encoded content exceeds size limit.`);
+    error.code = "workspace_attachment_encoded_size_limit_exceeded";
+    throw error;
+  }
+  const compact = encoded.replace(/\s+/g, "");
+  if (compact && !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(compact)) {
+    const error = new Error(`${label} content is not valid base64.`);
+    error.code = "workspace_attachment_base64_invalid";
+    throw error;
+  }
+  const padding = compact.endsWith("==") ? 2 : compact.endsWith("=") ? 1 : 0;
+  const decodedBytes = Math.floor(compact.length * 3 / 4) - padding;
+  if (decodedBytes > maxBytes) {
+    const error = new Error(`${label} decoded content exceeds size limit.`);
+    error.code = "workspace_attachment_decoded_size_limit_exceeded";
+    throw error;
+  }
+  const decoded = Buffer.from(compact, "base64");
+  if (decoded.length > maxBytes) {
+    const error = new Error(`${label} decoded content exceeds size limit.`);
+    error.code = "workspace_attachment_decoded_size_limit_exceeded";
+    throw error;
+  }
+  return decoded;
+}
+
 function splitGitDiffPaths(headerText = "") {
   const parts = [];
   let current = "";
@@ -1118,9 +1152,12 @@ async function ensureAttachmentIgnore() {
 async function stageAttachment(params = {}) {
   const draftId = safeAttachmentSegment(params.draftId, "draft id");
   const fileName = safeAttachmentSegment(params.fileName, "file name");
-  const content = Buffer.from(String(params.contentBase64 || ""), "base64");
-  if (!content.length) throw new Error("Attachment content is empty.");
-  if (content.length > MAX_ATTACHMENT_BYTES) throw new Error("Attachment content exceeds size limit.");
+  const content = decodeBase64WithinLimit(params.contentBase64, MAX_ATTACHMENT_BYTES, "Attachment");
+  if (!content.length) {
+    const error = new Error("Attachment content is empty.");
+    error.code = "workspace_attachment_content_empty";
+    throw error;
+  }
   const relPath = path.posix.join(ATTACHMENT_STAGING_ROOT, draftId, fileName);
   const { fullPath, displayRel } = resolveWithinRoot(relPath);
   const draftDir = path.dirname(fullPath);
@@ -1177,9 +1214,12 @@ async function uniqueFilePath(dirPath, fileName) {
 async function importFile(params = {}) {
   const relDir = normalizeRelPath(params.relDir || CHATGPT_DOWNLOAD_STAGING_ROOT);
   const fileName = safeImportFileName(params.fileName);
-  const content = Buffer.from(String(params.contentBase64 || ""), "base64");
-  if (!content.length) throw new Error("Import file content is empty.");
-  if (content.length > MAX_IMPORT_FILE_BYTES) throw new Error("Import file exceeds size limit.");
+  const content = decodeBase64WithinLimit(params.contentBase64, MAX_IMPORT_FILE_BYTES, "Import file");
+  if (!content.length) {
+    const error = new Error("Import file content is empty.");
+    error.code = "workspace_import_content_empty";
+    throw error;
+  }
   const { fullPath: dirPath, displayRel: dirDisplayRel } = resolveWithinRoot(relDir);
   beginCurrentRequestCommit("import_file");
   await ensureAttachmentIgnore();
@@ -2414,12 +2454,26 @@ async function captureDigestProcess(command, args, options = {}) {
     child.stderr.on("data", (chunk) => {
       stderrTruncated = appendLimited(stderrChunks, chunk, 32 * 1024) || stderrTruncated;
     });
+    child.stdout.on("error", (error) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      reject(error);
+    });
+    child.stderr.on("error", (error) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      reject(error);
+    });
     child.on("error", (error) => {
+      if (settled) return;
       clearTimeout(timer);
       settled = true;
       reject(error);
     });
     child.on("close", (exitCode, signal) => {
+      if (settled) return;
       clearTimeout(timer);
       settled = true;
       resolve({
@@ -2467,6 +2521,9 @@ async function runCommand(params = {}) {
 
     const stdoutChunks = [];
     const stderrChunks = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let overflowError = null;
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let settled = false;
@@ -2475,20 +2532,57 @@ async function runCommand(params = {}) {
       terminateChild(child);
     }, timeoutMs);
 
+    const capture = (chunks, chunk, stream) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
+      if (stream === "stdout") stdoutBytes += buffer.length;
+      else stderrBytes += buffer.length;
+      if ((stream === "stdout" ? stdoutBytes : stderrBytes) > COMMAND_OUTPUT_LIMIT_BYTES) {
+        if (!overflowError) {
+          overflowError = new Error(`Workspace backend ${stream} output exceeded the bounded command limit.`);
+          overflowError.code = "workspace_backend_process_output_limit_exceeded";
+          overflowError.stream = stream;
+          overflowError.limitBytes = COMMAND_OUTPUT_LIMIT_BYTES;
+          terminateChild(child);
+        }
+      }
+      return buffer;
+    };
     child.stdout.on("data", (chunk) => {
+      capture([], chunk, "stdout");
       stdoutTruncated = appendLimited(stdoutChunks, chunk, COMMAND_OUTPUT_LIMIT_BYTES) || stdoutTruncated;
     });
     child.stderr.on("data", (chunk) => {
+      capture([], chunk, "stderr");
       stderrTruncated = appendLimited(stderrChunks, chunk, COMMAND_OUTPUT_LIMIT_BYTES) || stderrTruncated;
     });
-    child.on("error", (error) => {
+    child.stdout.on("error", (error) => {
+      if (settled) return;
       clearTimeout(timer);
       settled = true;
-      reject(error);
+      terminateChild(child);
+      reject(overflowError || error);
+    });
+    child.stderr.on("error", (error) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      terminateChild(child);
+      reject(overflowError || error);
+    });
+    child.on("error", (error) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      reject(overflowError || error);
     });
     child.on("close", (exitCode, signal) => {
+      if (settled) return;
       clearTimeout(timer);
       settled = true;
+      if (overflowError) {
+        reject(overflowError);
+        return;
+      }
       resolve({
         command,
         args,
@@ -2496,10 +2590,12 @@ async function runCommand(params = {}) {
         exitCode,
         signal,
         durationMs: Date.now() - startedAt,
-        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        stdout: Buffer.concat(stdoutChunks, Math.min(stdoutBytes, COMMAND_OUTPUT_LIMIT_BYTES)).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks, Math.min(stderrBytes, COMMAND_OUTPUT_LIMIT_BYTES)).toString("utf8"),
         stdoutTruncated,
         stderrTruncated,
+        stdoutBytes,
+        stderrBytes,
         outputLimit: COMMAND_OUTPUT_LIMIT_BYTES,
       });
     });
@@ -2772,6 +2868,9 @@ async function runDirectCommand(params = {}) {
 
     const stdoutChunks = [];
     const stderrChunks = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let overflowError = null;
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let settled = false;
@@ -2785,15 +2884,47 @@ async function runDirectCommand(params = {}) {
       }, 1200);
     }, timeoutMs);
 
+    const captureOutput = (chunk, stream, chunks) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
+      if (stream === "stdout") stdoutBytes += buffer.length;
+      else stderrBytes += buffer.length;
+      if ((stream === "stdout" ? stdoutBytes : stderrBytes) > COMMAND_OUTPUT_LIMIT_BYTES && !overflowError) {
+        overflowError = new Error(`Workspace backend ${stream} output exceeded the bounded command limit.`);
+        overflowError.code = "workspace_backend_process_output_limit_exceeded";
+        overflowError.stream = stream;
+        overflowError.limitBytes = COMMAND_OUTPUT_LIMIT_BYTES;
+        terminateChild(child);
+      }
+      return appendLimited(chunks, buffer, COMMAND_OUTPUT_LIMIT_BYTES);
+    };
     child.stdout.on("data", (chunk) => {
-      stdoutTruncated = appendLimited(stdoutChunks, chunk, COMMAND_OUTPUT_LIMIT_BYTES) || stdoutTruncated;
+      stdoutTruncated = captureOutput(chunk, "stdout", stdoutChunks) || stdoutTruncated;
     });
     child.stderr.on("data", (chunk) => {
-      stderrTruncated = appendLimited(stderrChunks, chunk, COMMAND_OUTPUT_LIMIT_BYTES) || stderrTruncated;
+      stderrTruncated = captureOutput(chunk, "stderr", stderrChunks) || stderrTruncated;
     });
-    child.on("error", async (error) => {
+    child.stdout.on("error", (error) => {
+      if (settled) return;
       clearTimeout(timer);
       settled = true;
+      terminateChild(child);
+      reject(overflowError || error);
+    });
+    child.stderr.on("error", (error) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      terminateChild(child);
+      reject(overflowError || error);
+    });
+    child.on("error", async (error) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      if (overflowError) {
+        reject(overflowError);
+        return;
+      }
       const afterEffects = await workspaceEffectSnapshot().catch(() => ({
         supported: false,
         scanScope: "none",
@@ -2810,10 +2941,12 @@ async function runDirectCommand(params = {}) {
         spawnError: String(error.message || error).slice(0, 500),
         timedOut,
         durationMs: Date.now() - startedAt,
-        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        stdout: Buffer.concat(stdoutChunks, Math.min(stdoutBytes, COMMAND_OUTPUT_LIMIT_BYTES)).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks, Math.min(stderrBytes, COMMAND_OUTPUT_LIMIT_BYTES)).toString("utf8"),
         stdoutTruncated,
         stderrTruncated,
+        stdoutBytes,
+        stderrBytes,
         outputLimit: COMMAND_OUTPUT_LIMIT_BYTES,
         workspaceEffects: workspaceEffectSummary(beforeEffects, afterEffects),
         backendCapabilities,
@@ -2824,8 +2957,13 @@ async function runDirectCommand(params = {}) {
       });
     });
     child.on("close", async (exitCode, signal) => {
+      if (settled) return;
       clearTimeout(timer);
       settled = true;
+      if (overflowError) {
+        reject(overflowError);
+        return;
+      }
       const afterEffects = await workspaceEffectSnapshot().catch(() => ({
         supported: false,
         scanScope: "none",
@@ -2841,10 +2979,12 @@ async function runDirectCommand(params = {}) {
         signal,
         timedOut,
         durationMs: Date.now() - startedAt,
-        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        stdout: Buffer.concat(stdoutChunks, stdoutBytes > COMMAND_OUTPUT_LIMIT_BYTES ? COMMAND_OUTPUT_LIMIT_BYTES : stdoutBytes).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks, stderrBytes > COMMAND_OUTPUT_LIMIT_BYTES ? COMMAND_OUTPUT_LIMIT_BYTES : stderrBytes).toString("utf8"),
         stdoutTruncated,
         stderrTruncated,
+        stdoutBytes,
+        stderrBytes,
         outputLimit: COMMAND_OUTPUT_LIMIT_BYTES,
         workspaceEffects: workspaceEffectSummary(beforeEffects, afterEffects),
         backendCapabilities,
@@ -2860,6 +3000,12 @@ async function runDirectCommand(params = {}) {
 function captureProcess(command, args, options = {}) {
   throwIfCurrentRequestCancelled();
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
+  const stdoutLimit = Number.isFinite(Number(options.stdoutLimitBytes))
+    ? Math.max(0, Math.floor(Number(options.stdoutLimitBytes)))
+    : COMMAND_OUTPUT_LIMIT_BYTES;
+  const stderrLimit = Number.isFinite(Number(options.stderrLimitBytes))
+    ? Math.max(0, Math.floor(Number(options.stderrLimitBytes)))
+    : COMMAND_OUTPUT_LIMIT_BYTES;
   return new Promise((resolve, reject) => {
     let spawned;
     try {
@@ -2874,6 +3020,11 @@ function captureProcess(command, args, options = {}) {
     const child = trackChildProcess(spawned);
     const stdoutChunks = [];
     const stderrChunks = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutCapturedBytes = 0;
+    let stderrCapturedBytes = 0;
+    let overflowError = null;
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -2882,21 +3033,64 @@ function captureProcess(command, args, options = {}) {
         if (!settled) killProcessTree(child, "SIGKILL");
       }, 1200).unref?.();
     }, timeoutMs);
-    child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
-    child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
-    child.on("error", (error) => {
+    const capture = (chunks, chunk, stream, limit) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
+      if (stream === "stdout") stdoutBytes += buffer.length;
+      else stderrBytes += buffer.length;
+      const capturedBytes = stream === "stdout" ? stdoutCapturedBytes : stderrCapturedBytes;
+      if (capturedBytes < limit) {
+        const slice = buffer.subarray(0, Math.max(0, limit - capturedBytes));
+        if (slice.length) chunks.push(slice);
+        if (stream === "stdout") stdoutCapturedBytes += slice.length;
+        else stderrCapturedBytes += slice.length;
+      }
+      if (!overflowError && (stream === "stdout" ? stdoutBytes : stderrBytes) > limit) {
+        overflowError = new Error(`Workspace backend ${stream} capture exceeded the bounded output limit.`);
+        overflowError.code = "workspace_backend_process_output_limit_exceeded";
+        overflowError.stream = stream;
+        overflowError.limitBytes = limit;
+        killProcessTree(child, "SIGTERM");
+      }
+    };
+    child.stdout.on("data", (chunk) => capture(stdoutChunks, chunk, "stdout", stdoutLimit));
+    child.stderr.on("data", (chunk) => capture(stderrChunks, chunk, "stderr", stderrLimit));
+    child.stdout.on("error", (error) => {
+      if (settled) return;
       clearTimeout(timer);
       settled = true;
-      reject(error);
+      terminateChild(child);
+      reject(overflowError || error);
+    });
+    child.stderr.on("error", (error) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      terminateChild(child);
+      reject(overflowError || error);
+    });
+    child.on("error", (error) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      reject(overflowError || error);
     });
     child.on("close", (exitCode, signal) => {
+      if (settled) return;
       clearTimeout(timer);
       settled = true;
+      if (overflowError) {
+        reject(overflowError);
+        return;
+      }
       resolve({
         exitCode,
         signal,
-        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        stdout: Buffer.concat(stdoutChunks, stdoutCapturedBytes).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks, stderrCapturedBytes).toString("utf8"),
+        stdoutBytes,
+        stderrBytes,
+        stdoutTruncated: stdoutBytes > stdoutCapturedBytes,
+        stderrTruncated: stderrBytes > stderrCapturedBytes,
       });
     });
   });
@@ -5983,14 +6177,57 @@ async function main() {
     platform: process.platform,
   });
 
-  const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-  rl.on("line", (line) => {
+  const decoder = new StringDecoder("utf8");
+  let lineBuffer = "";
+  let lineBufferBytes = 0;
+  let inputOverflowed = false;
+  const dispatchLine = (line) => {
     handleLine(line).catch((error) => {
       sendEvent("internal-error", { error: error.message });
     });
-  });
-  rl.on("close", () => {
+  };
+  const consumeInput = (chunk) => {
+    if (inputOverflowed || stdinClosed) return;
+    const text = decoder.write(chunk);
+    let remaining = text;
+    while (remaining.length) {
+      const newlineIndex = remaining.indexOf("\n");
+      const segment = newlineIndex >= 0 ? remaining.slice(0, newlineIndex) : remaining;
+      const segmentBytes = Buffer.byteLength(segment, "utf8");
+      if (lineBufferBytes + segmentBytes > MAX_NDJSON_REQUEST_BYTES) {
+        inputOverflowed = true;
+        send({
+          error: {
+            code: "workspace_backend_ndjson_request_too_large",
+            message: "Workspace backend NDJSON request exceeded the bounded input limit.",
+          },
+        });
+        process.stdin.pause();
+        requestShutdown(1);
+        return;
+      }
+      lineBuffer += segment;
+      lineBufferBytes += segmentBytes;
+      if (newlineIndex < 0) return;
+      const line = lineBuffer;
+      lineBuffer = "";
+      lineBufferBytes = 0;
+      if (line.trim()) dispatchLine(line);
+      remaining = remaining.slice(newlineIndex + 1);
+    }
+  };
+  process.stdin.on("data", consumeInput);
+  process.stdin.on("end", () => {
+    if (!inputOverflowed) {
+      const suffix = decoder.end();
+      if (suffix) consumeInput(Buffer.from(suffix, "utf8"));
+      if (!inputOverflowed && lineBuffer.trim()) dispatchLine(lineBuffer);
+    }
     requestShutdown();
+  });
+  process.stdin.on("error", (error) => {
+    inputOverflowed = true;
+    requestShutdown(error?.code === "EPIPE" ? 0 : 1);
   });
 }
 

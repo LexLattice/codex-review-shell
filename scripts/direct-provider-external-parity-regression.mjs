@@ -170,11 +170,18 @@ const controller = new DirectLiveTextController({
   fetchImpl: async (_url, init) => {
     providerCalls += 1;
     providerBody = JSON.parse(init.body);
+    const encodedSse = Buffer.from(sse, "utf8");
     return {
       ok: true,
       status: 200,
       headers: { get: () => "text/event-stream" },
-      text: async () => sse,
+      body: {
+        async *[Symbol.asyncIterator]() {
+          for (let offset = 0; offset < encodedSse.length; offset += 7) {
+            yield encodedSse.subarray(offset, offset + 7);
+          }
+        },
+      },
     };
   },
 });
