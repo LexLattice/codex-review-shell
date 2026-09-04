@@ -80,6 +80,16 @@ function patchApplyOperationDigest(obligation = {}, parsed = {}, patchPlan = {})
   }));
 }
 
+function patchExecutionErrorOutcome(error) {
+  const noEffectProven = error?.authoritativeNoEffect === true &&
+    ["before_effect", "not_entered"].includes(normalizeString(error?.effectPhase, ""));
+  return {
+    status: noEffectProven ? "patch_execution_failed" : "patch_execution_ambiguous",
+    effectOutcome: noEffectProven ? "not_entered" : "unknown",
+    sideEffectMayHaveExecuted: !noEffectProven,
+  };
+}
+
 function canonicalPatchToolLoopId(obligation = {}) {
   const existing = normalizeString(obligation.toolLoopId, "");
   if (existing) return existing;
@@ -434,6 +444,7 @@ async function executeApprovedPatchApplyObligation(options = {}) {
       patchPlanId: patchPlan.patchPlanId,
     });
   } catch (error) {
+    const errorOutcome = patchExecutionErrorOutcome(error);
     const resultId = patchResultIdFor(obligation.obligationId, patchPlan.patchPlanId || "");
     const recordedAt = nowIso(options.nowMs);
     const failure = {
@@ -441,18 +452,24 @@ async function executeApprovedPatchApplyObligation(options = {}) {
       resultId,
       obligationId: obligation.obligationId,
       tool: "apply_patch",
-      status: "patch_execution_failed",
-      resultClass: "patch_execution_failed",
+      status: errorOutcome.status,
+      resultClass: errorOutcome.status,
       operationDigest,
       patchPlanId: normalizeString(patchPlan.patchPlanId, ""),
-      executionState: "failed",
-      effectOutcome: "unknown",
+      executionState: errorOutcome.status === "patch_execution_ambiguous" ? "ambiguous" : "failed",
+      effectOutcome: errorOutcome.effectOutcome,
       sideEffectExecuted: false,
+      sideEffectExecutionProven: false,
+      sideEffectMayHaveExecuted: errorOutcome.sideEffectMayHaveExecuted,
       providerContinuationBlocked: true,
       providerOutputText: JSON.stringify({
         kind: "apply_patch_result",
-        status: "patch_execution_failed",
-        executionFailed: true,
+        status: errorOutcome.status,
+        executionFailed: errorOutcome.status === "patch_execution_failed",
+        executionAmbiguous: errorOutcome.status === "patch_execution_ambiguous",
+        effectOutcome: errorOutcome.effectOutcome,
+        sideEffectExecutionProven: false,
+        sideEffectMayHaveExecuted: errorOutcome.sideEffectMayHaveExecuted,
         providerContinuationBlocked: true,
         rawPathsExposed: false,
         rawPatchIncluded: false,
@@ -468,13 +485,16 @@ async function executeApprovedPatchApplyObligation(options = {}) {
       rawPatchIncluded: false,
     };
     const updatedFailure = sessionStore.updateToolObligation(options.sessionId, options.turnId, options.obligationId, {
-      status: "patch_execution_failed",
-      authorityState: "patch_execution_failed",
+      status: errorOutcome.status,
+      authorityState: errorOutcome.status,
       executionAllowed: false,
       continuationAllowed: false,
       approvalAvailable: false,
-      executionState: "failed",
+      executionState: errorOutcome.status === "patch_execution_ambiguous" ? "ambiguous" : "failed",
+      effectOutcome: errorOutcome.effectOutcome,
       sideEffectExecuted: false,
+      sideEffectExecutionProven: false,
+      sideEffectMayHaveExecuted: errorOutcome.sideEffectMayHaveExecuted,
       result: failure,
       resultRecordedAt: recordedAt,
     }, {
@@ -483,12 +503,18 @@ async function executeApprovedPatchApplyObligation(options = {}) {
       nextTurnState: "failed",
       turnPatch: {
         error: {
-          code: failure.error.code,
+          code: errorOutcome.status === "patch_execution_ambiguous" ? "patch_execution_ambiguous" : failure.error.code,
           message: failure.error.message,
         },
       },
     });
-    return { reused: false, failed: true, obligation: updatedFailure.obligation, result: failure };
+    return {
+      reused: false,
+      failed: errorOutcome.status === "patch_execution_failed",
+      ambiguous: errorOutcome.status === "patch_execution_ambiguous",
+      obligation: updatedFailure.obligation,
+      result: failure,
+    };
   }
   const resultId = patchResultIdFor(obligation.obligationId, patchPlan.patchPlanId || "");
   const files = (Array.isArray(applied.files) ? applied.files : []).map((file) => ({

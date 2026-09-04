@@ -808,12 +808,42 @@ async function main() {
     restartedStore.ensure();
     const recoveredInterrupted = restartedStore.findToolObligation(session.sessionId, turn.turnId, interruptedObligation.obligationId).obligation;
     assert(recoveredInterrupted.status === "command_execution_ambiguous" && recoveredInterrupted.result?.error?.code === "execution_interrupted_restart", "restart must reconcile an executing command as ambiguous without replay");
+    assert(recoveredInterrupted.effectOutcome === "unknown" && recoveredInterrupted.result.effectOutcome === "unknown" && recoveredInterrupted.result.sideEffectMayHaveExecuted === true && recoveredInterrupted.result.sideEffectExecutionProven === false, "restart command reconciliation must preserve unknown effect truth");
+
+    const throwAfterEffectObligation = sessionStore.addToolObligations(session.sessionId, turn.turnId, [commandEvent({
+      itemId: "item_command_throw_after_effect",
+      callId: "call_command_throw_after_effect",
+      command: "npm",
+      args: ["test"],
+      sequence: 10,
+      responseId: "resp_continuation_command_loop_9",
+    })], {
+      parentResponseId: "resp_continuation_command_loop_9",
+      parentResponseSource: "native_direct_tool_continuation_stream",
+      toolLoopId: test.continuationRequest.toolLoop?.toolLoopId,
+      stepOrdinal: 10,
+    }).obligations[0];
+    await planCommandExecutionObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: throwAfterEffectObligation.obligationId, workspaceRequest, projectId: session.projectId });
+    approveCommandExecutionObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: throwAfterEffectObligation.obligationId, projectId: session.projectId });
+    const throwAfterEffect = await executeApprovedCommandExecutionObligation({
+      sessionStore,
+      sessionId: session.sessionId,
+      turnId: turn.turnId,
+      obligationId: throwAfterEffectObligation.obligationId,
+      workspaceRequest: async (...args) => {
+        await workspaceRequest(...args);
+        throw Object.assign(new Error("fixture threw after command effect"), { code: "fixture_throw_after_effect", effectPhase: "after_effect" });
+      },
+      projectId: session.projectId,
+    });
+    assert(throwAfterEffect.ambiguous === true && throwAfterEffect.result.status === "command_execution_ambiguous", "throw-after-effect command must be ambiguous");
+    assert(throwAfterEffect.obligation.effectOutcome === "unknown" && throwAfterEffect.result.effectOutcome === "unknown" && throwAfterEffect.result.sideEffectMayHaveExecuted === true && throwAfterEffect.result.sideEffectExecutionProven === false, "ambiguous command must expose unknown effect truth");
 
     const finalTurn = sessionStore.readTurn(session.sessionId, turn.turnId);
     assert((finalTurn.toolResults || []).length >= 4, "turn must persist command result evidence");
     assert((finalTurn.continuationRequests || []).length >= 4, "turn must persist command continuation evidence");
-    assert(counters.runCommandCalls === 5, "only one concurrent command retry should execute");
-    assert(counters.readFileCalls >= 7, "command planning must read package manifest evidence for package-script cases");
+    assert(counters.runCommandCalls === 6, "only one concurrent command retry should execute");
+    assert(counters.readFileCalls >= 8, "command planning must read package manifest evidence for package-script cases");
 
     console.log(JSON.stringify({
       schema: "direct_command_tool_loop_regression_report@1",
@@ -830,6 +860,7 @@ async function main() {
         "terminal_command_replay_is_idempotent",
         "concurrent_command_claim_is_single_winner",
         "restart_command_claim_becomes_ambiguous",
+        "throw_after_command_effect_is_ambiguous",
       ],
       evidence: {
         toolLoopId: test.continuationRequest.toolLoop?.toolLoopId,

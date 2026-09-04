@@ -127,6 +127,16 @@ function commandExecutionOperationDigest(obligation = {}, parsed = {}, commandPl
   }));
 }
 
+function commandExecutionErrorOutcome(error) {
+  const noEffectProven = error?.authoritativeNoEffect === true &&
+    ["before_effect", "not_entered"].includes(normalizeString(error?.effectPhase, ""));
+  return {
+    status: noEffectProven ? "command_execution_failed" : "command_execution_ambiguous",
+    effectOutcome: noEffectProven ? "not_entered" : "unknown",
+    sideEffectMayHaveExecuted: !noEffectProven,
+  };
+}
+
 function canonicalCommandToolLoopId(obligation = {}) {
   const existing = normalizeString(obligation.toolLoopId, "");
   if (existing) return existing;
@@ -666,6 +676,7 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
       workspaceEffectScan: true,
     });
   } catch (error) {
+    const errorOutcome = commandExecutionErrorOutcome(error);
     const resultId = commandResultIdFor(obligation.obligationId, commandPlan.commandPlanId || "");
     const recordedAt = nowIso(options.nowMs);
     const failure = {
@@ -673,18 +684,24 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
       resultId,
       obligationId: obligation.obligationId,
       tool: "run_command",
-      status: "command_execution_failed",
-      resultClass: "command_execution_failed",
+      status: errorOutcome.status,
+      resultClass: errorOutcome.status,
       operationDigest,
       commandPlanId: normalizeString(commandPlan.commandPlanId, ""),
-      executionState: "failed",
-      effectOutcome: "unknown",
+      executionState: errorOutcome.status === "command_execution_ambiguous" ? "ambiguous" : "failed",
+      effectOutcome: errorOutcome.effectOutcome,
       sideEffectExecuted: false,
+      sideEffectExecutionProven: false,
+      sideEffectMayHaveExecuted: errorOutcome.sideEffectMayHaveExecuted,
       providerContinuationBlocked: true,
       providerOutputText: JSON.stringify({
         kind: "run_command_result",
-        status: "command_execution_failed",
-        executionFailed: true,
+        status: errorOutcome.status,
+        executionFailed: errorOutcome.status === "command_execution_failed",
+        executionAmbiguous: errorOutcome.status === "command_execution_ambiguous",
+        effectOutcome: errorOutcome.effectOutcome,
+        sideEffectExecutionProven: false,
+        sideEffectMayHaveExecuted: errorOutcome.sideEffectMayHaveExecuted,
         providerContinuationBlocked: true,
         rawPathsExposed: false,
       }),
@@ -699,13 +716,16 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
       rawCommandOutputHashExposed: false,
     };
     const updatedFailure = sessionStore.updateToolObligation(options.sessionId, options.turnId, options.obligationId, {
-      status: "command_execution_failed",
-      authorityState: "command_execution_failed",
+      status: errorOutcome.status,
+      authorityState: errorOutcome.status,
       executionAllowed: false,
       continuationAllowed: false,
       approvalAvailable: false,
-      executionState: "failed",
+      executionState: errorOutcome.status === "command_execution_ambiguous" ? "ambiguous" : "failed",
+      effectOutcome: errorOutcome.effectOutcome,
       sideEffectExecuted: false,
+      sideEffectExecutionProven: false,
+      sideEffectMayHaveExecuted: errorOutcome.sideEffectMayHaveExecuted,
       result: failure,
       resultRecordedAt: recordedAt,
     }, {
@@ -714,12 +734,18 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
       nextTurnState: "failed",
       turnPatch: {
         error: {
-          code: failure.error.code,
+          code: errorOutcome.status === "command_execution_ambiguous" ? "command_execution_ambiguous" : failure.error.code,
           message: failure.error.message,
         },
       },
     });
-    return { reused: false, failed: true, obligation: updatedFailure.obligation, result: failure };
+    return {
+      reused: false,
+      failed: errorOutcome.status === "command_execution_failed",
+      ambiguous: errorOutcome.status === "command_execution_ambiguous",
+      obligation: updatedFailure.obligation,
+      result: failure,
+    };
   }
   const resultId = commandResultIdFor(obligation.obligationId, commandPlan.commandPlanId || "");
   const stdoutPreview = boundedOutput(executed.stdout, MAX_COMMAND_OUTPUT_PREVIEW_CHARS);
