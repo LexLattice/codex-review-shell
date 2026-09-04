@@ -1063,6 +1063,25 @@ try {
   );
   assert.equal(oversizedFrameTransport.pendingRequestCount(), 0);
 
+  const boundaryTransport = new NdjsonTransport(new FakeChild());
+  const boundaryMessages = [];
+  boundaryTransport.handleLine = (line) => boundaryMessages.push(JSON.parse(line));
+  const boundaryPayload = Buffer.from(
+    '{"id":"utf8","result":{"text":"€"}}\n{"id":"small","result":{"ok":true}}\n',
+    "utf8",
+  );
+  const euroOffset = boundaryPayload.indexOf(Buffer.from("€", "utf8"));
+  boundaryTransport.handleData(boundaryPayload.subarray(0, euroOffset + 1));
+  boundaryTransport.handleData(boundaryPayload.subarray(euroOffset + 1));
+  assert.deepEqual(
+    boundaryMessages,
+    [
+      { id: "utf8", result: { text: "€" } },
+      { id: "small", result: { ok: true } },
+    ],
+    "NDJSON frames must be admitted as raw bytes before decoding, preserving split UTF-8 and multiple lines",
+  );
+
   const windowsTreeChild = new EventEmitter();
   windowsTreeChild.pid = 4242;
   windowsTreeChild.exitCode = null;
@@ -3066,8 +3085,25 @@ try {
     env: process.env,
     stdio: ["pipe", "pipe", "pipe"],
   });
+  const probeRaceStdinWrite = probeRaceChild.stdin.write.bind(probeRaceChild.stdin);
+  probeRaceChild.stdin.write = (chunk, encoding, callback) => {
+    const done = typeof encoding === "function" ? encoding : callback;
+    const payload = Buffer.isBuffer(chunk)
+      ? chunk
+      : Buffer.from(String(chunk), typeof encoding === "string" ? encoding : "utf8");
+    const euroOffset = payload.indexOf(Buffer.from("€", "utf8"));
+    if (euroOffset < 0) {
+      return typeof encoding === "function"
+        ? probeRaceStdinWrite(chunk, encoding)
+        : probeRaceStdinWrite(chunk, encoding, callback);
+    }
+    const splitAt = euroOffset + 1;
+    probeRaceStdinWrite(payload.subarray(0, splitAt));
+    probeRaceStdinWrite(payload.subarray(splitAt), done);
+    return true;
+  };
   const probeRaceTransport = new NdjsonTransport(probeRaceChild);
-  const firstProbeHello = probeRaceTransport.request("hello", {}, 8_000);
+  const firstProbeHello = probeRaceTransport.request("hello", { marker: "€" }, 8_000);
   const firstProbeRequestId = [...probeRaceTransport.pending.values()]
     .find((pending) => pending.method === "hello")?.requestId;
   assert.ok(firstProbeRequestId, "the first containment probe request is addressable for cancellation");

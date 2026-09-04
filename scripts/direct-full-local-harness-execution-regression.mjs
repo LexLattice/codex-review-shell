@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -366,18 +368,52 @@ async function main() {
   const splitUtf8Result = await manager.wait({ ...binding, sessionId: splitUtf8.sessionId });
   assert.equal(splitUtf8Result.stdoutPreview, "€", "split UTF-8 output must decode exactly across chunks");
 
-  const stdinError = manager.start({
+  class DeferredStdinChild extends EventEmitter {
+    constructor() {
+      super();
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.stdin = new PassThrough();
+      this.exitCode = null;
+      this.signalCode = null;
+      this.killSignals = [];
+    }
+
+    kill(signal) {
+      this.killSignals.push(signal);
+      return true;
+    }
+  }
+
+  const deferredStdinChild = new DeferredStdinChild();
+  const deferredStdinManager = new DirectStatefulExecSessionManager({
+    grantStore: store,
+    workspaceRootResolver: () => workspace,
+    spawnImpl: () => deferredStdinChild,
+  });
+  const stdinError = deferredStdinManager.start({
     ...binding,
     command: node,
     args: ["-e", "setTimeout(() => {}, 1000)"],
     stdinPolicy: "line_input",
   });
-  const stdinRecord = manager.sessions.get(stdinError.sessionId);
-  stdinRecord.child.stdin.emit("error", Object.assign(new Error("fixture EPIPE"), { code: "EPIPE" }));
-  const stdinErrorResult = await manager.wait({ ...binding, sessionId: stdinError.sessionId });
+  let stdinWaitSettled = false;
+  const stdinWait = deferredStdinManager.wait({ ...binding, sessionId: stdinError.sessionId }).then((result) => {
+    stdinWaitSettled = true;
+    return result;
+  });
+  deferredStdinChild.stdin.emit("error", Object.assign(new Error("fixture EPIPE"), { code: "EPIPE" }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stdinWaitSettled, false, "stdin errors must remain pending until the child is reaped");
+  assert.deepEqual(deferredStdinChild.killSignals, ["SIGTERM"], "stdin errors must initiate bounded termination before close");
+  deferredStdinChild.exitCode = 1;
+  deferredStdinChild.signalCode = "SIGTERM";
+  deferredStdinChild.emit("close", 1, "SIGTERM");
+  const stdinErrorResult = await stdinWait;
   assert.equal(stdinErrorResult.status, "failed", "stdin stream errors must settle a failed session");
   assert.equal(stdinErrorResult.errorCode, "direct_stateful_exec_stdin_write_failed");
   assert.equal(stdinErrorResult.stdinErrorCode, "EPIPE");
+  await deferredStdinManager.dispose("stdin-error-regression");
 
   const stdinCallbackError = manager.start({
     ...binding,
@@ -390,7 +426,8 @@ async function main() {
     callback(Object.assign(new Error("fixture callback EPIPE"), { code: "EPIPE" }));
     return true;
   };
-  manager.writeStdin({ ...binding, sessionId: stdinCallbackError.sessionId, chars: "fixture\n" });
+  const stdinCallbackAccepted = manager.writeStdin({ ...binding, sessionId: stdinCallbackError.sessionId, chars: "fixture\n" });
+  assert.equal(stdinCallbackAccepted.stdinAccepted, false, "synchronous stdin write failures must not be reported as accepted");
   const stdinCallbackResult = await manager.wait({ ...binding, sessionId: stdinCallbackError.sessionId });
   assert.equal(stdinCallbackResult.status, "failed", "stdin write callbacks must settle a failed session");
   assert.equal(stdinCallbackResult.stdinErrorCode, "EPIPE");

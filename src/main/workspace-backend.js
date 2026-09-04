@@ -472,15 +472,13 @@ class NdjsonTransport extends EventEmitter {
   constructor(child) {
     super();
     this.child = child;
-    this.buffer = "";
+    this.buffer = Buffer.alloc(0);
     this.bufferBytes = 0;
     this.pending = new Map();
     this.closed = false;
 
-    child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => this.handleData(chunk));
     child.stdout.on("error", (error) => this.failProtocol(error, "workspace_backend_stdout_read_failed"));
-    child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => this.emit("stderr", chunk));
     child.stderr.on("error", (error) => this.failProtocol(error, "workspace_backend_stderr_read_failed"));
     child.stdin?.on?.("error", (error) => this.failPendingWrites(error));
@@ -495,11 +493,12 @@ class NdjsonTransport extends EventEmitter {
   }
 
   handleData(chunk) {
-    let remaining = typeof chunk === "string" ? chunk : Buffer.from(chunk || "").toString("utf8");
-    while (remaining.length) {
-      const newlineIndex = remaining.indexOf("\n");
-      const segment = newlineIndex >= 0 ? remaining.slice(0, newlineIndex) : remaining;
-      const segmentBytes = Buffer.byteLength(segment, "utf8");
+    const source = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk || ""), "utf8");
+    let offset = 0;
+    while (offset < source.length) {
+      const newlineIndex = source.indexOf(0x0a, offset);
+      const segmentEnd = newlineIndex >= 0 ? newlineIndex : source.length;
+      const segmentBytes = segmentEnd - offset;
       if (this.bufferBytes + segmentBytes > MAX_NDJSON_FRAME_BYTES) {
         this.failProtocol(
           new Error("Workspace backend NDJSON frame exceeded the bounded transport limit."),
@@ -507,14 +506,19 @@ class NdjsonTransport extends EventEmitter {
         );
         return;
       }
-      this.buffer += segment;
-      this.bufferBytes += segmentBytes;
+      if (segmentBytes > 0) {
+        this.buffer = Buffer.concat([
+          this.buffer,
+          Buffer.from(source.subarray(offset, segmentEnd)),
+        ], this.bufferBytes + segmentBytes);
+        this.bufferBytes += segmentBytes;
+      }
       if (newlineIndex < 0) return;
-      const line = this.buffer.trim();
-      this.buffer = "";
+      const line = this.buffer.toString("utf8").trim();
+      this.buffer = Buffer.alloc(0);
       this.bufferBytes = 0;
       if (line) this.handleLine(line);
-      remaining = remaining.slice(newlineIndex + 1);
+      offset = newlineIndex + 1;
     }
   }
 

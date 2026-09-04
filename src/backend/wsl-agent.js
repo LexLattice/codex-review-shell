@@ -19,7 +19,6 @@ const { AsyncLocalStorage } = require("node:async_hooks");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const { TextDecoder } = require("node:util");
-const { StringDecoder } = require("node:string_decoder");
 const {
   DIRECT_WORKSPACE_WORKER_POLICY_SCHEMA,
   WORKSPACE_WORKER_TOOLS,
@@ -2407,10 +2406,10 @@ function appendLimited(chunks, chunk, limitBytes) {
   let current = chunks.reduce((sum, item) => sum + item.length, 0);
   if (current >= limitBytes) return true;
   if (current + buffer.length <= limitBytes) {
-    chunks.push(buffer);
+    chunks.push(Buffer.from(buffer));
     return false;
   }
-  chunks.push(buffer.subarray(0, limitBytes - current));
+  chunks.push(Buffer.from(buffer.subarray(0, limitBytes - current)));
   return true;
 }
 
@@ -2447,7 +2446,7 @@ async function captureDigestProcess(command, args, options = {}) {
       stdoutBytes += buffer.length;
       if (stdoutCapturedBytes < captureLimit) {
         const slice = buffer.subarray(0, Math.max(0, captureLimit - stdoutCapturedBytes));
-        if (slice.length) stdoutChunks.push(slice);
+        if (slice.length) stdoutChunks.push(Buffer.from(slice));
         stdoutCapturedBytes += slice.length;
       }
     });
@@ -3040,7 +3039,7 @@ function captureProcess(command, args, options = {}) {
       const capturedBytes = stream === "stdout" ? stdoutCapturedBytes : stderrCapturedBytes;
       if (capturedBytes < limit) {
         const slice = buffer.subarray(0, Math.max(0, limit - capturedBytes));
-        if (slice.length) chunks.push(slice);
+        if (slice.length) chunks.push(Buffer.from(slice));
         if (stream === "stdout") stdoutCapturedBytes += slice.length;
         else stderrCapturedBytes += slice.length;
       }
@@ -6177,8 +6176,7 @@ async function main() {
     platform: process.platform,
   });
 
-  const decoder = new StringDecoder("utf8");
-  let lineBuffer = "";
+  let lineBuffer = Buffer.alloc(0);
   let lineBufferBytes = 0;
   let inputOverflowed = false;
   const dispatchLine = (line) => {
@@ -6188,12 +6186,12 @@ async function main() {
   };
   const consumeInput = (chunk) => {
     if (inputOverflowed || stdinClosed) return;
-    const text = decoder.write(chunk);
-    let remaining = text;
-    while (remaining.length) {
-      const newlineIndex = remaining.indexOf("\n");
-      const segment = newlineIndex >= 0 ? remaining.slice(0, newlineIndex) : remaining;
-      const segmentBytes = Buffer.byteLength(segment, "utf8");
+    const source = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk || ""), "utf8");
+    let offset = 0;
+    while (offset < source.length) {
+      const newlineIndex = source.indexOf(0x0a, offset);
+      const segmentEnd = newlineIndex >= 0 ? newlineIndex : source.length;
+      const segmentBytes = segmentEnd - offset;
       if (lineBufferBytes + segmentBytes > MAX_NDJSON_REQUEST_BYTES) {
         inputOverflowed = true;
         send({
@@ -6206,22 +6204,28 @@ async function main() {
         requestShutdown(1);
         return;
       }
-      lineBuffer += segment;
-      lineBufferBytes += segmentBytes;
+      if (segmentBytes > 0) {
+        lineBuffer = Buffer.concat([
+          lineBuffer,
+          Buffer.from(source.subarray(offset, segmentEnd)),
+        ], lineBufferBytes + segmentBytes);
+        lineBufferBytes += segmentBytes;
+      }
       if (newlineIndex < 0) return;
-      const line = lineBuffer;
-      lineBuffer = "";
+      const line = lineBuffer.toString("utf8");
+      lineBuffer = Buffer.alloc(0);
       lineBufferBytes = 0;
       if (line.trim()) dispatchLine(line);
-      remaining = remaining.slice(newlineIndex + 1);
+      offset = newlineIndex + 1;
     }
   };
   process.stdin.on("data", consumeInput);
   process.stdin.on("end", () => {
     if (!inputOverflowed) {
-      const suffix = decoder.end();
-      if (suffix) consumeInput(Buffer.from(suffix, "utf8"));
-      if (!inputOverflowed && lineBuffer.trim()) dispatchLine(lineBuffer);
+      if (lineBuffer.length) {
+        const line = lineBuffer.toString("utf8");
+        if (line.trim()) dispatchLine(line);
+      }
     }
     requestShutdown();
   });
