@@ -127,7 +127,12 @@ function sanitizeInputSchema(schema) {
     active.delete(value);
     return result;
   };
-  return visit(schema, 0);
+  const sanitized = visit(schema, 0);
+  const actualEncodedBytes = Buffer.byteLength(JSON.stringify(sanitized), "utf8");
+  if (actualEncodedBytes > MAX_MCP_SCHEMA_ENCODED_BYTES) {
+    throw scopeError("direct_mcp_input_schema_too_large", "Configured MCP input schema exceeded its aggregate encoded-size limit.");
+  }
+  return sanitized;
 }
 
 function appendDiscoveryRows(rows, additions, state) {

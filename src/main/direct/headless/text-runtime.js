@@ -196,9 +196,51 @@ class DirectHeadlessTextRuntime {
 
   recoverPersistedPackets() {
     if (typeof this.store.listTurnPackets !== "function") return;
+    const recoveryPackets = this.store.listTurnPackets({ states: ["recovery_required", "cancellation_pending"] });
+    for (const packet of recoveryPackets) {
+      const threadId = normalizeString(packet.targetThreadId, "");
+      if (!threadId) continue;
+      this.activeByThread.set(threadId, packet.packetId);
+      const activePromise = packet.turnId
+        ? this.controller.activeRuns?.get(packet.turnId)?.promise || null
+        : null;
+      if (activePromise) {
+        this.retainImplementationRecovery(threadId, packet.packetId, threadId, packet.turnId, {
+          activePromise,
+          error: packet.error,
+        });
+      } else {
+        this.reconcilePersistedRecovery(packet);
+      }
+    }
     const packets = this.store.listTurnPackets({ states: ["queued"] });
     for (const packet of packets) this.queuePacket(packet);
     for (const threadId of this.queueByThread.keys()) this.processNext(threadId);
+  }
+
+  reconcilePersistedRecovery(packet = {}) {
+    const claim = isPlainObject(packet.executionClaim) ? packet.executionClaim : null;
+    this.store.updateTurnPacket(packet.packetId, {
+      state: "failed",
+      providerCompleted: false,
+      replayState: "replay_unsafe",
+      blockerCode: "headless_implementation_restart_recovery_unknown",
+      recoveryRequired: false,
+      recoveryReconciled: true,
+      cancellationPending: false,
+      cancellationSettled: false,
+      terminationSettled: false,
+      settled: true,
+      terminalTurnState: "transport_handoff_unknown",
+      error: {
+        code: "headless_implementation_restart_recovery_unknown",
+        message: "Implementation recovery had no live controller run after restart.",
+      },
+      executionClaim: claim
+        ? { ...claim, status: "reconciled_unknown", reconciledAt: nowIso(), updatedAt: nowIso() }
+        : claim,
+    });
+    this.activeByThread.delete(normalizeString(packet.targetThreadId, ""));
   }
 
   statusProjection() {

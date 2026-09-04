@@ -319,6 +319,20 @@ try {
     }),
     (error) => error?.code === "direct_mcp_input_schema_too_deep",
   );
+  assert.throws(
+    () => normalizeConfiguredMcpServer({
+      serverIdentityId: "mcp_server_escape_schema_fixture",
+      transport: "fixture",
+      tools: [{
+        name: "escape-heavy",
+        inputSchema: {
+          type: "object",
+          properties: { escaped: Array.from({ length: 34 }, () => "\n".repeat(1_000)) },
+        },
+      }],
+    }),
+    (error) => error?.code === "direct_mcp_input_schema_too_large",
+  );
 
   const aggregateServers = Array.from({ length: 18 }, (_, index) => normalizeConfiguredMcpServer({
     serverIdentityId: `mcp_server_aggregate_fixture_${index}`,

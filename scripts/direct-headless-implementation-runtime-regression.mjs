@@ -488,6 +488,68 @@ try {
   assert.equal(unresolvedController.turnStarts, 2);
   assert.equal(unresolvedRuntime.statusProjection().activeTurns, 0);
 
+  const restartRecoveryThreadId = "direct_session_headless_impl_restart_recovery";
+  const restartRecoveryPacket = daemon.store.writeTurnPacket({
+    packetId: "headless_restart_recovery_packet",
+    envelopeId: "headless_restart_recovery_envelope",
+    routeId: "route_impl",
+    routeVersion: "v1",
+    targetThreadId: restartRecoveryThreadId,
+    runtimePath: "direct-implementation",
+    state: "recovery_required",
+    promptText: "restart recovery fixture",
+    promptDigest: "sha256:restart-recovery-fixture",
+    clientTurnRequestId: "headless_restart_recovery_request",
+    turnId: "missing_after_restart_turn",
+    providerCompleted: false,
+    recoveryRequired: true,
+    terminationSettled: false,
+    createdAt: "2026-01-01T00:01:00.000Z",
+  });
+  daemon.store.claimTurnPacket(restartRecoveryPacket.packetId, { runtimeId: "crashed-runtime" });
+  const restartQueuedPacket = daemon.store.writeTurnPacket({
+    packetId: "headless_restart_recovery_queued_packet",
+    envelopeId: "headless_restart_recovery_queued_envelope",
+    routeId: "route_impl",
+    routeVersion: "v1",
+    targetThreadId: restartRecoveryThreadId,
+    runtimePath: "direct-implementation",
+    state: "queued",
+    promptText: "queued after restart recovery",
+    promptDigest: "sha256:queued-after-restart-recovery",
+    clientTurnRequestId: "headless_restart_recovery_queued_request",
+    createdAt: "2026-01-01T00:01:01.000Z",
+  });
+  const restartController = new PendingImplementationController();
+  const reductionCountBeforeRestartRecovery = daemon.store.reducedResultSummary().total;
+  const restartRuntime = new DirectHeadlessTextRuntime({
+    store: daemon.store,
+    controller: restartController,
+    project,
+    implementationSettleTimeoutMs: 500,
+  });
+  daemon.textRuntime = restartRuntime;
+  const reconciledRestartRecovery = await waitForPacket(
+    baseUrl,
+    restartRecoveryPacket.packetId,
+    (packet) => packet.state === "failed",
+    "restart recovery reconciliation",
+  );
+  assert.equal(reconciledRestartRecovery.providerCompleted, false);
+  assert.equal(reconciledRestartRecovery.blockerCode, "headless_implementation_restart_recovery_unknown");
+  assert.equal(reconciledRestartRecovery.terminationSettled, false);
+  assert.equal(reconciledRestartRecovery.executionClaim.status, "reconciled_unknown");
+  const restartedQueuedTerminal = await waitForPacket(
+    baseUrl,
+    restartQueuedPacket.packetId,
+    (packet) => packet.state === "failed",
+    "queued packet after restart recovery",
+  );
+  assert.equal(restartedQueuedTerminal.providerCompleted, false);
+  assert.equal(restartController.turns.size, 1);
+  assert.equal(daemon.store.reducedResultSummary().total, reductionCountBeforeRestartRecovery);
+  assert.equal(restartRuntime.statusProjection().activeTurns, 0);
+
   const persistedTurn = sessionStore.readTurn("direct_session_headless_impl", terminal.turnId);
   assert.equal(persistedTurn.state, "completed");
   const expectedInitialToolNames = [
