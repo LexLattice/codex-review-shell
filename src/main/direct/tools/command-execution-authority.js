@@ -23,6 +23,8 @@ const COMMAND_TERMINAL_STATUSES = new Set([
   "command_declined",
   "command_canceled",
   "command_result_recorded",
+  "command_execution_failed",
+  "command_execution_ambiguous",
   "continuation_built",
   "continuation_sent",
 ]);
@@ -107,6 +109,22 @@ function commandResultIdFor(obligationId, commandPlanId) {
 
 function commandContinuationIdFor(obligationId, resultId) {
   return `command_continuation_${sha256(`${normalizeString(obligationId, "")}:${normalizeString(resultId, "")}`).slice(0, 20)}`;
+}
+
+function commandExecutionOperationDigest(obligation = {}, parsed = {}, commandPlan = {}) {
+  return sha256(stableStringify({
+    schema: "direct_command_execution_operation@1",
+    obligationId: normalizeString(obligation.obligationId, ""),
+    callId: normalizeString(parsed.callId || obligation.callId, ""),
+    providerCallType: normalizeString(parsed.providerCallType || obligation.providerCallType || obligation.toolType, ""),
+    commandPlanId: normalizeString(commandPlan.commandPlanId || obligation.commandPlan?.commandPlanId, ""),
+    command: normalizeString(commandPlan.command || parsed.command, ""),
+    args: Array.isArray(commandPlan.args) ? commandPlan.args : Array.isArray(parsed.args) ? parsed.args : [],
+    cwdRelPath: normalizeString(commandPlan.cwdRelPath || parsed.cwdRelPath, ""),
+    timeoutMs: Number(commandPlan.timeoutMs || parsed.timeoutMs || 0),
+    packageScript: parsed.packageScript || commandPlan.packageScript || {},
+    scriptEvidenceKey: normalizeString(commandPlan.packageScriptEvidence?.scriptCommandEvidenceKey, ""),
+  }));
 }
 
 function canonicalCommandToolLoopId(obligation = {}) {
@@ -491,6 +509,7 @@ function approveCommandExecutionObligation(options = {}) {
     throw error;
   }
   const approvedAt = nowIso(options.nowMs);
+  const operationDigest = commandExecutionOperationDigest(obligation, parsed, obligation.commandPlan);
   return sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "command_approved",
     authorityState: "command_approved",
@@ -503,7 +522,9 @@ function approveCommandExecutionObligation(options = {}) {
       commandPlanId: obligation.commandPlan.commandPlanId,
       providerCallType: parsed.providerCallType,
       outputType: parsed.outputType,
+      operationDigest,
     },
+    approvedOperationDigest: operationDigest,
   }, {
     ...options,
     nextTurnState: "authority_waiting",
@@ -612,22 +633,94 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
   if (!sessionStore) throw new Error("Command execution requires a direct session store.");
   if (typeof options.workspaceRequest !== "function") throw new Error("Command execution requires workspaceRequest.");
   const { obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
-  if (isPlainObject(obligation.result)) return { reused: true, obligation, result: obligation.result };
-  if (obligation.status !== "command_approved" || obligation.authorityState !== "command_approved") {
-    const error = new Error("Command obligation must be approved before execution.");
-    error.code = "command_obligation_not_approved";
-    throw error;
-  }
   const parsed = assertCommandObligation(obligation);
   const commandPlan = obligation.commandPlan || {};
-  const executed = await options.workspaceRequest("runDirectCommand", {
-    command: commandPlan.command || parsed.command,
-    args: Array.isArray(commandPlan.args) ? commandPlan.args : parsed.args,
-    cwdRelPath: normalizeString(commandPlan.cwdRelPath, parsed.cwdRelPath),
-    timeoutMs: Number(commandPlan.timeoutMs || parsed.timeoutMs || MAX_COMMAND_TIMEOUT_MS),
-    commandPlanId: normalizeString(commandPlan.commandPlanId, ""),
-    workspaceEffectScan: true,
+  const operationDigest = commandExecutionOperationDigest(obligation, parsed, commandPlan);
+  const claim = await sessionStore.claimToolObligation(options.sessionId, options.turnId, options.obligationId, {
+    operationDigest,
+    approvedStatus: "command_approved",
+    executingStatus: "command_executing",
+    ambiguousStatus: "command_execution_ambiguous",
+    terminalStatuses: [...COMMAND_TERMINAL_STATUSES],
+    conflictCode: "command_operation_digest_conflict",
+    notApprovedCode: "command_obligation_not_approved",
+    nowMs: options.nowMs,
   });
+  if (!claim.claimed) {
+    return {
+      reused: true,
+      active: claim.active,
+      ambiguous: claim.ambiguous,
+      obligation: claim.obligation,
+      result: claim.result,
+    };
+  }
+  let executed;
+  try {
+    executed = await options.workspaceRequest("runDirectCommand", {
+      command: commandPlan.command || parsed.command,
+      args: Array.isArray(commandPlan.args) ? commandPlan.args : parsed.args,
+      cwdRelPath: normalizeString(commandPlan.cwdRelPath, parsed.cwdRelPath),
+      timeoutMs: Number(commandPlan.timeoutMs || parsed.timeoutMs || MAX_COMMAND_TIMEOUT_MS),
+      commandPlanId: normalizeString(commandPlan.commandPlanId, ""),
+      workspaceEffectScan: true,
+    });
+  } catch (error) {
+    const resultId = commandResultIdFor(obligation.obligationId, commandPlan.commandPlanId || "");
+    const recordedAt = nowIso(options.nowMs);
+    const failure = {
+      schema: DIRECT_COMMAND_EXECUTION_RESULT_SCHEMA,
+      resultId,
+      obligationId: obligation.obligationId,
+      tool: "run_command",
+      status: "command_execution_failed",
+      resultClass: "command_execution_failed",
+      operationDigest,
+      commandPlanId: normalizeString(commandPlan.commandPlanId, ""),
+      executionState: "failed",
+      effectOutcome: "unknown",
+      sideEffectExecuted: false,
+      providerContinuationBlocked: true,
+      providerOutputText: JSON.stringify({
+        kind: "run_command_result",
+        status: "command_execution_failed",
+        executionFailed: true,
+        providerContinuationBlocked: true,
+        rawPathsExposed: false,
+      }),
+      providerOutputChars: 0,
+      providerOutputTruncated: false,
+      error: {
+        code: normalizeString(error?.code, "workspace_execution_failed"),
+        message: normalizeString(error?.message, "Workspace command execution failed."),
+      },
+      recordedAt,
+      rawWorkspacePathExposed: false,
+      rawCommandOutputHashExposed: false,
+    };
+    const updatedFailure = sessionStore.updateToolObligation(options.sessionId, options.turnId, options.obligationId, {
+      status: "command_execution_failed",
+      authorityState: "command_execution_failed",
+      executionAllowed: false,
+      continuationAllowed: false,
+      approvalAvailable: false,
+      executionState: "failed",
+      sideEffectExecuted: false,
+      result: failure,
+      resultRecordedAt: recordedAt,
+    }, {
+      ...options,
+      expectedExecutionClaimId: claim.claimId,
+      nextTurnState: "failed",
+      turnPatch: {
+        error: {
+          code: failure.error.code,
+          message: failure.error.message,
+        },
+      },
+    });
+    return { reused: false, failed: true, obligation: updatedFailure.obligation, result: failure };
+  }
   const resultId = commandResultIdFor(obligation.obligationId, commandPlan.commandPlanId || "");
   const stdoutPreview = boundedOutput(executed.stdout, MAX_COMMAND_OUTPUT_PREVIEW_CHARS);
   const stderrPreview = boundedOutput(executed.stderr, MAX_COMMAND_OUTPUT_PREVIEW_CHARS);
@@ -751,6 +844,7 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
     tool: "run_command",
     status: redaction.providerOutputAllowed ? status : "command_output_redaction_blocked",
     resultClass: redaction.providerOutputAllowed ? status : "command_output_redaction_blocked",
+    operationDigest,
     commandPlanId: normalizeString(commandPlan.commandPlanId, ""),
     displayCommand: normalizeString(commandPlan.displayCommand, ""),
     cwdRelPath: normalizeString(commandPlan.cwdRelPath, ""),
@@ -823,6 +917,7 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
     resultRecordedAt: result.recordedAt,
   }, {
     ...options,
+    expectedExecutionClaimId: claim.claimId,
     nextTurnState: redaction.providerOutputAllowed && !providerContinuationBlockedByPolicy ? "continuation_ready" : "failed",
     turnPatch: redaction.providerOutputAllowed && !providerContinuationBlockedByPolicy ? undefined : {
       error: {

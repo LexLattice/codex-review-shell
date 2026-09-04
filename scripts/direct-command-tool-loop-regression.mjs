@@ -740,11 +740,80 @@ async function main() {
     }
     assert(unsafeCwdBlocked, "unsafe cwd must be blocked before workspace execution");
 
+    const replay = await executeApprovedCommandExecutionObligation({
+      sessionStore,
+      sessionId: session.sessionId,
+      turnId: turn.turnId,
+      obligationId: testObligations[0].obligationId,
+      workspaceRequest,
+      projectId: session.projectId,
+    });
+    assert(replay.reused === true && replay.result?.resultId === test.result.resultId, "matching terminal command retry must replay its stored result");
+    assert(counters.runCommandCalls === 4, "terminal command replay must not execute the workspace command");
+
+    const concurrentObligation = sessionStore.addToolObligations(session.sessionId, turn.turnId, [commandEvent({
+      itemId: "item_command_concurrent",
+      callId: "call_command_concurrent",
+      command: "npm",
+      args: ["test"],
+      sequence: 8,
+      responseId: "resp_continuation_command_loop_7",
+    })], {
+      parentResponseId: "resp_continuation_command_loop_7",
+      parentResponseSource: "native_direct_tool_continuation_stream",
+      toolLoopId: test.continuationRequest.toolLoop?.toolLoopId,
+      stepOrdinal: 8,
+    }).obligations[0];
+    await planCommandExecutionObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: concurrentObligation.obligationId, workspaceRequest, projectId: session.projectId });
+    approveCommandExecutionObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: concurrentObligation.obligationId, projectId: session.projectId });
+    const delayedWorkspaceRequest = async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return workspaceRequest(...args);
+    };
+    const concurrentResults = await Promise.all([1, 2].map(() => executeApprovedCommandExecutionObligation({
+      sessionStore,
+      sessionId: session.sessionId,
+      turnId: turn.turnId,
+      obligationId: concurrentObligation.obligationId,
+      workspaceRequest: delayedWorkspaceRequest,
+      projectId: session.projectId,
+    })));
+    assert(concurrentResults.filter((entry) => entry.result?.status === "completed_exit_zero").length === 1, "concurrent command retries must have one executor");
+    assert(concurrentResults.filter((entry) => entry.active === true).length === 1, "losing command retry must observe the active claim");
+    assert(counters.runCommandCalls === 5, "concurrent command retries must execute the workspace command once");
+
+    const interruptedObligation = sessionStore.addToolObligations(session.sessionId, turn.turnId, [commandEvent({
+      itemId: "item_command_restart_interrupted",
+      callId: "call_command_restart_interrupted",
+      command: "npm",
+      args: ["test"],
+      sequence: 9,
+      responseId: "resp_continuation_command_loop_8",
+    })], {
+      parentResponseId: "resp_continuation_command_loop_8",
+      parentResponseSource: "native_direct_tool_continuation_stream",
+      toolLoopId: test.continuationRequest.toolLoop?.toolLoopId,
+      stepOrdinal: 9,
+    }).obligations[0];
+    await planCommandExecutionObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: interruptedObligation.obligationId, workspaceRequest, projectId: session.projectId });
+    approveCommandExecutionObligation({ sessionStore, sessionId: session.sessionId, turnId: turn.turnId, obligationId: interruptedObligation.obligationId, projectId: session.projectId });
+    const interruptedApproved = sessionStore.findToolObligation(session.sessionId, turn.turnId, interruptedObligation.obligationId).obligation;
+    await sessionStore.claimToolObligation(session.sessionId, turn.turnId, interruptedObligation.obligationId, {
+      operationDigest: interruptedApproved.approvedOperationDigest,
+      approvedStatus: "command_approved",
+      executingStatus: "command_executing",
+      ambiguousStatus: "command_execution_ambiguous",
+    });
+    const restartedStore = new DirectSessionStore({ rootDir: path.join(storeRoot, "sessions") });
+    restartedStore.ensure();
+    const recoveredInterrupted = restartedStore.findToolObligation(session.sessionId, turn.turnId, interruptedObligation.obligationId).obligation;
+    assert(recoveredInterrupted.status === "command_execution_ambiguous" && recoveredInterrupted.result?.error?.code === "execution_interrupted_restart", "restart must reconcile an executing command as ambiguous without replay");
+
     const finalTurn = sessionStore.readTurn(session.sessionId, turn.turnId);
     assert((finalTurn.toolResults || []).length >= 4, "turn must persist command result evidence");
     assert((finalTurn.continuationRequests || []).length >= 4, "turn must persist command continuation evidence");
-    assert(counters.runCommandCalls === 4, "only approved command obligations should execute");
-    assert(counters.readFileCalls >= 5, "command planning must read package manifest evidence for package-script cases");
+    assert(counters.runCommandCalls === 5, "only one concurrent command retry should execute");
+    assert(counters.readFileCalls >= 7, "command planning must read package manifest evidence for package-script cases");
 
     console.log(JSON.stringify({
       schema: "direct_command_tool_loop_regression_report@1",
@@ -758,6 +827,9 @@ async function main() {
         "denied_package_script_blocked_before_approval",
         "unsafe_cwd_blocked_before_execution",
         "command_continuation_context_built",
+        "terminal_command_replay_is_idempotent",
+        "concurrent_command_claim_is_single_winner",
+        "restart_command_claim_becomes_ambiguous",
       ],
       evidence: {
         toolLoopId: test.continuationRequest.toolLoop?.toolLoopId,

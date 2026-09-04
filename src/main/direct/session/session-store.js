@@ -76,6 +76,14 @@ const DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES = new Set([
   "command_declined",
   "command_canceled",
   "command_result_recorded",
+  "command_execution_failed",
+  "command_execution_ambiguous",
+  "patch_execution_failed",
+  "patch_execution_ambiguous",
+]);
+const DIRECT_TOOL_OBLIGATION_EXECUTING_STATUSES = new Set([
+  "command_executing",
+  "patch_executing",
 ]);
 
 function isPlainObject(value) {
@@ -393,6 +401,10 @@ function writeJsonAtomic(targetPath, value) {
   }
 }
 
+function waitForMilliseconds(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function safeArtifactName(value) {
   const name = normalizeString(value, "");
   if (/^[a-z0-9][a-z0-9-]{0,80}\.json$/i.test(name)) return name;
@@ -543,6 +555,7 @@ class DirectSessionStore {
     if (!rootDir) throw new Error("DirectSessionStore requires an explicit rootDir.");
     this.rootDir = path.resolve(rootDir);
     this._index = null;
+    this._obligationRecoveryDone = false;
     this._epistemicObservers = new Set();
     if (typeof options.epistemicObserver === "function") {
       this._epistemicObservers.add(options.epistemicObserver);
@@ -613,7 +626,12 @@ class DirectSessionStore {
     if (!fs.existsSync(this.indexPath())) {
       return this.recoverIndex({ write: true });
     }
-    return this.readIndex();
+    const index = this.readIndex();
+    if (!this._obligationRecoveryDone) {
+      this._obligationRecoveryDone = true;
+      this.recoverInterruptedToolClaims();
+    }
+    return index;
   }
 
   emptyImportIndex() {
@@ -1542,6 +1560,16 @@ class DirectSessionStore {
 
   updateToolObligation(sessionId, turnId, obligationId, patch = {}, options = {}) {
     const { turn, obligation } = this.findToolObligation(sessionId, turnId, obligationId);
+    if (options.expectedExecutionClaimId) {
+      if (
+        !DIRECT_TOOL_OBLIGATION_EXECUTING_STATUSES.has(normalizeString(obligation.status, "")) ||
+        normalizeString(obligation.executionClaimId, "") !== normalizeString(options.expectedExecutionClaimId, "")
+      ) {
+        const error = new Error("Tool execution claim is no longer active.");
+        error.code = "tool_execution_claim_lost";
+        throw error;
+      }
+    }
     const now = nowIso(options.nowMs);
     const nextObligation = {
       ...obligation,
@@ -1612,12 +1640,202 @@ class DirectSessionStore {
     return result;
   }
 
+  async claimToolObligation(sessionId, turnId, obligationId, options = {}) {
+    const operationDigest = normalizeString(options.operationDigest, "");
+    if (!operationDigest) {
+      const error = new Error("Tool execution claim requires an exact operation digest.");
+      error.code = "tool_obligation_operation_digest_required";
+      throw error;
+    }
+    const executingStatus = normalizeString(options.executingStatus, "executing");
+    const ambiguousStatus = normalizeString(options.ambiguousStatus, "execution_ambiguous");
+    const approvedStatus = normalizeString(options.approvedStatus, "approved");
+    const terminalStatuses = new Set(Array.isArray(options.terminalStatuses) ? options.terminalStatuses.map((status) => normalizeString(status, "")) : []);
+    const conflictCode = normalizeString(options.conflictCode, "tool_obligation_operation_digest_conflict");
+    const safeSessionId = requireSafeId(sessionId, "session");
+    const safeTurnId = requireSafeId(turnId, "turn");
+    const safeObligationId = requireSafeId(obligationId, "obligation");
+    const lockDirectory = path.join(this.rootDir, "locks");
+    ensureDirectory(lockDirectory);
+    const lockPath = path.join(lockDirectory, `${safeSessionId}.${safeTurnId}.${safeObligationId}.lock`);
+    let lockHandle = null;
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      try {
+        lockHandle = fs.openSync(lockPath, "wx", 0o600);
+        fs.writeFileSync(lockHandle, JSON.stringify({ pid: process.pid, claimedAt: nowIso() }), "utf8");
+        break;
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        try {
+          const stat = fs.statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > 30_000) fs.unlinkSync(lockPath);
+        } catch (statError) {
+          if (statError?.code !== "ENOENT") throw statError;
+        }
+        await waitForMilliseconds(10);
+      }
+    }
+    if (lockHandle === null) {
+      const error = new Error("Timed out acquiring the durable tool execution claim lock.");
+      error.code = "tool_obligation_claim_lock_timeout";
+      throw error;
+    }
+    try {
+      const { turn, obligation } = this.findToolObligation(safeSessionId, safeTurnId, safeObligationId);
+      const status = normalizeString(obligation.status, "");
+      const storedDigest = normalizeString(
+        obligation.executionOperationDigest ||
+          obligation.approvedOperationDigest ||
+          obligation.approvedCommand?.operationDigest ||
+          obligation.approvedPatch?.operationDigest ||
+          obligation.result?.operationDigest,
+        "",
+      );
+      const assertDigestMatch = () => {
+        if (storedDigest && storedDigest !== operationDigest) {
+          const error = new Error("Tool execution request does not match the approved operation digest.");
+          error.code = conflictCode;
+          error.expectedOperationDigest = storedDigest;
+          error.receivedOperationDigest = operationDigest;
+          throw error;
+        }
+      };
+      if (terminalStatuses.has(status) || status === ambiguousStatus) {
+        assertDigestMatch();
+        return { claimed: false, replayed: true, active: false, ambiguous: status === ambiguousStatus, turn, obligation, result: obligation.result || null };
+      }
+      if (DIRECT_TOOL_OBLIGATION_EXECUTING_STATUSES.has(status) || status === executingStatus) {
+        assertDigestMatch();
+        return { claimed: false, replayed: false, active: true, ambiguous: false, turn, obligation, result: null };
+      }
+      if (status === ambiguousStatus) {
+        assertDigestMatch();
+        return { claimed: false, replayed: true, active: false, ambiguous: true, turn, obligation, result: obligation.result || null };
+      }
+      if (status !== approvedStatus) {
+        const error = new Error("Tool obligation must be approved before execution.");
+        error.code = options.notApprovedCode || "tool_obligation_not_approved";
+        throw error;
+      }
+      assertDigestMatch();
+      const claimId = normalizeString(options.claimId, newId("tool_execution_claim"));
+      const claimedAt = nowIso(options.nowMs);
+      const result = this.updateToolObligation(safeSessionId, safeTurnId, safeObligationId, {
+        status: executingStatus,
+        authorityState: executingStatus,
+        approvalAvailable: false,
+        executionAllowed: false,
+        continuationAllowed: false,
+        executionOperationDigest: operationDigest,
+        executionClaimId: claimId,
+        executionClaimIdentity: {
+          schema: "direct_tool_execution_claim@1",
+          claimId,
+          operationDigest,
+          claimedAt,
+          pid: process.pid,
+          rawRequestIncluded: false,
+        },
+        executionClaimedAt: claimedAt,
+        executionState: "executing",
+        sideEffectExecuted: false,
+      }, {
+        ...options,
+        nextTurnState: "authority_waiting",
+      });
+      return { claimed: true, replayed: false, active: true, ambiguous: false, ...result, claimId };
+    } finally {
+      try { fs.closeSync(lockHandle); } catch {}
+      try { fs.unlinkSync(lockPath); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+    }
+  }
+
+  recoverInterruptedToolClaims(options = {}) {
+    let recoveredCount = 0;
+    for (const sessionId of this.listSessionIdsFromDisk()) {
+      const session = this.readSession(sessionId);
+      if (!session) continue;
+      const turnIds = new Set([
+        ...(Array.isArray(session.turns) ? session.turns.map((summary) => summary?.turnId) : []),
+        ...this.listTurnIdsFromDisk(sessionId),
+      ].filter(isSafeId));
+      for (const turnId of turnIds) {
+        const turn = this.readTurn(sessionId, turnId);
+        if (!turn) continue;
+        const obligations = Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [];
+        for (const obligation of obligations) {
+          const status = normalizeString(obligation?.status, "");
+          if (!DIRECT_TOOL_OBLIGATION_EXECUTING_STATUSES.has(status)) continue;
+          const isCommand = status === "command_executing";
+          const tool = isCommand ? "command" : "patch";
+          const ambiguousStatus = `${tool}_execution_ambiguous`;
+          const operationDigest = normalizeString(obligation.executionOperationDigest, "");
+          const resultId = `${tool}_result_${crypto.createHash("sha256").update(`${obligation.obligationId}:${operationDigest}`).digest("hex").slice(0, 20)}`;
+          const result = {
+            schema: `direct_codex_${tool}_execution_result@1`,
+            resultId,
+            obligationId: obligation.obligationId,
+            tool: isCommand ? "run_command" : "apply_patch",
+            status: ambiguousStatus,
+            resultClass: ambiguousStatus,
+            operationDigest,
+            executionState: "ambiguous_interrupted",
+            effectOutcome: "unknown",
+            sideEffectExecuted: false,
+            providerContinuationBlocked: true,
+            providerOutputText: JSON.stringify({
+              kind: `${isCommand ? "run_command" : "apply_patch"}_result`,
+              status: ambiguousStatus,
+              executionInterrupted: true,
+              providerContinuationBlocked: true,
+              rawPathsExposed: false,
+              rawPatchIncluded: false,
+            }),
+            providerOutputTruncated: false,
+            recordedAt: nowIso(options.nowMs),
+            error: {
+              code: "execution_interrupted_restart",
+              message: "Execution was interrupted before a terminal result was recorded.",
+            },
+            rawWorkspacePathExposed: false,
+            rawPatchIncluded: false,
+          };
+          this.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+            status: ambiguousStatus,
+            authorityState: ambiguousStatus,
+            executionAllowed: false,
+            continuationAllowed: false,
+            approvalAvailable: false,
+            executionState: "ambiguous_interrupted",
+            executionRecoveredAt: result.recordedAt,
+            sideEffectExecuted: false,
+            result,
+            resultRecordedAt: result.recordedAt,
+          }, {
+            ...options,
+            nextTurnState: "failed",
+            turnPatch: {
+              error: {
+                code: "execution_interrupted_restart",
+                message: "An approved workspace operation was interrupted and will not be replayed automatically.",
+              },
+            },
+          });
+          recoveredCount += 1;
+        }
+      }
+    }
+    return recoveredCount;
+  }
+
   recoverInterruptedTurns(options = {}) {
     const {
       toolResultDigest,
       verifyCompleteTurnCapture,
     } = require("../epistemic/turn-capture-writer");
     const recoveredAt = nowIso(options.nowMs);
+    this._obligationRecoveryDone = true;
+    this.recoverInterruptedToolClaims(options);
     let recoveredTurnCount = 0;
     for (const sessionId of this.listSessionIdsFromDisk()) {
       const session = this.readSession(sessionId);
