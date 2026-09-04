@@ -456,8 +456,18 @@ try {
   assert.equal(daemon.store.readTurnPacket(unresolvedPackets[1].packetId).state, "queued");
   assert.equal(daemon.store.reducedResultSummary().total, reductionCountBeforeUnresolved);
   assert.equal(unresolvedRuntime.statusProjection().activeTurns, 1);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(daemon.store.readTurnPacket(unresolvedPackets[0].packetId).state, "cancellation_pending");
+  const recoveryStartedAt = Date.now();
+  const recoveryRequired = await waitForPacket(
+    baseUrl,
+    unresolvedPackets[0].packetId,
+    (packet) => packet.state === "recovery_required",
+    "unresolved implementation bounded recovery",
+  );
+  assert.ok(Date.now() - recoveryStartedAt < 1500, "unresolved implementation recovery must remain bounded");
+  assert.equal(recoveryRequired.providerCompleted, false);
+  assert.equal(recoveryRequired.terminationSettled, false);
+  assert.equal(recoveryRequired.recoveryRequired, true);
+  assert.equal(daemon.store.readTurnPacket(unresolvedPackets[0].packetId).state, "recovery_required");
   assert.equal(daemon.store.readTurnPacket(unresolvedPackets[1].packetId).state, "queued");
   assert.equal(daemon.store.reducedResultSummary().total, reductionCountBeforeUnresolved);
   unresolvedController.releaseFirstTurn();

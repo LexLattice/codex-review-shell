@@ -8,6 +8,14 @@ const MAX_MCP_HEADER_BYTES = 64 * 1024;
 const DEFAULT_MCP_TIMEOUT_MS = 15_000;
 const MAX_MCP_TIMEOUT_MS = 60_000;
 const MAX_DISCOVERY_RESULTS = 100;
+const MAX_DISCOVERY_BYTES = 512 * 1024;
+const MAX_MCP_BLOB_ENCODED_BYTES = 120_000;
+const MAX_MCP_BLOB_DECODED_BYTES = 90_000;
+const MAX_MCP_SCHEMA_DEPTH = 8;
+const MAX_MCP_SCHEMA_NODES = 256;
+const MAX_MCP_SCHEMA_ARRAY_ITEMS = 64;
+const MAX_MCP_SCHEMA_STRING_BYTES = 4_096;
+const MAX_MCP_SCHEMA_ENCODED_BYTES = 64 * 1024;
 const MCP_CHILD_TERM_GRACE_MS = 200;
 const MCP_CHILD_CLEANUP_DEADLINE_MS = 2_000;
 
@@ -40,6 +48,110 @@ function arrayOrEmpty(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function boundedBlob(value) {
+  if (typeof value !== "string") return undefined;
+  const encodedBytes = Buffer.byteLength(value, "utf8");
+  if (encodedBytes > MAX_MCP_BLOB_ENCODED_BYTES) {
+    throw scopeError("direct_mcp_blob_too_large", "Configured MCP blob exceeded the bounded encoded-size limit.");
+  }
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 === 1) {
+    throw scopeError("direct_mcp_blob_invalid", "Configured MCP returned an invalid base64 blob.");
+  }
+  const decodedBytes = Buffer.from(value, "base64").byteLength;
+  if (decodedBytes > MAX_MCP_BLOB_DECODED_BYTES) {
+    throw scopeError("direct_mcp_blob_too_large", "Configured MCP blob exceeded the bounded decoded-size limit.");
+  }
+  return value;
+}
+
+function sanitizeInputSchema(schema) {
+  let nodes = 0;
+  let encodedBytes = 2;
+  const active = new WeakSet();
+  const addBytes = (value) => {
+    encodedBytes += Number(value) || 0;
+    if (encodedBytes > MAX_MCP_SCHEMA_ENCODED_BYTES) {
+      throw scopeError("direct_mcp_input_schema_too_large", "Configured MCP input schema exceeded its aggregate encoded-size limit.");
+    }
+  };
+  const visit = (value, depth) => {
+    if (depth > MAX_MCP_SCHEMA_DEPTH) {
+      throw scopeError("direct_mcp_input_schema_too_deep", "Configured MCP input schema exceeded its nesting limit.");
+    }
+    nodes += 1;
+    if (nodes > MAX_MCP_SCHEMA_NODES) {
+      throw scopeError("direct_mcp_input_schema_too_complex", "Configured MCP input schema exceeded its node limit.");
+    }
+    if (value === null || typeof value === "boolean") {
+      addBytes(5);
+      return value;
+    }
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw scopeError("direct_mcp_input_schema_invalid", "Configured MCP input schema contains a non-finite number.");
+      addBytes(24);
+      return value;
+    }
+    if (typeof value === "string") {
+      const size = Buffer.byteLength(value, "utf8");
+      if (size > MAX_MCP_SCHEMA_STRING_BYTES) {
+        throw scopeError("direct_mcp_input_schema_string_too_large", "Configured MCP input schema contains an oversized string.");
+      }
+      addBytes(size + 2);
+      return value;
+    }
+    if (Array.isArray(value)) {
+      if (value.length > MAX_MCP_SCHEMA_ARRAY_ITEMS) {
+        throw scopeError("direct_mcp_input_schema_array_too_large", "Configured MCP input schema contains an oversized array.");
+      }
+      addBytes(2);
+      return value.map((entry) => visit(entry, depth + 1));
+    }
+    if (!isPlainObject(value)) throw scopeError("direct_mcp_input_schema_invalid", "Configured MCP input schema contains a non-JSON value.");
+    if (active.has(value)) throw scopeError("direct_mcp_input_schema_invalid", "Configured MCP input schema contains a cycle.");
+    active.add(value);
+    const result = {};
+    addBytes(2);
+    for (const key of Object.keys(value)) {
+      const keyBytes = Buffer.byteLength(key, "utf8");
+      if (keyBytes > MAX_MCP_SCHEMA_STRING_BYTES) {
+        throw scopeError("direct_mcp_input_schema_string_too_large", "Configured MCP input schema contains an oversized property name.");
+      }
+      addBytes(keyBytes + 3);
+      Object.defineProperty(result, key, {
+        value: visit(value[key], depth + 1),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    active.delete(value);
+    return result;
+  };
+  return visit(schema, 0);
+}
+
+function appendDiscoveryRows(rows, additions, state) {
+  for (const row of additions) {
+    const encodedBytes = Buffer.byteLength(JSON.stringify(row), "utf8");
+    state.bytes += encodedBytes;
+    if (state.bytes > MAX_DISCOVERY_BYTES) {
+      throw scopeError("direct_mcp_discovery_too_large", "Configured MCP discovery exceeded its aggregate bounded output limit.");
+    }
+    rows.push(row);
+  }
+}
+
+function sanitizeContentEntry(entry = {}) {
+  if (!isPlainObject(entry)) return { type: "text", text: boundedString(entry, 120_000) };
+  return {
+    type: normalizeString(entry.type, "text"),
+    text: typeof entry.text === "string" ? entry.text.slice(0, 120_000) : undefined,
+    data: typeof entry.data === "string" ? entry.data.slice(0, 120_000) : undefined,
+    blob: boundedBlob(entry.blob),
+    mimeType: boundedString(entry.mimeType, 120),
+  };
+}
+
 function sanitizeDescriptor(entry = {}, fallbackKind = "mcp_resource") {
   const source = isPlainObject(entry) ? entry : {};
   const sourceKind = normalizeString(source.sourceKind || source.kind, fallbackKind);
@@ -51,7 +163,7 @@ function sanitizeDescriptor(entry = {}, fallbackKind = "mcp_resource") {
     uriTemplate: boundedString(source.uriTemplate || source.templateUri, 640),
     mimeType: boundedString(source.mimeType, 120),
     serverIdentityId: boundedString(source.serverIdentityId || source.serverId, 180),
-    inputSchema: isPlainObject(source.inputSchema) ? source.inputSchema : undefined,
+    inputSchema: Object.hasOwn(source, "inputSchema") ? sanitizeInputSchema(source.inputSchema) : undefined,
     permissionClass: boundedString(source.permissionClass, 120),
     externalSideEffectClass: boundedString(source.externalSideEffectClass, 120),
     requiresOwnerApproval: source.requiresOwnerApproval === true,
@@ -86,8 +198,8 @@ function normalizeConfiguredMcpServer(input = {}) {
         uri: boundedString(item.uri || item.resourceUri, 640),
         mimeType: boundedString(item.mimeType, 120),
         text: typeof item.text === "string" ? item.text : "",
-        blob: typeof item.blob === "string" ? item.blob : "",
-        content: arrayOrEmpty(item.content).slice(0, 32),
+        blob: boundedBlob(item.blob),
+        content: arrayOrEmpty(item.content).slice(0, 32).map((content) => sanitizeContentEntry(content)),
         status: boundedString(item.status, 80),
       };
     })
@@ -271,17 +383,9 @@ function validateResourceResultUris(result = {}, requestedUri = "") {
 }
 
 function externalResultPayload(result = {}) {
-  const contents = arrayOrEmpty(result.contents || result.content).slice(0, 32).map((entry) => {
-    if (!isPlainObject(entry)) return { type: "text", text: boundedString(entry, 120_000) };
-    return {
-      type: normalizeString(entry.type, "text"),
-      text: typeof entry.text === "string" ? entry.text.slice(0, 120_000) : undefined,
-      data: typeof entry.data === "string" ? entry.data.slice(0, 120_000) : undefined,
-      mimeType: boundedString(entry.mimeType, 120),
-    };
-  });
+  const contents = arrayOrEmpty(result.contents || result.content).slice(0, 32).map((entry) => sanitizeContentEntry(entry));
   const text = typeof result.text === "string" ? result.text.slice(0, 120_000) : "";
-  const blob = typeof result.blob === "string" ? result.blob.slice(0, 120_000) : "";
+  const blob = boundedBlob(result.blob) || "";
   const contentText = contents
     .filter((entry) => entry.type === "text" && typeof entry.text === "string")
     .map((entry) => entry.text)
@@ -526,30 +630,31 @@ async function discoverConfiguredMcp(input = {}) {
     : configured.map((server) => serverFor(input, profile, server.serverIdentityId).configured);
   if (!servers.length) throw scopeError("direct_mcp_server_missing", "No configured MCP server is available for this project.");
   let rows = [];
+  const discoveryBudget = { bytes: 0 };
   for (const server of servers) {
     if (server.enabledState !== "enabled" || server.freshness !== "fresh" || ["unknown", "untrusted"].includes(server.trustState)) continue;
     const serverArgs = { _serverIdentityId: server.serverIdentityId };
     if (toolName === "list_mcp_resources") {
       const result = await queryConfiguredServer(server, "resources/list", serverArgs, input);
-      rows.push(...resultEntries({ resources: result.resources || server.resources }, "resources").map((row) => ({
+      appendDiscoveryRows(rows, resultEntries({ resources: result.resources || server.resources }, "resources").map((row) => ({
         ...row,
         serverIdentityId: server.serverIdentityId,
         sourceKind: "mcp_resource",
-      })));
+      })), discoveryBudget);
     } else if (toolName === "list_mcp_resource_templates") {
       const result = await queryConfiguredServer(server, "resources/templates/list", serverArgs, input);
-      rows.push(...resultEntries({ resourceTemplates: result.resourceTemplates || server.resourceTemplates }, "resourceTemplates").map((row) => ({ ...row, serverIdentityId: server.serverIdentityId, sourceKind: "mcp_resource_template" })));
+      appendDiscoveryRows(rows, resultEntries({ resourceTemplates: result.resourceTemplates || server.resourceTemplates }, "resourceTemplates").map((row) => ({ ...row, serverIdentityId: server.serverIdentityId, sourceKind: "mcp_resource_template" })), discoveryBudget);
     } else if (toolName === "tool_search") {
       const [resources, templates, tools] = await Promise.all([
         queryConfiguredServer(server, "resources/list", {}, input),
         queryConfiguredServer(server, "resources/templates/list", {}, input),
         queryConfiguredServer(server, "tools/list", {}, input),
       ]);
-      rows.push(
+      appendDiscoveryRows(rows, [
         ...resultEntries({ resources: resources.resources || server.resources }, "resources").map((row) => ({ ...row, serverIdentityId: server.serverIdentityId, sourceKind: "mcp_resource" })),
         ...resultEntries({ resourceTemplates: templates.resourceTemplates || server.resourceTemplates }, "resourceTemplates").map((row) => ({ ...row, serverIdentityId: server.serverIdentityId, sourceKind: "mcp_resource_template" })),
         ...resultEntries({ tools: tools.tools || server.tools }, "tools").map((row) => ({ ...row, serverIdentityId: server.serverIdentityId, sourceKind: "mcp_tool" })),
-      );
+      ], discoveryBudget);
     }
   }
   return {

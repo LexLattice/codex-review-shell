@@ -182,8 +182,13 @@ class DirectHeadlessTextRuntime {
     this.queueByThread = new Map();
     this.retryTimersByThread = new Map();
     this.deferNextByThread = new Set();
+    this.recoveryByThread = new Map();
     this.activeTurnRetryDelayMs = Math.max(100, Number(options.activeTurnRetryDelayMs) || 1000);
     this.implementationSettleTimeoutMs = Math.max(500, Number(options.implementationSettleTimeoutMs) || 5000);
+    this.implementationCancellationSettleTimeoutMs = Math.max(
+      500,
+      Number(options.implementationCancellationSettleTimeoutMs) || this.implementationSettleTimeoutMs,
+    );
     this.artifactRoot = normalizeString(options.artifactRoot, "");
     this.runtimeId = normalizeString(options.runtimeId, `headless_runtime_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`);
     this.recoverPersistedPackets();
@@ -200,6 +205,7 @@ class DirectHeadlessTextRuntime {
     return {
       schema: "headless_direct_text_runtime_status@1",
       activeTurns: this.activeByThread.size,
+      recoveryRequiredTurns: this.recoveryByThread.size,
       queuedTurns: [...this.queueByThread.values()].reduce((sum, queue) => sum + queue.length, 0),
       turnPackets: this.store.turnPacketSummary(),
     };
@@ -395,11 +401,15 @@ class DirectHeadlessTextRuntime {
     packet = claim.packet || packet;
     const threadId = normalizeString(packet.targetThreadId, "");
     this.activeByThread.set(threadId, packet.packetId);
-    this.runPacket(packet).finally(() => {
-      if (this.activeByThread.get(threadId) === packet.packetId) this.activeByThread.delete(threadId);
-      const deferred = this.deferNextByThread.delete(threadId);
-      if (!deferred) this.processNext(threadId);
-    });
+    let runResult = null;
+    this.runPacket(packet)
+      .then((result) => { runResult = result; return result; })
+      .finally(() => {
+        const recoveryRequired = runResult?.recoveryRequired === true || this.recoveryByThread.has(threadId);
+        if (!recoveryRequired && this.activeByThread.get(threadId) === packet.packetId) this.activeByThread.delete(threadId);
+        const deferred = this.deferNextByThread.delete(threadId);
+        if (!recoveryRequired && !deferred) this.processNext(threadId);
+      });
     return packet;
   }
 
@@ -568,28 +578,114 @@ class DirectHeadlessTextRuntime {
     const readTurn = () => this.controller.sessionStore?.readTurn
       ? this.controller.sessionStore.readTurn(sessionId, turnId)
       : null;
-    let activePromise = pending.activePromise || this.controller.activeRuns?.get(turnId)?.promise;
-    if (activePromise) await Promise.resolve(activePromise).catch(() => {});
-    while (true) {
-      const active = this.controller.activeRuns?.get(turnId);
-      if (active?.promise && active.promise !== activePromise) {
-        activePromise = active.promise;
-        await Promise.resolve(activePromise).catch(() => {});
-        continue;
-      }
+    const activePromise = pending.activePromise || this.controller.activeRuns?.get(turnId)?.promise || null;
+    const cancellationDeadline = Date.now() + this.implementationCancellationSettleTimeoutMs;
+    let promiseSettled = false;
+    if (activePromise) {
+      Promise.resolve(activePromise).catch(() => {}).then(() => { promiseSettled = true; });
+    }
+    while (Date.now() < cancellationDeadline) {
       const turn = readTurn();
-      if ((pending.surfaceSessionClosed === true || !surfaceSession?.hasServerRequest?.()) &&
+      const active = this.controller.activeRuns?.get(turnId);
+      const noLiveRun = !active?.promise || promiseSettled;
+      if (noLiveRun && (pending.surfaceSessionClosed === true || !surfaceSession?.hasServerRequest?.()) &&
           IMPLEMENTATION_TERMINAL_TURN_STATES.has(normalizeString(turn?.state || turn?.status, ""))) {
         return {
           ...turn,
           error: turn.error || pending.error,
           boundedWaitExpired: true,
           cancellationSettled: true,
+          terminationSettled: true,
           settled: true,
         };
       }
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
+    const turn = readTurn();
+    return {
+      ...(turn || { state: "recovery_required", status: "recovery_required" }),
+      error: pending.error || turn?.error,
+      boundedWaitExpired: true,
+      cancellationPending: true,
+      cancellationSettled: false,
+      terminationSettled: false,
+      recoveryRequired: true,
+      settled: false,
+      activePromise,
+      surfaceSessionClosed: pending.surfaceSessionClosed === true,
+    };
+  }
+
+  retainImplementationRecovery(threadId = "", packetId = "", sessionId = "", turnId = "", pending = {}) {
+    if (!threadId || !packetId) return;
+    const recovery = {
+      packetId,
+      sessionId,
+      turnId,
+      surfaceSession: pending.surfaceSession,
+      error: pending.error,
+      activePromise: pending.activePromise || null,
+    };
+    this.recoveryByThread.set(threadId, recovery);
+    if (!recovery.activePromise) return;
+    Promise.resolve(recovery.activePromise)
+      .catch(() => {})
+      .then(() => this.reconcileImplementationRecovery(threadId, recovery))
+      .catch(() => {});
+  }
+
+  async reconcileImplementationRecovery(threadId = "", recovery = {}) {
+    const current = this.recoveryByThread.get(threadId);
+    if (!current || current.packetId !== recovery.packetId) return;
+    const active = this.controller.activeRuns?.get(recovery.turnId);
+    if (active?.promise && active.promise !== recovery.activePromise) {
+      const nextRecovery = { ...recovery, activePromise: active.promise };
+      this.recoveryByThread.set(threadId, nextRecovery);
+      Promise.resolve(active.promise)
+        .catch(() => {})
+        .then(() => this.reconcileImplementationRecovery(threadId, nextRecovery))
+        .catch(() => {});
+      return;
+    }
+    const turn = this.controller.sessionStore?.readTurn
+      ? this.controller.sessionStore.readTurn(recovery.sessionId, recovery.turnId)
+      : null;
+    const terminal = IMPLEMENTATION_TERMINAL_TURN_STATES.has(normalizeString(turn?.state || turn?.status, ""));
+    const packet = this.store.readTurnPacket(recovery.packetId);
+    if (!packet) {
+      this.recoveryByThread.delete(threadId);
+      if (this.activeByThread.get(threadId) === recovery.packetId) this.activeByThread.delete(threadId);
+      this.processNext(threadId);
+      return;
+    }
+    const terminalTurn = terminal ? turn : {
+      state: "transport_handoff_unknown",
+      status: "transport_handoff_unknown",
+      error: recovery.error || {
+        code: "headless_implementation_recovery_unknown",
+        message: "Implementation recovery settled without a terminal turn witness.",
+      },
+    };
+    const packetState = terminalStateForTurn(terminalTurn);
+    this.store.updateTurnPacket(recovery.packetId, {
+      state: packetState,
+      providerCompleted: packetState === "provider_completed",
+      blockerCode: packetState === "provider_completed" ? "" : "headless_implementation_recovery_reconciled",
+      recoveryRequired: false,
+      recoveryReconciled: true,
+      cancellationPending: false,
+      cancellationSettled: true,
+      terminationSettled: true,
+      settled: true,
+      terminalTurnState: normalizeString(terminalTurn.state || terminalTurn.status, "transport_handoff_unknown"),
+      error: isPlainObject(terminalTurn.error || recovery.error) ? (terminalTurn.error || recovery.error) : null,
+      executionClaim: isPlainObject(packet.executionClaim)
+        ? { ...packet.executionClaim, status: "settled", settledAt: nowIso(), updatedAt: nowIso() }
+        : packet.executionClaim,
+    });
+    this.recoveryByThread.delete(threadId);
+    if (this.activeByThread.get(threadId) === recovery.packetId) this.activeByThread.delete(threadId);
+    this.processNext(threadId);
   }
 
   async runPacket(packet = {}) {
@@ -680,6 +776,28 @@ class DirectHeadlessTextRuntime {
           turnAck?.turn?.id,
           finalTurn,
         );
+      }
+      if (implementationRuntime && finalTurn?.recoveryRequired === true) {
+        const threadId = normalizeString(packet.targetThreadId, "");
+        const turnId = normalizeString(turnAck?.turn?.id, "");
+        mark("recovery_required", {
+          providerCompleted: false,
+          replayState: "replay_unsafe",
+          turnId,
+          terminalTurnState: normalizeString(finalTurn.state || finalTurn.status, "recovery_required"),
+          blockerCode: "headless_implementation_recovery_required",
+          boundedWaitExpired: true,
+          cancellationRequested: true,
+          cancellationSettled: false,
+          terminationSettled: false,
+          recoveryRequired: true,
+          error: isPlainObject(finalTurn.error) ? finalTurn.error : null,
+        });
+        this.retainImplementationRecovery(threadId, packetId, packet.targetThreadId, turnId, {
+          ...finalTurn,
+          surfaceSession,
+        });
+        return { recoveryRequired: true };
       }
       const settledTurn = this.controller.sessionStore?.readTurn
         ? this.controller.sessionStore.readTurn(packet.targetThreadId, turnAck?.turn?.id)

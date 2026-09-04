@@ -258,6 +258,107 @@ try {
   assert.equal(foreignEnvelope.status, "blocked");
   assert(foreignEnvelope.blockerCodes.length > 0);
 
+  const blobServerIdentityId = "mcp_server_blob_fixture";
+  const blobUri = "mcp://fixture/blob";
+  const blobServer = normalizeConfiguredMcpServer({
+    serverIdentityId: blobServerIdentityId,
+    displayName: "Blob fixture MCP server",
+    transport: "fixture",
+    projectId,
+    workThreadId,
+    resourceContents: [{
+      uri: blobUri,
+      content: [{ type: "resource", blob: "AA==", data: "must-remain-separate" }],
+    }],
+  });
+  const blobProject = { ...project, mcpServers: [blobServer] };
+  const blobProfile = buildExternalCapabilityProfile({
+    projectId,
+    workThreadId,
+    serverIdentities: [...profile.serverIdentities, mcpServerIdentityFor({
+      serverIdentityId: blobServerIdentityId,
+      transportKind: "fixture",
+      authPosture: "local_config",
+      trustState: "configured",
+      enabledState: "enabled",
+      freshness: "fresh",
+    })],
+  });
+  const blobRead = await createDirectConfiguredMcpResolvers().mcpResourceReadResolver({
+    project: blobProject,
+    profile: blobProfile,
+    projectId,
+    workThreadId,
+    threadId: "task_provider_external_production_fixture",
+    arguments: { serverIdentityId: blobServerIdentityId, resourceUri: blobUri },
+  });
+  assert.equal(blobRead.content[0].blob, "AA==");
+  assert.equal(blobRead.content[0].data, "must-remain-separate");
+  assert.throws(
+    () => normalizeConfiguredMcpServer({
+      serverIdentityId: "mcp_server_oversized_blob_fixture",
+      transport: "fixture",
+      resourceContents: [{ uri: blobUri, blob: "A".repeat(120_001) }],
+    }),
+    (error) => error?.code === "direct_mcp_blob_too_large",
+  );
+
+  const boundedSchema = { type: "object", properties: { prompt: { type: "string" } } };
+  const schemaServer = normalizeConfiguredMcpServer({
+    serverIdentityId: "mcp_server_schema_fixture",
+    transport: "fixture",
+    tools: [{ name: "bounded", inputSchema: boundedSchema }],
+  });
+  assert.deepEqual(schemaServer.tools[0].inputSchema, boundedSchema);
+  assert.notEqual(schemaServer.tools[0].inputSchema, boundedSchema);
+  assert.throws(
+    () => normalizeConfiguredMcpServer({
+      serverIdentityId: "mcp_server_deep_schema_fixture",
+      transport: "fixture",
+      tools: [{ name: "deep", inputSchema: { a: { b: { c: { d: { e: { f: { g: { h: { i: true } } } } } } } } } }],
+    }),
+    (error) => error?.code === "direct_mcp_input_schema_too_deep",
+  );
+
+  const aggregateServers = Array.from({ length: 18 }, (_, index) => normalizeConfiguredMcpServer({
+    serverIdentityId: `mcp_server_aggregate_fixture_${index}`,
+    displayName: `Aggregate fixture ${index}`,
+    transport: "fixture",
+    projectId,
+    workThreadId,
+    tools: [{
+      name: `aggregate_tool_${index}`,
+      inputSchema: { type: "object", properties: { payload: Array.from({ length: 10 }, () => "x".repeat(3_000)) } },
+    }],
+  }));
+  const aggregateProfile = buildExternalCapabilityProfile({
+    projectId,
+    workThreadId,
+    serverIdentities: [
+      ...profile.serverIdentities,
+      ...aggregateServers.map((server) => mcpServerIdentityFor({
+      serverIdentityId: server.serverIdentityId,
+      transportKind: "fixture",
+      authPosture: "local_config",
+      trustState: "configured",
+      enabledState: "enabled",
+      freshness: "fresh",
+      })),
+    ],
+  });
+  await assert.rejects(
+    () => createDirectConfiguredMcpResolvers().externalDiscoveryResolver({
+      project: { ...project, mcpServers: aggregateServers },
+      profile: aggregateProfile,
+      projectId,
+      workThreadId,
+      threadId: "task_provider_external_production_fixture",
+      toolName: "tool_search",
+      arguments: {},
+    }),
+    (error) => error?.code === "direct_mcp_discovery_too_large",
+  );
+
   console.log(JSON.stringify({
     ok: true,
     discoveryCalls,
