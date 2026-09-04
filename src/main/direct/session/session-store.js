@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { StringDecoder } = require("node:string_decoder");
 const { assertFixtureRedacted } = require("../fixtures/redaction");
 const { updateDirectTurnUsageAttribution } = require("../usage/turn-attribution");
 
@@ -15,6 +16,9 @@ const DIRECT_IMPORT_INDEX_SCHEMA = "direct_codex_import_index@1";
 const DIRECT_TURN_CAPTURE_SCHEMA = "direct_turn_capture@1";
 const DIRECT_TURN_CAPTURE_GAP_SCHEMA = "direct_turn_capture_gap@1";
 const DIRECT_CAPTURED_TOOL_RESULT_SCHEMA = "direct_captured_tool_result@1";
+const MAX_NORMALIZED_EVENT_BYTES_PER_TURN = 4 * 1024 * 1024;
+const MAX_NORMALIZED_EVENT_COUNT_PER_TURN = 10_000;
+const NORMALIZED_EVENT_READ_CHUNK_BYTES = 64 * 1024;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/;
 const DIRECT_TURN_STATES = new Set([
   "created",
@@ -183,6 +187,34 @@ function requireSafeId(value, label) {
   const text = normalizeString(value, "");
   if (isSafeId(text)) return text;
   throw new Error(`Invalid ${label} id.`);
+}
+
+function boundedPositiveInteger(value, fallback, maximum) {
+  const numeric = Number(value);
+  if (!Number.isSafeInteger(numeric) || numeric <= 0) return fallback;
+  return Math.min(numeric, maximum);
+}
+
+function acquireSynchronousFileLock(lockPath) {
+  const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    try {
+      const handle = fs.openSync(lockPath, "wx", 0o600);
+      fs.writeFileSync(handle, JSON.stringify({ pid: process.pid, lockedAt: nowIso() }), "utf8");
+      return handle;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      try {
+        if (Date.now() - fs.statSync(lockPath).mtimeMs > 30_000) fs.unlinkSync(lockPath);
+      } catch (statError) {
+        if (statError?.code !== "ENOENT") throw statError;
+      }
+      Atomics.wait(waitBuffer, 0, 0, 10);
+    }
+  }
+  const error = new Error("Timed out acquiring the normalized event append lock.");
+  error.code = "direct_normalized_event_append_lock_timeout";
+  throw error;
 }
 
 function normalizeTurnState(value, fallback = "created") {
@@ -567,6 +599,16 @@ class DirectSessionStore {
     const rootDir = normalizeString(options.rootDir, "");
     if (!rootDir) throw new Error("DirectSessionStore requires an explicit rootDir.");
     this.rootDir = path.resolve(rootDir);
+    this.maxNormalizedEventBytesPerTurn = boundedPositiveInteger(
+      options.maxNormalizedEventBytesPerTurn,
+      MAX_NORMALIZED_EVENT_BYTES_PER_TURN,
+      MAX_NORMALIZED_EVENT_BYTES_PER_TURN,
+    );
+    this.maxNormalizedEventCountPerTurn = boundedPositiveInteger(
+      options.maxNormalizedEventCountPerTurn,
+      MAX_NORMALIZED_EVENT_COUNT_PER_TURN,
+      MAX_NORMALIZED_EVENT_COUNT_PER_TURN,
+    );
     this._index = null;
     this._obligationRecoveryDone = false;
     this._epistemicObservers = new Set();
@@ -1089,11 +1131,21 @@ class DirectSessionStore {
     return inspection.events;
   }
 
-  inspectNormalizedEventLog(sessionId, turnId) {
+  inspectNormalizedEventLog(sessionId, turnId, options = {}) {
     const filePath = this.eventPath(sessionId, turnId);
-    let body = "";
+    const maxBytes = boundedPositiveInteger(
+      options.maxBytes,
+      this.maxNormalizedEventBytesPerTurn,
+      MAX_NORMALIZED_EVENT_BYTES_PER_TURN,
+    );
+    const maxEvents = boundedPositiveInteger(
+      options.maxEvents,
+      this.maxNormalizedEventCountPerTurn,
+      MAX_NORMALIZED_EVENT_COUNT_PER_TURN,
+    );
+    let handle;
     try {
-      body = fs.readFileSync(filePath, "utf8");
+      handle = fs.openSync(filePath, "r");
     } catch (error) {
       if (error?.code === "ENOENT") {
         return {
@@ -1101,6 +1153,8 @@ class DirectSessionStore {
           complete: true,
           error: null,
           errorCode: "",
+          byteCount: 0,
+          bytesTruncated: false,
           observedEventCount: 0,
           observedPrefixDigest: normalizedEventPrefixDigest([]),
         };
@@ -1108,14 +1162,28 @@ class DirectSessionStore {
       throw error;
     }
     const events = [];
-    for (const [index, line] of body.split(/\r?\n/).entries()) {
-      if (!line.trim()) continue;
+    const decoder = new StringDecoder("utf8");
+    const chunk = Buffer.alloc(Math.min(NORMALIZED_EVENT_READ_CHUNK_BYTES, maxBytes + 1));
+    let pending = "";
+    let bytesRead = 0;
+    let lineNumber = 0;
+    let failure = null;
+    const parseLine = (rawLine) => {
+      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+      if (!line.trim()) return;
+      lineNumber += 1;
+      if (events.length >= maxEvents) {
+        const error = new Error(`Normalized event count exceeds the configured per-turn bound at line ${lineNumber}.`);
+        error.code = "direct_normalized_event_count_exceeded";
+        failure = { error, code: error.code };
+        return;
+      }
       try {
         const envelope = JSON.parse(line);
         if (isPlainObject(envelope?.event)) {
           const sourceEnvelopeDigest = normalizedEventEnvelopeDigest(envelope);
           if (envelope.sourceEnvelopeDigest && envelope.sourceEnvelopeDigest !== sourceEnvelopeDigest) {
-            const error = new Error(`Normalized event envelope digest mismatch at line ${index + 1}.`);
+            const error = new Error(`Normalized event envelope digest mismatch at line ${lineNumber}.`);
             error.code = "direct_normalized_event_envelope_digest_mismatch";
             throw error;
           }
@@ -1126,7 +1194,7 @@ class DirectSessionStore {
             sourceEnvelopeDigest,
           });
         } else {
-          const error = new Error(`Normalized event envelope is missing an event object at line ${index + 1}.`);
+          const error = new Error(`Normalized event envelope is missing an event object at line ${lineNumber}.`);
           error.code = "direct_normalized_event_envelope_invalid";
           throw error;
         }
@@ -1139,24 +1207,63 @@ class DirectSessionStore {
           : "direct_normalized_event_jsonl_invalid";
         const error = cause?.code === code
           ? cause
-          : new Error(`Invalid normalized event JSONL at line ${index + 1}.`);
+          : new Error(`Invalid normalized event JSONL at line ${lineNumber}.`);
         error.code = code;
-        return {
-          events,
-          complete: false,
-          error,
-          errorCode: code,
-          invalidLine: index + 1,
-          observedEventCount: events.length,
-          observedPrefixDigest: normalizedEventPrefixDigest(events),
-        };
+        failure = { error, code, invalidLine: lineNumber };
       }
+    };
+    try {
+      while (!failure && bytesRead <= maxBytes) {
+        const bytesToRead = Math.min(chunk.length, maxBytes + 1 - bytesRead);
+        if (bytesToRead <= 0) break;
+        const readResult = fs.readSync(handle, chunk, 0, bytesToRead, null);
+        if (!readResult) break;
+        const acceptedBytes = Math.min(readResult, Math.max(0, maxBytes - bytesRead));
+        if (acceptedBytes > 0) {
+          pending += decoder.write(chunk.subarray(0, acceptedBytes));
+          bytesRead += acceptedBytes;
+          let newlineIndex = pending.indexOf("\n");
+          while (!failure && newlineIndex >= 0) {
+            parseLine(pending.slice(0, newlineIndex));
+            pending = pending.slice(newlineIndex + 1);
+            newlineIndex = pending.indexOf("\n");
+          }
+        }
+        if (readResult > acceptedBytes) {
+          bytesRead += readResult - acceptedBytes;
+          const error = new Error("Normalized event log exceeds the configured per-turn byte bound.");
+          error.code = "direct_normalized_event_bytes_exceeded";
+          failure = { error, code: error.code };
+          break;
+        }
+      }
+      if (!failure && bytesRead === maxBytes) {
+        const probe = Buffer.alloc(1);
+        const readResult = fs.readSync(handle, probe, 0, 1, null);
+        if (readResult) {
+          bytesRead += readResult;
+          const error = new Error("Normalized event log exceeds the configured per-turn byte bound.");
+          error.code = "direct_normalized_event_bytes_exceeded";
+          failure = { error, code: error.code };
+        }
+      }
+      if (!failure) {
+        pending += decoder.end();
+        if (pending) parseLine(pending);
+      } else {
+        decoder.end();
+      }
+    } finally {
+      fs.closeSync(handle);
     }
     return {
       events,
-      complete: true,
-      error: null,
-      errorCode: "",
+      complete: !failure,
+      error: failure?.error || null,
+      errorCode: failure?.code || "",
+      invalidLine: Number(failure?.invalidLine || 0),
+      byteCount: bytesRead,
+      bytesTruncated: failure?.code === "direct_normalized_event_bytes_exceeded",
       observedEventCount: events.length,
       observedPrefixDigest: normalizedEventPrefixDigest(events),
     };
@@ -1198,6 +1305,7 @@ class DirectSessionStore {
       responseContentType: "",
       input: Array.isArray(input.input) ? input.input : [],
       normalizedEventCount: 0,
+      normalizedEventByteCount: 0,
       unresolvedObligations: Array.isArray(input.unresolvedObligations) ? input.unresolvedObligations : [],
       toolResults: Array.isArray(input.toolResults) ? input.toolResults : [],
       capture: isPlainObject(input.capture) ? input.capture : null,
@@ -1872,6 +1980,7 @@ class DirectSessionStore {
         if (!turn) continue;
         const eventLog = this.inspectNormalizedEventLog(session.sessionId, turnId);
         const observedEventCount = eventLog.observedEventCount;
+        const observedEventByteCount = Number(eventLog.byteCount || 0);
         const observedPrefixDigest = eventLog.observedPrefixDigest;
         const recoverable = DIRECT_RECOVERABLE_ACTIVE_TURN_STATES.has(turn.state);
         const managedCapture = isPlainObject(turn.capture) &&
@@ -1890,12 +1999,14 @@ class DirectSessionStore {
           DIRECT_CAPTURE_TERMINAL_TURN_STATES.has(completedCaptureState);
         const preserveTerminalCaptureOutcome = !recoverable && completeClaim && !verification.ok;
         const metadataDrift = Number(turn.normalizedEventCount || 0) !== observedEventCount;
+        const byteMetadataDrift = Number(turn.normalizedEventByteCount) !== observedEventByteCount;
         const terminalCaptureInvalid = completeClaim && !verification.ok;
         if (!recoverable && !terminalCaptureInvalid && eventLog.complete) {
-          const reconciledTurn = metadataDrift
+          const reconciledTurn = metadataDrift || byteMetadataDrift
             ? {
                 ...turn,
                 normalizedEventCount: observedEventCount,
+                normalizedEventByteCount: observedEventByteCount,
                 updatedAt: recoveredAt,
                 eventLogRecovered: true,
               }
@@ -1969,6 +2080,7 @@ class DirectSessionStore {
               ...turn,
               state: completedCaptureState,
               normalizedEventCount: observedEventCount,
+              normalizedEventByteCount: observedEventByteCount,
               updatedAt: recoveredAt,
               captureRecovered: true,
               ...(completedCaptureState === "completed" ? {
@@ -1992,18 +2104,23 @@ class DirectSessionStore {
             ? {
                 ...turn,
                 normalizedEventCount: observedEventCount,
+                ...(eventLog.complete ? { normalizedEventByteCount: observedEventByteCount } : {}),
                 updatedAt: recoveredAt,
                 capture,
                 captureVerificationFailed: true,
                 eventLogIntegrity: eventLog.complete ? {
                   status: "verified",
                   observedEventCount,
+                  observedByteCount: observedEventByteCount,
                   observedPrefixDigest,
                 } : {
                   status: "invalid",
                   code: eventLog.errorCode,
                   invalidLine: Number(eventLog.invalidLine || 0),
                   observedEventCount,
+                  observedByteCount: observedEventByteCount,
+                  maxByteBound: this.maxNormalizedEventBytesPerTurn,
+                  bytesTruncated: eventLog.bytesTruncated === true,
                   observedPrefixDigest,
                   rawLinePersisted: false,
                 },
@@ -2012,6 +2129,7 @@ class DirectSessionStore {
               ...turn,
               state: "failed",
               normalizedEventCount: observedEventCount,
+              ...(eventLog.complete ? { normalizedEventByteCount: observedEventByteCount } : {}),
               updatedAt: recoveredAt,
               failedAt: recoveredAt,
               error: {
@@ -2032,12 +2150,16 @@ class DirectSessionStore {
               eventLogIntegrity: eventLog.complete ? {
                 status: "verified",
                 observedEventCount,
+                observedByteCount: observedEventByteCount,
                 observedPrefixDigest,
               } : {
                 status: "invalid",
                 code: eventLog.errorCode,
                 invalidLine: Number(eventLog.invalidLine || 0),
                 observedEventCount,
+                observedByteCount: observedEventByteCount,
+                maxByteBound: this.maxNormalizedEventBytesPerTurn,
+                bytesTruncated: eventLog.bytesTruncated === true,
                 observedPrefixDigest,
                 rawLinePersisted: false,
               },
@@ -2093,40 +2215,89 @@ class DirectSessionStore {
   }
 
   appendNormalizedEvents(sessionId, turnId, events, options = {}) {
-    const turn = this.readTurn(sessionId, turnId);
-    if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
     const normalizedEvents = Array.isArray(events) ? events : [];
-    if (!normalizedEvents.length) return turn;
+    if (!normalizedEvents.length) {
+      const turn = this.readTurn(sessionId, turnId);
+      if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+      return turn;
+    }
     const at = nowIso(options.nowMs);
     const lines = normalizedEvents.map((event) => {
       const envelope = { at, event };
       return JSON.stringify({ ...envelope, sourceEnvelopeDigest: normalizedEventEnvelopeDigest(envelope) });
     }).join("\n");
-    ensureDirectory(path.dirname(this.eventPath(sessionId, turnId)));
-    fs.appendFileSync(this.eventPath(sessionId, turnId), `${lines}\n`, "utf8");
-    const session = this.readSession(sessionId);
-    const usageAttribution = updateDirectTurnUsageAttribution({
-      existing: turn.usageAttribution,
-      session,
-      turn,
-      events: normalizedEvents,
-      observedAt: at,
-      projectId: session?.projectId,
-      model: turn.model,
-      reasoningEffort: turn.reasoningEffort,
-    });
-    const updatedTurn = this.updateTurnState(sessionId, turnId, turn.state, {
-      normalizedEventCount: turn.normalizedEventCount + normalizedEvents.length,
-      usageAttribution,
-    }, options);
-    this.notifyEpistemicObservers({
-      kind: "normalized_events_appended",
-      sessionId,
-      turnId,
-      eventCount: normalizedEvents.length,
-      events: normalizedEvents,
-    });
-    return updatedTurn;
+    const eventFilePath = this.eventPath(sessionId, turnId);
+    const lockPath = path.join(
+      this.rootDir,
+      "locks",
+      `${requireSafeId(sessionId, "session")}.${requireSafeId(turnId, "turn")}.normalized-events.lock`,
+    );
+    const appendText = `${lines}\n`;
+    const appendBytes = Buffer.byteLength(appendText, "utf8");
+    ensureDirectory(path.dirname(lockPath));
+    const lockHandle = acquireSynchronousFileLock(lockPath);
+    try {
+      const turn = this.readTurn(sessionId, turnId);
+      if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+      let existingBytes = 0;
+      try {
+        existingBytes = fs.statSync(eventFilePath).size;
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      let existingCount = Number(turn.normalizedEventCount || 0);
+      const hasByteMetadata = Object.prototype.hasOwnProperty.call(turn, "normalizedEventByteCount");
+      const recordedBytes = Number(turn.normalizedEventByteCount);
+      if (!hasByteMetadata || !Number.isSafeInteger(recordedBytes) || recordedBytes !== existingBytes) {
+        const inspection = this.inspectNormalizedEventLog(sessionId, turnId);
+        if (inspection.error) throw inspection.error;
+        if (existingCount !== inspection.observedEventCount) {
+          const error = new Error("Normalized event metadata does not match the durable event log.");
+          error.code = "direct_normalized_event_metadata_mismatch";
+          throw error;
+        }
+        existingCount = inspection.observedEventCount;
+      }
+      if (existingCount + normalizedEvents.length > this.maxNormalizedEventCountPerTurn) {
+        const error = new Error("Normalized event count exceeds the configured per-turn bound.");
+        error.code = "direct_normalized_event_count_exceeded";
+        throw error;
+      }
+      if (existingBytes + appendBytes > this.maxNormalizedEventBytesPerTurn) {
+        const error = new Error("Normalized event log exceeds the configured per-turn byte bound.");
+        error.code = "direct_normalized_event_bytes_exceeded";
+        throw error;
+      }
+      ensureDirectory(path.dirname(eventFilePath));
+      fs.appendFileSync(eventFilePath, appendText, "utf8");
+      const session = this.readSession(sessionId);
+      const usageAttribution = updateDirectTurnUsageAttribution({
+        existing: turn.usageAttribution,
+        session,
+        turn,
+        events: normalizedEvents,
+        observedAt: at,
+        projectId: session?.projectId,
+        model: turn.model,
+        reasoningEffort: turn.reasoningEffort,
+      });
+      const updatedTurn = this.updateTurnState(sessionId, turnId, turn.state, {
+        normalizedEventCount: existingCount + normalizedEvents.length,
+        normalizedEventByteCount: existingBytes + appendBytes,
+        usageAttribution,
+      }, options);
+      this.notifyEpistemicObservers({
+        kind: "normalized_events_appended",
+        sessionId,
+        turnId,
+        eventCount: normalizedEvents.length,
+        events: normalizedEvents,
+      });
+      return updatedTurn;
+    } finally {
+      try { fs.closeSync(lockHandle); } catch {}
+      try { fs.unlinkSync(lockPath); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+    }
   }
 
   writeDiagnostic(sessionId, fixtureId, record, options = {}) {
@@ -2212,6 +2383,8 @@ module.exports = {
   DIRECT_TURN_CAPTURE_SCHEMA,
   DIRECT_TURN_SCHEMA,
   DIRECT_TURN_STATES,
+  MAX_NORMALIZED_EVENT_BYTES_PER_TURN,
+  MAX_NORMALIZED_EVENT_COUNT_PER_TURN,
   DirectSessionStore,
   buildToolObligationsFromEvents,
   capturedToolResultDigest,

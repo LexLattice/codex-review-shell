@@ -2,6 +2,11 @@
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const { StringDecoder } = require("node:string_decoder");
+const {
+  MAX_NORMALIZED_EVENT_BYTES_PER_TURN,
+  MAX_NORMALIZED_EVENT_COUNT_PER_TURN,
+} = require("../session/session-store");
 
 const RENDERER_TRANSCRIPT_PROJECTION_KIND = "renderer_transcript";
 const COMPACT_TRANSCRIPT_PROJECTION_KIND = "compact_transcript";
@@ -16,6 +21,9 @@ const MAX_RENDERER_ITEM_TEXT_CHARS = 16_000;
 const MAX_RENDERER_TOTAL_TEXT_CHARS = 1_000_000;
 const MAX_TOOL_RESULT_PREVIEW_CHARS = 4096;
 const MAX_COMPACT_ITEM_TEXT_CHARS = 2_000;
+const MAX_RENDERER_EVENT_LOG_BYTES = MAX_NORMALIZED_EVENT_BYTES_PER_TURN;
+const MAX_RENDERER_EVENT_LOG_EVENTS = Math.min(MAX_RENDERER_PROJECTION_ITEMS, MAX_NORMALIZED_EVENT_COUNT_PER_TURN);
+const RENDERER_EVENT_READ_CHUNK_BYTES = 64 * 1024;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -72,6 +80,7 @@ function canonicalSourceDigest(input) {
     sourceManifestDigests: input.sourceManifestDigests || [],
     sourceTurnDigests: input.sourceTurnDigests || [],
     normalizedEventRangeDigests: input.normalizedEventRangeDigests || [],
+    normalizedEventLogBounds: input.normalizedEventLogBounds || [],
     operationLedgerHeadDigest: input.operationLedgerHeadDigest || "",
     schemaVersion: input.schemaVersion || "1",
     securityPolicyVersion: "renderer_raw_exposure_scan@1",
@@ -84,27 +93,120 @@ function canonicalSourceDigest(input) {
   }));
 }
 
-function readJsonLinesText(text) {
-  return String(text || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
-}
-
-function readNormalizedEventFile(filePath) {
+function readNormalizedEventFile(filePath, options = {}) {
+  const maxBytes = Math.min(
+    MAX_RENDERER_EVENT_LOG_BYTES,
+    Number.isSafeInteger(Number(options.maxBytes)) && Number(options.maxBytes) > 0
+      ? Number(options.maxBytes)
+      : MAX_RENDERER_EVENT_LOG_BYTES,
+  );
+  const maxEvents = Math.min(
+    MAX_RENDERER_EVENT_LOG_EVENTS,
+    Number.isSafeInteger(Number(options.maxEvents)) && Number(options.maxEvents) > 0
+      ? Number(options.maxEvents)
+      : MAX_RENDERER_EVENT_LOG_EVENTS,
+  );
+  let handle;
   try {
-    const buffer = fs.readFileSync(filePath);
-    const text = buffer.toString("utf8");
-    return {
-      events: readJsonLinesText(text).map(normalizedEventFromLine),
-      digest: crypto.createHash("sha256").update(buffer).digest("hex"),
-      exists: true,
-    };
+    handle = fs.openSync(filePath, "r");
   } catch (error) {
-    if (error && error.code === "ENOENT") return { events: [], digest: "", exists: false };
+    if (error && error.code === "ENOENT") {
+      return {
+        events: [],
+        digest: "",
+        exists: false,
+        complete: true,
+        truncated: false,
+        digestComplete: true,
+        errorCode: "",
+        byteCount: 0,
+        observedEventCount: 0,
+        maxBytes,
+        maxEvents,
+      };
+    }
     throw error;
   }
+  const events = [];
+  const digest = crypto.createHash("sha256");
+  const decoder = new StringDecoder("utf8");
+  const chunk = Buffer.alloc(Math.min(RENDERER_EVENT_READ_CHUNK_BYTES, maxBytes + 1));
+  let pending = "";
+  let bytesRead = 0;
+  let lineNumber = 0;
+  let failure = null;
+  const parseLine = (rawLine) => {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line.trim()) return;
+    lineNumber += 1;
+    if (events.length >= maxEvents) {
+      failure = {
+        code: "renderer_normalized_event_count_exceeded",
+        truncated: true,
+      };
+      return;
+    }
+    try {
+      events.push(normalizedEventFromLine(JSON.parse(line)));
+    } catch {
+      failure = {
+        code: "renderer_normalized_event_jsonl_invalid",
+        truncated: false,
+        invalidLine: lineNumber,
+      };
+    }
+  };
+  try {
+    while (!failure && bytesRead <= maxBytes) {
+      const bytesToRead = Math.min(chunk.length, maxBytes + 1 - bytesRead);
+      if (bytesToRead <= 0) break;
+      const readResult = fs.readSync(handle, chunk, 0, bytesToRead, null);
+      if (!readResult) break;
+      const acceptedBytes = Math.min(readResult, Math.max(0, maxBytes - bytesRead));
+      if (acceptedBytes > 0) {
+        const accepted = chunk.subarray(0, acceptedBytes);
+        digest.update(accepted);
+        pending += decoder.write(accepted);
+        bytesRead += acceptedBytes;
+        let newlineIndex = pending.indexOf("\n");
+        while (!failure && newlineIndex >= 0) {
+          parseLine(pending.slice(0, newlineIndex));
+          pending = pending.slice(newlineIndex + 1);
+          newlineIndex = pending.indexOf("\n");
+        }
+      }
+      if (readResult > acceptedBytes) {
+        bytesRead += readResult - acceptedBytes;
+        failure = {
+          code: "renderer_normalized_event_bytes_exceeded",
+          truncated: true,
+        };
+        break;
+      }
+    }
+    if (!failure) {
+      pending += decoder.end();
+      if (pending) parseLine(pending);
+    } else {
+      decoder.end();
+    }
+  } finally {
+    fs.closeSync(handle);
+  }
+  return {
+    events,
+    digest: digest.digest("hex"),
+    exists: true,
+    complete: !failure,
+    truncated: failure?.truncated === true,
+    digestComplete: !failure,
+    errorCode: failure?.code || "",
+    invalidLine: Number(failure?.invalidLine || 0),
+    byteCount: bytesRead,
+    observedEventCount: events.length,
+    maxBytes,
+    maxEvents,
+  };
 }
 
 function normalizedEventFromLine(line) {
@@ -591,6 +693,7 @@ function buildRendererTranscriptProjection(input = {}) {
   const turnDigests = new Map();
   const eventDigests = new Map();
   const normalizedEventRangeDigests = [];
+  const normalizedEventLogBounds = [];
   const sourceTurnDigests = [];
   const sessionTurns = Array.isArray(session.turns) ? session.turns : [];
   const sessionOrder = new Map(sessionTurns.map((summary, index) => [summary.turnId, index]));
@@ -604,8 +707,23 @@ function buildRendererTranscriptProjection(input = {}) {
     const turnDigest = fileSha256(turnPath);
     turnDigests.set(turn.turnId, turnDigest);
     sourceTurnDigests.push(turnDigest);
-    const eventFile = readNormalizedEventFile(sessionStore.eventPath(session.sessionId, turn.turnId));
+    const eventFile = readNormalizedEventFile(sessionStore.eventPath(session.sessionId, turn.turnId), {
+      maxBytes: sessionStore.maxNormalizedEventBytesPerTurn,
+      maxEvents: sessionStore.maxNormalizedEventCountPerTurn,
+    });
     eventsByTurn.set(turn.turnId, eventFile.events);
+    normalizedEventLogBounds.push({
+      turnId: normalizeString(turn.turnId, ""),
+      exists: eventFile.exists === true,
+      complete: eventFile.complete === true,
+      truncated: eventFile.truncated === true,
+      digestComplete: eventFile.digestComplete === true,
+      errorCode: normalizeString(eventFile.errorCode, ""),
+      byteCount: Number(eventFile.byteCount || 0),
+      observedEventCount: Number(eventFile.observedEventCount || 0),
+      maxBytes: Number(eventFile.maxBytes || MAX_RENDERER_EVENT_LOG_BYTES),
+      maxEvents: Number(eventFile.maxEvents || MAX_RENDERER_EVENT_LOG_EVENTS),
+    });
     if (eventFile.exists) {
       eventDigests.set(turn.turnId, eventFile.digest);
       normalizedEventRangeDigests.push(eventFile.digest);
@@ -622,6 +740,7 @@ function buildRendererTranscriptProjection(input = {}) {
     sourceManifestDigests,
     sourceTurnDigests,
     normalizedEventRangeDigests,
+    normalizedEventLogBounds,
     operationLedgerHeadDigest,
   });
   const sourceClass = sourceClassForSession(session);
@@ -629,6 +748,18 @@ function buildRendererTranscriptProjection(input = {}) {
     truncated: false,
     omittedCounts: {},
   };
+  for (const eventLog of normalizedEventLogBounds) {
+    if (eventLog.truncated) {
+      capsState.truncated = true;
+      const key = eventLog.errorCode === "renderer_normalized_event_count_exceeded"
+        ? "normalized_event_log_events"
+        : "normalized_event_log_bytes";
+      capsState.omittedCounts[key] = (capsState.omittedCounts[key] || 0) + 1;
+    } else if (!eventLog.complete && eventLog.errorCode) {
+      capsState.truncated = true;
+      capsState.omittedCounts.normalized_event_log_invalid = (capsState.omittedCounts.normalized_event_log_invalid || 0) + 1;
+    }
+  }
   let items = [];
   let ordinal = 1;
   for (const turn of orderedTurns) {
@@ -681,7 +812,9 @@ function buildRendererTranscriptProjection(input = {}) {
   items = applyProjectionCaps(items, capsState);
   for (const item of items) mergeOmittedCounts(capsState.omittedCounts, item.omittedCounts);
   const scan = scanProjectionItems(items);
-  const blocked = scan.blockers.length > 0;
+  const eventLogBlockers = normalizedEventLogBounds.filter((eventLog) =>
+    !eventLog.complete && !eventLog.truncated && eventLog.errorCode);
+  const blocked = scan.blockers.length > 0 || eventLogBlockers.length > 0;
   const projection = {
     projectionId,
     projectId,
@@ -692,7 +825,7 @@ function buildRendererTranscriptProjection(input = {}) {
     policyId: RENDERER_TRANSCRIPT_POLICY_ID,
     status: blocked ? "blocked" : "valid",
     staleReason: "",
-    securityReason: blocked ? scan.blockers[0].reason : "",
+    securityReason: blocked ? scan.blockers[0]?.reason || eventLogBlockers[0]?.errorCode || "normalized_event_log_invalid" : "",
     unsafeForRenderer: blocked,
     unsafeForContextBuild: true,
     createdAt,
@@ -701,6 +834,7 @@ function buildRendererTranscriptProjection(input = {}) {
       sessionId: threadId,
       operationIds: [],
       eventRangeDigest: sha256(stableStringify(normalizedEventRangeDigests)),
+      normalizedEventLogBounds,
       sourceProjectionIds: [],
       sourceManifestDigest: sourceManifestDigests[0] || "",
       sourceDigest,
@@ -714,6 +848,8 @@ function buildRendererTranscriptProjection(input = {}) {
       rawRequestBodyExposed: false,
       rawImportedJsonlExposed: false,
       unboundedToolResultExposed: false,
+      boundedEventLog: normalizedEventLogBounds.some((eventLog) => eventLog.truncated),
+      eventLogIntegrity: normalizedEventLogBounds,
       warnings: scan.warnings,
       blockers: scan.blockers,
     },
@@ -723,6 +859,7 @@ function buildRendererTranscriptProjection(input = {}) {
       maxTotalTextChars: MAX_RENDERER_TOTAL_TEXT_CHARS,
       maxToolResultPreviewChars: MAX_TOOL_RESULT_PREVIEW_CHARS,
       truncated: capsState.truncated,
+      normalizedEventLogBounds,
       omittedCounts: capsState.omittedCounts,
     },
     continuity: {
@@ -888,6 +1025,8 @@ module.exports = {
   COMPACT_TRANSCRIPT_PROJECTION_KIND,
   COMPACT_TRANSCRIPT_PROJECTION_VERSION,
   MAX_RENDERER_ITEM_TEXT_CHARS,
+  MAX_RENDERER_EVENT_LOG_BYTES,
+  MAX_RENDERER_EVENT_LOG_EVENTS,
   MAX_RENDERER_PROJECTION_ITEMS,
   MAX_RENDERER_TOTAL_TEXT_CHARS,
   MAX_TOOL_RESULT_PREVIEW_CHARS,

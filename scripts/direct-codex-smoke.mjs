@@ -63,6 +63,7 @@ const {
   evaluateDirectExperimentalProjectActivation,
 } = require("../src/main/direct/runtime/project-activation");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
+const { MAX_RENDERER_PROJECTION_ITEMS } = require("../src/main/direct/thread/renderer-transcript-projection");
 const {
   COMPACT_TRANSCRIPT_PROJECTION_KIND,
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
@@ -1074,6 +1075,53 @@ try {
       nowMs: 1_700_000_016_100,
     });
     assert(reusedRendererProjection.reused === true, "Expected unchanged renderer projection rebuild to reuse current projection.");
+
+    const rendererBoundedSession = reloadedSessionStore.createSession({
+      sessionId: "session_renderer_bounded",
+      projectId: "project_fixture",
+      workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+      title: "Renderer bounded event fixture",
+      model: "gpt-5.4",
+      nativeDirectSession: true,
+    }, { nowMs: 1_700_000_016_110 });
+    const rendererBoundedTurn = reloadedSessionStore.createTurn(rendererBoundedSession.sessionId, {
+      turnId: "turn_renderer_bounded",
+      state: "streaming",
+      input: [{ role: "user", text: "bounded renderer event fixture" }],
+    }, { nowMs: 1_700_000_016_111 });
+    reloadedSessionStore.appendNormalizedEvents(rendererBoundedSession.sessionId, rendererBoundedTurn.turnId,
+      Array.from({ length: MAX_RENDERER_PROJECTION_ITEMS + 1 }, (_, index) => ({
+        type: "message_delta",
+        sequence: index,
+        text: "x",
+      })), { nowMs: 1_700_000_016_112 });
+    directThreadStore.indexFromSessionStore(reloadedSessionStore, { nowMs: 1_700_000_016_113 });
+    const rendererBoundedEventPath = reloadedSessionStore.eventPath(rendererBoundedSession.sessionId, rendererBoundedTurn.turnId);
+    const rendererReadFileSync = fs.readFileSync;
+    let rendererEventReadFileSyncCalls = 0;
+    let rendererBoundedBuild;
+    try {
+      fs.readFileSync = (filePath, ...args) => {
+        if (filePath === rendererBoundedEventPath) rendererEventReadFileSyncCalls += 1;
+        return rendererReadFileSync(filePath, ...args);
+      };
+      rendererBoundedBuild = directThreadStore.buildRendererTranscriptProjection(rendererBoundedSession.sessionId, {
+        sessionStore: reloadedSessionStore,
+        force: true,
+        nowMs: 1_700_000_016_114,
+      });
+    } finally {
+      fs.readFileSync = rendererReadFileSync;
+    }
+    nodeAssert.equal(rendererEventReadFileSyncCalls, 0, "renderer event ingestion must not materialize the event log with readFileSync");
+    nodeAssert.equal(rendererBoundedBuild.status, "valid", "oversized renderer event logs should yield a bounded safe projection");
+    const rendererBoundedRead = directThreadStore.readRendererTranscriptProjection(rendererBoundedSession.sessionId);
+    const rendererBoundedEventLog = rendererBoundedRead.caps.normalizedEventLogBounds?.[0] || {};
+    nodeAssert.equal(rendererBoundedRead.caps.truncated, true, "renderer projection must expose event-log truncation");
+    nodeAssert.equal(rendererBoundedEventLog.truncated, true, "renderer projection must retain bounded event-log metadata");
+    nodeAssert.equal(rendererBoundedEventLog.errorCode, "renderer_normalized_event_count_exceeded");
+    assert(rendererBoundedEventLog.observedEventCount <= MAX_RENDERER_PROJECTION_ITEMS, "renderer must cap event materialization before projection assembly");
+
     const contextProjection = directThreadStore.buildContextRecentDialogueProjection(session.sessionId, {
       nowMs: 1_700_000_016_150,
     });

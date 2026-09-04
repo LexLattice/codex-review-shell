@@ -336,9 +336,15 @@ class DirectFullAccessLocalEnvironmentExecutor {
     const patchText = String(params.patch || "");
     const patches = parseUnifiedPatch(patchText);
     const plans = [];
+    const canonicalTargets = new Map();
     for (const filePatch of patches) {
       if (filePatch.relPath === "/dev/null") throw localError("direct_full_access_patch_invalid", "Patch target is missing.");
       const resolved = this.resolveTarget(input, grant, filePatch.relPath, "patch target");
+      const canonicalTarget = process.platform === "win32" ? resolved.target.toLowerCase() : resolved.target;
+      if (canonicalTargets.has(canonicalTarget)) {
+        throw localError("direct_full_access_patch_duplicate_target", "Patch contains duplicate canonical workspace targets.");
+      }
+      canonicalTargets.set(canonicalTarget, filePatch.relPath);
       const beforeTarget = await this.readPatchTarget(resolved.target, filePatch.operation);
       const beforeBuffer = beforeTarget.bytes;
       const beforeText = beforeBuffer.toString("utf8");

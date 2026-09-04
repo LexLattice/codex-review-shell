@@ -26,6 +26,7 @@ const {
   DirectLiveTextSurfaceSession,
 } = require("../src/main/direct/controller/live-text-controller");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
+const { DirectFullAccessLocalEnvironmentExecutor } = require("../src/main/direct/tools/full-access-local-environment");
 
 const projectId = "project_full_access_authority";
 const threadId = "thread_full_access_authority";
@@ -446,6 +447,44 @@ async function main() {
     assert.equal(autoObligation.authorityMode, "durable_task_grant");
     assert.equal(autoObligation.harnessGrantId, currentGrant.grantId);
 
+    const fullAccessWorkspaceRoot = path.join(root, "full-access-workspace");
+    await fs.mkdir(fullAccessWorkspaceRoot, { recursive: true });
+    await fs.writeFile(path.join(fullAccessWorkspaceRoot, "first.txt"), "first\n", "utf8");
+    await fs.writeFile(path.join(fullAccessWorkspaceRoot, "duplicate.txt"), "duplicate\n", "utf8");
+    const fullAccessExecutor = new DirectFullAccessLocalEnvironmentExecutor({
+      workspaceRootResolver: () => fullAccessWorkspaceRoot,
+    });
+    const fullAccessInput = {
+      taskId: threadId,
+      threadId,
+      projectId,
+      executionEnvironmentDigest: currentGrant.executionEnvironmentDigest,
+      harnessGrant: currentGrant,
+      workspaceRoot: fullAccessWorkspaceRoot,
+    };
+    const duplicateTargetPatch = [
+      "*** Begin Patch",
+      "*** Update File: first.txt",
+      "@@ -1 +1 @@",
+      "-first",
+      "+changed first",
+      "*** Update File: duplicate.txt",
+      "@@ -1 +1 @@",
+      "-duplicate",
+      "+changed duplicate",
+      "*** Update File: ./duplicate.txt",
+      "@@ -1 +1 @@",
+      "-duplicate",
+      "+changed through alias",
+      "*** End Patch",
+    ].join("\n");
+    await assert.rejects(
+      () => fullAccessExecutor.request(fullAccessInput, "applyPatch", { mode: "apply", patch: duplicateTargetPatch }),
+      (error) => error?.code === "direct_full_access_patch_duplicate_target",
+    );
+    assert.equal(await fs.readFile(path.join(fullAccessWorkspaceRoot, "first.txt"), "utf8"), "first\n");
+    assert.equal(await fs.readFile(path.join(fullAccessWorkspaceRoot, "duplicate.txt"), "utf8"), "duplicate\n");
+
     console.log(JSON.stringify({
       schema: "direct_full_access_authority_regression_report@1",
       status: "passed",
@@ -453,6 +492,7 @@ async function main() {
       declaredToolCount: composition.witness.declaredTools.length,
       autoApprovalCards: approvalCards,
       childGrantId: child.grantId,
+      duplicateCanonicalPatchTargetsRejected: true,
     }));
   } finally {
     await fs.rm(root, { recursive: true, force: true });
