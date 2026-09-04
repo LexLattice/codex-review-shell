@@ -115,16 +115,30 @@ class Dss02Delivery {
     // projection may omit events, but an acknowledged offer still establishes
     // a contiguous durable cursor boundary from the subscriber's prior head.
     const first = row.current_cursor + 1; const last = projection.events[projection.events.length - 1].sequence;
-    const artifact = this.cas.publish(projection, { kind: "authorized-safe-projection" });
+    // Canonicalization is bounded and happens before the admission
+    // transaction, but publication itself must remain behind both the latest
+    // subscription check and the retained-projection reservation.
+    const preparedArtifact = this.cas.prepare(projection, { kind: "authorized-safe-projection" });
     const now = this.clock(); const attemptRef = randomRef("delivery-attempt"); const deadline = new Date(Date.now() + deadlineMs).toISOString();
     let result;
-    this.store.transaction((tx) => {
-      const latest = tx.get("SELECT * FROM subscriptions WHERE subscription_ref=?", subscriptionRef); if (!latest || latest.revision !== row.revision || latest.current_cursor !== row.current_cursor) dss02Fail("DSS02_DELIVERY_CONFLICT");
-      this.capacity.reserveOfferInTransaction(tx, artifact.byteLength);
-      tx.run("UPDATE artifacts SET reference_count=reference_count+1,state='REFERENCED' WHERE artifact_ref=?", artifact.artifactRef);
-      tx.run("INSERT INTO delivery_offers(delivery_attempt_ref,subscription_ref,capability_validation_receipt_ref,first_event_sequence,last_event_sequence,projection_digest,projection_artifact_ref,offered_at,acknowledgment_deadline,state,generation_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?)", attemptRef, subscriptionRef, authorizationReceipt.receiptRef || authorizationReceipt.authorizationDigest, first, last, projection.projectionDigest, artifact.artifactRef, now, deadline, "OFFERED", this.store.currentGeneration()?.generation_ref || "unknown");
-      result = { schema: "direct_semantic_delivery_attempt@1", deliveryAttemptRef: attemptRef, subscriptionRef, capabilityValidationReceiptRef: authorizationReceipt.receiptRef || authorizationReceipt.authorizationDigest, firstEventSequence: first, lastEventSequence: last, projectionDigest: projection.projectionDigest, projectionArtifactRef: artifact.artifactRef, offeredAt: now, acknowledgmentDeadline: deadline, state: "OFFERED", projection };
-    });
+    let publication = null;
+    let createdFilePath = null;
+    try {
+      this.store.transaction((tx) => {
+        const latest = tx.get("SELECT * FROM subscriptions WHERE subscription_ref=?", subscriptionRef); if (!latest || latest.revision !== row.revision || latest.current_cursor !== row.current_cursor) dss02Fail("DSS02_DELIVERY_CONFLICT");
+        this.capacity.reserveOfferInTransaction(tx, preparedArtifact.byteLength);
+        publication = this.cas.publishPreparedInTransaction(tx, preparedArtifact, {
+          onCreatedFile: (filePath) => { createdFilePath = filePath; },
+        });
+        const artifact = publication.descriptor;
+        tx.run("UPDATE artifacts SET reference_count=reference_count+1,state='REFERENCED' WHERE artifact_ref=?", artifact.artifact_ref);
+        tx.run("INSERT INTO delivery_offers(delivery_attempt_ref,subscription_ref,capability_validation_receipt_ref,first_event_sequence,last_event_sequence,projection_digest,projection_artifact_ref,offered_at,acknowledgment_deadline,state,generation_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?)", attemptRef, subscriptionRef, authorizationReceipt.receiptRef || authorizationReceipt.authorizationDigest, first, last, projection.projectionDigest, artifact.artifact_ref, now, deadline, "OFFERED", this.store.currentGeneration()?.generation_ref || "unknown");
+        result = { schema: "direct_semantic_delivery_attempt@1", deliveryAttemptRef: attemptRef, subscriptionRef, capabilityValidationReceiptRef: authorizationReceipt.receiptRef || authorizationReceipt.authorizationDigest, firstEventSequence: first, lastEventSequence: last, projectionDigest: projection.projectionDigest, projectionArtifactRef: artifact.artifact_ref, offeredAt: now, acknowledgmentDeadline: deadline, state: "OFFERED", projection };
+      });
+    } catch (error) {
+      this.cas.discardUnreferencedPublication({ digest: preparedArtifact.digest, createdFilePath: createdFilePath || publication?.createdFilePath });
+      throw error;
+    }
     return Object.freeze(result);
   }
 

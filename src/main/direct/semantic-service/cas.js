@@ -43,12 +43,19 @@ class Dss02Cas {
     return { path: target, bytes, byteLength: bytes.length };
   }
 
-  publish(value, { digest = undefined, kind = "admitted-request", artifactRef = randomRef("artifact"), simulateCrashBeforeReference = false } = {}) {
+  prepare(value, { digest = undefined, kind = "admitted-request", artifactRef = randomRef("artifact") } = {}) {
     const bytes = Buffer.isBuffer(value) ? Buffer.from(value) : canonicalBytes(value);
     const computed = sha256(bytes);
     if (digest !== undefined && digest !== computed) dss02Fail("DSS02_CAS_DIGEST_MISMATCH");
+    return Object.freeze({ bytes, digest: computed, kind, artifactRef, byteLength: bytes.length });
+  }
+
+  publishPreparedInTransaction(tx, prepared = {}, { onCreatedFile = undefined } = {}) {
+    const { bytes, digest: computed, kind = "admitted-request", artifactRef } = prepared;
+    if (!Buffer.isBuffer(bytes) || !immutableDigest(computed) || !artifactRef) dss02Fail("DSS02_CAS_PUBLICATION_INVALID");
     const target = this.pathForDigest(computed);
     ensureDirectory(this.store.paths.cas, 0o700);
+    let createdFile = false;
     if (fs.existsSync(target)) {
       this.verifyPath(computed);
     } else {
@@ -61,26 +68,69 @@ class Dss02Cas {
         // link() is an atomic no-replace publication on the same filesystem.
         fs.linkSync(temporary, target);
         fs.unlinkSync(temporary);
+        createdFile = true;
+        if (typeof onCreatedFile === "function") onCreatedFile(target);
       } catch (error) {
         if (error.code === "EEXIST") { try { fs.unlinkSync(temporary); } catch (_) {} this.verifyPath(computed); }
         else { try { fs.unlinkSync(temporary); } catch (_) {} dss02Fail("DSS02_CAS_PUBLICATION_FAILED"); }
       }
       fsyncDirectory(this.store.paths.cas);
     }
-    if (simulateCrashBeforeReference) return Object.freeze({ status: "ORPHANED", digest: computed, artifactRef, byteLength: bytes.length });
     const verification = this.verifyPath(computed);
     const now = this.clock();
-    let descriptor;
-    this.store.transaction((tx) => {
-      const conflictingRef = tx.get("SELECT digest FROM artifacts WHERE artifact_ref=?", artifactRef);
-      if (conflictingRef && conflictingRef.digest !== computed) dss02Fail("DSS02_CAS_METADATA_MISMATCH");
-      tx.run("INSERT INTO artifacts(artifact_ref,digest,kind,relative_path,byte_length,state,created_at,reference_count) VALUES(?,?,?,?,?,?,?,0) ON CONFLICT DO NOTHING", artifactRef, computed, kind, computed.slice(7), bytes.length, "PUBLISHED", now);
-      descriptor = tx.get("SELECT * FROM artifacts WHERE digest=?", computed);
-      if (!descriptor || descriptor.digest !== computed || verification.byteLength !== bytes.length || typeof descriptor.artifact_ref !== "string" || !descriptor.artifact_ref || typeof descriptor.kind !== "string" || !descriptor.kind || typeof descriptor.relative_path !== "string" || descriptor.relative_path !== computed.slice(7) || !Number.isSafeInteger(descriptor.byte_length) || descriptor.byte_length !== bytes.length || typeof descriptor.created_at !== "string" || !descriptor.created_at || !["PUBLISHED", "REFERENCED"].includes(descriptor.state) || !Number.isSafeInteger(descriptor.reference_count) || descriptor.reference_count < 0) {
-        dss02Fail("DSS02_CAS_METADATA_MISMATCH");
-      }
-    });
-    return Object.freeze({ ...this.describe(descriptor), status: descriptor.state });
+    const conflictingRef = tx.get("SELECT digest FROM artifacts WHERE artifact_ref=?", artifactRef);
+    if (conflictingRef && conflictingRef.digest !== computed) dss02Fail("DSS02_CAS_METADATA_MISMATCH");
+    tx.run("INSERT INTO artifacts(artifact_ref,digest,kind,relative_path,byte_length,state,created_at,reference_count) VALUES(?,?,?,?,?,?,?,0) ON CONFLICT DO NOTHING", artifactRef, computed, kind, computed.slice(7), bytes.length, "PUBLISHED", now);
+    const descriptor = tx.get("SELECT * FROM artifacts WHERE digest=?", computed);
+    if (!descriptor || descriptor.digest !== computed || verification.byteLength !== bytes.length || typeof descriptor.artifact_ref !== "string" || !descriptor.artifact_ref || typeof descriptor.kind !== "string" || !descriptor.kind || typeof descriptor.relative_path !== "string" || descriptor.relative_path !== computed.slice(7) || !Number.isSafeInteger(descriptor.byte_length) || descriptor.byte_length !== bytes.length || typeof descriptor.created_at !== "string" || !descriptor.created_at || !["PUBLISHED", "REFERENCED"].includes(descriptor.state) || !Number.isSafeInteger(descriptor.reference_count) || descriptor.reference_count < 0) {
+      dss02Fail("DSS02_CAS_METADATA_MISMATCH");
+    }
+    return { descriptor, createdFilePath: createdFile ? target : null };
+  }
+
+  discardUnreferencedPublication({ digest, createdFilePath = null } = {}) {
+    if (!createdFilePath || !digest) return false;
+    const row = this.store.get("SELECT reference_count FROM artifacts WHERE digest=?", digest);
+    if (row && Number(row.reference_count) > 0) return false;
+    if (row) return false;
+    try {
+      fs.unlinkSync(createdFilePath);
+      fsyncDirectory(this.store.paths.cas);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  publish(value, { digest = undefined, kind = "admitted-request", artifactRef = randomRef("artifact"), simulateCrashBeforeReference = false } = {}) {
+    const prepared = this.prepare(value, { digest, kind, artifactRef });
+    const target = this.pathForDigest(prepared.digest);
+    let publication = null;
+    let createdFilePath = null;
+    if (simulateCrashBeforeReference) {
+      // Preserve the crash fixture: publication is intentionally outside the
+      // metadata transaction and recovery must observe the orphaned file.
+      ensureDirectory(this.store.paths.cas, 0o700);
+      if (!fs.existsSync(target)) {
+        const temporary = path.join(this.store.paths.cas, `.${prepared.digest.slice(7)}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`);
+        const fd = fs.openSync(temporary, "wx", 0o600);
+        try { fs.writeFileSync(fd, prepared.bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+        try { fs.linkSync(temporary, target); fs.unlinkSync(temporary); } catch (error) { try { fs.unlinkSync(temporary); } catch (_) {} if (error.code !== "EEXIST") dss02Fail("DSS02_CAS_PUBLICATION_FAILED"); }
+        fsyncDirectory(this.store.paths.cas);
+      } else this.verifyPath(prepared.digest);
+      return Object.freeze({ status: "ORPHANED", digest: prepared.digest, artifactRef, byteLength: prepared.byteLength });
+    }
+    try {
+      this.store.transaction((tx) => {
+        publication = this.publishPreparedInTransaction(tx, prepared, {
+          onCreatedFile: (filePath) => { createdFilePath = filePath; },
+        });
+      });
+    } catch (error) {
+      this.discardUnreferencedPublication({ digest: prepared.digest, createdFilePath: createdFilePath || publication?.createdFilePath });
+      throw error;
+    }
+    return Object.freeze({ ...this.describe(publication.descriptor), status: publication.descriptor.state });
   }
 
   referenceInTransaction(tx, { artifactRef, digest, kind = undefined } = {}) {

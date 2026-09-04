@@ -754,12 +754,59 @@ freshGame(31, () => {
   for (const variant of ["missing", "extra", "duplicate", "stale generation", "forked", "unacknowledged"]) { recoveryVariant(variant); completeSubcase(31, variant); }
 });
 
+function offerStorageSnapshot(f) {
+  const casRoot = f.daemon.store.paths.cas;
+  return {
+    artifacts: f.daemon.store.all("SELECT * FROM artifacts ORDER BY artifact_ref"),
+    deliveryOffers: f.daemon.store.all("SELECT * FROM delivery_offers ORDER BY delivery_attempt_ref"),
+    capacity: f.daemon.store.all("SELECT * FROM capacity_counters ORDER BY singleton"),
+    cas: fs.readdirSync(casRoot).sort().map((name) => ({ name, bytes: fs.readFileSync(path.join(casRoot, name)).toString("base64") })),
+  };
+}
+
 function runLimited(limits, action) { const f = createFixture({ limits }); try { action(f); } finally { f.daemon.close(); } }
 runLimited({ openJobs: 0 }, (f) => { const before = f.daemon.store.get("SELECT COUNT(*) AS count FROM jobs").count; expectCode("DSS02_BACKPRESSURED", () => submitJob(f)); assert.equal(f.daemon.store.get("SELECT COUNT(*) AS count FROM jobs").count, before); completeSubcase(32, "open jobs"); });
 runLimited({ requestBytes: 1 }, (f) => { const before = f.daemon.store.get("SELECT COUNT(*) AS count FROM jobs").count; expectCode("DSS02_BACKPRESSURED", () => submitJob(f)); assert.equal(f.daemon.store.get("SELECT COUNT(*) AS count FROM jobs").count, before); completeSubcase(32, "request bytes"); });
 runLimited({ subscriptions: 0 }, (f) => { const { receipt } = submitJob(f); const body = { jobRef: receipt.jobRef }; const authorization = authorize(f, { operation: "subscribe", body, objectScopeDigest: digestObject("DirectSemanticService.ObjectScope.v1", body) }); const before = f.daemon.capacity.current().subscriptions; expectCode("DSS02_BACKPRESSURED", () => f.daemon.subscribe({ jobRef: receipt.jobRef, authorizationReceipt: authorization.receipt, returnProjectionRef: "projection-safe@1" })); assert.equal(f.daemon.capacity.current().subscriptions, before); completeSubcase(32, "subscriptions"); });
-runLimited({ outstandingOffers: 0 }, (f) => { const { receipt } = submitJob(f); const { authorization, subscription } = subscribeJob(f, receipt.jobRef); const before = f.daemon.capacity.current().outstandingOffers; expectCode("DSS02_BACKPRESSURED", () => f.daemon.offer({ subscriptionRef: subscription.subscriptionRef, authorizationReceipt: authorization.receipt })); assert.equal(f.daemon.capacity.current().outstandingOffers, before); completeSubcase(32, "offers"); });
-runLimited({ retainedProjectionBytes: 0 }, (f) => { const { receipt } = submitJob(f); const { authorization, subscription } = subscribeJob(f, receipt.jobRef); const before = f.daemon.capacity.current().retainedProjectionBytes; expectCode("DSS02_BACKPRESSURED", () => f.daemon.offer({ subscriptionRef: subscription.subscriptionRef, authorizationReceipt: authorization.receipt })); assert.equal(f.daemon.capacity.current().retainedProjectionBytes, before); completeSubcase(32, "retained bytes"); });
+runLimited({ outstandingOffers: 0 }, (f) => { const { receipt } = submitJob(f); const { authorization, subscription } = subscribeJob(f, receipt.jobRef); const before = offerStorageSnapshot(f); for (const attempt of [0, 1]) expectCode("DSS02_BACKPRESSURED", () => f.daemon.offer({ subscriptionRef: subscription.subscriptionRef, authorizationReceipt: authorization.receipt })); assert.deepEqual(offerStorageSnapshot(f), before, "outstanding-offer admission must not publish CAS or metadata on failure"); completeSubcase(32, "offers"); });
+{
+  const f = createFixture();
+  try {
+    const { receipt } = submitJob(f, "publication-rollback", "publication-rollback");
+    const { authorization, subscription } = subscribeJob(f, receipt.jobRef);
+    const before = offerStorageSnapshot(f);
+    const originalPublishPrepared = f.daemon.cas.publishPreparedInTransaction.bind(f.daemon.cas);
+    f.daemon.cas.publishPreparedInTransaction = (tx, prepared, hooks = {}) =>
+      originalPublishPrepared(tx, prepared, {
+        ...hooks,
+        onCreatedFile: (filePath) => {
+          hooks.onCreatedFile?.(filePath);
+          const error = new Error("injected post-publication metadata failure");
+          error.code = "DSS02_INJECTED_PUBLICATION_FAILURE";
+          throw error;
+        },
+      });
+    try {
+      expectCode("DSS02_CAS_PUBLICATION_FAILED", () => f.daemon.offer({
+        subscriptionRef: subscription.subscriptionRef,
+        authorizationReceipt: authorization.receipt,
+      }));
+    } finally {
+      f.daemon.cas.publishPreparedInTransaction = originalPublishPrepared;
+    }
+    assert.deepEqual(offerStorageSnapshot(f), before, "post-publication failure must roll back metadata, capacity, offers, and CAS bytes");
+    const successful = f.daemon.offer({
+      subscriptionRef: subscription.subscriptionRef,
+      authorizationReceipt: authorization.receipt,
+    });
+    assert.equal(successful.state, "OFFERED");
+    assert.equal(f.daemon.store.get("SELECT COUNT(*) AS count FROM artifacts").count, 1);
+    assert.equal(f.daemon.store.get("SELECT COUNT(*) AS count FROM delivery_offers").count, 1);
+    assert.equal(f.daemon.store.get("SELECT projection_artifact_ref FROM delivery_offers WHERE delivery_attempt_ref=?", successful.deliveryAttemptRef).projection_artifact_ref, successful.projectionArtifactRef);
+    completeSubcase(32, "offers");
+  } finally { f.daemon.close(); }
+}
+runLimited({ retainedProjectionBytes: 0 }, (f) => { const { receipt } = submitJob(f); const { authorization, subscription } = subscribeJob(f, receipt.jobRef); const before = offerStorageSnapshot(f); for (let attempt = 0; attempt < 2; attempt += 1) expectCode("DSS02_BACKPRESSURED", () => f.daemon.offer({ subscriptionRef: subscription.subscriptionRef, authorizationReceipt: authorization.receipt })); assert.deepEqual(offerStorageSnapshot(f), before, "retained-byte admission must not publish CAS or metadata on failure"); completeSubcase(32, "retained bytes"); });
 { const gate = new Dss02WaiterGate({ profileRef: "capacity", generationRef: "generation-capacity", limit: 0 }); assert.equal(gate.reserve({ connectionRef: "c", waitRequestRef: "w" }).status, "AT_LIMIT"); passedGames.add(32); }
 
 freshGame(33, (f) => {

@@ -721,8 +721,20 @@ class DirectWorldManagerEpistemicFabricRuntime {
       this.pendingFlushTimer = null;
       this.pendingFlushDueAt = 0;
       if (this.closed) return;
-      const flushResult = this.flushPendingOutbox();
-      this.pendingFlushRetryDelayMs = flushResult.backpressureBlocked ? 250 : 0;
+      let flushResult;
+      try {
+        flushResult = this.flushPendingOutbox();
+        this.pendingFlushRetryDelayMs = flushResult.backpressureBlocked ? 250 : 0;
+      } catch (_) {
+        // A timer callback is a terminal scheduling boundary: preserve the
+        // broker/outbox state and retry at the bounded backpressure cadence,
+        // without allowing a synchronous flush error to escape the timer.
+        this.pendingFlushRetryDelayMs = 250;
+      }
+      // Flushing broker groups only creates queued deliveries. Join the same
+      // coalesced downstream drain used by normal production paths so a group
+      // that becomes due while the resident is idle cannot strand in queue.
+      this.dispatchQueuedDeliveries().catch(() => {});
       this.schedulePendingFlush();
     }, dueAt > nowMs ? dueAt - nowMs : retryDelayMs);
     return true;
@@ -2764,6 +2776,14 @@ class DirectWorldManagerEpistemicFabricRuntime {
   }
 
   async dispatchQueuedDeliveries() {
+    if (this.closed) {
+      return {
+        attempted: 0,
+        delivered: 0,
+        deferred: 0,
+        boundary: "runtime_closed_before_delivery_drain",
+      };
+    }
     if (!this.contextImporter || !this.deliveryTargetResolver) {
       return {
         attempted: 0,
@@ -2782,6 +2802,10 @@ class DirectWorldManagerEpistemicFabricRuntime {
         (delivery) => delivery.deliveryPosture === "queued",
       );
       for (const delivery of queued) {
+        if (this.closed) {
+          deferred += 1;
+          continue;
+        }
         const subscription = this.broker.subscriptions().find((candidate) => {
           const candidateRef = subscriptionRef(candidate);
           return candidateRef.id === delivery.subscriptionRef.id &&
@@ -2795,6 +2819,10 @@ class DirectWorldManagerEpistemicFabricRuntime {
           delivery,
           subscription,
         });
+        if (this.closed) {
+          deferred += 1;
+          continue;
+        }
         if (!target?.targetAgentRef) {
           deferred += 1;
           continue;
@@ -2836,6 +2864,20 @@ class DirectWorldManagerEpistemicFabricRuntime {
   async importDeliveryContext(deliveryId, input = {}) {
     let delivery = this.broker.deliveries.get(deliveryId);
     if (!delivery) fail("epistemic_fabric_delivery_unknown", deliveryId);
+    const closedResult = (admission = null, dispatch = null) => ({
+      schema: "direct_epistemic_delivery_context_import_result@1",
+      delivery,
+      admission,
+      dispatch,
+      dispatchReceipt: null,
+      deliveryTransition: "runtime_closed",
+      runtimeDispatchStarted: false,
+      wakeStarted: false,
+      productionDispatchBoundary: "runtime_closed_before_delivery_effect",
+      canonicalEffect: false,
+      grantsAuthority: false,
+    });
+    if (this.closed) return closedResult();
     const priorAdmission = this.artifactState.contextAdmissions
       .slice()
       .reverse()
@@ -2907,6 +2949,7 @@ class DirectWorldManagerEpistemicFabricRuntime {
         maxInputTokens:
           input.maxInputTokens || input.contextBudget?.maxInputTokens,
       }, { now: this.now });
+    if (this.closed) return closedResult(admission);
     this.artifactState.contextAdmissions = upsert(
       this.artifactState.contextAdmissions,
       admission,
@@ -2966,6 +3009,7 @@ class DirectWorldManagerEpistemicFabricRuntime {
         dispatch.disposition !== "semantic_inbox_only" &&
         this.deliveryDispatchAdapter
       ) {
+        if (this.closed) return closedResult(admission, dispatch);
         try {
           const acceptedReceipt =
             this.artifactState.contextDispatchReceipts
@@ -3033,6 +3077,7 @@ class DirectWorldManagerEpistemicFabricRuntime {
 
       const durableInboxAccepted =
         !dispatch || dispatch.disposition === "semantic_inbox_only";
+      if (this.closed) return closedResult(admission, dispatch);
       if (durableInboxAccepted || runtimeDispatchStarted) {
         delivery = this.broker.markDelivered(deliveryId, {
           now: this.now,

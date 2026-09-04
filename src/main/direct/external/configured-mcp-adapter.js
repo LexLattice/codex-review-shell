@@ -239,6 +239,37 @@ function resultEntries(result = {}, key) {
   return arrayOrEmpty(result[key]).slice(0, MAX_DISCOVERY_RESULTS).map((entry) => sanitizeDescriptor(entry));
 }
 
+function validateResourceResultUris(result = {}, requestedUri = "") {
+  const candidates = [];
+  const collect = (value, label) => {
+    if (typeof value !== "string" || !value.trim() || value.length > 640 || value.trim() !== value) {
+      throw scopeError("direct_mcp_resource_result_scope_mismatch", `Configured MCP returned a malformed ${label}.`);
+    }
+    candidates.push(value);
+  };
+  if (!isPlainObject(result)) return;
+  if (Object.hasOwn(result, "uri")) collect(result.uri, "resource URI");
+  if (Object.hasOwn(result, "resourceUri")) collect(result.resourceUri, "resource URI");
+  if (isPlainObject(result.resource)) {
+    if (Object.hasOwn(result.resource, "uri")) collect(result.resource.uri, "resource URI");
+    if (Object.hasOwn(result.resource, "resourceUri")) collect(result.resource.resourceUri, "resource URI");
+  }
+  for (const [key, entries] of [["contents", result.contents], ["content", result.content]]) {
+    for (const [index, entry] of arrayOrEmpty(entries).entries()) {
+      if (!isPlainObject(entry)) continue;
+      if (Object.hasOwn(entry, "uri")) collect(entry.uri, `${key} URI at index ${index}`);
+      if (Object.hasOwn(entry, "resourceUri")) collect(entry.resourceUri, `${key} URI at index ${index}`);
+      if (isPlainObject(entry.resource)) {
+        if (Object.hasOwn(entry.resource, "uri")) collect(entry.resource.uri, `${key} resource URI at index ${index}`);
+        if (Object.hasOwn(entry.resource, "resourceUri")) collect(entry.resource.resourceUri, `${key} resource URI at index ${index}`);
+      }
+    }
+  }
+  if (candidates.some((value) => value !== requestedUri)) {
+    throw scopeError("direct_mcp_resource_result_scope_mismatch", "Configured MCP returned a resource from a different URI.");
+  }
+}
+
 function externalResultPayload(result = {}) {
   const contents = arrayOrEmpty(result.contents || result.content).slice(0, 32).map((entry) => {
     if (!isPlainObject(entry)) return { type: "text", text: boundedString(entry, 120_000) };
@@ -545,13 +576,7 @@ async function readConfiguredMcpResource(input = {}) {
   if (!serverIdentityId || !resourceUri) throw scopeError("direct_mcp_resource_selector_missing", "MCP resource reads require an exact server identity and URI.");
   const server = serverFor(input, profile, serverIdentityId).configured;
   const result = await queryConfiguredServer(server, "resources/read", { uri: resourceUri }, input);
-  const returnedUri = normalizeString(
-    result?.uri || result?.resourceUri || arrayOrEmpty(result?.contents || result?.content)[0]?.uri,
-    "",
-  );
-  if (returnedUri && returnedUri !== resourceUri) {
-    throw scopeError("direct_mcp_resource_result_scope_mismatch", "Configured MCP returned a resource from a different URI.");
-  }
+  validateResourceResultUris(result, resourceUri);
   const payload = externalResultPayload(result);
   return {
     ...scope,

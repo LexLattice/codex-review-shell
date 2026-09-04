@@ -113,11 +113,41 @@ function digest(value, label) { try { return immutableDigest(value, label); } ca
 function nowValue(now) { return isoNow(typeof now === "function" ? now() : now); }
 function clone(value) { return parseJsonStrict(canonicalJson(value)); }
 function freeze(value) { return deepFreeze(clone(value)); }
+const MAX_RAW_DIAGNOSTIC_BYTES = 4096;
+
+function decodedBase64ByteLength(value, scenarioRef) {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  if (value.length % 4 === 1) fail("DSS03_RAW_FIXTURE_INVALID", scenarioRef);
+  return Math.max(0, Math.floor(value.length * 3 / 4) - padding);
+}
+
+function boundedUtf8Prefix(value, maximumBytes = MAX_RAW_DIAGNOSTIC_BYTES) {
+  const boundedBytes = Math.max(0, Math.min(MAX_RAW_DIAGNOSTIC_BYTES, Number(maximumBytes) || 0));
+  const textValue = String(value ?? "");
+  if (Buffer.byteLength(textValue, "utf8") <= boundedBytes) return Buffer.from(textValue, "utf8");
+  let characterCount = Math.min(textValue.length, boundedBytes);
+  let bytes = Buffer.from(textValue.slice(0, characterCount), "utf8");
+  while (bytes.length > boundedBytes && characterCount > 0) {
+    characterCount -= Math.max(1, Math.ceil((bytes.length - boundedBytes) / 2));
+    bytes = Buffer.from(textValue.slice(0, characterCount), "utf8");
+  }
+  return bytes.length > boundedBytes ? bytes.subarray(0, boundedBytes) : bytes;
+}
+
+function boundedBase64Prefix(value, maximumBytes = MAX_RAW_DIAGNOSTIC_BYTES) {
+  const boundedBytes = Math.max(0, Math.min(MAX_RAW_DIAGNOSTIC_BYTES, Number(maximumBytes) || 0));
+  const encodedCharacters = Math.min(value.length, Math.ceil(boundedBytes / 3) * 4);
+  return Buffer.from(value.slice(0, encodedCharacters), "base64").subarray(0, boundedBytes);
+}
+
 function fixtureRawBytes(bundle) {
   const bytes = new Map();
   for (const [scenarioRef, scenario] of Object.entries(bundle.scenarios || {})) if (scenario.rawBytesBase64 !== undefined) {
     if (typeof scenario.rawBytesBase64 !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(scenario.rawBytesBase64)) fail("DSS03_RAW_FIXTURE_INVALID", scenarioRef);
-    bytes.set(scenarioRef, Buffer.from(scenario.rawBytesBase64, "base64"));
+    bytes.set(scenarioRef, Object.freeze({
+      encoded: scenario.rawBytesBase64,
+      byteLength: decodedBase64ByteLength(scenario.rawBytesBase64, scenarioRef),
+    }));
   }
   return bytes;
 }
@@ -784,8 +814,72 @@ class Dss03FakeExecutionBackend {
     const inputDigest = operationDigest("captureRawResultToQuarantine", { attemptRef: attempt.attemptRef, leaseRef: lease.leaseRef, leaseRevision: lease.leaseRevision, fencingToken: lease.fencingToken });
     if (attempt.state === "RAW_CAPTURED") { const raw = this.state.raw[attempt.rawRef]; if (!raw || raw.operationInputDigest !== inputDigest) fail("DSS03_REPLAY_INPUT_CONFLICT", "captureRawResultToQuarantine"); return result(null, "EXACT_REPLAY", { raw }); }
     if (attempt.state !== "RAW_READY") { if (attempt.state === "INTERRUPTED_UNKNOWN") return result(null, "INTERRUPTED_UNKNOWN", { attempt }); fail("DSS03_RAW_NOT_READY"); }
-    const capsule = this.state.capsules[attempt.capsuleRef]; const scenario = this._fixture().scenarios[capsule.scenarioRef]; if (!scenario) fail("DSS03_SCENARIO_UNDECLARED", capsule.scenarioRef); const fixtureBytes = this.fixtureRawBytes.get(capsule.scenarioRef); const bytes = fixtureBytes ? Buffer.from(fixtureBytes) : Buffer.from(canonicalJson({ ...scenario.rawResult, capsuleRef: capsule.capsuleRef, attemptRef: attempt.attemptRef, cellRef: attempt.cellRef, edgeRef: capsule.edgeRef, materializationRef: capsule.materializationRef, kernelRef: capsule.kernelRef }), "utf8");
+    const capsule = this.state.capsules[attempt.capsuleRef]; const scenario = this._fixture().scenarios[capsule.scenarioRef]; if (!scenario) fail("DSS03_SCENARIO_UNDECLARED", capsule.scenarioRef);
     const limit = this._policy().outputByteLimit;
+    const diagnosticLimit = Math.min(limit, MAX_RAW_DIAGNOSTIC_BYTES);
+    const fixtureRaw = this.fixtureRawBytes.get(capsule.scenarioRef);
+    let bytes;
+    let payloadByteLength;
+    let serialized = "";
+    if (fixtureRaw) {
+      payloadByteLength = fixtureRaw.byteLength;
+      bytes = payloadByteLength > limit
+        ? boundedBase64Prefix(fixtureRaw.encoded, diagnosticLimit)
+        : Buffer.from(fixtureRaw.encoded, "base64");
+    } else {
+      serialized = canonicalJson({ ...scenario.rawResult, capsuleRef: capsule.capsuleRef, attemptRef: attempt.attemptRef, cellRef: attempt.cellRef, edgeRef: capsule.edgeRef, materializationRef: capsule.materializationRef, kernelRef: capsule.kernelRef });
+      payloadByteLength = Buffer.byteLength(serialized, "utf8");
+      bytes = payloadByteLength > limit
+        ? boundedUtf8Prefix(serialized, diagnosticLimit)
+        : Buffer.from(serialized, "utf8");
+    }
+    if (payloadByteLength > limit) {
+      const rawRef = randomRef("raw-result");
+      let quarantineRef;
+      let relativePath;
+      if (this.dss02?.quarantine && typeof this.dss02.quarantine.capture === "function") {
+        const quarantined = this.dss02.quarantine.capture(bytes, { diagnosticCode: "DSS03_RAW_OUTPUT_OVERSIZED" });
+        quarantineRef = quarantined.quarantineRef;
+        relativePath = quarantined.relativePath || `quarantine/${quarantineRef}.bin`;
+      } else {
+        quarantineRef = randomRef("quarantine");
+        relativePath = this.profileRoot ? `quarantine/${quarantineRef}.bin` : null;
+        if (this.profileRoot) {
+          const filePath = path.join(path.resolve(this.profileRoot), relativePath);
+          ensureDirectory(path.dirname(filePath));
+          atomicWrite(filePath, bytes);
+        } else this.memoryQuarantine.set(quarantineRef, Buffer.from(bytes));
+      }
+      const rawDigest = digestBytes("DirectSemanticService.RawResult.v1", bytes);
+      const raw = {
+        rawRef,
+        rawResultRef: rawRef,
+        quarantineRef,
+        attemptRef: attempt.attemptRef,
+        capsuleRef: capsule.capsuleRef,
+        cellRef: attempt.cellRef,
+        processRef: this.state.observations[attempt.observationRef]?.processRef || attempt.runtimeProcessRef,
+        terminalKind: this.state.observations[attempt.observationRef]?.terminalKind || null,
+        byteLength: bytes.length,
+        byteCount: bytes.length,
+        payloadByteLength,
+        digest: rawDigest,
+        digestScope: "retained_bounded_prefix",
+        bounded: true,
+        complete: false,
+        retentionPolicy: "DSS03_PRIVATE_BOUNDED_DIAGNOSTIC_PREFIX",
+        custodyTag: digestObject("Dss03.RawCustody.v1", { quarantineRef, rawDigest, byteCount: bytes.length, retentionPolicy: "DSS03_PRIVATE_BOUNDED_DIAGNOSTIC_PREFIX", payloadByteLength, digestScope: "retained_bounded_prefix", bounded: true, complete: false }),
+        relativePath,
+        operationInputDigest: inputDigest,
+        state: "QUARANTINED",
+        capturedAt: this.clock(),
+      };
+      this.state.raw[rawRef] = raw;
+      attempt.rawRef = rawRef;
+      attempt.state = "RAW_CAPTURED";
+      this._saveEvent("raw_result_captured", { rawRef, quarantineRef, attemptRef: attempt.attemptRef, byteLength: bytes.length, payloadByteLength, digest: raw.digest, bounded: true, complete: false });
+      return this._rawStructuralFailure(attempt, "DSS03_RAW_OUTPUT_OVERSIZED", raw);
+    }
     const rawRef = randomRef("raw-result"); let quarantineRef; let relativePath;
     if (this.dss02?.quarantine && typeof this.dss02.quarantine.capture === "function") { const quarantined = this.dss02.quarantine.capture(bytes); quarantineRef = quarantined.quarantineRef; relativePath = quarantined.relativePath || `quarantine/${quarantineRef}.bin`; }
     else { quarantineRef = randomRef("quarantine"); relativePath = this.profileRoot ? `quarantine/${quarantineRef}.bin` : null; if (this.profileRoot) { const filePath = path.join(path.resolve(this.profileRoot), relativePath); ensureDirectory(path.dirname(filePath)); atomicWrite(filePath, bytes); } else this.memoryQuarantine.set(quarantineRef, Buffer.from(bytes)); }
@@ -1100,7 +1194,23 @@ class Dss03FakeExecutionBackend {
     }
     if (this.state.counters.attemptSequence < Object.keys(this.state.attempts).length) fail("DSS03_ATTEMPT_COUNTER_DRIFT");
     for (const [ref, lease] of Object.entries(this.state.leases)) if (lease.leaseRef !== ref || !this.state.attempts[lease.attemptRef] || this.state.attempts[lease.attemptRef].leaseRef !== ref || lease.capsuleRef !== this.state.attempts[lease.attemptRef].capsuleRef || lease.daemonGeneration !== this.state.generation?.generationRef || !lease.leaseEventDigest) fail("DSS03_LEASE_POPULATION_INVALID", ref);
-    for (const [ref, raw] of Object.entries(this.state.raw)) { if (raw.rawRef !== ref || raw.rawResultRef !== ref || !this.state.attempts[raw.attemptRef] || this.state.attempts[raw.attemptRef].rawRef !== ref || raw.byteCount !== raw.byteLength || raw.custodyTag !== digestObject("Dss03.RawCustody.v1", { quarantineRef: raw.quarantineRef, rawDigest: raw.digest, byteCount: raw.byteCount, retentionPolicy: raw.retentionPolicy })) fail("DSS03_RAW_POPULATION_INVALID", ref); this._verifyRawCustody(raw); }
+    for (const [ref, raw] of Object.entries(this.state.raw)) {
+      const custodyInput = {
+        quarantineRef: raw.quarantineRef,
+        rawDigest: raw.digest,
+        byteCount: raw.byteCount,
+        retentionPolicy: raw.retentionPolicy,
+        ...(raw.bounded === true ? {
+          payloadByteLength: raw.payloadByteLength,
+          digestScope: raw.digestScope,
+          bounded: true,
+          complete: false,
+        } : {}),
+      };
+      if (raw.rawRef !== ref || raw.rawResultRef !== ref || !this.state.attempts[raw.attemptRef] || this.state.attempts[raw.attemptRef].rawRef !== ref || raw.byteCount !== raw.byteLength || raw.custodyTag !== digestObject("Dss03.RawCustody.v1", custodyInput)) fail("DSS03_RAW_POPULATION_INVALID", ref);
+      if (raw.bounded === true && (raw.complete !== false || raw.digestScope !== "retained_bounded_prefix" || !Number.isSafeInteger(raw.payloadByteLength) || raw.payloadByteLength <= raw.byteLength)) fail("DSS03_RAW_POPULATION_INVALID", ref);
+      this._verifyRawCustody(raw);
+    }
     this._validateQuarantineInventory();
     for (const [ref, admission] of Object.entries(this.state.admissions)) if (admission.rawRef !== ref || !admission.rawDigest || admission.rawDigest !== this.state.raw[ref]?.digest || !admission.structuralReceiptsDigest || !admission.bindingReceiptsDigest || !admission.rejectionCodesDigest || !this.state.raw[ref] || !this.state.microresults[admission.microresultRef] || this.state.microresults[admission.microresultRef].attemptRef !== admission.attemptRef) fail("DSS03_ADMISSION_POPULATION_INVALID", ref);
     for (const [ref, microresult] of Object.entries(this.state.microresults)) if (microresult.microresultRef !== ref || !Object.values(this.state.attempts).some((attempt) => attempt.attemptRef === microresult.attemptRef) || !this.state.cells[microresult.cellRef]) fail("DSS03_MICRORESULT_ORPHAN", ref);
@@ -1314,6 +1424,8 @@ module.exports = {
   createDss03PredecessorBoundary,
   createDss02PredecessorBoundary,
   normalizeFixtureBundle,
+  boundedBase64Prefix,
+  boundedUtf8Prefix,
   RESULT_STATUSES,
   TERMINAL_CLASSES,
   DSS03_CARRIER_FIELD_MAP,

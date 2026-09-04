@@ -59,6 +59,29 @@ function toolCallSse(responseId, name, args) {
   ].join("\n");
 }
 
+function incrementalResponse(text) {
+  const bytes = new TextEncoder().encode(text);
+  let consumed = false;
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => "text/event-stream" },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (consumed) return { done: true, value: undefined };
+            consumed = true;
+            return { done: false, value: bytes };
+          },
+          cancel() {},
+        };
+      },
+    },
+    text: async () => text,
+  };
+}
+
 function expectCode(fn, code) {
   assert.throws(fn, (error) => error?.code === code, `expected ${code}`);
 }
@@ -146,6 +169,29 @@ async function main() {
   });
   assert.equal(outsideEnvPatchResult.status, "applied", "full-access patch should allow synthetic .env-style files");
   assert.equal(await fs.readFile(outsideEnvFile, "utf8"), "FAKE_TOKEN=fake_token_replaced_123456\n");
+
+  const monotonicPatchFile = path.join(outside, "monotonic-hunks.txt");
+  await fs.writeFile(monotonicPatchFile, "header\nrepeat\nmiddle\nrepeat\ntail\n", "utf8");
+  const monotonicPatch = `*** Begin Patch\n*** Update File: ${monotonicPatchFile}\n@@ -2,1 +2,2 @@\n repeat\n+first-insert\n@@ -4,1 +4,2 @@\n repeat\n+second-insert\n*** End Patch`;
+  const monotonicResult = await localExecutor.request(binding, "applyPatch", {
+    mode: "apply",
+    patch: monotonicPatch,
+  });
+  assert.equal(monotonicResult.status, "applied");
+  assert.equal(
+    await fs.readFile(monotonicPatchFile, "utf8"),
+    "header\nrepeat\nfirst-insert\nmiddle\nrepeat\nsecond-insert\ntail\n",
+    "later identical-context hunks must apply only at or after the successor cursor",
+  );
+
+  const preCursorOnlyFile = path.join(outside, "monotonic-pre-cursor-only.txt");
+  await fs.writeFile(preCursorOnlyFile, "repeat\ntail\n", "utf8");
+  const preCursorOnlyPatch = `*** Begin Patch\n*** Update File: ${preCursorOnlyFile}\n@@ -1,1 +1,3 @@\n-repeat\n+repeat\n+inserted\n+repeat\n@@ -2,1 +2,2 @@\n repeat\n+must-not-remutate\n*** End Patch`;
+  await expectCodeAsync(
+    () => localExecutor.request(binding, "applyPatch", { mode: "apply", patch: preCursorOnlyPatch }),
+    "direct_full_access_patch_conflict",
+  );
+  assert.equal(await fs.readFile(preCursorOnlyFile, "utf8"), "repeat\ntail\n");
 
   const staleDeleteFile = path.join(outside, "stale-delete.txt");
   await fs.writeFile(staleDeleteFile, "delete-first\ndelete-second\n", "utf8");
@@ -332,22 +378,12 @@ async function main() {
       if (providerBodies.length === 1) {
         const [execSessionId] = JSON.stringify(body).match(/exec_session_[a-f0-9]+/) || [];
         assert(execSessionId, "stateful exec continuation should expose the bounded session id");
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: () => "text/event-stream" },
-          text: async () => toolCallSse("resp_stateful_exec_stdin", "write_stdin", {
+        return incrementalResponse(toolCallSse("resp_stateful_exec_stdin", "write_stdin", {
             session_id: execSessionId,
             chars: "provider-route\n",
-          }),
-        };
+          }));
       }
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => "text/event-stream" },
-        text: async () => continuationSse,
-      };
+      return incrementalResponse(continuationSse);
     },
   });
   controller.statusForProject = () => ({ status: "ready", model: "gpt-5.6-sol" });

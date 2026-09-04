@@ -815,6 +815,7 @@ try {
     attemptOrdinal: 2,
     maxStdoutChars: 10_000,
   }, {
+    terminationGraceMs: 100,
     spawnImpl: () => {
       setImmediate(() => {
         journalChild.stdout.write(`${JSON.stringify({ type: "text", part: { text: "durable" } })}\n`);
@@ -837,6 +838,84 @@ try {
   }
 } finally {
   fs.rmSync(journalRoot, { recursive: true, force: true });
+}
+
+function ignoringSigtermChild(signals) {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = (signal) => {
+    signals.push(signal);
+    if (signal === "SIGKILL") setImmediate(() => child.emit("close", null, signal));
+    return true;
+  };
+  return child;
+}
+
+const terminalFailureRoot = fs.mkdtempSync(path.join(journalTempRoot, "direct-opencode-terminal-failure-"));
+try {
+  const outputSignals = [];
+  const outputJournalPath = path.join(terminalFailureRoot, "output-events.ndjson");
+  const outputChild = ignoringSigtermChild(outputSignals);
+  const outputRun = spawnOpenCodeProcess({
+    executable: "/fixture/opencode",
+    args: ["run"],
+    cwd: terminalFailureRoot,
+    runtimeDirectory: path.join(terminalFailureRoot, "output-runtime"),
+    eventJournalPath: outputJournalPath,
+    maxStdoutChars: 4,
+  }, {
+    spawnImpl: () => {
+      setImmediate(() => {
+        outputChild.stdout.write("12345");
+        setTimeout(() => outputChild.stdout.write("late-output"), 20);
+      });
+      return outputChild;
+    },
+  });
+  const outputOutcome = outputRun.then(() => null, (error) => error);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(outputSignals, ["SIGTERM"], "output-limit terminal must wait for process reaping");
+  const outputError = await outputOutcome;
+  assert.equal(outputError?.code, "direct_opencode_output_limit");
+  assert.deepEqual(outputSignals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(fs.statSync(outputJournalPath).size, 0, "late output must not grow the journal");
+
+  const journalSignals = [];
+  const journalPathFailure = path.join(terminalFailureRoot, "journal-failure.ndjson");
+  const journalFailureChild = ignoringSigtermChild(journalSignals);
+  const originalWriteSync = fs.writeSync;
+  fs.writeSync = () => { throw new Error("fixture journal write failure"); };
+  try {
+    const journalFailureRun = spawnOpenCodeProcess({
+      executable: "/fixture/opencode",
+      args: ["run"],
+      cwd: terminalFailureRoot,
+      runtimeDirectory: path.join(terminalFailureRoot, "journal-runtime"),
+      eventJournalPath: journalPathFailure,
+      maxStdoutChars: 10_000,
+    }, {
+      terminationGraceMs: 100,
+      spawnImpl: () => {
+        setImmediate(() => {
+          journalFailureChild.stdout.write(`${JSON.stringify({ type: "text", part: { text: "journal-failure" } })}\n`);
+          setTimeout(() => journalFailureChild.stdout.write("late-journal\n"), 20);
+        });
+        return journalFailureChild;
+      },
+    });
+    const journalFailureOutcome = journalFailureRun.then(() => null, (error) => error);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(journalSignals, ["SIGTERM"], "journal failure terminal must wait for process reaping");
+    const journalError = await journalFailureOutcome;
+    assert.equal(journalError?.code, "direct_opencode_event_journal_write_failed");
+    assert.deepEqual(journalSignals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(fs.statSync(journalPathFailure).size, 0, "late stdout must not grow a failed journal");
+  } finally {
+    fs.writeSync = originalWriteSync;
+  }
+} finally {
+  fs.rmSync(terminalFailureRoot, { recursive: true, force: true });
 }
 
 const poolCalls = [];

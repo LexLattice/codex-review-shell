@@ -1,4 +1,16 @@
 import { createHash } from "node:crypto";
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const {
+  boundedBase64Prefix,
+  boundedUtf8Prefix,
+  createDss03FakeExecutionBackend,
+  createDss03PredecessorBoundary,
+  DSS03_TRANCHE_REVISION,
+} = require("../src/main/direct/semantic-service/dss03.js");
+const { digestObject: dss02DigestObject } = require("../src/main/direct/semantic-service/dss02-common.js");
 
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 const normalize = (value) => Array.isArray(value)
@@ -808,3 +820,67 @@ export const falsifyNamedLaw = ({ entry, projection, moduleDeclaration, evidence
     },
   };
 };
+
+// The production DSS03 runtime is exercised through the matrix-driven gate
+// above; retain this small raw-capture boundary fixture here so the evidence
+// law also proves that a sub-diagnostic output policy cannot retain a full
+// oversized owner fixture payload in memory.
+const rawDiagnosticLimit = 17;
+const oversizedOwnerRaw = Buffer.alloc(256 * 1024, 0x78);
+const oversizedOwnerRawBase64 = oversizedOwnerRaw.toString("base64");
+const retainedOwnerPrefix = boundedBase64Prefix(oversizedOwnerRawBase64, rawDiagnosticLimit);
+assert.equal(retainedOwnerPrefix.length, rawDiagnosticLimit);
+assert.equal(retainedOwnerPrefix.length <= rawDiagnosticLimit, true);
+assert.equal(retainedOwnerPrefix.length < oversizedOwnerRaw.length, true);
+assert.equal(retainedOwnerPrefix.toString("utf8"), oversizedOwnerRaw.subarray(0, rawDiagnosticLimit).toString("utf8"));
+const retainedGeneratedPrefix = boundedUtf8Prefix("x".repeat(256 * 1024), rawDiagnosticLimit);
+assert.equal(retainedGeneratedPrefix.length, rawDiagnosticLimit);
+assert.equal(retainedGeneratedPrefix.length <= rawDiagnosticLimit, true);
+
+const zeroDigest = `sha256:${"0".repeat(64)}`;
+const oversizedPayload = Buffer.alloc(10_000, 0x78);
+const oversizedFixture = {
+  schema: "direct_semantic_fake_fixture_bundle@1",
+  root: { installationRef: "dss03-boundary-install", rootFingerprint: "dss03-boundary-root", fixturePolicyDigest: zeroDigest },
+  registry: { registryRevision: "dss03-boundary-registry", fixturePopulationDigest: zeroDigest, scenarioPopulationDigest: zeroDigest, signature: "dss03-boundary-owner-signature" },
+  compiled: {
+    fixtureRef: "dss03-boundary-fixture",
+    compilerPinRef: "dss03-boundary-pin",
+    compiledSetDigest: zeroDigest,
+    edgePopulationDigest: zeroDigest,
+    edgeOccurrences: [{ edgeOccurrenceRef: "dss03-boundary-edge-occurrence", edgeRef: "dss03-boundary-edge", obligationRef: "dss03-boundary-obligation", materializationRef: "dss03-boundary-materialization" }],
+  },
+  materializations: [{ materializationRef: "dss03-boundary-materialization", routeRef: "dss03-boundary-route", edgeRef: "dss03-boundary-edge", requiredCells: ["dss03-boundary-edge-occurrence:slot:0"], pageDigest: zeroDigest, sufficiencyPosture: "SUFFICIENT" }],
+  runtime: { runtimeRevision: "dss03-boundary-runtime", executionProfileRef: "dss03-boundary-profile", kernelRef: "dss03-boundary-kernel", adapterDigest: zeroDigest, isolationDigest: zeroDigest, environmentDigest: zeroDigest, outputPolicyDigest: zeroDigest },
+  policies: { attemptPolicy: { attemptPolicyRef: "dss03-boundary-attempt-policy", retryableFailureClasses: [], maximumAttemptsPerReplicateSlot: 1, replicateCountPerCell: 1, selectionRule: "all_results_independent", timeoutMs: 1_000, outputByteLimit: rawDiagnosticLimit }, evaluationPolicy: { evaluationPolicyRef: "dss03-boundary-evaluation-policy" } },
+  scenarios: { oversized: { runtimeTerminal: "EXIT", runtimeFacts: { reaped: true, streamsClosed: true, bufferedBytes: 0 }, rawBytesBase64: oversizedPayload.toString("base64"), rawResult: { schema: "direct_semantic_microresult@1", resultStatus: "support", claims: { fixture: "oversized" }, evidenceRefs: [], authorityEffect: "none" } } },
+};
+const dss03JobRef = "dss03-boundary-job";
+const dss03HandoffTuple = { jobRef: dss03JobRef, jobAdmissionEventDigest: zeroDigest, jobEventHead: zeroDigest, dss02Generation: zeroDigest, fencingToken: 1, dispatchBoundaryRevision: 1, targetTrancheRevision: DSS03_TRANCHE_REVISION, handoffEventDigest: zeroDigest };
+const dss03Handoff = { ...dss03HandoffTuple, state: "HANDOFF_COMMITTED", identityDigest: dss02DigestObject("DirectSemanticService.Dss03Handoff.v1", dss03HandoffTuple) };
+const dss03Service = createDss03FakeExecutionBackend({
+  ownerFixtureBundle: oversizedFixture,
+  predecessorBoundary: createDss03PredecessorBoundary({ handoffs: [dss03Handoff] }),
+});
+dss03Service.openDss03Generation();
+dss03Service.installFakeFixtureRegistry();
+dss03Service.recoverDss03Generation();
+dss03Service.acceptDss02Handoff({ jobRef: dss03JobRef, targetTrancheRevision: DSS03_TRANCHE_REVISION });
+const dss03Plan = dss03Service.instantiateExecutionPlan({ jobRef: dss03JobRef, executionPlanRef: "dss03-boundary-plan" });
+const dss03Capsule = dss03Service.admitExecutionCapsule({ planRef: dss03Plan.plan.planRef, cellRef: dss03Plan.plan.expectedCellRefs[0], capsuleRef: "dss03-boundary-capsule", scenarioRef: "oversized" });
+dss03Service.performPreexecutionAssurance({ capsuleRef: dss03Capsule.capsule.capsuleRef, assuranceRef: "dss03-boundary-assurance" });
+const dss03Attempt = dss03Service.allocateAttempt({ capsuleRef: dss03Capsule.capsule.capsuleRef, attemptRef: "dss03-boundary-attempt" });
+const dss03Lease = dss03Service.acquireAttemptLease({ attemptRef: dss03Attempt.attempt.attemptRef, leaseRef: "dss03-boundary-lease", ttlMs: 1_000 });
+const dss03LeaseInput = { attemptRef: dss03Attempt.attempt.attemptRef, leaseRef: dss03Lease.lease.leaseRef, leaseRevision: dss03Lease.lease.leaseRevision, fencingToken: dss03Lease.lease.fencingToken };
+dss03Service.startFakeAttempt(dss03LeaseInput);
+dss03Service.recordRuntimeTerminal(dss03LeaseInput);
+assert.throws(() => dss03Service.captureRawResultToQuarantine(dss03LeaseInput), (error) => error.code === "DSS03_RAW_OUTPUT_OVERSIZED");
+const dss03Raw = Object.values(dss03Service.state.raw)[0];
+const dss03Retained = [...dss03Service.memoryQuarantine.values()][0];
+assert.equal(dss03Raw.payloadByteLength, oversizedPayload.length);
+assert.equal(dss03Raw.complete, false);
+assert.equal(dss03Raw.digestScope, "retained_bounded_prefix");
+assert.equal(dss03Raw.byteLength, rawDiagnosticLimit);
+assert.equal(dss03Retained.length, rawDiagnosticLimit);
+assert.equal(dss03Retained.length <= rawDiagnosticLimit, true);
+assert.equal(dss03Retained.length < oversizedPayload.length, true);

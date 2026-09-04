@@ -1967,6 +1967,12 @@ class DirectLiveTextController {
     this.endpoint = normalizeString(options.endpoint, "");
     this.maxPromptChars = Number(options.maxPromptChars || DEFAULT_MAX_PROMPT_CHARS);
     this.maxAssistantChars = Number(options.maxAssistantChars || DEFAULT_MAX_ASSISTANT_CHARS);
+    this.maxTransportOutputChars = Number(options.maxTransportOutputChars || Math.max(256 * 1024, this.maxAssistantChars * 8));
+    this.maxTransportBytes = Number(options.maxTransportBytes || Math.max(2 * 1024 * 1024, this.maxAssistantChars * 8));
+    this.maxTransportFrameBytes = Number(options.maxTransportFrameBytes || 512 * 1024);
+    this.maxTransportRawEvents = Number(options.maxTransportRawEvents || 10_000);
+    this.maxTransportNormalizedEvents = Number(options.maxTransportNormalizedEvents || 10_000);
+    this.maxTransportErrorBytes = Number(options.maxTransportErrorBytes || 64 * 1024);
     this.readOnlyWorkspaceTimeoutMs = boundedPositiveInteger(
       options.readOnlyWorkspaceTimeoutMs,
       DEFAULT_READONLY_WORKSPACE_TIMEOUT_MS,
@@ -10296,6 +10302,12 @@ class DirectLiveTextController {
       instructions,
       fetchImpl: this.fetchImpl || undefined,
       signal: abortController.signal,
+      maxProviderOutputChars: this.maxTransportOutputChars,
+      maxRawResponseBytes: this.maxTransportBytes,
+      maxSseFrameBytes: this.maxTransportFrameBytes,
+      maxRawEventCount: this.maxTransportRawEvents,
+      maxNormalizedEventCount: this.maxTransportNormalizedEvents,
+      maxErrorBodyBytes: this.maxTransportErrorBytes,
       onLifecycle: callerLifecycle,
       onNormalizedEvents: (events, details = {}) => {
         for (const event of Array.isArray(events) ? events : []) emitAssistantDelta(event, details.at);

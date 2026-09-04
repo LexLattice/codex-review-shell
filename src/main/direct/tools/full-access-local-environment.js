@@ -166,11 +166,12 @@ function parseUnifiedPatch(patchText) {
   return files;
 }
 
-function findHunkStart(before, hunk, preferred) {
+function findHunkStart(before, hunk, preferred, minimumStart = 0) {
   const wanted = hunk.lines.filter((line) => line[0] !== "+").map((line) => line.slice(1));
   const matches = (start) => wanted.every((line, offset) => before[start + offset] === line);
-  if (matches(preferred)) return preferred;
-  for (let start = 0; start <= before.length - wanted.length; start += 1) {
+  const boundedPreferred = Math.max(minimumStart, preferred);
+  if (matches(boundedPreferred)) return boundedPreferred;
+  for (let start = minimumStart; start <= before.length - wanted.length; start += 1) {
     if (matches(start)) return start;
   }
   throw localError("direct_full_access_patch_conflict", "Patch hunk does not match the selected local file.");
@@ -187,7 +188,7 @@ function applyHunks(before, hunks, operation) {
   let changed = 0;
   for (const hunk of hunks) {
     const preferred = Math.max(0, (hunk.oldStart || 1) - 1);
-    const start = findHunkStart(result, hunk, Math.max(cursor, preferred));
+    const start = findHunkStart(result, hunk, Math.max(cursor, preferred), cursor);
     const oldLines = hunk.lines.filter((line) => line[0] !== "+").map((line) => line.slice(1));
     const newLines = hunk.lines.filter((line) => line[0] !== "-").map((line) => line.slice(1));
     result.splice(start, oldLines.length, ...newLines);

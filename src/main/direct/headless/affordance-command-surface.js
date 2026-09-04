@@ -303,7 +303,7 @@ function validateDaemonIngressGate(daemon, command = {}) {
   }
   if (Number.isFinite(Number(daemon?.maxInboxEvents))
     && typeof daemon?.store?.count === "function"
-    && daemon.store.count("direct_bridge_inbox_events") >= Number(daemon.maxInboxEvents)) {
+    && (daemon.store.count("direct_bridge_inbox_events") + (typeof daemon.store.providerAffordanceIngressCount === "function" ? daemon.store.providerAffordanceIngressCount() : 0)) >= Number(daemon.maxInboxEvents)) {
     return commandResult(command, {
       status: "blocked",
       error: "queue_full",
@@ -351,6 +351,34 @@ function providerBackedSubAgentRouteFor(daemon, validation = {}) {
   return routes.get(routeKey);
 }
 
+function providerAffordanceClaimInput(command = {}, validation = {}) {
+  const route = validation.route || {};
+  const identity = {
+    clientId: command.clientId,
+    routeId: route.routeId || validation.requestedRouteId || "",
+    routeVersion: route.routeVersion || validation.routeVersion || "",
+    routeDigest: route.routeDigest || "",
+    idempotencyKey: command.idempotencyKey || command.commandId,
+  };
+  const input = {
+    ...identity,
+    commandKind: command.commandKind,
+    childAgentId: command.childAgentId,
+    promptDigest: command.text ? sha256(command.text) : "",
+    model: command.model,
+    reasoningEffort: command.reasoningEffort,
+    instructionsDigest: command.instructions ? sha256(command.instructions) : "",
+    displayLabel: command.displayLabel,
+    role: command.role,
+    noInterferencePolicy: command.noInterferencePolicy,
+  };
+  return {
+    claimId: sha256(`headless-provider-affordance-identity:${stableStringify(identity)}`),
+    inputDigest: sha256(`headless-provider-affordance-input:${stableStringify(input)}`),
+    ...identity,
+  };
+}
+
 function submitOutcome(result = null) {
   if (!isPlainObject(result)) {
     return {
@@ -386,6 +414,36 @@ function submitOutcome(result = null) {
     blockerCode: "",
     providerRequestStarted: Boolean(packet.providerStarted),
   };
+}
+
+function providerAffordanceReplayResult(command, claim) {
+  if (claim.conflict) {
+    return commandResult(command, {
+      status: "blocked",
+      error: "provider_affordance_idempotency_conflict",
+      blockerCode: "provider_affordance_idempotency_conflict",
+      result: { claimId: claim.claimId, replayed: true, conflict: true, rawPayloadIncluded: false },
+    });
+  }
+  if (!claim.replay) return null;
+  if (claim.result) {
+    const replayedResult = sanitizeBridgeResult(claim.result);
+    return commandResult(command, {
+      status: replayedResult.status || "completed",
+      error: replayedResult.blockerCode || replayedResult.error || "",
+      blockerCode: replayedResult.blockerCode || replayedResult.error || "",
+      providerRequestStarted: replayedResult.providerRequestStarted === true,
+      result: replayedResult,
+      replayed: true,
+      evidenceRefs: [evidenceRef("provider_backed_sub_agent_replay", "Durable provider-backed affordance result replay")],
+    });
+  }
+  return commandResult(command, {
+    status: "accepted",
+    providerRequestStarted: false,
+    result: { schema: "headless_provider_affordance_in_progress@1", claimId: claim.claimId, status: "in_progress", replayed: true, rawPayloadIncluded: false },
+    evidenceRefs: [evidenceRef("provider_backed_sub_agent_replay", "Durable provider-backed affordance is already in progress")],
+  });
 }
 
 async function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
@@ -448,21 +506,44 @@ async function executeHeadlessAffordanceCommand({ daemon, command: input } = {})
         blockerCode: "missing_child_agent_id",
       });
     }
-    const daemonGate = validateDaemonIngressGate(daemon, command);
-    if (daemonGate) return daemonGate;
     const validation = validateAffordanceRoute(daemon, command);
     if (!validation.ok) return validation.result;
+    const claimInput = providerAffordanceClaimInput(command, validation.validation);
+    const existingClaim = daemon.store?.readProviderAffordance?.(claimInput);
+    const existingResult = existingClaim ? providerAffordanceReplayResult(command, existingClaim) : null;
+    if (existingResult) return existingResult;
+    const daemonGate = validateDaemonIngressGate(daemon, command);
+    if (daemonGate) return daemonGate;
+    const claim = daemon.store?.claimProviderAffordance?.(claimInput);
+    if (!claim) {
+      return commandResult(command, {
+        status: "blocked",
+        error: "provider_affordance_claim_unavailable",
+        blockerCode: "provider_affordance_claim_unavailable",
+      });
+    }
+    const claimedReplayResult = providerAffordanceReplayResult(command, claim);
+    if (claimedReplayResult) return claimedReplayResult;
     const route = providerBackedSubAgentRouteFor(daemon, validation.validation);
-    const result = sanitizeBridgeResult(await route.spawnAndRun({
-      childAgentId: command.childAgentId,
-      displayLabel: command.displayLabel,
-      role: command.role,
-      noInterferencePolicy: command.noInterferencePolicy,
-      prompt: command.text,
-      model: command.model,
-      reasoningEffort: command.reasoningEffort,
-      instructions: command.instructions,
-    }));
+    let result;
+    try {
+      result = sanitizeBridgeResult(await route.spawnAndRun({
+        childAgentId: command.childAgentId,
+        displayLabel: command.displayLabel,
+        role: command.role,
+        noInterferencePolicy: command.noInterferencePolicy,
+        prompt: command.text,
+        model: command.model,
+        reasoningEffort: command.reasoningEffort,
+        instructions: command.instructions,
+      }));
+    } catch (error) {
+      result = sanitizeBridgeResult({ status: "failed", blockerCode: normalizeString(error?.code, "provider_affordance_failed"), providerRequestStarted: false });
+    }
+    daemon.store.completeProviderAffordance(claim.claimId, {
+      status: normalizeString(result.status, "failed"),
+      result,
+    });
     return commandResult(command, {
       status: result.status,
       error: result.blockerCode,
@@ -581,6 +662,7 @@ module.exports = {
   HEADLESS_AFFORDANCE_RESULT_SCHEMA,
   executeHeadlessAffordanceCommand,
   normalizeCommand,
+  providerAffordanceClaimInput,
   sanitizeBridgeResult,
   sanitizeTurnPacket,
 };

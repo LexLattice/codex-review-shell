@@ -13,6 +13,7 @@ const HEADLESS_TURN_PACKET_SCHEMA = "headless_turn_packet@1";
 const REDUCED_RESULT_SCHEMA = "headless_reduced_result@1";
 const HUMAN_DECISION_PACKET_SCHEMA = "human_decision_packet@1";
 const HUMAN_DECISION_REPLY_SCHEMA = "human_decision_reply@1";
+const PROVIDER_AFFORDANCE_CLAIM_SCHEMA = "headless_provider_affordance_claim@1";
 
 function normalizeString(value, fallback = "") {
   const text = typeof value === "string" ? value.trim() : "";
@@ -330,6 +331,21 @@ class DirectHeadlessBridgeStore {
         created_at text not null,
         updated_at text not null
       );
+      create table if not exists direct_bridge_provider_affordance_claims (
+        claim_id text primary key,
+        client_id text not null,
+        route_id text not null,
+        route_version text not null,
+        route_digest text not null,
+        idempotency_key text not null,
+        input_digest text not null,
+        status text not null,
+        result_json text,
+        created_at text not null,
+        updated_at text not null
+      );
+      create unique index if not exists idx_direct_bridge_provider_affordance_identity
+        on direct_bridge_provider_affordance_claims(client_id, route_id, route_version, route_digest, idempotency_key);
     `);
     this.db.prepare("create table if not exists direct_bridge_meta (key text primary key, value_json text not null)").run();
     this.db.prepare(`
@@ -337,6 +353,22 @@ class DirectHeadlessBridgeStore {
       values ('schema', ?)
       on conflict(key) do update set value_json = excluded.value_json
     `).run(safeJson({ schema: HEADLESS_BRIDGE_STORE_SCHEMA }));
+    this.reconcileProviderAffordanceClaims();
+  }
+
+  reconcileProviderAffordanceClaims() {
+    const interruptedAt = nowIso();
+    const result = safeJson({
+      schema: "headless_provider_affordance_interrupted_unknown@1",
+      status: "interrupted_unknown",
+      blockerCode: "provider_affordance_interrupted_unknown",
+      providerRequestStarted: false,
+      rawPayloadIncluded: false,
+      rawPromptIncluded: false,
+      rawProviderPayloadIncluded: false,
+      rawProviderFrameIncluded: false,
+    });
+    this.db.prepare("update direct_bridge_provider_affordance_claims set status='interrupted_unknown', result_json=?, updated_at=? where status='in_progress'").run(result, interruptedAt);
   }
 
   seed({ clients = [], routes = [], workThreads = [] } = {}) {
@@ -420,9 +452,84 @@ class DirectHeadlessBridgeStore {
       "direct_bridge_outbox_actions",
       "direct_bridge_delivery_receipts",
       "direct_bridge_human_decisions",
+      "direct_bridge_provider_affordance_claims",
     ]);
     if (!allowed.has(tableName)) throw new Error(`headless_bridge_count_table_invalid:${tableName}`);
     return Number(this.db.prepare(`select count(*) as count from ${tableName}`).get()?.count || 0);
+  }
+
+  providerAffordanceIngressCount() {
+    return Number(this.db.prepare("select count(*) as count from direct_bridge_provider_affordance_claims").get()?.count || 0);
+  }
+
+  providerAffordanceRecord(row, inputDigest = "") {
+    return {
+      schema: PROVIDER_AFFORDANCE_CLAIM_SCHEMA,
+      claimId: row.claim_id,
+      clientId: row.client_id,
+      routeId: row.route_id,
+      routeVersion: row.route_version,
+      routeDigest: row.route_digest,
+      idempotencyKey: row.idempotency_key,
+      inputDigest: row.input_digest,
+      status: row.status,
+      result: parseJson(row.result_json, null),
+      replay: true,
+      conflict: row.input_digest !== inputDigest,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  providerAffordanceIdentity(input = {}) {
+    const identity = {
+      claimId: normalizeString(input.claimId, ""),
+      clientId: normalizeString(input.clientId, ""),
+      routeId: normalizeString(input.routeId, ""),
+      routeVersion: normalizeString(input.routeVersion, ""),
+      routeDigest: normalizeString(input.routeDigest, ""),
+      idempotencyKey: normalizeString(input.idempotencyKey, ""),
+      inputDigest: normalizeString(input.inputDigest, ""),
+    };
+    if (!identity.claimId || !identity.clientId || !identity.routeId || !identity.routeVersion || !identity.routeDigest || !identity.idempotencyKey || !identity.inputDigest) throw new Error("headless_provider_affordance_claim_invalid");
+    return identity;
+  }
+
+  readProviderAffordance(input = {}) {
+    const identity = this.providerAffordanceIdentity(input);
+    const row = this.db.prepare("select * from direct_bridge_provider_affordance_claims where client_id=? and route_id=? and route_version=? and route_digest=? and idempotency_key=?").get(identity.clientId, identity.routeId, identity.routeVersion, identity.routeDigest, identity.idempotencyKey);
+    return row ? this.providerAffordanceRecord(row, identity.inputDigest) : null;
+  }
+
+  claimProviderAffordance(input = {}) {
+    const identity = this.providerAffordanceIdentity(input);
+    const { claimId, clientId, routeId, routeVersion, routeDigest, idempotencyKey, inputDigest } = identity;
+    const at = normalizeString(input.createdAt, nowIso());
+    this.db.exec("begin immediate");
+    try {
+      const existing = this.db.prepare("select * from direct_bridge_provider_affordance_claims where client_id=? and route_id=? and route_version=? and route_digest=? and idempotency_key=?").get(clientId, routeId, routeVersion, routeDigest, idempotencyKey);
+      if (existing) {
+        this.db.exec("commit");
+        return this.providerAffordanceRecord(existing, inputDigest);
+      }
+      this.db.prepare("insert into direct_bridge_provider_affordance_claims (claim_id, client_id, route_id, route_version, route_digest, idempotency_key, input_digest, status, result_json, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, 'in_progress', null, ?, ?)").run(claimId, clientId, routeId, routeVersion, routeDigest, idempotencyKey, inputDigest, at, at);
+      this.db.exec("commit");
+      return { schema: PROVIDER_AFFORDANCE_CLAIM_SCHEMA, claimId, clientId, routeId, routeVersion, routeDigest, idempotencyKey, inputDigest, status: "in_progress", result: null, replay: false, conflict: false, createdAt: at, updatedAt: at };
+    } catch (error) {
+      try { this.db.exec("rollback"); } catch (_) {}
+      throw error;
+    }
+  }
+
+  completeProviderAffordance(claimId = "", input = {}) {
+    const safeClaimId = normalizeString(claimId, "");
+    const status = normalizeString(input.status, "failed");
+    const result = isPlainObject(input.result) ? input.result : { status, blockerCode: normalizeString(input.blockerCode, "provider_affordance_failed") };
+    const at = normalizeString(input.updatedAt, nowIso());
+    const row = this.db.prepare("select claim_id from direct_bridge_provider_affordance_claims where claim_id=?").get(safeClaimId);
+    if (!row) throw new Error("headless_provider_affordance_claim_missing");
+    this.db.prepare("update direct_bridge_provider_affordance_claims set status=?, result_json=?, updated_at=? where claim_id=? and status='in_progress'").run(status, safeJson(result), at, safeClaimId);
+    return result;
   }
 
   statusProjection(extra = {}) {
@@ -452,6 +559,7 @@ class DirectHeadlessBridgeStore {
       lastEventAt: normalizeString(lastEventRow?.at, ""),
       lastErrorClass: normalizeString(extra.lastErrorClass, ""),
       providerRequestsStarted: 0,
+      providerAffordanceClaims: this.providerAffordanceIngressCount(),
       rawSecretsExposed: false,
       rawPayloadsExposed: false,
       rawProviderFramesExposed: false,

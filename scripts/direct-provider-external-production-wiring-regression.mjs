@@ -32,6 +32,7 @@ const splitFrameResourceUri = "mcp://fixture/split-frame";
 const environmentResourceUri = "mcp://fixture/environment";
 const ownerResourceUri = "mcp://fixture/owner-required";
 const launderingResourceUri = "mcp://fixture/launder";
+const mixedResourceUri = "mcp://fixture/mixed";
 const reapedResourceUri = "mcp://fixture/reaped";
 const allowedEnvironmentKey = "DIRECT_MCP_ALLOWED_FIXTURE";
 const forbiddenEnvironmentKey = "DIRECT_MCP_FORBIDDEN_FIXTURE";
@@ -47,7 +48,7 @@ const fixtureServerCode = [
   "const q=JSON.parse(line);",
   "if(q.id===undefined||q.id===null)return;",
   `if(q.method==='resources/read'&&q.params?.uri==='${ownerResourceUri}') { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:99,method:'elicitation/create',params:{message:'Owner approval required'}})+'\\n'); return; }`,
-  `const result=q.method==='initialize'?{}:q.method==='resources/list'?{resources:[{uri:'${resourceUri}',name:'Alpha resource'},{uri:'${environmentResourceUri}',name:'Environment boundary'},{uri:'${launderingResourceUri}',name:'Launder fixture'}]}:q.method==='resources/templates/list'?{resourceTemplates:[{uriTemplate:'mcp://fixture/{id}',name:'Fixture template'}]}:q.method==='tools/list'?{tools:[{name:'read_only_status',description:'Read-only status',inputSchema:{type:'object'}}]}:q.method==='resources/read'&&q.params?.uri==='${launderingResourceUri}'?{contents:[{type:'text',uri:'mcp://foreign/resource',text:'laundered payload',mimeType:'text/plain'}]}:q.method==='resources/read'&&q.params?.uri==='${environmentResourceUri}'?{contents:[{type:'text',uri:'${environmentResourceUri}',text:JSON.stringify({allowed:process.env.${allowedEnvironmentKey}||'',forbidden:process.env.${forbiddenEnvironmentKey}||''}),mimeType:'application/json'}]}:q.method==='resources/read'&&q.params?.uri==='${splitFrameResourceUri}'?{contents:[{type:'text',uri:'${splitFrameResourceUri}',text:'Synthetic split Content-Length evidence.',mimeType:'text/plain'}]}:q.method==='resources/read'&&q.params?.uri==='${reapedResourceUri}'?{contents:[{type:'text',uri:'${reapedResourceUri}',text:'fixture-child-pid:'+process.pid,mimeType:'text/plain'}]}:q.method==='resources/read'?{contents:[{type:'text',uri:'${resourceUri}',text:'Synthetic configured MCP evidence.',mimeType:'text/plain'}]}:{};`,
+  `const result=q.method==='initialize'?{}:q.method==='resources/list'?{resources:[{uri:'${resourceUri}',name:'Alpha resource'},{uri:'${environmentResourceUri}',name:'Environment boundary'},{uri:'${launderingResourceUri}',name:'Launder fixture'}]}:q.method==='resources/templates/list'?{resourceTemplates:[{uriTemplate:'mcp://fixture/{id}',name:'Fixture template'}]}:q.method==='tools/list'?{tools:[{name:'read_only_status',description:'Read-only status',inputSchema:{type:'object'}}]}:q.method==='resources/read'&&q.params?.uri==='${launderingResourceUri}'?{contents:[{type:'text',uri:'mcp://foreign/resource',text:'laundered payload',mimeType:'text/plain'}]}:q.method==='resources/read'&&q.params?.uri==='${mixedResourceUri}'?{contents:[{type:'text',uri:'${mixedResourceUri}',text:'safe first content',mimeType:'text/plain'},{type:'text',uri:'mcp://foreign/resource',text:'foreign later content',mimeType:'text/plain'}]}:q.method==='resources/read'&&q.params?.uri==='${environmentResourceUri}'?{contents:[{type:'text',uri:'${environmentResourceUri}',text:JSON.stringify({allowed:process.env.${allowedEnvironmentKey}||'',forbidden:process.env.${forbiddenEnvironmentKey}||''}),mimeType:'application/json'}]}:q.method==='resources/read'&&q.params?.uri==='${splitFrameResourceUri}'?{contents:[{type:'text',uri:'${splitFrameResourceUri}',text:'Synthetic split Content-Length evidence.',mimeType:'text/plain'}]}:q.method==='resources/read'&&q.params?.uri==='${reapedResourceUri}'?{contents:[{type:'text',uri:'${reapedResourceUri}',text:'fixture-child-pid:'+process.pid,mimeType:'text/plain'}]}:q.method==='resources/read'?{contents:[{type:'text',uri:'${resourceUri}',text:'Synthetic configured MCP evidence.',mimeType:'text/plain'}]}:{};`,
   `const reaped=q.method==='resources/read'&&q.params?.uri==='${reapedResourceUri}'; if(reaped) { process.on('SIGTERM',()=>{}); setInterval(()=>{},10000); }`,
   "const payload=JSON.stringify({jsonrpc:'2.0',id:q.id,result});",
   `if(q.method==='resources/read'&&q.params?.uri==='${splitFrameResourceUri}') { process.stdout.write('Content-Length: '+Buffer.byteLength(payload)+'\\r\\n'); setTimeout(()=>process.stdout.write('\\r\\n'+payload), 30); } else process.stdout.write(payload+'\\n');`,
@@ -171,6 +172,11 @@ try {
   const laundered = await envelope("read_mcp_resource", { serverIdentityId, resourceUri: launderingResourceUri }, "laundered");
   assert.equal(laundered.status, "blocked");
   assert(laundered.blockerCodes.includes("direct_mcp_resource_result_scope_mismatch"));
+
+  const mixed = await envelope("read_mcp_resource", { serverIdentityId, resourceUri: mixedResourceUri }, "mixed");
+  assert.equal(mixed.status, "blocked");
+  assert(mixed.blockerCodes.includes("direct_mcp_resource_result_scope_mismatch"));
+  assert.doesNotMatch(JSON.stringify(mixed), /foreign later content/);
 
   const ownerRequired = await envelope("read_mcp_resource", { serverIdentityId, resourceUri: ownerResourceUri }, "owner-required");
   assert.equal(ownerRequired.status, "blocked");
