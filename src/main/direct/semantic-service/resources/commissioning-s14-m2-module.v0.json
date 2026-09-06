@@ -1,0 +1,1899 @@
+{
+  "schema": "semantic-contract-module.v0",
+  "module_id": "arcagi.s14-m2-identity-continuity.bc1ed3e.v0",
+  "ontology": {
+    "o_declarations": [
+      "one M2 entity persists only through exact action-conditioned occurrence continuity",
+      "an M1 target claim records public addressing provenance but does not establish identity, control, causation, or utility",
+      "an occurrence binding is an append-only endpoint-evidence node, never a general occurrence-to-entity lookup",
+      "a live endpoint lease grants one bounded semantic join to one exact consumer and no downstream truth"
+    ],
+    "e_observation_bridges": [
+      "M1 owner-issued raster-free lineage receipt binds private derivation to public facts without exporting raster",
+      "M0 owner snapshot plus exact envelope domain witnesses current complete M1/M2 state",
+      "M2 complete-chain reconstruction witnesses genesis, contiguity, uniqueness, and currentness",
+      "independent production/reference differential and source-seal evidence may support but never self-ratify the declaration"
+    ],
+    "forbidden_grants": [
+      "raw raster, coordinate, appearance, action label, or occurrence spelling as M2 identity",
+      "caller-selected subsets, private receipts, process caches, or old snapshots as complete currentness",
+      "lease replay, copy, reconstruction, mutation, wrong-purpose use, wrong-consumer use, or authority after consumption",
+      "M3+ runtime activation, decision authority, utility truth, or task success from this tranche"
+    ]
+  },
+  "project_surface": [
+    {
+      "id": "policy.s14-m2-implementation-contract",
+      "kind": "POLICY",
+      "provenance": "docs/migration/s14_m2_identity_continuity_implementation_contract_v3.md: frozen five-producer lowering and exact authority law"
+    },
+    {
+      "id": "policy.s14-m3-unit-prerequisite",
+      "kind": "POLICY",
+      "provenance": "migration/s14_m3_unit_producer_boundaries_v3.json and specification/s14_m3_unit_prerequisite_v3: ratified source law for S14U3-07E through S14U3-10"
+    },
+    {
+      "id": "policy.s14-m2-law-token-closure",
+      "kind": "POLICY",
+      "provenance": "implementation contract section 10 and implementation report: 63 required and negative law-token occurrences"
+    },
+    {
+      "id": "policy.m1-raster-firewall",
+      "kind": "POLICY",
+      "provenance": "implementation contract section 4 and scripts/check_s14_m2_identity_continuity_firewall.py: raster-private M1 boundary"
+    },
+    {
+      "id": "policy.s14-m2-lease-purpose-consumer-matrix",
+      "kind": "POLICY",
+      "provenance": "implementation contract sections 7.4, 7.5, and 8: exact purpose, consumer, and one-use laws"
+    },
+    {
+      "id": "policy.s14-m2-no-runtime-activation",
+      "kind": "POLICY",
+      "provenance": "implementation contract sections 1 and 11 plus migration/s14_m2_identity_continuity_boundaries_v3.json forbidden_activation_roots"
+    },
+    {
+      "id": "source.m1-static-candidate-batch",
+      "kind": "SOURCE",
+      "provenance": "src/arcagi3_spine/m1/action_evidence.py CandidateBatch static COMPLETE lineage consumed by m2_publish_entity"
+    },
+    {
+      "id": "source.m1-action-conditioned-batch",
+      "kind": "SOURCE",
+      "provenance": "src/arcagi3_spine/m1/action_evidence.py CandidateBatch action-conditioned COMPLETE lineage consumed by binding and spatial lease producers"
+    },
+    {
+      "id": "source.m1-action-conditioned-event-group",
+      "kind": "SOURCE",
+      "provenance": "src/arcagi3_spine/m1/action_evidence.py ActionConditionedEventGroup consumed by target-claim and causal lease producers"
+    },
+    {
+      "id": "source.m1-identity-lineage-receipt",
+      "kind": "SOURCE",
+      "provenance": "src/arcagi3_spine/m1/action_evidence.py M1IdentityLineageReceipt and _issue_identity_lineage_receipt"
+    },
+    {
+      "id": "source.m0-m1-owner-snapshot",
+      "kind": "SOURCE",
+      "provenance": "M0 OwnerSnapshotScope for the exact M1 owner at one semantic revision and snapshot digest"
+    },
+    {
+      "id": "source.m0-m2-owner-snapshot",
+      "kind": "SOURCE",
+      "provenance": "M0 OwnerSnapshotScope for the exact M2 owner at one semantic revision and snapshot digest"
+    },
+    {
+      "id": "source.m0-canonical-fact-envelopes",
+      "kind": "SOURCE",
+      "provenance": "M0 canonical fact envelopes whose exact ordered domain and payload digests witness M1/M2 currentness"
+    },
+    {
+      "id": "clock.m0-semantic-revision",
+      "kind": "CLOCK",
+      "provenance": "M0 SemanticRevisionId and OwnerSnapshotScope parent_revision establish the currentness boundary"
+    },
+    {
+      "id": "clock.m1-event-interval-order",
+      "kind": "CLOCK",
+      "provenance": "src/arcagi3_spine/m1/action_evidence.py ExecutionIntervalValue interval and ordinal plus stop/first contiguity"
+    },
+    {
+      "id": "clock.m1-observation-endpoint-order",
+      "kind": "CLOCK",
+      "provenance": "ActionEventValue before/after observations and CandidateOccurrenceId endpoints define directed continuity"
+    },
+    {
+      "id": "clock.process-runtime-identity",
+      "kind": "CLOCK",
+      "provenance": "process authority serials, Python object identity, weak-reference lifetime, and wall time are observable implementation clocks without semantic authority"
+    },
+    {
+      "id": "object.m1-action-target-claim",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "src/arcagi3_spine/m1/action_evidence.py ActionTargetClaimValue/ActionTargetClaimPayload, fact type m1-action-target-claim"
+    },
+    {
+      "id": "object.m2-entity",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "src/arcagi3_spine/m2 entities authority reused by m2_publish_entity"
+    },
+    {
+      "id": "object.m2-qualitative-kind",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "conserved M2 appearance and shape qualitative-kind companion facts"
+    },
+    {
+      "id": "object.m2-genesis-worldline",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "conserved M2 GENESIS worldline companion fact reconstructing canonical entity genesis"
+    },
+    {
+      "id": "object.m2-occurrence-binding",
+      "kind": "PERSISTED_OBJECT",
+      "provenance": "src/arcagi3_spine/m2/identity_continuity.py OccurrenceBindingValue/OccurrenceBindingPayload, fact type m2-occurrence-binding"
+    },
+    {
+      "id": "interface.m0-owner-snapshot-scope",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "M0-issued OwnerSnapshotScope plus exact canonical envelope domain crossing into M1/M2 validation"
+    },
+    {
+      "id": "interface.m1-raster-private-lineage-port",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "unconstructible M1IdentityLineageReceipt validation contact exported to the bound M2 authority"
+    },
+    {
+      "id": "operation.m2-publish-entity",
+      "kind": "OPERATION",
+      "provenance": "src/arcagi3_spine/m2/identity_continuity.py m2_publish_entity"
+    },
+    {
+      "id": "operation.m1-publish-action-target-claim",
+      "kind": "OPERATION",
+      "provenance": "src/arcagi3_spine/m1/action_evidence.py m1_publish_action_target_claim"
+    },
+    {
+      "id": "operation.m2-publish-occurrence-binding",
+      "kind": "OPERATION",
+      "provenance": "src/arcagi3_spine/m2/identity_continuity.py m2_publish_occurrence_binding"
+    },
+    {
+      "id": "operation.m2-issue-causal-entity-binding-lease",
+      "kind": "OPERATION",
+      "provenance": "src/arcagi3_spine/m2/identity_continuity.py m2_issue_causal_entity_binding_lease"
+    },
+    {
+      "id": "operation.m2-issue-spatial-entity-binding-lease",
+      "kind": "OPERATION",
+      "provenance": "src/arcagi3_spine/m2/identity_continuity.py m2_issue_spatial_entity_binding_lease"
+    },
+    {
+      "id": "operation.consume-causal-entity-binding-lease",
+      "kind": "OPERATION",
+      "provenance": "src/arcagi3_spine/m2/ports.py consume_causal_entity_binding_lease(s) S14 freshness and atomic burn path"
+    },
+    {
+      "id": "operation.consume-spatial-entity-binding-lease",
+      "kind": "OPERATION",
+      "provenance": "src/arcagi3_spine/m2/ports.py consume_spatial_entity_binding_lease(s) S14 freshness and atomic burn path"
+    },
+    {
+      "id": "operation.m0-commit-owner-transaction",
+      "kind": "OPERATION",
+      "provenance": "M0 validates exact current dependencies and atomically commits M1/M2 owner transactions"
+    },
+    {
+      "id": "operation.issue-m2-identity-authority",
+      "kind": "OPERATION",
+      "provenance": "src/arcagi3_spine/m2/ports.py issue_m2_authority(action_evidence_authority=...) and identity_continuity.py _bind_m1_authority"
+    },
+    {
+      "id": "consumer.m4-control-binding",
+      "kind": "CONSUMER",
+      "provenance": "future m4_publish_control_binding is the only CONTROL_SUBJECT lease consumer; not activated in this tranche"
+    },
+    {
+      "id": "consumer.m4-kinetic-law",
+      "kind": "CONSUMER",
+      "provenance": "future m4_publish_kinetic_law is the only KINETIC_PARTICIPANT lease consumer; not activated in this tranche"
+    },
+    {
+      "id": "consumer.m3-grid-conformance",
+      "kind": "CONSUMER",
+      "provenance": "future m3_publish_grid_conformance is the only GRID_CONFORMANCE lease consumer; not activated in this tranche"
+    },
+    {
+      "id": "consumer.m3-body-pose-family",
+      "kind": "CONSUMER",
+      "provenance": "future m3_publish_initial_body_pose and m3_revise_body_pose form the BODY_POSE consumer family; not activated in this tranche"
+    },
+    {
+      "id": "grant.m0-canonical-fact-authority",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "M0 sole authority for fact identity, version, scope, standing, dependency, currentness, and commit"
+    },
+    {
+      "id": "grant.m1-action-evidence-authority",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "M1ActionEvidenceAuthority and exact bound registry own candidate/event/target-claim lineage"
+    },
+    {
+      "id": "grant.m2-identity-continuity-authority",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "M2Authority bound to the exact M1 authority owns entity, occurrence-chain, and lease decisions"
+    },
+    {
+      "id": "grant.m2-causal-entity-binding-lease",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "owner-issued sealed CausalEntityBindingLease with exact purpose, consumer, and one remaining use"
+    },
+    {
+      "id": "grant.m2-spatial-entity-binding-lease",
+      "kind": "AUTHORITY_GRANT",
+      "provenance": "owner-issued sealed SpatialEntityBindingLease with exact purpose, consumer family, and one remaining use"
+    },
+    {
+      "id": "mutation.m0-fact-commit",
+      "kind": "MUTATION_PATH",
+      "provenance": "M0 atomic transition from proposal to canonical current M1/M2 facts"
+    },
+    {
+      "id": "mutation.m2-occurrence-chain-append",
+      "kind": "MUTATION_PATH",
+      "provenance": "new deterministic append-only occurrence-binding node plus replay/fork/cycle/stale-ancestor checks"
+    },
+    {
+      "id": "mutation.m2-lease-registry-and-consumption",
+      "kind": "MUTATION_PATH",
+      "provenance": "M2 locked semantic-basis/seal registries and atomic one-to-zero use transition"
+    },
+    {
+      "id": "mutation.m1-m2-currentness-invalidation",
+      "kind": "MUTATION_PATH",
+      "provenance": "M0 revision, standing, dependency, or owner-scope change invalidates chain and lease authority"
+    },
+    {
+      "id": "mutation.owner-private-proof-staging",
+      "kind": "MUTATION_PATH",
+      "provenance": "weak lineage-receipt and target-group seals plus issued remand receipts may be staged without M0 fact authority"
+    },
+    {
+      "id": "interface.s14-m2-public-package-abi",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "src/arcagi3_spine/m1/__init__.py and src/arcagi3_spine/m2/__init__.py public exports for the new facts, producers, authority binding, and leases"
+    },
+    {
+      "id": "interface.s14-semantic-abi-registry",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "specification/s14_semantic_abi/semantic_abi.json must reconcile the five producer operations and two new public fact families"
+    },
+    {
+      "id": "interface.raw-raster-evidence",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "frames, pixels, masks, colors, signatures, boxes, centroids, coordinates, and calibration remain M1-private"
+    },
+    {
+      "id": "interface.downstream-runtime-activation",
+      "kind": "EXTERNAL_INTERFACE",
+      "provenance": "M3+ producers, robot loop, and downstream consumer routing forbidden by tranche boundary"
+    },
+    {
+      "id": "mutation.legacy-process-local-occurrence-map",
+      "kind": "MUTATION_PATH",
+      "provenance": "legacy process-local _OCCURRENCES and optional caches/counters explicitly lack S14 authority"
+    },
+    {
+      "id": "source.reference-model-production-import",
+      "kind": "SOURCE",
+      "provenance": "ratified reference_model.py is a verification oracle and is forbidden as a production import"
+    },
+    {
+      "id": "policy.legacy-lease-purposes",
+      "kind": "POLICY",
+      "provenance": "non-S14 values in conserved causal/spatial purpose enums remain lawful only for unchanged legacy ports"
+    }
+  ],
+  "exclusions": [
+    {
+      "id": "exclude.raw-raster-above-m1",
+      "surface_id": "interface.raw-raster-evidence",
+      "owner": "M1 raster-evidence owner",
+      "theorem": "S14 M2 receives only opaque M1 identifiers, exact fact references, and an unconstructible raster-free lineage receipt; raw raster vocabulary cannot become M2 identity or lease authority."
+    },
+    {
+      "id": "exclude.downstream-activation",
+      "surface_id": "interface.downstream-runtime-activation",
+      "owner": "S14 tranche owner",
+      "theorem": "This tranche makes five producers callable but routes no result into M3+, M4+, or the robot loop; downstream activation requires a separately ratified contract."
+    },
+    {
+      "id": "exclude.process-local-occurrence-authority",
+      "surface_id": "mutation.legacy-process-local-occurrence-map",
+      "owner": "M2 identity owner",
+      "theorem": "Process-local occurrence maps, caches, and counters are optional accelerators only; canonical M0 rows and complete owner snapshots reconstruct every authoritative identity and chain after restart."
+    },
+    {
+      "id": "exclude.reference-production-import",
+      "surface_id": "source.reference-model-production-import",
+      "owner": "S14 verification owner",
+      "theorem": "The ratified reference model may independently verify the lowering but cannot execute on a production authority path or supply production state."
+    },
+    {
+      "id": "exclude.legacy-purpose-entry",
+      "surface_id": "policy.legacy-lease-purposes",
+      "owner": "M2 legacy-port owners",
+      "theorem": "Conserved non-S14 purpose values remain valid for their existing ports but cannot enter any S14 issuance path or authorize an S14 consumer."
+    },
+    {
+      "id": "exclude.owner-private-proof-storage",
+      "surface_id": "mutation.owner-private-proof-staging",
+      "owner": "M1 and M2 proof owners",
+      "theorem": "Weak receipts, target-group seals, and denial receipts may preserve exact source relations or typed failure only; they cannot substitute for M0 currentness, survive as canonical fact authority, or mutate entitlement on a failed path."
+    },
+    {
+      "id": "exclude.nonsemantic-process-clocks",
+      "surface_id": "clock.process-runtime-identity",
+      "owner": "M1 and M2 runtime owners",
+      "theorem": "Process serials, Python object IDs, weak-reference lifetimes, and wall timings may support in-process sealing or cleanup but never determine canonical semantic identity, currentness, replay equivalence, or entitlement."
+    }
+  ],
+  "carriers": [
+    {
+      "id": "e.m1-identity-lineage-receipt",
+      "carrier_lane": "E",
+      "claim_target": "O",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "one owner-issued raster-free receipt binds the exact live M1 carrier object, digest, semantic scope, phase, batch/event/interface lineage, endpoint states, opaque support, basis, and completeness posture",
+        "non_claims": [
+          "M2 entity identity",
+          "current M0 standing",
+          "raw raster export",
+          "independent semantic conclusion"
+        ]
+      },
+      "authority": {
+        "owner": "M1 action-evidence owner",
+        "root": "exact bound M1ActionEvidenceAuthority and owner-private lineage seal"
+      },
+      "identity": {
+        "stable_fields": [
+          "exact source carrier object identity",
+          "source carrier digest",
+          "semantic scope",
+          "batch or event-group identity"
+        ],
+        "generation_fields": [
+          "M1 authority identity",
+          "event fact version",
+          "observation fact versions",
+          "partition-basis fact version",
+          "lineage seal"
+        ],
+        "alias_law": "copy-equal, reconstructed, mutated, cross-authority, or carrier-substituted receipts never alias the issued receipt"
+      },
+      "scope": {
+        "closure_kind": "EVENT_INTERVAL",
+        "membership_predicate": "all and only public M1 facts and opaque endpoint support required by the exact sealed carrier lineage",
+        "population_owner": "M1 action-evidence owner"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "M1 evidence occurrence",
+          "receipt issuance",
+          "M0 snapshot validation"
+        ],
+        "relations": [
+          "evidence occurrence <= receipt issuance <= currentness validation"
+        ]
+      },
+      "persistence": "BOUNDARY_LOCAL",
+      "lifecycle": {
+        "states": [
+          "ISSUED",
+          "VALIDATED",
+          "REJECTED",
+          "EXPIRED"
+        ],
+        "initial_state": "ISSUED",
+        "events": [
+          "VALIDATE",
+          "SUBSTITUTE",
+          "COPY",
+          "MUTATE",
+          "AUTHORITY_CHANGE",
+          "SOURCE_CHANGE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "grant.m1-action-evidence-authority",
+          "grant.m0-canonical-fact-authority"
+        ],
+        "mutable": true,
+        "reverse_impact": "DIRECT"
+      },
+      "composition": {
+        "input_families": [
+          "M1 sealed carrier identity",
+          "M1 public fact lineage",
+          "opaque endpoint evidence",
+          "M1 owner authority"
+        ],
+        "join_relations": [
+          "same exact carrier object",
+          "same semantic scope",
+          "same event and endpoint lineage",
+          "raster-free projection"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "ISSUED",
+          "VALIDATED"
+        ]
+      },
+      "surface_refs": [
+        "source.m1-static-candidate-batch",
+        "source.m1-action-conditioned-batch",
+        "source.m1-action-conditioned-event-group",
+        "source.m1-identity-lineage-receipt",
+        "interface.m1-raster-private-lineage-port",
+        "grant.m1-action-evidence-authority",
+        "policy.m1-raster-firewall"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.m1-m2-authority-binding",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "one issued M2 authority is bound to the exact owner-issued M1 action-evidence authority from the same canonical registry generation",
+        "non_claims": [
+          "M0 fact commit authority",
+          "semantic correctness of any M1 carrier",
+          "authority across another registry",
+          "downstream consumer activation"
+        ]
+      },
+      "authority": {
+        "owner": "M2 authority issuer",
+        "root": "issue_m2_authority with exact M1ActionEvidenceAuthority validation and owner-private authority binding"
+      },
+      "identity": {
+        "stable_fields": [
+          "M1 authority object identity",
+          "M1 registry generation",
+          "M2 owner module"
+        ],
+        "generation_fields": [
+          "M2 authority identity",
+          "M2 registry generation",
+          "authority issuance seal"
+        ],
+        "alias_law": "an M1 authority from another registry, a reconstructed object, an unissued M2 authority, or a missing owner-private binding cannot alias the issued authority pair"
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact M1 authority is bound to one issued M2 authority for the active registry generation",
+        "population_owner": "M2 authority issuer"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "M1 authority issuance",
+          "M2 authority issuance",
+          "producer invocation"
+        ],
+        "relations": [
+          "M1 authority issuance <= M2 binding < producer invocation"
+        ]
+      },
+      "persistence": "BOUNDARY_LOCAL",
+      "lifecycle": {
+        "states": [
+          "ISSUED",
+          "REVOKED",
+          "REJECTED"
+        ],
+        "initial_state": "ISSUED",
+        "events": [
+          "ISSUE",
+          "VALIDATE",
+          "REGISTRY_CHANGE",
+          "SUBSTITUTE",
+          "REVOKE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "grant.m1-action-evidence-authority",
+          "grant.m2-identity-continuity-authority"
+        ],
+        "mutable": true,
+        "reverse_impact": "DIRECT"
+      },
+      "composition": {
+        "input_families": [
+          "issued M1 action-evidence authority",
+          "canonical registry generation",
+          "M2 authority issuance"
+        ],
+        "join_relations": [
+          "same registry generation",
+          "exact authority object identity",
+          "exclusive M2 owner binding"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "ISSUED"
+        ]
+      },
+      "surface_refs": [
+        "operation.issue-m2-identity-authority",
+        "grant.m1-action-evidence-authority",
+        "grant.m2-identity-continuity-authority",
+        "interface.s14-m2-public-package-abi",
+        "interface.s14-semantic-abi-registry",
+        "policy.s14-m2-no-runtime-activation"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.m0-owner-snapshot-currentness",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "UNIVERSAL",
+        "predicate": "one M0-issued owner scope and its exact canonical envelope domain completely enumerate the current eligible M1 or M2 facts for one scope, owner, parent revision, and snapshot digest",
+        "non_claims": [
+          "future currentness",
+          "caller-selected subset completeness",
+          "domain truth outside the named owner",
+          "semantic correctness of payloads"
+        ]
+      },
+      "authority": {
+        "owner": "M0",
+        "root": "M0 OwnerSnapshotScope seal, canonical row ordering, payload digests, and semantic revision authority"
+      },
+      "identity": {
+        "stable_fields": [
+          "semantic scope",
+          "owner module"
+        ],
+        "generation_fields": [
+          "parent semantic revision",
+          "snapshot digest",
+          "ordered fact-version domain",
+          "envelope payload digests"
+        ],
+        "alias_law": "a scope from another owner, revision, digest, row order, or incomplete envelope domain cannot alias the current owner scope"
+      },
+      "scope": {
+        "closure_kind": "SNAPSHOT_ENUMERATION",
+        "membership_predicate": "all and only canonical current eligible fact envelopes in the named M1 or M2 owner domain",
+        "population_owner": "M0"
+      },
+      "time": {
+        "mode": "SNAPSHOT",
+        "roles": [
+          "parent semantic revision",
+          "scope issuance",
+          "producer or consumer validation"
+        ],
+        "relations": [
+          "scope.parent_revision == transaction.parent_revision",
+          "issuance snapshot must be current at validation"
+        ]
+      },
+      "persistence": "BOUNDARY_LOCAL",
+      "lifecycle": {
+        "states": [
+          "ISSUED",
+          "VALIDATED",
+          "STALE",
+          "REJECTED"
+        ],
+        "initial_state": "ISSUED",
+        "events": [
+          "VALIDATE",
+          "COMMIT",
+          "STANDING_CHANGE",
+          "DEPENDENCY_CHANGE",
+          "OWNER_CHANGE",
+          "REPLAY"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "grant.m0-canonical-fact-authority"
+        ],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "OwnerSnapshotScope",
+          "canonical fact envelope domain",
+          "standing and dependency closure"
+        ],
+        "join_relations": [
+          "same owner",
+          "same scope",
+          "same parent revision",
+          "same snapshot digest",
+          "exact ordered domain"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "ISSUED",
+          "VALIDATED"
+        ]
+      },
+      "surface_refs": [
+        "source.m0-m1-owner-snapshot",
+        "source.m0-m2-owner-snapshot",
+        "source.m0-canonical-fact-envelopes",
+        "clock.m0-semantic-revision",
+        "interface.m0-owner-snapshot-scope",
+        "grant.m0-canonical-fact-authority",
+        "mutation.m1-m2-currentness-invalidation"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.m1-action-target-claim",
+      "carrier_lane": "E",
+      "claim_target": "O",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "the exact complete sealed action-conditioned event group publicly addressed one opaque action-target label at the event AFTER occurrence",
+        "non_claims": [
+          "M2 entity identity",
+          "control subject",
+          "causation",
+          "grid locus",
+          "predecessor selection"
+        ]
+      },
+      "authority": {
+        "owner": "M1",
+        "root": "M1 target-claim fact declaration, exact event-group lineage, and M0 atomic fact commit"
+      },
+      "identity": {
+        "stable_fields": [
+          "event-group digest",
+          "event fact version",
+          "action kind",
+          "opaque subject key",
+          "target AFTER occurrence"
+        ],
+        "generation_fields": [
+          "action-interface version",
+          "current dependency versions",
+          "M0 fact version"
+        ],
+        "alias_law": "a changed group, event, action kind, subject key, endpoint, or dependency receives no alias or revision of the existing claim object"
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "exactly one target row for one complete event group and its AFTER endpoint",
+        "population_owner": "M1"
+      },
+      "time": {
+        "mode": "EVENT_TIME",
+        "roles": [
+          "event before endpoint",
+          "event after endpoint",
+          "claim commit"
+        ],
+        "relations": [
+          "before < target AFTER <= claim commit"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "CANDIDATE",
+          "SUPPORTED",
+          "CONTRADICTED",
+          "RETIRED"
+        ],
+        "initial_state": "CANDIDATE",
+        "events": [
+          "PROPOSE",
+          "COMMIT",
+          "REPLAY",
+          "DEPENDENCY_CHANGE",
+          "CONTRADICT",
+          "RETIRE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.m1-identity-lineage-receipt",
+          "grant.m1-action-evidence-authority",
+          "grant.m0-canonical-fact-authority"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "sealed event group",
+          "current M1 action event",
+          "current action interface",
+          "one target row"
+        ],
+        "join_relations": [
+          "same event lineage",
+          "target equals exact AFTER occurrence",
+          "subject key equals bound public label",
+          "same scope"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "CANDIDATE",
+          "SUPPORTED"
+        ]
+      },
+      "surface_refs": [
+        "object.m1-action-target-claim",
+        "source.m1-action-conditioned-event-group",
+        "grant.m1-action-evidence-authority",
+        "operation.m0-commit-owner-transaction",
+        "mutation.m0-fact-commit"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.m2-entity",
+      "carrier_lane": "E",
+      "claim_target": "O",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "one canonical M2 entity identity is established or exactly reused from an exact static M1 genesis proof with deterministic qualitative-kind companions and one GENESIS worldline",
+        "non_claims": [
+          "identity from action-target label",
+          "identity from occurrence spelling",
+          "raw raster identity",
+          "worldline continuation beyond genesis",
+          "downstream activation"
+        ]
+      },
+      "authority": {
+        "owner": "M2",
+        "root": "M2 entity/worldline/kind owners under M0 canonical fact commit"
+      },
+      "identity": {
+        "stable_fields": [
+          "semantic scope",
+          "exact M1 genesis observation",
+          "partition basis",
+          "motion witness",
+          "before support refs"
+        ],
+        "generation_fields": [
+          "entity fact version",
+          "qualitative-kind versions",
+          "GENESIS worldline version",
+          "current M1 dependency versions"
+        ],
+        "alias_law": "label equality, equal appearance, process counters, disconnected mover evidence, or malformed companion histories cannot alias one entity genesis"
+      },
+      "scope": {
+        "closure_kind": "FAMILY_INDEX",
+        "membership_predicate": "one entity with exactly one OBJECT payload, one current APPEARANCE kind, one current SHAPE kind, and one current GENESIS worldline in the complete M2 owner domain",
+        "population_owner": "M2"
+      },
+      "time": {
+        "mode": "EVENT_TIME",
+        "roles": [
+          "genesis before observation",
+          "genesis event",
+          "entity commit"
+        ],
+        "relations": [
+          "genesis before observation <= genesis event < entity commit"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "CANDIDATE",
+          "SUPPORTED",
+          "WEAKENED",
+          "CONTRADICTED",
+          "RETIRED"
+        ],
+        "initial_state": "CANDIDATE",
+        "events": [
+          "PROPOSE",
+          "COMMIT",
+          "EXACT_REPLAY",
+          "CONTINUE",
+          "DEPENDENCY_CHANGE",
+          "CONTRADICT",
+          "RETIRE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.m1-identity-lineage-receipt",
+          "e.m0-owner-snapshot-currentness",
+          "grant.m2-identity-continuity-authority",
+          "grant.m0-canonical-fact-authority"
+        ],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "static M1 candidate lineage",
+          "current M2 entity domain",
+          "qualitative-kind companions",
+          "GENESIS worldline"
+        ],
+        "join_relations": [
+          "same exact genesis proof",
+          "same semantic scope",
+          "deterministic stable basis",
+          "complete current companion set"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "CANDIDATE",
+          "SUPPORTED"
+        ]
+      },
+      "surface_refs": [
+        "object.m2-entity",
+        "source.m1-static-candidate-batch",
+        "grant.m2-identity-continuity-authority",
+        "operation.m0-commit-owner-transaction",
+        "mutation.m0-fact-commit"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.m2-qualitative-kind",
+      "carrier_lane": "E",
+      "claim_target": "O",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "one canonical M2 APPEARANCE or SHAPE qualitative kind represents the exact opaque M1 genesis pattern domain without exporting its private signature",
+        "non_claims": [
+          "raw appearance signature",
+          "physical coordinate or shape geometry",
+          "entity identity by itself",
+          "behavior or role"
+        ]
+      },
+      "authority": {
+        "owner": "M2",
+        "root": "conserved M2 qualitative-kind declaration and M0 canonical fact commit"
+      },
+      "identity": {
+        "stable_fields": [
+          "semantic scope",
+          "qualitative-kind domain",
+          "private opaque M1 pattern signature"
+        ],
+        "generation_fields": [
+          "qualitative-kind fact version",
+          "standing generation",
+          "exact genesis dependency closure"
+        ],
+        "alias_law": "a public domain label cannot alias a private signature; reuse requires the exact deterministic stable key and current canonical dependency history"
+      },
+      "scope": {
+        "closure_kind": "FAMILY_INDEX",
+        "membership_predicate": "all and only current APPEARANCE or SHAPE kinds required by the exact entity genesis within the complete M2 owner scope",
+        "population_owner": "M2"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "M1 genesis evidence",
+          "kind proposal",
+          "entity genesis commit"
+        ],
+        "relations": [
+          "genesis evidence <= kind proposal == entity genesis transaction boundary"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "CANDIDATE",
+          "SUPPORTED",
+          "WEAKENED",
+          "CONTRADICTED",
+          "RETIRED"
+        ],
+        "initial_state": "CANDIDATE",
+        "events": [
+          "PROPOSE",
+          "COMMIT",
+          "EXACT_REPLAY",
+          "DEPENDENCY_CHANGE",
+          "CONTRADICT",
+          "RETIRE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.m1-identity-lineage-receipt",
+          "e.m0-owner-snapshot-currentness",
+          "grant.m2-identity-continuity-authority"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "opaque M1 appearance or shape pattern",
+          "exact entity genesis closure"
+        ],
+        "join_relations": [
+          "domain matches the pattern family",
+          "same genesis scope and evidence",
+          "deterministic private signature projection"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "CANDIDATE",
+          "SUPPORTED"
+        ]
+      },
+      "surface_refs": [
+        "object.m2-qualitative-kind",
+        "source.m1-static-candidate-batch",
+        "grant.m2-identity-continuity-authority",
+        "operation.m0-commit-owner-transaction",
+        "mutation.m0-fact-commit"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.m2-genesis-worldline",
+      "carrier_lane": "E",
+      "claim_target": "O",
+      "claim": {
+        "kind": "POSITIVE",
+        "predicate": "one canonical M2 worldline records the exact entity as VISIBLE with GENESIS continuity at its M1 before observation",
+        "non_claims": [
+          "worldline continuation after genesis",
+          "current visibility at another event",
+          "identity from occurrence spelling",
+          "occurrence-binding revision authority"
+        ]
+      },
+      "authority": {
+        "owner": "M2",
+        "root": "conserved M2 worldline declaration and M0 canonical fact commit"
+      },
+      "identity": {
+        "stable_fields": [
+          "semantic scope",
+          "entity stable fact key",
+          "genesis before observation",
+          "GENESIS continuity"
+        ],
+        "generation_fields": [
+          "worldline fact version",
+          "entity fact version",
+          "standing generation",
+          "exact genesis dependency closure"
+        ],
+        "alias_law": "each entity has exactly one canonical GENESIS worldline basis; changed entity, observation, continuity, payload, or dependency history cannot alias it"
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "exactly one current VISIBLE/GENESIS worldline companion for the new entity in the complete M2 owner scope",
+        "population_owner": "M2"
+      },
+      "time": {
+        "mode": "EVENT_TIME",
+        "roles": [
+          "genesis before observation",
+          "entity genesis transaction",
+          "worldline commit"
+        ],
+        "relations": [
+          "genesis before observation < entity and worldline atomic commit"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "CANDIDATE",
+          "SUPPORTED",
+          "WEAKENED",
+          "CONTRADICTED",
+          "RETIRED"
+        ],
+        "initial_state": "CANDIDATE",
+        "events": [
+          "PROPOSE",
+          "COMMIT",
+          "EXACT_REPLAY",
+          "DEPENDENCY_CHANGE",
+          "CONTRADICT",
+          "RETIRE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.m1-identity-lineage-receipt",
+          "e.m2-entity",
+          "grant.m2-identity-continuity-authority"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "canonical new entity",
+          "exact genesis before observation",
+          "exact genesis dependency closure"
+        ],
+        "join_relations": [
+          "worldline entity equals the new entity",
+          "worldline observation equals the genesis BEFORE observation",
+          "same atomic owner transaction"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "CANDIDATE",
+          "SUPPORTED"
+        ]
+      },
+      "surface_refs": [
+        "object.m2-genesis-worldline",
+        "object.m2-entity",
+        "source.m1-static-candidate-batch",
+        "grant.m2-identity-continuity-authority",
+        "operation.m0-commit-owner-transaction",
+        "mutation.m0-fact-commit"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.m2-occurrence-binding",
+      "carrier_lane": "E",
+      "claim_target": "O",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "one append-only canonical M2 fact binds an exact current entity to one exact reconstructed event endpoint and explicit predecessor without deriving identity from its occurrence token or optional target claim",
+        "non_claims": [
+          "general occurrence-to-entity lookup",
+          "identity from public label",
+          "worldline revision",
+          "lease authority by itself",
+          "raw raster export"
+        ]
+      },
+      "authority": {
+        "owner": "M2",
+        "root": "M2 occurrence-binding declaration, exact M1/M2 lineage validation, and M0 atomic fact commit"
+      },
+      "identity": {
+        "stable_fields": [
+          "candidate-batch identity and digest",
+          "entity fact version",
+          "event fact version",
+          "occurrence",
+          "endpoint role and evidence",
+          "optional target-claim version",
+          "predecessor-binding version"
+        ],
+        "generation_fields": [
+          "observation version",
+          "partition-basis version",
+          "support refs",
+          "current dependency closure",
+          "M0 fact version"
+        ],
+        "alias_law": "partial stable-basis collisions, changed semantics, another entity, another endpoint, or a revised predecessor never alias an exact binding replay"
+      },
+      "scope": {
+        "closure_kind": "HISTORICAL_MEMBERSHIP",
+        "membership_predicate": "one append-only node in the complete same-scope canonical binding history; every endpoint occurrence belongs to at most one stable entity",
+        "population_owner": "M2"
+      },
+      "time": {
+        "mode": "EVENT_TIME",
+        "roles": [
+          "predecessor endpoint",
+          "current event endpoint",
+          "binding commit"
+        ],
+        "relations": [
+          "same-event BEFORE < AFTER",
+          "contiguous-event AFTER == next BEFORE boundary",
+          "predecessor endpoint < binding commit"
+        ]
+      },
+      "persistence": "DURABLE",
+      "lifecycle": {
+        "states": [
+          "CANDIDATE",
+          "SUPPORTED",
+          "INVALIDATED",
+          "RETIRED"
+        ],
+        "initial_state": "CANDIDATE",
+        "events": [
+          "PROPOSE",
+          "COMMIT",
+          "EXACT_REPLAY",
+          "APPEND_SUCCESSOR",
+          "DEPENDENCY_CHANGE",
+          "ANCESTOR_CHANGE",
+          "REVISE_ATTEMPT",
+          "RETIRE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.m1-identity-lineage-receipt",
+          "e.m0-owner-snapshot-currentness",
+          "e.m2-entity",
+          "e.m1-action-target-claim",
+          "grant.m2-identity-continuity-authority"
+        ],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "action-conditioned M1 batch",
+          "current entity",
+          "reconstructed endpoint state",
+          "optional M1 target claim",
+          "predecessor binding",
+          "complete owner snapshot"
+        ],
+        "join_relations": [
+          "same scope and snapshot",
+          "exact event/batch lineage",
+          "allowed-next-endpoint",
+          "exact predecessor",
+          "unique occurrence entity"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "CANDIDATE",
+          "SUPPORTED"
+        ]
+      },
+      "surface_refs": [
+        "object.m2-occurrence-binding",
+        "source.m1-action-conditioned-batch",
+        "clock.m1-observation-endpoint-order",
+        "grant.m2-identity-continuity-authority",
+        "mutation.m2-occurrence-chain-append",
+        "operation.m0-commit-owner-transaction"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.m2-current-occurrence-chain",
+      "carrier_lane": "E",
+      "claim_target": "O",
+      "claim": {
+        "kind": "UNIVERSAL",
+        "predicate": "all and only canonical current occurrence bindings for one entity form one nonempty root-to-head chain with exact genesis, no repeats, no branch, no cycle, no gap, no stale ancestor, and one allowed next endpoint",
+        "non_claims": [
+          "future continuation",
+          "identity from appearance or label",
+          "caller-selected subset completeness",
+          "broad public reverse lookup"
+        ]
+      },
+      "authority": {
+        "owner": "M2",
+        "root": "complete M0-issued M2 owner scope plus canonical per-node reconstruction and least-fixed-point topology validation"
+      },
+      "identity": {
+        "stable_fields": [
+          "semantic scope",
+          "stable entity identity"
+        ],
+        "generation_fields": [
+          "M2 owner-snapshot digest",
+          "ordered binding fact versions and endpoint states",
+          "chain head",
+          "current dependency closure"
+        ],
+        "alias_law": "a subset, reordered domain, missing committed node, branch, cycle, stale ancestor, different head, or different snapshot is another chain generation"
+      },
+      "scope": {
+        "closure_kind": "SNAPSHOT_ENUMERATION",
+        "membership_predicate": "complete canonical current M2 owner scope projected to every binding for the exact stable entity, including committed nodes named by another row",
+        "population_owner": "M2"
+      },
+      "time": {
+        "mode": "SNAPSHOT",
+        "roles": [
+          "genesis endpoint",
+          "ordered event endpoints",
+          "snapshot revision",
+          "lease evaluation"
+        ],
+        "relations": [
+          "genesis <= each predecessor < successor <= chain head",
+          "snapshot current at evaluation"
+        ]
+      },
+      "persistence": "BOUNDARY_LOCAL",
+      "lifecycle": {
+        "states": [
+          "VALID",
+          "INVALID",
+          "STALE",
+          "REMANDED"
+        ],
+        "initial_state": "VALID",
+        "events": [
+          "RECONSTRUCT",
+          "APPEND",
+          "REPLAY",
+          "BRANCH",
+          "CYCLE",
+          "ANCESTOR_CHANGE",
+          "SCOPE_CHANGE",
+          "REMAND"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.m0-owner-snapshot-currentness",
+          "e.m2-entity",
+          "e.m2-occurrence-binding"
+        ],
+        "mutable": true,
+        "reverse_impact": "SCOPE_AND_FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "canonical entity genesis",
+          "complete binding-node family",
+          "current M1 event dependencies",
+          "M0 owner snapshot"
+        ],
+        "join_relations": [
+          "exact genesis root",
+          "CAN_PRECEDE for every edge",
+          "one root and one head",
+          "complete current transitive closure"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "VALID"
+        ]
+      },
+      "surface_refs": [
+        "object.m2-occurrence-binding",
+        "source.m0-m2-owner-snapshot",
+        "source.m0-canonical-fact-envelopes",
+        "clock.m1-event-interval-order",
+        "clock.m1-observation-endpoint-order",
+        "mutation.m2-occurrence-chain-append",
+        "mutation.m1-m2-currentness-invalidation"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.m2-causal-entity-binding-lease",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "one exact M2-issued sealed one-use causal lease authorizes only its exact event-group endpoint, current entity chain, exact purpose, and named M4 consumer",
+        "non_claims": [
+          "causation truth",
+          "control truth",
+          "general M4 authority",
+          "identity minting",
+          "authority after one successful consume"
+        ]
+      },
+      "authority": {
+        "owner": "M2",
+        "root": "M2 private causal lease seal, semantic-basis registry, exact purpose/consumer matrix, and fresh M1/M2 owner scopes"
+      },
+      "identity": {
+        "stable_fields": [
+          "M2 authority identity",
+          "source event-group object and digest",
+          "occurrence-binding version",
+          "chain digest",
+          "entity version",
+          "event endpoint",
+          "semantic scope",
+          "purpose",
+          "authorized consumer"
+        ],
+        "generation_fields": [
+          "issuance snapshot digest",
+          "fresh consume snapshot digest",
+          "one remaining use",
+          "private seal"
+        ],
+        "alias_law": "copy, reconstruction, mutation, another authority, purpose, consumer, source, endpoint, chain, or replay cannot alias the owner-issued live lease"
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact causal semantic basis may have at most one issued or consumed lease",
+        "population_owner": "M2"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "issuance snapshot",
+          "consumer transaction snapshot",
+          "consume transition"
+        ],
+        "relations": [
+          "issuance snapshot <= fresh consume snapshot",
+          "successful consume changes uses 1 -> 0 atomically"
+        ]
+      },
+      "persistence": "EPHEMERAL",
+      "lifecycle": {
+        "states": [
+          "ISSUED",
+          "CONSUMED",
+          "INVALIDATED"
+        ],
+        "initial_state": "ISSUED",
+        "events": [
+          "ISSUE",
+          "REPLAY",
+          "COPY",
+          "MUTATE",
+          "CONSUME",
+          "DOUBLE_CONSUME",
+          "SOURCE_CHANGE",
+          "CHAIN_CHANGE",
+          "SCOPE_CHANGE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.m1-identity-lineage-receipt",
+          "e.m0-owner-snapshot-currentness",
+          "e.m2-occurrence-binding",
+          "e.m2-current-occurrence-chain",
+          "grant.m2-identity-continuity-authority"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "complete event group",
+          "current occurrence binding",
+          "valid complete entity chain",
+          "exact causal purpose",
+          "authorized consumer",
+          "fresh M1/M2 scopes"
+        ],
+        "join_relations": [
+          "same source batch and event",
+          "same endpoint and entity",
+          "same scope and current closure",
+          "exact purpose-consumer mapping"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "ISSUED"
+        ]
+      },
+      "surface_refs": [
+        "grant.m2-causal-entity-binding-lease",
+        "source.m1-action-conditioned-event-group",
+        "policy.s14-m2-lease-purpose-consumer-matrix",
+        "consumer.m4-control-binding",
+        "consumer.m4-kinetic-law",
+        "mutation.m2-lease-registry-and-consumption"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "e.m2-spatial-entity-binding-lease",
+      "carrier_lane": "E",
+      "claim_target": "E",
+      "claim": {
+        "kind": "COMPOSITE",
+        "predicate": "one exact M2-issued sealed one-use spatial lease authorizes only its exact candidate-batch endpoint, current entity chain, exact purpose, and named M3 consumer or consumer family",
+        "non_claims": [
+          "grid conformance truth",
+          "body pose truth",
+          "general M3 authority",
+          "identity minting",
+          "authority after one successful consume"
+        ]
+      },
+      "authority": {
+        "owner": "M2",
+        "root": "M2 private spatial lease seal, semantic-basis registry, exact purpose/consumer matrix, and fresh M1/M2 owner scopes"
+      },
+      "identity": {
+        "stable_fields": [
+          "M2 authority identity",
+          "source batch object and digest",
+          "occurrence-binding version",
+          "chain digest",
+          "entity version",
+          "event endpoint",
+          "semantic scope",
+          "purpose",
+          "authorized consumer family"
+        ],
+        "generation_fields": [
+          "issuance snapshot digest",
+          "fresh consume snapshot digest",
+          "one remaining use",
+          "private seal"
+        ],
+        "alias_law": "copy, reconstruction, mutation, another authority, purpose, consumer, source, endpoint, chain, or replay cannot alias the owner-issued live lease"
+      },
+      "scope": {
+        "closure_kind": "SINGLETON",
+        "membership_predicate": "one exact spatial semantic basis may have at most one issued or consumed lease",
+        "population_owner": "M2"
+      },
+      "time": {
+        "mode": "BOUNDARY",
+        "roles": [
+          "issuance snapshot",
+          "consumer transaction snapshot",
+          "consume transition"
+        ],
+        "relations": [
+          "issuance snapshot <= fresh consume snapshot",
+          "successful consume changes uses 1 -> 0 atomically"
+        ]
+      },
+      "persistence": "EPHEMERAL",
+      "lifecycle": {
+        "states": [
+          "ISSUED",
+          "CONSUMED",
+          "INVALIDATED"
+        ],
+        "initial_state": "ISSUED",
+        "events": [
+          "ISSUE",
+          "REPLAY",
+          "COPY",
+          "MUTATE",
+          "CONSUME",
+          "DOUBLE_CONSUME",
+          "SOURCE_CHANGE",
+          "CHAIN_CHANGE",
+          "SCOPE_CHANGE"
+        ]
+      },
+      "dependencies": {
+        "authority_edges": [
+          "e.m1-identity-lineage-receipt",
+          "e.m0-owner-snapshot-currentness",
+          "e.m2-occurrence-binding",
+          "e.m2-current-occurrence-chain",
+          "grant.m2-identity-continuity-authority"
+        ],
+        "mutable": true,
+        "reverse_impact": "FIXED_POINT"
+      },
+      "composition": {
+        "input_families": [
+          "complete action-conditioned batch",
+          "current occurrence binding",
+          "valid complete entity chain",
+          "exact spatial purpose",
+          "authorized consumer family",
+          "fresh M1/M2 scopes"
+        ],
+        "join_relations": [
+          "same source batch and event",
+          "same endpoint and entity",
+          "same scope and current closure",
+          "exact purpose-consumer mapping"
+        ]
+      },
+      "quantity": null,
+      "grant": {
+        "allowed_lanes": [
+          "E"
+        ],
+        "allowed_postures": [
+          "ISSUED"
+        ]
+      },
+      "surface_refs": [
+        "grant.m2-spatial-entity-binding-lease",
+        "source.m1-action-conditioned-batch",
+        "policy.s14-m2-lease-purpose-consumer-matrix",
+        "consumer.m3-grid-conformance",
+        "consumer.m3-body-pose-family",
+        "mutation.m2-lease-registry-and-consumption"
+      ],
+      "canonical_construct": false
+    }
+  ],
+  "operations": [
+    {
+      "id": "issue-m2-identity-authority",
+      "owner": "M2 authority issuer",
+      "inputs": [],
+      "outputs": [
+        "e.m1-m2-authority-binding"
+      ],
+      "output_cases": [
+        "ISSUED",
+        "M1_AUTHORITY_MISSING",
+        "M1_AUTHORITY_FOREIGN",
+        "REGISTRY_MISMATCH",
+        "REJECTED"
+      ],
+      "atomicity": "validate the exact issued M1 authority and canonical registry before publishing one M2 authority binding; every failure publishes no M2 authority",
+      "replay": "the same already-issued authority pair preserves its exact binding; another authority or registry cannot replace or alias it",
+      "events": [
+        "ISSUE",
+        "VALIDATE",
+        "REPLAY",
+        "SUBSTITUTE",
+        "REGISTRY_CHANGE",
+        "REJECT"
+      ],
+      "surface_refs": [
+        "operation.issue-m2-identity-authority",
+        "interface.s14-m2-public-package-abi",
+        "policy.s14-m2-implementation-contract"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "m2-publish-entity",
+      "owner": "M2",
+      "inputs": [
+        "e.m1-m2-authority-binding",
+        "e.m1-identity-lineage-receipt",
+        "e.m0-owner-snapshot-currentness"
+      ],
+      "outputs": [
+        "e.m2-entity",
+        "e.m2-qualitative-kind",
+        "e.m2-genesis-worldline"
+      ],
+      "output_cases": [
+        "NEW_CANONICAL_ENTITY",
+        "EXACT_REPLAY",
+        "ONE_CONTINUING_ENTITY_PRESERVED",
+        "IDENTITY_AMBIGUOUS",
+        "INVALID_OR_INCOMPLETE_INPUT",
+        "STALE_OR_FOREIGN",
+        "REMANDED"
+      ],
+      "atomicity": "validate the complete static lineage and M2 scope, then publish or preserve all kind/entity/GENESIS companions together or change no authority state",
+      "replay": "the exact semantic genesis basis preserves one deterministic canonical result; a semantic change cannot revise or alias it",
+      "events": [
+        "PUBLISH",
+        "COMMIT",
+        "EXACT_REPLAY",
+        "CONTINUE",
+        "CONFLICT",
+        "DEPENDENCY_CHANGE",
+        "REMAND"
+      ],
+      "surface_refs": [
+        "operation.m2-publish-entity",
+        "operation.m0-commit-owner-transaction",
+        "mutation.m0-fact-commit",
+        "policy.s14-m3-unit-prerequisite",
+        "policy.s14-m2-law-token-closure"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "m1-publish-action-target-claim",
+      "owner": "M1",
+      "inputs": [
+        "e.m1-identity-lineage-receipt"
+      ],
+      "outputs": [
+        "e.m1-action-target-claim"
+      ],
+      "output_cases": [
+        "TARGET_CLAIM_PROPOSED",
+        "EXACT_REPLAY",
+        "NO_TARGET",
+        "MULTIPLE_TARGETS",
+        "NONENDPOINT_TARGET",
+        "STALE_OR_FOREIGN_LINEAGE",
+        "REMANDED"
+      ],
+      "atomicity": "validate the exact complete event-group seal and publish one deterministic claim transaction or no fact proposal",
+      "replay": "exact group/event/action/label/AFTER basis preserves one canonical claim; any changed basis cannot revise it",
+      "events": [
+        "PUBLISH",
+        "COMMIT",
+        "EXACT_REPLAY",
+        "SOURCE_CHANGE",
+        "DEPENDENCY_CHANGE",
+        "REMAND"
+      ],
+      "surface_refs": [
+        "operation.m1-publish-action-target-claim",
+        "operation.m0-commit-owner-transaction",
+        "mutation.m0-fact-commit",
+        "policy.s14-m3-unit-prerequisite",
+        "policy.s14-m2-law-token-closure"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "m2-publish-occurrence-binding",
+      "owner": "M2",
+      "inputs": [
+        "e.m1-m2-authority-binding",
+        "e.m1-identity-lineage-receipt",
+        "e.m0-owner-snapshot-currentness",
+        "e.m2-entity"
+      ],
+      "outputs": [
+        "e.m2-occurrence-binding",
+        "e.m2-current-occurrence-chain"
+      ],
+      "output_cases": [
+        "BINDING_PROPOSED",
+        "EXACT_REPLAY",
+        "GENESIS_REQUIRED",
+        "AFTER_REQUIRED",
+        "NEXT_CONTIGUOUS_BEFORE_REQUIRED",
+        "OCCURRENCE_OWNED_BY_OTHER_ENTITY",
+        "CHAIN_INVALID",
+        "STALE_OR_FOREIGN",
+        "REMANDED"
+      ],
+      "atomicity": "validate exact endpoint reconstruction, complete owner scope, unique occurrence ownership, and whole-chain topology before one append proposal; every failure leaves no registration or proposal",
+      "replay": "only the complete semantic basis including optional target claim and predecessor preserves one exact binding; partial collisions and lease-like replay shortcuts remand",
+      "events": [
+        "PUBLISH",
+        "COMMIT",
+        "EXACT_REPLAY",
+        "APPEND",
+        "BRANCH_ATTEMPT",
+        "CYCLE_ATTEMPT",
+        "DEPENDENCY_CHANGE",
+        "REMAND"
+      ],
+      "surface_refs": [
+        "operation.m2-publish-occurrence-binding",
+        "operation.m0-commit-owner-transaction",
+        "mutation.m2-occurrence-chain-append",
+        "mutation.m0-fact-commit",
+        "policy.s14-m3-unit-prerequisite",
+        "policy.s14-m2-law-token-closure"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "m2-issue-causal-entity-binding-lease",
+      "owner": "M2",
+      "inputs": [
+        "e.m1-m2-authority-binding",
+        "e.m1-identity-lineage-receipt",
+        "e.m0-owner-snapshot-currentness",
+        "e.m2-occurrence-binding",
+        "e.m2-current-occurrence-chain"
+      ],
+      "outputs": [
+        "e.m2-causal-entity-binding-lease"
+      ],
+      "output_cases": [
+        "ISSUED",
+        "PURPOSE_OR_CONSUMER_REJECTED",
+        "SOURCE_OR_BINDING_MISMATCH",
+        "CHAIN_INVALID",
+        "LEASE_REPLAY",
+        "STALE_OR_FOREIGN",
+        "REMANDED"
+      ],
+      "atomicity": "validate exact source, complete chain, fresh scopes, and purpose/consumer law without mutation, then under the M2 lock register one sealed live lease or no marker",
+      "replay": "lease replay is never idempotent; an issued or consumed semantic basis remands and a failed attempt cannot poison a later lawful issue",
+      "events": [
+        "ISSUE",
+        "REPLAY",
+        "CONCURRENT_ISSUE",
+        "SOURCE_CHANGE",
+        "CHAIN_CHANGE",
+        "SCOPE_CHANGE",
+        "REMAND"
+      ],
+      "surface_refs": [
+        "operation.m2-issue-causal-entity-binding-lease",
+        "mutation.m2-lease-registry-and-consumption",
+        "policy.s14-m3-unit-prerequisite",
+        "policy.s14-m2-law-token-closure"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "m2-issue-spatial-entity-binding-lease",
+      "owner": "M2",
+      "inputs": [
+        "e.m1-m2-authority-binding",
+        "e.m1-identity-lineage-receipt",
+        "e.m0-owner-snapshot-currentness",
+        "e.m2-occurrence-binding",
+        "e.m2-current-occurrence-chain"
+      ],
+      "outputs": [
+        "e.m2-spatial-entity-binding-lease"
+      ],
+      "output_cases": [
+        "ISSUED",
+        "PURPOSE_OR_CONSUMER_REJECTED",
+        "SOURCE_OR_BINDING_MISMATCH",
+        "CHAIN_INVALID",
+        "LEASE_REPLAY",
+        "STALE_OR_FOREIGN",
+        "REMANDED"
+      ],
+      "atomicity": "validate exact source, complete chain, fresh scopes, and purpose/consumer law without mutation, then under the M2 lock register one sealed live lease or no marker",
+      "replay": "lease replay is never idempotent; an issued or consumed semantic basis remands and a failed attempt cannot poison a later lawful issue",
+      "events": [
+        "ISSUE",
+        "REPLAY",
+        "CONCURRENT_ISSUE",
+        "SOURCE_CHANGE",
+        "CHAIN_CHANGE",
+        "SCOPE_CHANGE",
+        "REMAND"
+      ],
+      "surface_refs": [
+        "operation.m2-issue-spatial-entity-binding-lease",
+        "mutation.m2-lease-registry-and-consumption",
+        "policy.s14-m3-unit-prerequisite",
+        "policy.s14-m2-law-token-closure"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "consume-causal-entity-binding-lease",
+      "owner": "M2",
+      "inputs": [
+        "e.m1-m2-authority-binding",
+        "e.m2-causal-entity-binding-lease",
+        "e.m0-owner-snapshot-currentness",
+        "e.m2-current-occurrence-chain",
+        "e.m1-identity-lineage-receipt"
+      ],
+      "outputs": [
+        "e.m2-causal-entity-binding-lease"
+      ],
+      "output_cases": [
+        "CONSUMED",
+        "WRONG_CONSUMER_OR_PURPOSE",
+        "SOURCE_OR_BINDING_MISMATCH",
+        "STALE_CHAIN_OR_SCOPE",
+        "COPIED_MUTATED_OR_FOREIGN",
+        "ALREADY_CONSUMED",
+        "REJECTED"
+      ],
+      "atomicity": "revalidate every lease field, private seal, fresh consumer scopes, source lineage, and complete chain before atomically changing uses from one to zero; all failures preserve one use",
+      "replay": "a successful consume is final; repeat consume rejects, while every failed consume leaves the exact lease live and retryable",
+      "events": [
+        "CONSUME",
+        "DOUBLE_CONSUME",
+        "COPY",
+        "MUTATE",
+        "SOURCE_CHANGE",
+        "CHAIN_CHANGE",
+        "SCOPE_CHANGE"
+      ],
+      "surface_refs": [
+        "operation.consume-causal-entity-binding-lease",
+        "mutation.m2-lease-registry-and-consumption"
+      ],
+      "canonical_construct": false
+    },
+    {
+      "id": "consume-spatial-entity-binding-lease",
+      "owner": "M2",
+      "inputs": [
+        "e.m1-m2-authority-binding",
+        "e.m2-spatial-entity-binding-lease",
+        "e.m0-owner-snapshot-currentness",
+        "e.m2-current-occurrence-chain",
+        "e.m1-identity-lineage-receipt"
+      ],
+      "outputs": [
+        "e.m2-spatial-entity-binding-lease"
+      ],
+      "output_cases": [
+        "CONSUMED",
+        "WRONG_CONSUMER_OR_PURPOSE",
+        "SOURCE_OR_BINDING_MISMATCH",
+        "STALE_CHAIN_OR_SCOPE",
+        "COPIED_MUTATED_OR_FOREIGN",
+        "ALREADY_CONSUMED",
+        "REJECTED"
+      ],
+      "atomicity": "revalidate every lease field, private seal, fresh consumer scopes, source lineage, and complete chain before atomically changing uses from one to zero; all failures preserve one use",
+      "replay": "a successful consume is final; repeat consume rejects, while every failed consume leaves the exact lease live and retryable",
+      "events": [
+        "CONSUME",
+        "DOUBLE_CONSUME",
+        "COPY",
+        "MUTATE",
+        "SOURCE_CHANGE",
+        "CHAIN_CHANGE",
+        "SCOPE_CHANGE"
+      ],
+      "surface_refs": [
+        "operation.consume-spatial-entity-binding-lease",
+        "mutation.m2-lease-registry-and-consumption"
+      ],
+      "canonical_construct": false
+    }
+  ]
+}
