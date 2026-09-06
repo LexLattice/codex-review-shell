@@ -615,7 +615,13 @@ async function main() {
       directThreadHarnessGrantId: grant.grantId,
     },
   });
-  sessionStore.updateTurnState(controllerSession.sessionId, providerTurn.turnId, "streaming", {});
+  sessionStore.updateTurnState(controllerSession.sessionId, providerTurn.turnId, "streaming", {
+    admittedProviderContext: controller.captureAdmittedProviderContext(providerTurn, {
+      model: providerTurn.model,
+      input: [{ role: "user", content: [{ type: "input_text", text: providerTurn.input[0].text }] }],
+      instructions: "Original provider instructions for the task-bound process.",
+    }),
+  });
   const providerObligation = sessionStore.addToolObligations(controllerSession.sessionId, providerTurn.turnId, [{
     type: "tool_call_completed",
     itemId: "exec_item",
@@ -665,7 +671,13 @@ async function main() {
       directThreadHarnessGrantId: grant.grantId,
     },
   });
-  sessionStore.updateTurnState(controllerSession.sessionId, delayedProviderTurn.turnId, "streaming", {});
+  sessionStore.updateTurnState(controllerSession.sessionId, delayedProviderTurn.turnId, "streaming", {
+    admittedProviderContext: controller.captureAdmittedProviderContext(delayedProviderTurn, {
+      model: delayedProviderTurn.model,
+      input: [{ role: "user", content: [{ type: "input_text", text: delayedProviderTurn.input[0].text }] }],
+      instructions: "Original provider instructions for the delayed task-bound process.",
+    }),
+  });
   const delayedProviderObligation = sessionStore.addToolObligations(controllerSession.sessionId, delayedProviderTurn.turnId, [{
     type: "tool_call_completed",
     itemId: "delayed_exec_item",
@@ -686,7 +698,11 @@ async function main() {
   assert(delayedProviderState.statefulExecResult.stdoutPreview.includes("delayed-provider"));
   assert.equal(providerBodies.length, 3, "delayed provider exec should produce one additional continuation");
   assert.match(JSON.stringify(providerBodies[2]), /delayed-provider/);
-  assert.match(providerBodies[2].input?.[0]?.content?.[0]?.text || "", /"exitCode":0/);
+  const delayedEvidence = sessionStore.readTurn(controllerSession.sessionId, delayedProviderTurn.turnId)
+    .toolResults.find((result) => result.obligationId === delayedProviderObligation.obligationId);
+  assert.equal(JSON.parse(delayedEvidence.providerOutputText).exitCode, 0);
+  assert(providerBodies[2].input.at(-1).content[0].text.includes(JSON.stringify(delayedEvidence.providerOutputText)),
+    "the exact successful process result must reach the provider");
   assert.equal(sessionStore.readTurn(controllerSession.sessionId, delayedProviderTurn.turnId).state, "completed");
 
   const failed = manager.start({

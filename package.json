@@ -14,6 +14,9 @@
   "homepage": "https://github.com/LexLattice/codex-review-shell#readme",
   "main": "src/main.js",
   "scripts": {
+    "direct:everyday-live-acceptance": "node ./scripts/direct-everyday-live-acceptance.mjs",
+    "direct:everyday-live-acceptance-regression": "node ./scripts/direct-everyday-live-acceptance-regression.mjs",
+    "direct:everyday-continuation-regression": "node ./scripts/direct-everyday-continuation-regression.mjs",
     "start": "npm run dev",
     "dev": "node ./scripts/run-electron.mjs .",
     "dev:direct-workbench": "env -u CODEX_WORLD_MANAGER -u CODEX_WORLD_MANAGER_MOCKUP -u CODEX_DIRECT_T3_GUI CODEX_EXPERIENCE=direct-workbench node ./scripts/run-electron.mjs .",

@@ -372,6 +372,12 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
       : DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
   );
   if (mode === CONTINUATION_TRANSPORT_FRESH_CONTEXT) {
+    const contextInput = options.contextInput;
+    if (contextInput !== undefined && (!Array.isArray(contextInput) || !contextInput.length)) {
+      const error = new Error("Fresh-context continuation input must contain the admitted input and result evidence.");
+      error.code = "continuation_missing_context_input";
+      throw error;
+    }
     const prompt = normalizeString(
       options.prompt || options.contextPrompt,
       outputText
@@ -383,7 +389,7 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
           ].join("\n")
         : "",
     );
-    if (!prompt) {
+    if (!contextInput && !prompt) {
       const error = new Error("Fresh-context tool continuation requires a provider input prompt or tool output evidence.");
       error.code = "continuation_missing_context_prompt";
       throw error;
@@ -394,7 +400,7 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
       store: false,
       parallel_tool_calls: false,
       instructions,
-      input: [
+      input: contextInput ? JSON.parse(JSON.stringify(contextInput)) : [
         {
           role: "user",
           content: [
@@ -406,6 +412,10 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
         },
       ],
     };
+    const reasoningEffort = normalizeString(options.reasoningEffort || options.reasoning_effort || options.effort, "");
+    const serviceTier = normalizeString(options.serviceTier || options.service_tier, "");
+    if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
+    if (serviceTier) requestBody.service_tier = serviceTier;
     const continuationTools = Array.isArray(options.continuationTools)
       ? options.continuationTools.filter(Boolean)
       : [];
@@ -441,6 +451,10 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
     ],
     previous_response_id: previousResponseId,
   };
+  const reasoningEffort = normalizeString(options.reasoningEffort || options.reasoning_effort || options.effort, "");
+  const serviceTier = normalizeString(options.serviceTier || options.service_tier, "");
+  if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
+  if (serviceTier) requestBody.service_tier = serviceTier;
   if (metadata.resultId) {
     requestBody.metadata = {
       direct_tool_result_id: normalizeString(metadata.resultId, ""),

@@ -1099,10 +1099,18 @@ class DirectStatefulExecSessionManager extends EventEmitter {
   writeStdin(input = {}) {
     const record = this.exactRecord(input);
     this.resolveGrant({ ...input, harnessGrant: record.grant, executionEnvironmentDigest: record.executionEnvironmentDigest }, "write_stdin");
+    const text = normalizeExecInput(input.chars ?? input.input ?? input.data ?? "");
+    const emptyPoll = !text && input.eof !== true;
+    if (emptyPoll) {
+      return this.publicResult(record, {
+        emptyPoll: true,
+        stdinAccepted: false,
+        eofRequested: false,
+      });
+    }
     if (!['running', 'stdin_waiting'].includes(record.sessionState) || !record.child?.stdin || record.child.stdin.destroyed) {
       throw statefulExecError("direct_stateful_exec_session_not_live", "write_stdin requires an exact live process session.");
     }
-    const text = normalizeExecInput(input.chars ?? input.input ?? input.data ?? "");
     if (text && record.stdinPolicy !== "line_input") {
       throw statefulExecError("direct_stateful_exec_stdin_policy_blocked", "The process command class does not permit literal stdin input.");
     }
