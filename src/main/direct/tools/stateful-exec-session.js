@@ -6,6 +6,7 @@ const path = require("node:path");
 const { EventEmitter } = require("node:events");
 const { spawn } = require("node:child_process");
 const { StringDecoder } = require("node:string_decoder");
+const { BubblewrapExecSandbox, workspaceExecutesLocally } = require("./exec-sandbox");
 const {
   authorizeDirectThreadHarnessCapability,
   validateDirectThreadHarnessGrant,
@@ -660,6 +661,12 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     this.allowedCommands = options.allowedCommands
       ? new Set([...options.allowedCommands].map((value) => String(value).toLowerCase()))
       : null;
+    this.sandbox = options.sandbox && typeof options.sandbox.wrap === "function"
+      ? options.sandbox
+      : new BubblewrapExecSandbox();
+    this.workspaceLocalityResolver = typeof options.workspaceLocalityResolver === "function"
+      ? options.workspaceLocalityResolver
+      : (kind, project) => workspaceExecutesLocally(kind, project);
     this.defaultIdleTimeoutMs = boundedInteger(options.idleTimeoutMs, DEFAULT_EXEC_IDLE_TIMEOUT_MS, 25, 10 * 60_000);
     this.defaultHardTimeoutMs = boundedInteger(options.hardTimeoutMs, DEFAULT_EXEC_HARD_TIMEOUT_MS, 25, 10 * 60_000);
     this.defaultOutputBudgetChars = boundedInteger(options.outputBudgetChars, DEFAULT_EXEC_OUTPUT_BUDGET_CHARS, 256, MAX_EXEC_OUTPUT_BUDGET_CHARS);
@@ -740,8 +747,13 @@ class DirectStatefulExecSessionManager extends EventEmitter {
 
   workspaceFor(input, grant) {
     const kind = normalizeString(grant?.executionEnvironment?.kind || input.executionEnvironment?.kind, "local");
-    if (kind !== "local") {
-      throw statefulExecError("direct_stateful_exec_environment_not_local", "This slice executes only in the exact selected local workspace environment.");
+    if (!this.workspaceLocalityResolver(kind, input.project || {})) {
+      const error = statefulExecError(
+        "direct_stateful_exec_environment_not_local",
+        "Direct cannot run commands in this workspace from this host yet (for example, a WSL workspace opened from a Windows host).",
+      );
+      error.userActionable = true;
+      throw error;
     }
     const rootCandidate = this.workspaceRootResolver(input, grant?.executionEnvironment || {});
     const root = path.resolve(String(rootCandidate || ""));
@@ -803,6 +815,20 @@ class DirectStatefulExecSessionManager extends EventEmitter {
         })
       : []);
     const workspace = this.workspaceFor(input, grant);
+    const sandboxMode = normalizeString(grant?.sandboxMode, "danger-full-access");
+    const spawnPlan = sandboxMode === "danger-full-access"
+      ? { command, args, shell: Boolean(shellCommand), launcher: "none", networkAccess: true }
+      : {
+          ...this.sandbox.wrap({
+            sandboxMode,
+            root: workspace.root,
+            cwd: workspace.cwd,
+            shellCommand,
+            command,
+            args,
+          }),
+          shell: false,
+        };
     const stdinPolicy = normalizeEnum(input.stdinPolicy || input.stdinMode, STDIN_POLICIES, "line_input");
     const explicitSessionHandle = normalizeString(input.execSessionId || input.processSessionId || input.sessionHandleId, "");
     const sessionId = explicitSessionHandle
@@ -830,6 +856,9 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       cwd: workspace.cwd,
       env: safeExecEnvironment(input.env),
       stdinPolicy,
+      sandboxMode,
+      sandboxLauncher: spawnPlan.launcher,
+      networkAccess: spawnPlan.networkAccess !== false,
       transportMode: "plain_pipe",
       sessionState: "starting",
       startedAt: now,
@@ -871,10 +900,10 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     record.resolveCompletion = resolveCompletion;
     this.sessions.set(sessionId, record);
     try {
-      const child = this.spawnImpl(command, args, {
+      const child = this.spawnImpl(spawnPlan.command, spawnPlan.args, {
         cwd: workspace.cwd,
         env: record.env,
-        shell: Boolean(shellCommand),
+        shell: spawnPlan.shell,
         detached: process.platform !== "win32",
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
@@ -1355,6 +1384,8 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       timedOut: record.timedOut === true,
       cancellationRequested: record.cancellationRequested === true,
       stdinPolicy: record.stdinPolicy || "blocked_until_policy",
+      sandboxMode: record.sandboxMode || "danger-full-access",
+      networkAccess: record.networkAccess !== false,
       stdinAccepted: extra.stdinAccepted === true,
       eofRequested: extra.eofRequested === true,
       errorCode: record.errorCode || "",

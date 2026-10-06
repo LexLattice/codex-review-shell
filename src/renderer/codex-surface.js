@@ -3261,6 +3261,27 @@ function installComposerGeometryObserver() {
 function renderComposerAccessMenu() {
   if (!els.composerAccessMenu) return;
   els.composerAccessMenu.innerHTML = "";
+  if (isDirectFullAccessSurface()) {
+    const selected = currentDirectAccessProfile() || preferredDirectAccessProfile();
+    els.composerAccessMenu.appendChild(composerMenuSection(
+      "Access",
+      DIRECT_ACCESS_PROFILE_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
+      selected,
+      (value) => { selectDirectAccessProfile(value); },
+    ));
+    const note = document.createElement("p");
+    note.className = "composer-menu-note";
+    note.textContent = `${directAccessProfileOption(selected)?.description || ""} Applies to this thread and to new threads in this project.`;
+    els.composerAccessMenu.appendChild(note);
+    return;
+  }
+  if (isDirectLiveTextSurface()) {
+    const note = document.createElement("p");
+    note.className = "composer-menu-note";
+    note.textContent = "Text-only Direct threads have no tools, so access settings don't apply.";
+    els.composerAccessMenu.appendChild(note);
+    return;
+  }
   els.composerAccessMenu.appendChild(composerMenuSection("Approval", approvalPolicyOptions(), state.runtimeOverrides.approvalPolicy, (value) => setRuntimeOverride("approvalPolicy", value)));
   els.composerAccessMenu.appendChild(composerMenuSection("Sandbox", sandboxModeOptions(), state.runtimeOverrides.sandboxMode, (value) => setRuntimeOverride("sandboxMode", value)));
   const note = document.createElement("p");
@@ -3322,10 +3343,19 @@ function renderComposerRuntimeBand() {
   const contextProjection = contextUsageProjection();
   const contextText = contextProjection.compactLabel;
 
-  els.composerAccessButton.textContent = accessText;
-  els.composerAccessButton.classList.toggle("danger", state.runtimeOverrides.sandboxMode === "danger-full-access");
-  els.composerAccessButton.title = `Next-turn access override. Approval: ${approvalPolicyLabel()}. Sandbox: ${sandboxModeLabel()}.`;
-  els.composerAccessButton.setAttribute("aria-label", `Access override: approval ${approvalPolicyLabel()}, sandbox ${sandboxModeLabel()}`);
+  if (isDirectFullAccessSurface()) {
+    const profile = currentDirectAccessProfile() || preferredDirectAccessProfile();
+    const option = directAccessProfileOption(profile);
+    els.composerAccessButton.textContent = option?.label || "Access";
+    els.composerAccessButton.classList.toggle("danger", profile === "full_access");
+    els.composerAccessButton.title = `Thread access: ${option?.label || "unknown"}. ${option?.description || ""}`;
+    els.composerAccessButton.setAttribute("aria-label", `Thread access: ${option?.label || "unknown"}`);
+  } else {
+    els.composerAccessButton.textContent = accessText;
+    els.composerAccessButton.classList.toggle("danger", state.runtimeOverrides.sandboxMode === "danger-full-access");
+    els.composerAccessButton.title = `Next-turn access override. Approval: ${approvalPolicyLabel()}. Sandbox: ${sandboxModeLabel()}.`;
+    els.composerAccessButton.setAttribute("aria-label", `Access override: approval ${approvalPolicyLabel()}, sandbox ${sandboxModeLabel()}`);
+  }
 
   els.composerModelButton.textContent = modelText;
   els.composerModelButton.title = `Next-turn model settings. Model: ${compactModelLabel()}. Reasoning: ${reasoningLabel()}. Speed: ${serviceTierLabel()}.`;
@@ -6208,6 +6238,65 @@ function isDirectFullAccessSurface() {
   return isDirectLiveTextSurface() && connection?.directTier === "implementation-lane";
 }
 
+const DIRECT_ACCESS_PROFILE_OPTIONS = Object.freeze([
+  Object.freeze({
+    value: "read_only",
+    label: "Read only",
+    description: "Reads files and runs commands in a sandbox with no network. Cannot change files.",
+  }),
+  Object.freeze({
+    value: "workspace",
+    label: "Workspace",
+    description: "Changes files and runs commands inside the project folder. Network is off.",
+  }),
+  Object.freeze({
+    value: "full_access",
+    label: "Full access",
+    description: "No sandbox. Commands and edits can reach the whole machine and the network.",
+  }),
+]);
+const DEFAULT_DIRECT_ACCESS_PROFILE = "full_access";
+
+function directAccessProfileOption(profile) {
+  return DIRECT_ACCESS_PROFILE_OPTIONS.find((option) => option.value === profile) || null;
+}
+
+function directAccessPreferenceKey() {
+  return `codex.directAccessProfile.${project?.id || "default"}`;
+}
+
+function preferredDirectAccessProfile() {
+  const stored = localStorageGet(directAccessPreferenceKey(), DEFAULT_DIRECT_ACCESS_PROFILE);
+  return directAccessProfileOption(stored) ? stored : DEFAULT_DIRECT_ACCESS_PROFILE;
+}
+
+function currentDirectAccessProfile() {
+  const binding = connection?.taskBinding;
+  if (!binding || binding.current !== true) return "";
+  if (String(binding.taskId || "") !== String(state.threadId || "")) return "";
+  return directAccessProfileOption(binding.accessProfile) ? binding.accessProfile : "";
+}
+
+async function selectDirectAccessProfile(profile) {
+  const option = directAccessProfileOption(profile);
+  if (!option) return;
+  if (state.threadId && turnIsActive() && currentDirectAccessProfile() !== profile) {
+    addSystemMessage("Access can't change while a turn is running. Stop the turn or wait for it to finish.");
+    renderRuntimeConstitution();
+    return;
+  }
+  localStorageSet(directAccessPreferenceKey(), profile);
+  if (state.threadId && isDirectFullAccessSurface()) {
+    try {
+      await rpc("thread/selectAccessProfile", { sessionId: state.threadId, accessProfile: profile });
+      addSystemMessage(`Access for this thread is now ${option.label}.`);
+    } catch (error) {
+      addSystemMessage(`Access change failed: ${error.message}`);
+    }
+  }
+  renderRuntimeConstitution();
+}
+
 function isDirectRuntimeSurface() {
   return DIRECT_TRANSPORTS.has(connection?.transport);
 }
@@ -6681,7 +6770,7 @@ async function openDirectThread(threadId) {
   if (isDirectFullAccessSurface() && result?.taskBinding?.current !== true) {
     await rpc("thread/selectAccessProfile", {
       sessionId: requestedThreadId,
-      accessProfile: "full_access",
+      accessProfile: preferredDirectAccessProfile(),
     });
     result = await readThreadById(requestedThreadId);
   }
@@ -9319,10 +9408,12 @@ async function startNewThread() {
       if (isDirectFullAccessSurface()) {
         await rpc("thread/selectAccessProfile", {
           sessionId: result.thread.id || result.thread.threadId,
-          accessProfile: "full_access",
+          accessProfile: preferredDirectAccessProfile(),
         });
       }
-      addSystemMessage(`Created WorkThread-backed direct session${result.workThread?.workThreadId ? ` (${result.workThread.workThreadId})` : ""}.`);
+      addSystemMessage(isDirectFullAccessSurface()
+        ? `Started a new thread with ${directAccessProfileOption(preferredDirectAccessProfile())?.label || "default"} access.`
+        : "Started a new thread.");
       await persistRuntimePreferences("thread-model");
       await refreshDirectSurfaceProjection({ render: false });
       await refreshDirectThreadList({ showErrors: false });
@@ -9359,7 +9450,7 @@ async function startNewThread() {
   if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
   if (state.runtimeOverrides.sandboxMode) params.sandbox = state.runtimeOverrides.sandboxMode;
   if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
-  if (isDirectFullAccessSurface()) params.accessProfile = "full_access";
+  if (isDirectFullAccessSurface()) params.accessProfile = preferredDirectAccessProfile();
   const result = await rpc("thread/start", params);
   clearRenderedThreadState();
   state.sourceHome = "";
@@ -9401,7 +9492,9 @@ async function startCodexTurn(text, options = {}) {
         "";
       if (selectedWorkThreadId) {
         params.workThreadId = selectedWorkThreadId;
-        params.requireControlledRouting = true;
+        // Workbench threads are ordinary task threads: routing is still
+        // computed and recorded, but it must not block the turn.
+        if (!isDirectWorkbenchExperience()) params.requireControlledRouting = true;
       }
       if (directProjection?.contextPreview?.previewDigest) {
         params.contextPreviewDigest = directProjection.contextPreview.previewDigest;

@@ -69,8 +69,9 @@ async function main() {
   try {
     const rendererSource = await fs.readFile(new URL("../src/renderer/codex-surface.js", import.meta.url), "utf8");
     assert.match(rendererSource, /rpc\("thread\/selectAccessProfile",\s*\{\s*sessionId:\s*result\.thread\.(?:id\s*\|\|\s*result\.thread\.threadId|threadId)/s);
-    assert.match(rendererSource, /accessProfile:\s*"full_access"/);
-    assert.match(rendererSource, /isDirectFullAccessSurface\(\)\)\s*params\.accessProfile\s*=\s*"full_access"/);
+    assert.match(rendererSource, /accessProfile:\s*preferredDirectAccessProfile\(\)/);
+    assert.match(rendererSource, /DEFAULT_DIRECT_ACCESS_PROFILE\s*=\s*"full_access"/);
+    assert.match(rendererSource, /isDirectFullAccessSurface\(\)\)\s*params\.accessProfile\s*=\s*preferredDirectAccessProfile\(\)/);
     assert.match(rendererSource, /isDirectFullAccessSurface\(\)\s*&&\s*result\?\.taskBinding\?\.current\s*!==\s*true[\s\S]*thread\/selectAccessProfile/);
 
     const grant = DirectThreadHarnessGrant.issue({

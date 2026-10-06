@@ -8,6 +8,9 @@ const {
   authorizeDirectThreadHarnessCapability,
   validateDirectThreadHarnessGrant,
 } = require("../authority/direct-thread-harness-grant");
+const { workspaceExecutesLocally } = require("./exec-sandbox");
+
+const LOCAL_EXECUTOR_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 
 const MAX_READ_FILE_BYTES = 384 * 1024;
 const MAX_PATCH_TARGET_BYTES = 384 * 1024;
@@ -203,12 +206,38 @@ function safePathEvidence(target) {
   return `selected_local_path_${sha256(target).slice(0, 24)}`;
 }
 
+// Resolves symlinks on the deepest existing ancestor so a not-yet-created
+// file is still checked against the real directory it would land in.
+function realPathOfNearestExistingAncestor(target) {
+  let current = target;
+  const suffix = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(current), ...suffix.reverse());
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+      const parent = path.dirname(current);
+      if (parent === current) return target;
+      suffix.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function pathIsInside(root, target) {
+  const relative = path.relative(root, target);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
 class DirectFullAccessLocalEnvironmentExecutor {
   constructor(options = {}) {
     this.grantStore = options.grantStore || null;
     this.workspaceRootResolver = typeof options.workspaceRootResolver === "function"
       ? options.workspaceRootResolver
       : (input = {}) => input.workspaceRoot || input.project?.workspaceRoot || "";
+    this.workspaceLocalityResolver = typeof options.workspaceLocalityResolver === "function"
+      ? options.workspaceLocalityResolver
+      : (kind, project) => workspaceExecutesLocally(kind, project);
   }
 
   resolveGrant(input = {}, capabilityName) {
@@ -229,7 +258,11 @@ class DirectFullAccessLocalEnvironmentExecutor {
       try { grant = this.grantStore.currentForScope(expected); } catch { grant = null; }
     }
     const errors = grant ? validateDirectThreadHarnessGrant(grant, { ...expected, requireCurrent: true }) : ["grant_missing"];
-    if (errors.length || grant?.sandboxMode !== "danger-full-access" || grant?.executionEnvironment?.kind !== "local") {
+    if (
+      errors.length ||
+      !LOCAL_EXECUTOR_SANDBOX_MODES.has(grant?.sandboxMode) ||
+      !this.workspaceLocalityResolver(grant?.executionEnvironment?.kind, input.project || {})
+    ) {
       throw localError(errors.includes("grant_missing") ? "direct_full_access_grant_missing" : "direct_full_access_grant_not_current", "The exact current local full-access grant is required.");
     }
     const authorization = this.grantStore?.authorize && grant.grantId
@@ -332,6 +365,24 @@ class DirectFullAccessLocalEnvironmentExecutor {
     }
   }
 
+  assertPatchTargetAllowed(grant, resolved) {
+    if (grant.sandboxMode === "danger-full-access") return;
+    if (grant.sandboxMode === "read-only") {
+      throw localError(
+        "direct_access_profile_write_blocked",
+        "Read-only access does not allow file changes. Ask the user to switch Access to Workspace or Full access.",
+      );
+    }
+    const realRoot = fs.realpathSync(resolved.root);
+    const realTarget = realPathOfNearestExistingAncestor(resolved.target);
+    if (!pathIsInside(realRoot, realTarget)) {
+      throw localError(
+        "direct_access_profile_path_outside_workspace",
+        "Workspace access only allows changes inside the project folder. Ask the user to switch Access to Full access to change files outside it.",
+      );
+    }
+  }
+
   async applyPatch(input, params, grant, expected, authorization) {
     const patchText = String(params.patch || "");
     const patches = parseUnifiedPatch(patchText);
@@ -340,6 +391,7 @@ class DirectFullAccessLocalEnvironmentExecutor {
     for (const filePatch of patches) {
       if (filePatch.relPath === "/dev/null") throw localError("direct_full_access_patch_invalid", "Patch target is missing.");
       const resolved = this.resolveTarget(input, grant, filePatch.relPath, "patch target");
+      this.assertPatchTargetAllowed(grant, resolved);
       const canonicalTarget = process.platform === "win32" ? resolved.target.toLowerCase() : resolved.target;
       if (canonicalTargets.has(canonicalTarget)) {
         throw localError("direct_full_access_patch_duplicate_target", "Patch contains duplicate canonical workspace targets.");
@@ -379,6 +431,7 @@ class DirectFullAccessLocalEnvironmentExecutor {
         addedLineCount: filePatch.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.startsWith("+")).length,
         removedLineCount: filePatch.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.startsWith("-")).length,
         previewText: filePatch.hunks.flatMap((hunk) => hunk.lines).join("\n").slice(0, 8000),
+        _root: resolved.root,
         _target: resolved.target,
         _afterText: afterText,
       });
@@ -387,6 +440,7 @@ class DirectFullAccessLocalEnvironmentExecutor {
     // Revalidate every existing target with the same bounded reader before
     // mutating any file, preserving validate-all-before-mutate under races.
     for (const plan of plans) {
+      this.assertPatchTargetAllowed(grant, { root: plan._root, target: plan._target });
       if (!plan.beforeExists) {
         const current = await this.readPatchTarget(plan._target, "create");
         if (current.exists) throw localError("direct_full_access_patch_target_exists", "Patch create target appeared before apply.");
@@ -411,7 +465,7 @@ class DirectFullAccessLocalEnvironmentExecutor {
   }
 
   publicPatchResult(patchText, plans, mode, grant, expected, authorization) {
-    const files = plans.map(({ _target, _afterText, ...file }) => ({ ...file, previewTruncated: file.previewText.length >= 8000 }));
+    const files = plans.map(({ _root, _target, _afterText, ...file }) => ({ ...file, previewTruncated: file.previewText.length >= 8000 }));
     return {
       schema: "workspace_apply_patch_result@1",
       mode,

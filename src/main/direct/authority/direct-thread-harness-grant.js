@@ -16,6 +16,36 @@ const OWNER_ACT_MARKER = new WeakSet();
 
 const FULL_ACCESS_APPROVAL_POLICY = "never";
 const FULL_ACCESS_SANDBOX_MODE = "danger-full-access";
+const FULL_ACCESS_OWNER_ACT_ACTION = "select_full_access_task_profile";
+const ACCESS_PROFILE_OWNER_ACT_ACTION = "select_task_access_profile";
+
+// Every profile uses approvalPolicy "never": the selected profile itself is
+// the owner's decision, and anything outside it is denied rather than
+// prompted per call.  Widening is a new owner act that reissues the grant.
+const DIRECT_ACCESS_PROFILES = Object.freeze({
+  read_only: Object.freeze({
+    profile: "read_only",
+    label: "Read only",
+    sandboxMode: "read-only",
+    networkAccess: false,
+    workspaceWrites: false,
+  }),
+  workspace: Object.freeze({
+    profile: "workspace",
+    label: "Workspace",
+    sandboxMode: "workspace-write",
+    networkAccess: false,
+    workspaceWrites: true,
+  }),
+  full_access: Object.freeze({
+    profile: "full_access",
+    label: "Full access",
+    sandboxMode: FULL_ACCESS_SANDBOX_MODE,
+    networkAccess: true,
+    workspaceWrites: true,
+  }),
+});
+const DIRECT_ACCESS_PROFILE_NAMES = Object.freeze(Object.keys(DIRECT_ACCESS_PROFILES));
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -132,21 +162,43 @@ function normalizeCapabilityPopulation(input) {
   };
 }
 
+function normalizeAccessProfile(value, fallback = "") {
+  const text = normalizeString(value, "");
+  return Object.prototype.hasOwnProperty.call(DIRECT_ACCESS_PROFILES, text) ? text : fallback;
+}
+
+function grantAccessProfile(grant = {}) {
+  const declared = normalizeAccessProfile(grant?.accessProfile, "");
+  if (declared) return declared;
+  // Grants issued before access profiles existed carry no accessProfile
+  // field; they were all full-access grants.
+  return grant?.sandboxMode === FULL_ACCESS_SANDBOX_MODE && !grant?.accessProfile ? "full_access" : "";
+}
+
+function accessProfileDefinition(profile) {
+  return DIRECT_ACCESS_PROFILES[normalizeAccessProfile(profile, "")] || null;
+}
+
 function ownerActFor(input = {}, nowMs) {
   const taskId = safeId(input.taskId || input.threadId, "task");
   const threadId = safeId(input.threadId || input.taskId, "thread");
   const projectId = safeId(input.projectId, "project");
   const executionEnvironment = normalizeEnvironment(input.executionEnvironment || input.environment);
+  const requestedProfile = input.accessProfile === undefined ? "full_access" : input.accessProfile;
+  const selectedProfile = normalizeAccessProfile(requestedProfile, "");
+  if (!selectedProfile) {
+    throw grantError("direct_thread_harness_grant_access_profile_invalid", "Owner act requires a known Direct access profile.");
+  }
   const act = {
     schema: DIRECT_OWNER_FULL_ACCESS_ACT_SCHEMA,
     actId: normalizeString(input.actId, `owner_full_access_act_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`),
     actor: "direct_harness_owner",
-    action: "select_full_access_task_profile",
+    action: selectedProfile === "full_access" ? FULL_ACCESS_OWNER_ACT_ACTION : ACCESS_PROFILE_OWNER_ACT_ACTION,
     taskId,
     threadId,
     projectId,
     executionEnvironment,
-    selectedProfile: "full_access",
+    selectedProfile,
     selectedAt: nowIso(nowMs),
     rendererInputAccepted: false,
     modelInputAccepted: false,
@@ -169,6 +221,10 @@ function grantBase(input = {}, options = {}) {
   const executionEnvironment = normalizeEnvironment(input.executionEnvironment || ownerAct.executionEnvironment);
   if (taskId !== ownerAct.taskId || threadId !== ownerAct.threadId || projectId !== ownerAct.projectId || environmentDigest(executionEnvironment) !== environmentDigest(ownerAct.executionEnvironment)) {
     throw grantError("direct_thread_harness_grant_owner_act_scope_mismatch", "Grant scope must match the exact owner act.");
+  }
+  const profile = accessProfileDefinition(ownerAct.selectedProfile);
+  if (!profile) {
+    throw grantError("direct_thread_harness_grant_access_profile_invalid", "Grant requires a known Direct access profile.");
   }
   const capabilityPopulation = normalizeCapabilityPopulation(input.capabilityPopulation || input.capabilities);
   const issuedAt = nowIso(options.nowMs);
@@ -198,8 +254,10 @@ function grantBase(input = {}, options = {}) {
     executionEnvironment,
     executionEnvironmentDigest: environmentDigest(executionEnvironment),
     capabilityPopulation,
+    accessProfile: profile.profile,
     approvalPolicy: FULL_ACCESS_APPROVAL_POLICY,
-    sandboxMode: FULL_ACCESS_SANDBOX_MODE,
+    sandboxMode: profile.sandboxMode,
+    networkAccess: profile.networkAccess,
     inheritancePolicy,
     currentness: {
       state: "current",
@@ -249,9 +307,18 @@ function validateDirectThreadHarnessGrant(grant = {}, expected = {}) {
     if (!normalizeString(grant[field], "")) errors.push(`missing_${field}`);
   }
   if (grant.approvalPolicy !== FULL_ACCESS_APPROVAL_POLICY) errors.push("approval_policy_not_never");
-  if (grant.sandboxMode !== FULL_ACCESS_SANDBOX_MODE) errors.push("sandbox_mode_not_danger_full_access");
+  const profileName = grantAccessProfile(grant);
+  const profile = accessProfileDefinition(profileName);
+  if (!profile) errors.push("access_profile_invalid");
+  else {
+    if (grant.sandboxMode !== profile.sandboxMode) errors.push("sandbox_mode_profile_mismatch");
+    if (grant.networkAccess !== undefined && grant.networkAccess !== profile.networkAccess) errors.push("network_access_profile_mismatch");
+  }
   if (!isPlainObject(grant.ownerAct) || grant.ownerAct.schema !== DIRECT_OWNER_FULL_ACCESS_ACT_SCHEMA) errors.push("owner_act_invalid");
-  if (grant.ownerAct?.action !== "select_full_access_task_profile") errors.push("owner_act_action_invalid");
+  const ownerAction = grant.ownerAct?.action;
+  if (ownerAction !== FULL_ACCESS_OWNER_ACT_ACTION && ownerAction !== ACCESS_PROFILE_OWNER_ACT_ACTION) errors.push("owner_act_action_invalid");
+  if (ownerAction === FULL_ACCESS_OWNER_ACT_ACTION && profileName !== "full_access") errors.push("owner_act_action_invalid");
+  if (profileName && normalizeString(grant.ownerAct?.selectedProfile, "full_access") !== profileName) errors.push("owner_act_profile_mismatch");
   if (grant.ownerAct?.taskId !== grant.taskId || grant.ownerAct?.threadId !== grant.threadId || grant.ownerAct?.projectId !== grant.projectId) errors.push("owner_act_scope_mismatch");
   if (!isPlainObject(grant.executionEnvironment)) errors.push("execution_environment_invalid");
   if (grant.executionEnvironmentDigest && environmentDigest(grant.executionEnvironment) !== grant.executionEnvironmentDigest) errors.push("execution_environment_digest_invalid");
@@ -309,6 +376,7 @@ function authorizeDirectThreadHarnessCapability(grant, toolName, expected = {}) 
     grantRevision: Number(grant.grantRevision),
     approvalPolicy: grant.approvalPolicy,
     sandboxMode: grant.sandboxMode,
+    accessProfile: grantAccessProfile(grant),
     authorityMode: "durable_task_grant",
   };
 }
@@ -329,6 +397,7 @@ function inheritDirectThreadHarnessGrant(parentGrant, input = {}) {
     threadId: childThreadId,
     projectId: parentGrant.projectId,
     executionEnvironment: parentGrant.executionEnvironment,
+    accessProfile: grantAccessProfile(parentGrant),
   }, input.nowMs);
   const child = grantBase({
     ownerAct,
@@ -424,6 +493,10 @@ class DirectThreadHarnessGrantStore {
   }
 
   issueFullAccess(input = {}) {
+    return this.issueAccessProfile({ ...input, accessProfile: "full_access" });
+  }
+
+  issueAccessProfile(input = {}) {
     const ownerAct = ownerActFor(input, input.nowMs);
     const candidate = grantBase({
       ...input,
@@ -576,6 +649,8 @@ class DirectThreadHarnessGrant {
 }
 
 module.exports = {
+  DIRECT_ACCESS_PROFILES,
+  DIRECT_ACCESS_PROFILE_NAMES,
   DIRECT_HARNESS_GRANT_INHERITANCE_SCHEMA,
   DIRECT_OWNER_FULL_ACCESS_ACT_SCHEMA,
   DIRECT_THREAD_HARNESS_GRANT_INDEX_SCHEMA,
@@ -584,9 +659,12 @@ module.exports = {
   DirectThreadHarnessGrantStore,
   FULL_ACCESS_APPROVAL_POLICY,
   FULL_ACCESS_SANDBOX_MODE,
+  accessProfileDefinition,
   authorizeDirectThreadHarnessCapability,
   capabilityNames,
   environmentDigest,
+  grantAccessProfile,
+  normalizeAccessProfile,
   inheritDirectThreadHarnessGrant,
   issueDirectThreadHarnessGrant: (input = {}) => DirectThreadHarnessGrant.issue(input),
   validateDirectThreadHarnessGrant,

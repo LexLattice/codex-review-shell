@@ -116,14 +116,47 @@ const {
   validateDirectProviderMetadataProfile,
 } = require("../provider/metadata-adapter");
 const {
+  DIRECT_ACCESS_PROFILES,
   authorizeDirectThreadHarnessCapability,
   capabilityNames: harnessGrantCapabilityNames,
+  grantAccessProfile,
   inheritDirectThreadHarnessGrant,
+  normalizeAccessProfile,
   validateDirectThreadHarnessGrant,
 } = require("../authority/direct-thread-harness-grant");
 const {
   STATEFUL_EXEC_CAPABILITY_NAMES,
 } = require("../tools/stateful-exec-session");
+const { workspaceExecutesLocally } = require("../tools/exec-sandbox");
+
+// Tools withheld from each narrower profile.  Commands in those profiles go
+// through exec_command, which runs inside the sandbox; run_command would
+// bypass it through the workspace backend.
+const ACCESS_PROFILE_EXCLUDED_CAPABILITIES = Object.freeze({
+  full_access: new Set(),
+  workspace: new Set(["run_command"]),
+  read_only: new Set(["run_command", "apply_patch"]),
+});
+// Exec failures the model can recover from (or explain to the user) are
+// returned as tool results instead of failing the whole turn.
+const USER_ACTIONABLE_STATEFUL_EXEC_ERRORS = new Set([
+  "direct_stateful_exec_sandbox_unavailable",
+  "direct_stateful_exec_environment_not_local",
+  "direct_stateful_exec_workspace_unavailable",
+  "direct_stateful_exec_cwd_invalid",
+  "direct_stateful_exec_cwd_outside_workspace",
+  "direct_stateful_exec_cwd_unavailable",
+  "direct_stateful_exec_command_invalid",
+  "direct_stateful_exec_shell_blocked",
+  "direct_stateful_exec_command_not_admitted",
+  "direct_stateful_exec_argument_invalid",
+  "direct_stateful_exec_input_invalid",
+]);
+
+function accessProfileCapabilityNames(profile, names = []) {
+  const excluded = ACCESS_PROFILE_EXCLUDED_CAPABILITIES[profile] || ACCESS_PROFILE_EXCLUDED_CAPABILITIES.read_only;
+  return [...new Set(names)].filter((name) => !excluded.has(name));
+}
 
 const DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text";
 const DIRECT_SERVICE_TIERS = new Set(["fast", "flex"]);
@@ -707,21 +740,25 @@ function sanitizeStatus(status = {}) {
 function buildDirectLiveTextCapabilities(status = {}, options = {}) {
   const ready = status.status === "ready";
   const harnessGrant = isPlainObject(options.harnessGrant) ? options.harnessGrant : null;
-  const fullAccess = ready && Boolean(harnessGrant && validateDirectThreadHarnessGrant(harnessGrant, { requireCurrent: true }).length === 0);
+  // `granted` is any current task grant; `fullAccess` keeps its historical
+  // meaning of the unrestricted profile only.
+  const granted = ready && Boolean(harnessGrant && validateDirectThreadHarnessGrant(harnessGrant, { requireCurrent: true }).length === 0);
+  const accessProfile = granted ? grantAccessProfile(harnessGrant) : "";
+  const fullAccess = granted && accessProfile === "full_access";
   const taskId = normalizeString(options.taskId, "");
   const readOnlyToolReady = ready && status.readOnlyToolContinuation?.status === "ready";
   const patchApplyReady = ready && status.patchApplyContinuation?.status === "ready";
   const commandExecutionReady = ready && status.commandExecutionContinuation?.status === "ready";
   const patchApplyApprovalReady = ready && scopedProofApprovalReady(status.patchApplyContinuation);
   const commandExecutionApprovalReady = ready && scopedProofApprovalReady(status.commandExecutionContinuation);
-  const statefulExecGranted = fullAccess &&
+  const statefulExecGranted = granted &&
     harnessGrantCapabilityNames(harnessGrant).includes("exec_command");
   const stdinGranted = statefulExecGranted &&
     harnessGrantCapabilityNames(harnessGrant).includes("write_stdin");
   const toolMethods = [];
-  if (readOnlyToolReady && !fullAccess) toolMethods.push("direct/tool/readOnly/requestApproval");
-  if (patchApplyReady && !fullAccess) toolMethods.push("direct/tool/patchApply/requestApproval");
-  if (commandExecutionReady && !fullAccess) toolMethods.push("direct/tool/command/requestApproval");
+  if (readOnlyToolReady && !granted) toolMethods.push("direct/tool/readOnly/requestApproval");
+  if (patchApplyReady && !granted) toolMethods.push("direct/tool/patchApply/requestApproval");
+  if (commandExecutionReady && !granted) toolMethods.push("direct/tool/command/requestApproval");
   const attachmentCapability = buildDirectAttachmentCapabilityProjection({
     runtimeKind: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
     workspaceKind: normalizeString(status.workspaceKind || status.workspace?.kind, ""),
@@ -744,8 +781,9 @@ function buildDirectLiveTextCapabilities(status = {}, options = {}) {
     projectId: normalizeString(options.projectId, ""),
     grantId: normalizeString(harnessGrant?.grantId, ""),
     grantRevision: Number(harnessGrant?.grantRevision || 0),
-    current: fullAccess,
-    declaredToolNames: fullAccess ? harnessGrantCapabilityNames(harnessGrant) : [],
+    current: granted,
+    accessProfile,
+    declaredToolNames: granted ? harnessGrantCapabilityNames(harnessGrant) : [],
     rawGrantIncluded: false,
     rawProviderPayloadIncluded: false,
     rawPathIncluded: false,
@@ -812,19 +850,23 @@ function buildDirectLiveTextCapabilities(status = {}, options = {}) {
       canReadStatus: ready && status.environmentStatusAvailable === true,
     },
     authority: {
-      commandApproval: fullAccess ? false : commandExecutionApprovalReady,
-      fileChangeApproval: fullAccess ? false : patchApplyApprovalReady,
+      commandApproval: granted ? false : commandExecutionApprovalReady,
+      fileChangeApproval: granted ? false : patchApplyApprovalReady,
       permissionsApproval: false,
       approvalPolicies: [
-        ...(fullAccess ? ["never"] : []),
+        ...(granted ? ["never"] : []),
         ...(readOnlyToolReady ? ["explicit-read-only-tool"] : []),
         ...(patchApplyApprovalReady ? ["explicit-patch-apply"] : []),
         ...(commandExecutionApprovalReady ? ["explicit-command-execution"] : []),
       ],
-      sandboxModes: fullAccess ? ["danger-full-access"] : [],
-      readOnlyToolApproval: fullAccess ? false : readOnlyToolReady,
-      patchApplyApproval: fullAccess ? false : patchApplyApprovalReady,
-      commandExecutionApproval: fullAccess ? false : commandExecutionApprovalReady,
+      sandboxModes: granted ? [harnessGrant.sandboxMode] : [],
+      readOnlyToolApproval: granted ? false : readOnlyToolReady,
+      patchApplyApproval: granted ? false : patchApplyApprovalReady,
+      commandExecutionApproval: granted ? false : commandExecutionApprovalReady,
+      taskGrantCurrent: granted,
+      taskAccessProfile: accessProfile,
+      taskAccessProfiles: Object.keys(DIRECT_ACCESS_PROFILES),
+      taskNetworkAccess: granted ? DIRECT_ACCESS_PROFILES[accessProfile]?.networkAccess === true : false,
       fullAccessTaskProfile: fullAccess,
       fullAccessGrantId: normalizeString(harnessGrant?.grantId, ""),
       fullAccessGrantRevision: Number(harnessGrant?.grantRevision || 0),
@@ -846,7 +888,8 @@ function buildDirectLiveTextCapabilities(status = {}, options = {}) {
           projectId: normalizeString(options.projectId, ""),
           grantId: normalizeString(harnessGrant?.grantId, ""),
           grantRevision: Number(harnessGrant?.grantRevision || 0),
-          current: fullAccess,
+          current: granted,
+          accessProfile,
           rawGrantIncluded: false,
         }
       : null,
@@ -2053,7 +2096,7 @@ class DirectLiveTextController {
     if (!this.fullAccessLocalEnvironmentExecutor) return null;
     const session = this.sessionStore.readSession(sessionId) || {};
     const grant = this.harnessGrantForTurn(sessionId, turnId, project);
-    if (!grant || grant.sandboxMode !== "danger-full-access" || grant.executionEnvironment?.kind !== "local") return null;
+    if (!grant || !grantAccessProfile(grant) || !workspaceExecutesLocally(grant.executionEnvironment?.kind, project)) return null;
     const authorization = this.harnessGrantAuthorizationFor(sessionId, turnId, project, capabilityName);
     if (!authorization.authorized) return null;
     return {
@@ -2094,7 +2137,8 @@ class DirectLiveTextController {
         projectId: session.projectId,
         grantId: normalizeString(harnessGrant?.grantId, ""),
         grantRevision: Number(harnessGrant?.grantRevision || 0),
-        current: capabilities.authority?.fullAccessTaskProfile === true,
+        current: capabilities.authority?.taskGrantCurrent === true,
+        accessProfile: normalizeString(capabilities.authority?.taskAccessProfile, ""),
         rawGrantIncluded: false,
       },
     };
@@ -2130,51 +2174,75 @@ class DirectLiveTextController {
   }
 
   selectFullAccessTaskProfile(params = {}, context = {}) {
+    return this.selectTaskAccessProfile(params, context);
+  }
+
+  selectTaskAccessProfile(params = {}, context = {}) {
     const project = context.project || {};
-    if (!this.harnessGrantStore || typeof this.harnessGrantStore.issueFullAccess !== "function") {
-      const error = new Error("Direct full-access task profile selection is unavailable.");
-      error.code = "direct_thread_harness_grant_store_unavailable";
-      throw error;
-    }
-    const requestedProfile = normalizeString(
-      params.accessProfile || params.profile || params.taskProfile,
+    const requestedProfile = normalizeAccessProfile(
+      normalizeString(params.accessProfile || params.profile || params.taskProfile, ""),
       "",
     );
-    if (requestedProfile !== "full_access") {
-      const error = new Error("Direct task profile selection requires the owner-selected full_access profile.");
-      error.code = "direct_thread_harness_profile_not_full_access";
+    if (!requestedProfile) {
+      const error = new Error("Direct task access selection requires read_only, workspace, or full_access.");
+      error.code = "direct_thread_harness_profile_invalid";
+      throw error;
+    }
+    const store = this.harnessGrantStore;
+    const canIssue = store && (
+      typeof store.issueAccessProfile === "function" ||
+      (requestedProfile === "full_access" && typeof store.issueFullAccess === "function")
+    );
+    if (!canIssue) {
+      const error = new Error("Direct task access selection is unavailable.");
+      error.code = "direct_thread_harness_grant_store_unavailable";
       throw error;
     }
     const sessionId = normalizeString(params.sessionId || params.threadId, "");
     const session = sessionId ? this.sessionStore.readSession(sessionId) : null;
     if (!session || !sessionMatchesProject(session, normalizeString(project.id, ""))) {
-      const error = new Error("Direct full-access task profile selection requires an exact project-bound session.");
+      const error = new Error("Direct task access selection requires an exact project-bound session.");
       error.code = "direct_thread_harness_profile_scope_mismatch";
+      throw error;
+    }
+    const currentGrant = this.resolveHarnessGrant(project, session);
+    const currentProfile = currentGrant ? grantAccessProfile(currentGrant) : "";
+    const turnActive = (Array.isArray(session.turns) ? session.turns : [])
+      .some((turn) => ACTIVE_TURN_STATES.has(normalizeString(turn?.state, "")));
+    // A running turn is bound to its grant revision; switching profiles under
+    // it would strand that turn without authority.
+    if (turnActive && currentProfile && currentProfile !== requestedProfile) {
+      const error = new Error("Access can't change while a turn is running. Stop the turn or wait for it to finish.");
+      error.code = "direct_thread_access_profile_turn_active";
       throw error;
     }
     const status = this.assertReady(project, { model: session.model });
     const environment = this.executionEnvironmentForSession(project, session);
-    const grant = this.harnessGrantStore.issueFullAccess({
+    const issueInput = {
       taskId: session.sessionId,
       threadId: session.sessionId,
       projectId: session.projectId,
       executionEnvironment: environment,
-      capabilities: [
-        ...new Set([
-          ...implementationInitialPolicyCandidateToolNames(status, ""),
-          ...STATEFUL_EXEC_CAPABILITY_NAMES,
-        ]),
-      ],
-    });
+      accessProfile: requestedProfile,
+      capabilities: accessProfileCapabilityNames(requestedProfile, [
+        ...implementationInitialPolicyCandidateToolNames(status, ""),
+        ...STATEFUL_EXEC_CAPABILITY_NAMES,
+      ]),
+    };
+    const grant = typeof store.issueAccessProfile === "function"
+      ? store.issueAccessProfile(issueInput)
+      : store.issueFullAccess(issueInput);
     this.sessionStore.writeSession({
-      ...session,
-      harnessAccessProfile: "full_access",
+      ...(this.sessionStore.readSession(session.sessionId) || session),
+      harnessAccessProfile: requestedProfile,
       harnessGrantId: grant.grantId,
       executionEnvironmentDigest: grant.executionEnvironmentDigest,
     });
     const projection = this.capabilitiesForTask(project, session.sessionId);
     return {
-      profile: "full_access",
+      profile: requestedProfile,
+      label: DIRECT_ACCESS_PROFILES[requestedProfile].label,
+      networkAccess: DIRECT_ACCESS_PROFILES[requestedProfile].networkAccess,
       grantId: grant.grantId,
       grantRevision: grant.grantRevision,
       approvalPolicy: grant.approvalPolicy,
@@ -3103,9 +3171,9 @@ class DirectLiveTextController {
         if (!sessionMatchesProject(existing, projectId)) {
           throw new Error("Direct live text session does not belong to the active project.");
         }
-        const accessProfile = normalizeString(params.accessProfile || params.profile || params.taskProfile, "");
-        const selected = accessProfile === "full_access"
-          ? this.selectFullAccessTaskProfile({ sessionId: existing.sessionId, accessProfile }, context)
+        const accessProfile = normalizeAccessProfile(normalizeString(params.accessProfile || params.profile || params.taskProfile, ""), "");
+        const selected = accessProfile
+          ? this.selectTaskAccessProfile({ sessionId: existing.sessionId, accessProfile }, context)
           : null;
         const refreshed = this.sessionStore.readSession(existing.sessionId) || existing;
         const projection = this.capabilitiesForTask(project, refreshed.sessionId);
@@ -3176,8 +3244,9 @@ class DirectLiveTextController {
       workThreadId: workThreadCarrier.workThreadId,
       workThreadBindingDigest: normalizeString(workThreadCarrier.workThreadBinding?.bindingDigest, ""),
     });
-    const accessProfile = normalizeString(params.accessProfile || params.profile || params.taskProfile, "") === "full_access"
-      ? this.selectFullAccessTaskProfile({ sessionId: session.sessionId, accessProfile: "full_access" }, context)
+    const requestedAccessProfile = normalizeAccessProfile(normalizeString(params.accessProfile || params.profile || params.taskProfile, ""), "");
+    const accessProfile = requestedAccessProfile
+      ? this.selectTaskAccessProfile({ sessionId: session.sessionId, accessProfile: requestedAccessProfile }, context)
       : null;
     const refreshedSession = this.sessionStore.readSession(session.sessionId) || session;
     const projection = this.capabilitiesForTask(project, refreshedSession.sessionId);
@@ -3486,8 +3555,8 @@ class DirectLiveTextController {
       throw error;
     }
     const sourceGrant = this.resolveHarnessGrant(project, source);
-    if (source.harnessAccessProfile === "full_access" && !sourceGrant) {
-      const error = new Error("Direct fork cannot inherit a missing or stale full-access source grant.");
+    if (normalizeAccessProfile(source.harnessAccessProfile, "") && !sourceGrant) {
+      const error = new Error("Direct fork cannot inherit a missing or stale source task grant.");
       error.code = "direct_fork_source_grant_invalid";
       throw error;
     }
@@ -3663,15 +3732,16 @@ class DirectLiveTextController {
         error.code = "direct_fork_operation_recovery_ambiguous";
         throw error;
       }
-      if (refreshed.harnessAccessProfile !== "full_access" || refreshed.harnessGrantId !== childGrant.grantId) {
+      const childAccessProfile = grantAccessProfile(childGrant);
+      if (refreshed.harnessAccessProfile !== childAccessProfile || refreshed.harnessGrantId !== childGrant.grantId) {
         this.sessionStore.writeSession({
           ...refreshed,
-          harnessAccessProfile: "full_access",
+          harnessAccessProfile: childAccessProfile,
           harnessGrantId: childGrant.grantId,
           executionEnvironmentDigest: childGrant.executionEnvironmentDigest,
         });
       }
-    } else if (child.harnessAccessProfile === "full_access" || child.harnessGrantId) {
+    } else if (normalizeAccessProfile(child.harnessAccessProfile, "") || child.harnessGrantId) {
       const error = new Error("Direct fork recovery found unexpected full-access child authority.");
       error.code = "direct_fork_operation_recovery_ambiguous";
       throw error;
@@ -5670,6 +5740,9 @@ class DirectLiveTextController {
       );
       return 1;
     } catch (error) {
+      if (USER_ACTIONABLE_STATEFUL_EXEC_ERRORS.has(normalizeString(error?.code, ""))) {
+        return this.continueAfterRejectedStatefulExec(surfaceSession, sessionId, turnId, obligation, project, toolName, grantAuthorization, error);
+      }
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
         status: "unsupported",
         authorityState: "unsupported",
@@ -5688,6 +5761,51 @@ class DirectLiveTextController {
       });
       return 0;
     }
+  }
+
+  async continueAfterRejectedStatefulExec(surfaceSession, sessionId, turnId, obligation, project, toolName, grantAuthorization, error) {
+    const errorCode = normalizeString(error?.code, "stateful_exec_failed");
+    // Only harness-authored messages reach the provider; they carry no raw
+    // paths, commands, or environment values.
+    const providerOutput = {
+      schema: "direct_stateful_exec_rejection@1",
+      status: "rejected",
+      errorCode,
+      message: normalizeString(error?.message, "The command was not started.").slice(0, 600),
+      accessProfile: normalizeString(grantAuthorization?.accessProfile, ""),
+      sandboxMode: normalizeString(grantAuthorization?.sandboxMode, ""),
+      commandStarted: false,
+    };
+    this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+      status: "stateful_exec_rejected",
+      authorityState: "grant_auto_approval",
+      authorityMode: grantAuthorization.authorityMode,
+      harnessGrantId: grantAuthorization.grantId,
+      harnessGrantRevision: grantAuthorization.grantRevision,
+      approvalPolicy: grantAuthorization.approvalPolicy,
+      sandboxMode: grantAuthorization.sandboxMode,
+      approvalAvailable: false,
+      executionAllowed: false,
+      continuationAllowed: true,
+      failureKind: errorCode,
+    }, { nextTurnState: "continuation_ready" });
+    const envelope = {
+      schema: "direct_stateful_exec_tool_result_envelope@1",
+      envelopeId: `stateful_exec_rejection_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${errorCode}`).slice(0, 24)}`,
+      toolName,
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: "stateful_exec",
+      status: "ready_for_provider_continuation",
+      providerOutput,
+      sideEffectExecuted: false,
+      rawCommandIncluded: false,
+      rawInputIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
+    return 1;
   }
 
   commandExecutionRequestParams(obligation = {}, turn = {}, project = {}) {
@@ -9497,17 +9615,37 @@ class DirectLiveTextController {
       ? this.resolveHarnessGrant(project, session)
       : null;
     let activeSubAgentPolicySemanticResult = null;
+    let activeSubAgentPolicySemanticFailureCode = "";
     if (
       implementationTier &&
       this.activeSubAgentPolicySemanticPreflight
     ) {
-      activeSubAgentPolicySemanticResult =
-        await this.activeSubAgentPolicySemanticPreflight({
-          projectId: normalizeString(project.id, session.projectId),
+      // The preflight only decides whether this utterance revises sub-agent
+      // policy.  If it cannot settle, the existing policy stays in force and
+      // the user's turn proceeds instead of failing before the model runs.
+      try {
+        activeSubAgentPolicySemanticResult =
+          await this.activeSubAgentPolicySemanticPreflight({
+            projectId: normalizeString(project.id, session.projectId),
+            threadId: session.sessionId,
+            clientRequestId: clientTurnRequestId,
+            userText: rawPrompt,
+          });
+      } catch (error) {
+        this.assertOpen();
+        // Turn-admission races and the project-turn guard are integrity
+        // outcomes, not router unavailability.
+        if (["active_turn_exists", "direct_active_sub_agent_policy_turn_active"].includes(normalizeString(error?.code, ""))) throw error;
+        activeSubAgentPolicySemanticFailureCode = normalizeString(
+          error?.code,
+          "direct_active_sub_agent_policy_semantic_preflight_failed",
+        );
+        activeSubAgentPolicySemanticResult = null;
+        this.emitNotification(context.surfaceSession, "warning", {
           threadId: session.sessionId,
-          clientRequestId: clientTurnRequestId,
-          userText: rawPrompt,
+          message: "Sub-agent policy check was unavailable for this message, so the existing sub-agent policy stays in effect.",
         });
+      }
       this.assertOpen();
     }
     const implementationToolNames = implementationTier
@@ -9655,7 +9793,12 @@ class DirectLiveTextController {
               activeSubAgentPolicySemanticSettlementState:
                 activeSubAgentPolicySemanticResult.settlement.state,
             }
-          : {}),
+          : activeSubAgentPolicySemanticFailureCode
+            ? {
+                activeSubAgentPolicySemanticSettlementState: "preflight_unavailable",
+                activeSubAgentPolicySemanticFailureCode,
+              }
+            : {}),
       },
     });
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
@@ -9907,7 +10050,12 @@ class DirectLiveTextController {
                 activeSubAgentPolicySemanticResult.settlement
                   .admittedPolicyRef || null,
             }
-          : {}),
+          : activeSubAgentPolicySemanticFailureCode
+            ? {
+                activeSubAgentPolicySemanticSettlementState: "preflight_unavailable",
+                activeSubAgentPolicySemanticFailureCode,
+              }
+            : {}),
         directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
         directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
         directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
@@ -10706,7 +10854,7 @@ class DirectLiveTextController {
     if (method === "thread/start") return this.startThread(params, context);
     if (method === "thread/resume") return this.resumeThread(params, context);
     if (method === "thread/fork") return this.forkThread(params, context);
-    if (method === "thread/selectAccessProfile") return this.selectFullAccessTaskProfile(params, context);
+    if (method === "thread/selectAccessProfile") return this.selectTaskAccessProfile(params, context);
     if (method === "thread/list") return this.listThreads(params, context);
     if (method === "thread/read") return this.readThread(params, context);
     if (method === "thread/rollback") return this.rollbackThread(params, context);

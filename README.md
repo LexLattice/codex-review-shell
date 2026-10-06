@@ -144,6 +144,26 @@ bounded Direct tenant adapters exist. See the
 [project directory spec](./docs/DIRECT_WORKBENCH_PROJECT_DIRECTORY_SPEC.md), and
 [thread directory spec](./docs/DIRECT_WORKBENCH_THREAD_DIRECTORY_SPEC.md).
 
+### Thread access
+
+Direct implementation threads have one access setting, chosen from the
+composer's Access menu. It applies to the current thread and becomes the
+default for new threads in that project:
+
+- **Read only**: reads files and runs commands in a sandbox with no network.
+  It can't change files.
+- **Workspace**: changes files and runs commands inside the project folder
+  (plus `/tmp`), with the network off.
+- **Full access** (default): no sandbox.
+
+None of the modes ask for approval on each tool call. Actions outside the
+selected mode are refused with a message telling the user to switch Access.
+Workspace and Read only run commands under bubblewrap (`bwrap`), so they need
+Linux with unprivileged user namespaces. Where no sandbox is available, those
+modes refuse to run commands rather than running them unsandboxed. Access
+can't change while a turn is running. `npm run direct:access-profiles` covers
+this behavior.
+
 ## Windows + WSL mirror launcher
 
 While building, use the tracked Windows launcher scripts in this repo so the Windows checkout mirrors the WSL worktree before each run:
