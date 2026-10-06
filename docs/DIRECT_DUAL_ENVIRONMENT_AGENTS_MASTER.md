@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-06, after turn 5.
+Last updated: 2026-10-06, after turn 6.
 
 ## How to use this document
 
@@ -100,7 +100,7 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 6: Windows containment and sandbox spike (time-boxed).**
+**Turn 7: Windows executor.**
 
 ## Gates for every turn
 
@@ -415,17 +415,69 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   kill, and a workspace-write restricted token. If not, choose a minimal
   native helper.
 - Done when: a written decision plus a proof script. No production code.
-- Outcome: _(fill in)_
+- Outcome:
+  - Status: done. Decision in `docs/DIRECT_WINDOWS_CONTAINMENT_DECISION.md`.
+    Proof script: `scripts/spikes/windows-containment/windows-containment-spike.mjs`
+    with the prototype runner `job-runner.cs` next to it (spike code, not
+    wired into anything).
+  - Codex's sandbox is not reused. Source study (`openai/codex` `ccde2fc`)
+    and a live `codex sandbox -P :workspace` run showed:
+    - **Jobs allow breakaway**, and descendants are deliberately kept alive
+      after the command exits.
+    - **Unelevated network blocking** is only proxy environment variables.
+    - **Real isolation needs elevated mode**, which provisions accounts,
+      firewall and WFP rules, and HKLM entries.
+    - **It writes persistent ACEs** onto the user's folders, `%TEMP%`
+      included.
+    - **There's no stable interface** for a third party.
+  - Chosen instead: a Direct-owned job runner, built at first use by the
+    in-box `csc.exe`:
+    - Job Object with kill-on-close and no breakaway for every profile.
+    - Low integrity with a Low-labeled project folder for Workspace.
+    - Low integrity plus a write-restricted token for Read only.
+    - A Medium no-read-up label to hide credential stores.
+    - A private scratch `TEMP`.
+    - No network enforcement on Windows, stated plainly.
+
+    No admin rights are needed.
+  - The proof script passes on the Windows host and skips on Linux. It shows
+    that today's Windows local backend leaks a command's children both when
+    the command is killed and when the host dies, because libuv's job allows
+    silent breakaway. The runner kills the whole tree in both cases and when
+    the command exits, passes stdio and exit codes through, and adds about
+    70–90 ms.
+  - Spike discoveries that turn 7 must keep:
+    - **Scratch `TEMP`.** PowerShell drops to ConstrainedLanguage without a
+      writable `TEMP`.
+    - **Logon SID.** A write-restricted token needs the logon SID as a
+      restricting SID (else `STATUS_DLL_INIT_FAILED`).
+    - **Default DACL.** The token's default DACL must grant the logon SID,
+      or the command can't use its own pipes.
+    - **WSL blocked.** Low-integrity processes can't start WSL
+      (`Wsl/E_ACCESSDENIED`).
+  - Checks: `check:syntax` and `validate` pass; full sweep 262 of 282
+    passing, failures identical to **Known failing checks** (no production
+    code changed). The Codex probes' temporary `%TEMP%` ACEs, folders, and
+    leftover processes were removed afterwards.
 
 ### Turn 7: Windows executor
 
 - Status: planned
 - Scope:
   - PowerShell sessions (`pwsh`, fallback Windows PowerShell 5.1,
-    `-NoProfile -NonInteractive`, UTF-8 output) with Job Object containment.
-    The shell planning already exists (`nativeShellCommand`, turn 5).
-  - Full access first; Workspace and Read only through the sandbox if turn 6
-    was positive, otherwise refused with a clear message.
+    `-NoProfile -NonInteractive`, UTF-8 output). The shell planning already
+    exists (`nativeShellCommand`, turn 5).
+  - Containment per `DIRECT_WINDOWS_CONTAINMENT_DECISION.md`:
+    - Productionize the job runner (built from source by `csc.exe` at first
+      use and cached by digest; refuse commands clearly if it can't be
+      built).
+    - Run every Windows command through it, including the host's local
+      Windows backend under Full access, which leaks process trees today.
+  - Workspace (Low integrity, Low-labeled project folder) and Read only (Low
+    integrity plus write-restricted token), each with a private scratch
+    `TEMP`. Label credential stores Medium no-read-up.
+  - Execution-environment facts and the Access menu say that Windows
+    Workspace and Read only don't block the network.
   - Filesystem read and patch with CRLF preserved.
 - Done when: the regression passes under Windows Node.
 - Milestone: Windows-native agents.
@@ -528,7 +580,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   a Windows host until turn 8.
 - The Windows workspace backend refuses commands
   (`workspace_windows_job_object_containment_unavailable`) until Job Object
-  containment exists (turn 7).
+  containment exists (turn 7, using the job runner decided in turn 6).
 - The transport reports a provider body it can't read incrementally as
   `max_output`, which surfaces to users as `max_output_terminal`. A distinct
   code (for example `provider_body_not_streamable`) would be clearer.
@@ -565,6 +617,21 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 - The restricted (no-grant) read path in `read-only-authority.js` and the
   workspace backend's own `readFile`/`applyPatch` still exist for threads
   without a task grant; they were not changed this turn.
+- On a Windows host, Node children are in libuv's job, which allows silent
+  breakaway, so anything a command starts survives both killing the command
+  and a host crash. That applies to today's local Windows backend under Full
+  access (measured in turn 6); turn 7's job runner fixes it.
+- Codex's unelevated Windows sandbox treats `%TEMP%` as a writable root and
+  adds a persistent, inheritable Modify ACE for a new capability SID to the
+  user's real `%TEMP%` on each fresh `CODEX_HOME`. This machine also carries
+  Codex's elevated setup from 2026-07-13 (`CodexSandboxOffline`/`Online`
+  accounts, firewall and WFP rules, `CodexSandboxUsers` ACEs on `%TEMP%`),
+  which ended in `setup_error.json`. Not Direct's state; noted so it isn't
+  mistaken for ours.
+- Under Low integrity, tools that write caches in the user profile (npm, pip,
+  the PowerShell module cache) fail unless redirected, as they do under the
+  Linux Workspace sandbox. Turn 7 may want to point well-known cache
+  variables at the scratch directory.
 
 ## Decisions
 
@@ -581,6 +648,8 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | One environment facts object drives instructions, tool descriptions, and the self-constitution snapshot | The model can't be told one shell in the instructions and another in a tool description if both render from the same facts, and the snapshot shows exactly what the model was told. |
 | 2026-10-06 | Process sessions die with their executor, however it stops | A lost executor can never report on or clean up its processes later, so leaving them running would leak unsupervised work. |
 | 2026-10-06 | Credential exposure: Full access unrestricted; Workspace and Read only can't reach Windows drives, WSL interop, or credential stores | Full access matches a native full-access agent on either OS (and vanilla Codex). The sandboxed profiles keep a WSL agent on its own Linux filesystem, which is the track's goal, and keep tokens out of model context. Hiding interop is also what makes the sandbox a sandbox: otherwise a sandboxed command can start an unsandboxed Windows process. |
+| 2026-10-06 | Windows containment uses a Direct-owned job runner, not Codex's sandbox | Codex's jobs allow breakaway and keep descendants alive by design; its unelevated network blocking is advisory and its real isolation needs accounts, firewall rules, and UAC; it has no stable third-party interface. A ~300-line runner built by the in-box `csc.exe` covers containment fully without admin rights. Details in `DIRECT_WINDOWS_CONTAINMENT_DECISION.md`. |
+| 2026-10-06 | Windows Workspace and Read only use integrity levels; network stays unenforced | Low integrity with a Low-labeled project folder confines writes; adding a write-restricted token gives Read only; a Medium no-read-up label hides credential stores; WSL interop is blocked for free. Nothing short of admin-provisioned firewall rules can block the network, so Direct states that instead of claiming it. |
 | 2026-10-06 | One file implementation, two placements | The executor runs the host's `LocalFilePort` natively, so local and WSL file rules can't drift apart; the host only plans. |
 
 ## Plan changes
@@ -590,4 +659,6 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | 0 | Added a full regression sweep to every turn's gates, with an expected-failures list. | The four originally known failures were a sample; the sweep found 20 more, so "validate passes" alone can't detect regressions. |
 | 2026-10-06 | 0 | Turn 9 also fixes `direct-t3-alternate-gui-regression`. | It pins Workbench DOM ids, which turn 9 changes anyway. |
 | 2026-10-06 | 5 | Commands run in `bash -c` instead of turn 3's `bash -lc`. | See **Decisions**: the login profile's startup cost broke a latency expectation, and PATH is inherited from the executor's login shell anyway. |
+| 2026-10-06 | 6 | Turn 7 builds Workspace and Read only on Windows instead of refusing them, and also wraps the host's local Windows backend in the job runner. | The spike proved both profiles without admin rights, and measured that the local Windows backend leaks process trees today. |
+| 2026-10-06 | 6 | Network is reported as not enforced for Windows Workspace and Read only. | No non-admin mechanism blocks it; see **Decisions**. |
 | 2026-10-06 | 5 | Turn 7 reuses `nativeShellCommand` for its PowerShell sessions. | The planner already picks `pwsh` or Windows PowerShell 5.1 with `-NoLogo -NoProfile -NonInteractive`; turn 7 adds UTF-8 output and Job Object containment around it. |
