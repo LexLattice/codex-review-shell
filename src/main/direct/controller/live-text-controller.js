@@ -2096,7 +2096,12 @@ class DirectLiveTextController {
     if (!this.fullAccessLocalEnvironmentExecutor) return null;
     const session = this.sessionStore.readSession(sessionId) || {};
     const grant = this.harnessGrantForTurn(sessionId, turnId, project);
-    if (!grant || !grantAccessProfile(grant) || !workspaceExecutesLocally(grant.executionEnvironment?.kind, project)) return null;
+    // The file executor serves workspaces local to this host directly and a
+    // WSL workspace opened from elsewhere through that environment's executor.
+    const servable = typeof this.fullAccessLocalEnvironmentExecutor.canServe === "function"
+      ? this.fullAccessLocalEnvironmentExecutor.canServe(grant || {}, project)
+      : workspaceExecutesLocally(grant?.executionEnvironment?.kind, project);
+    if (!grant || !grantAccessProfile(grant) || !servable) return null;
     const authorization = this.harnessGrantAuthorizationFor(sessionId, turnId, project, capabilityName);
     if (!authorization.authorized) return null;
     return {

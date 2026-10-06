@@ -288,6 +288,7 @@ const {
   EnvironmentExecutorProcessBackend,
   createEnvironmentExecBackendResolver,
 } = require("./main/direct/tools/executor-process-backend");
+const { ExecutorFilePort } = require("./main/direct/tools/executor-file-port");
 const {
   assertCodeModeExecutionLaneSafe,
   buildCodeModeExecutionLaneStatus,
@@ -4581,15 +4582,17 @@ function resolveDirectWorkspaceWorkerDelegationPolicy(input = {}) {
 function ensureDirectLiveTextController() {
   if (directLiveTextController) return directLiveTextController;
   const directHarnessGrantStore = new DirectThreadHarnessGrantStore({ rootDir: directSessionRootDir() });
-  // Sessions for workspaces that aren't local to this host (a WSL workspace
-  // opened from Windows) run inside that environment's executor.
-  const environmentExecutorBackend = new EnvironmentExecutorProcessBackend({
-    workspaceBackends: {
-      ensureForProject: (project) => {
-        if (!workspaceBackends) throw new Error("Workspace backends are not initialized.");
-        return workspaceBackends.ensureForProject(project);
-      },
+  // Commands and file operations for workspaces that aren't local to this
+  // host (a WSL workspace opened from Windows) run inside that environment's
+  // executor.
+  const environmentExecutors = {
+    ensureForProject: (project) => {
+      if (!workspaceBackends) throw new Error("Workspace backends are not initialized.");
+      return workspaceBackends.ensureForProject(project);
     },
+  };
+  const environmentExecutorBackend = new EnvironmentExecutorProcessBackend({
+    workspaceBackends: environmentExecutors,
   });
   const statefulExecSessionManager = new DirectStatefulExecSessionManager({
     grantStore: directHarnessGrantStore,
@@ -4602,6 +4605,7 @@ function ensureDirectLiveTextController() {
   const fullAccessLocalEnvironmentExecutor = new DirectFullAccessLocalEnvironmentExecutor({
     grantStore: directHarnessGrantStore,
     workspaceRootResolver: (input) => workspaceRoot(input?.project || input, repoRoot),
+    executorFilePort: new ExecutorFilePort({ workspaceBackends: environmentExecutors }),
   });
   directLiveTextController = new DirectLiveTextController({
     sessionStore: ensureDirectSessionStore(),

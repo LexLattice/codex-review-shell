@@ -43,6 +43,7 @@ const {
   findExecutableOnPath,
 } = require("../shared/executor-protocol");
 const { LocalChildProcessBackend } = require("../main/direct/tools/exec-process-backends");
+const { LocalFilePort } = require("../main/direct/tools/full-access-local-environment");
 
 const PROTOCOL_VERSION = 1;
 // Keep the protocol line bounded while still admitting the largest supported
@@ -6196,6 +6197,63 @@ function signalExecutorProcessSessionRequest(params = {}) {
   return { delivered: signalExecutorProcessSession(session, signal), signal };
 }
 
+// Executor file operations (`fs/*`). The host plans patches and checks
+// grants; the executor resolves paths natively, applies the access profile's
+// read and write rules, and revalidates before-digests immediately before
+// writing. Both sides run the same LocalFilePort.
+let executorFilePort = null;
+
+function executorFiles() {
+  if (!executorFilePort) executorFilePort = new LocalFilePort({ workspaceRootResolver: () => root });
+  return executorFilePort;
+}
+
+function executorFileGrant(params = {}) {
+  const sandboxMode = ["read-only", "workspace-write", "danger-full-access"].includes(params.sandboxMode)
+    ? params.sandboxMode
+    : "read-only";
+  return { sandboxMode };
+}
+
+async function executorFsRead(params = {}) {
+  const port = executorFiles();
+  const grant = executorFileGrant(params);
+  const resolved = port.resolveTarget({}, grant, params.path, params.purpose === "patch" ? "patch target" : "read_file path");
+  if (params.purpose === "patch") {
+    const target = await port.readPatchTarget(resolved, String(params.operation || "update"));
+    return { exists: target.exists, bytesBase64: target.bytes.toString("base64") };
+  }
+  await port.assertReadable(grant, resolved);
+  const { size, bytes } = await port.readFile(resolved, params.maxBytes);
+  return { size, bytesBase64: bytes.toString("base64") };
+}
+
+async function executorFsStat(params = {}) {
+  const port = executorFiles();
+  const grant = executorFileGrant(params);
+  const resolved = port.resolveTarget({}, grant, params.path, "patch target");
+  if (params.check === "writable") await port.assertWritable(grant, resolved);
+  return { writable: params.check === "writable" };
+}
+
+async function executorFsApplyPlannedPatch(params = {}) {
+  const port = executorFiles();
+  const grant = executorFileGrant(params);
+  const files = Array.isArray(params.files) ? params.files : [];
+  if (!files.length || files.length > 16) {
+    throw executorProcessError("direct_full_access_patch_invalid", "fs/applyPlannedPatch requires between 1 and 16 planned files.");
+  }
+  const plans = files.map((file) => ({
+    operation: String(file.operation || ""),
+    beforeExists: file.beforeExists === true,
+    beforeDigest: String(file.beforeDigest || ""),
+    _resolved: port.resolveTarget({}, grant, file.path, "patch target"),
+    _afterText: typeof file.afterText === "string" ? file.afterText : "",
+  }));
+  await port.commit(grant, plans);
+  return { applied: plans.length };
+}
+
 async function handleRequest(method, params = {}) {
   if (method === "hello") {
     const stat = await fs.stat(root);
@@ -6256,6 +6314,9 @@ async function handleRequest(method, params = {}) {
       },
     };
   }
+  if (method === EXECUTOR_METHODS.fsRead) return executorFsRead(params);
+  if (method === EXECUTOR_METHODS.fsStat) return executorFsStat(params);
+  if (method === EXECUTOR_METHODS.fsApplyPlannedPatch) return executorFsApplyPlannedPatch(params);
   if (method === EXECUTOR_METHODS.processStart) return startExecutorProcessSession(params);
   if (method === EXECUTOR_METHODS.processWrite) return writeExecutorProcessSession(params);
   if (method === EXECUTOR_METHODS.processSignal) return signalExecutorProcessSessionRequest(params);

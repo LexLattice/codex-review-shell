@@ -8,7 +8,7 @@ const {
   authorizeDirectThreadHarnessCapability,
   validateDirectThreadHarnessGrant,
 } = require("../authority/direct-thread-harness-grant");
-const { workspaceExecutesLocally } = require("./exec-sandbox");
+const { sandboxedReadRefusal, workspaceExecutesLocally } = require("./exec-sandbox");
 
 const LOCAL_EXECUTOR_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 
@@ -229,68 +229,56 @@ function pathIsInside(root, target) {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-class DirectFullAccessLocalEnvironmentExecutor {
+/**
+ * Everything that touches files for the Direct file environment. The host
+ * executor class owns grants, patch parsing, planning, and results; a port
+ * owns target resolution, bounded reads, profile checks, and the final
+ * verify-then-write commit. LocalFilePort runs in-process; the WSL executor
+ * runs this same class natively behind `fs/*`, and ExecutorFilePort (in
+ * executor-file-port.js) reaches it from another host.
+ */
+class LocalFilePort {
   constructor(options = {}) {
-    this.grantStore = options.grantStore || null;
+    this.kind = "local";
     this.workspaceRootResolver = typeof options.workspaceRootResolver === "function"
       ? options.workspaceRootResolver
       : (input = {}) => input.workspaceRoot || input.project?.workspaceRoot || "";
-    this.workspaceLocalityResolver = typeof options.workspaceLocalityResolver === "function"
-      ? options.workspaceLocalityResolver
-      : (kind, project) => workspaceExecutesLocally(kind, project);
-  }
-
-  resolveGrant(input = {}, capabilityName) {
-    const supplied = isPlainObject(input.harnessGrant) ? input.harnessGrant : null;
-    const taskId = normalizeString(input.taskId || input.threadId, "");
-    const threadId = normalizeString(input.threadId || input.taskId, taskId);
-    const projectId = normalizeString(input.projectId || input.project?.id || input.project?.projectId, "");
-    const environmentDigest = normalizeString(input.executionEnvironmentDigest || supplied?.executionEnvironmentDigest, "");
-    if (!taskId || !threadId || !projectId || !environmentDigest) {
-      throw localError("direct_full_access_scope_mismatch", "Full-access file execution requires exact task, thread, project, and environment binding.");
-    }
-    const expected = { taskId, threadId, projectId, executionEnvironmentDigest: environmentDigest };
-    const grantId = normalizeString(input.grantId || supplied?.grantId, "");
-    let grant = supplied;
-    if (this.grantStore && grantId && typeof this.grantStore.reconstruct === "function") {
-      try { grant = this.grantStore.reconstruct(grantId, { ...expected, grantId, requireCurrent: true }); } catch { grant = null; }
-    } else if (this.grantStore && typeof this.grantStore.currentForScope === "function") {
-      try { grant = this.grantStore.currentForScope(expected); } catch { grant = null; }
-    }
-    const errors = grant ? validateDirectThreadHarnessGrant(grant, { ...expected, requireCurrent: true }) : ["grant_missing"];
-    if (
-      errors.length ||
-      !LOCAL_EXECUTOR_SANDBOX_MODES.has(grant?.sandboxMode) ||
-      !this.workspaceLocalityResolver(grant?.executionEnvironment?.kind, input.project || {})
-    ) {
-      throw localError(errors.includes("grant_missing") ? "direct_full_access_grant_missing" : "direct_full_access_grant_not_current", "The exact current local full-access grant is required.");
-    }
-    const authorization = this.grantStore?.authorize && grant.grantId
-      ? this.grantStore.authorize(grant.grantId, capabilityName, expected)
-      : authorizeDirectThreadHarnessCapability(grant, capabilityName, { ...expected, runtimeAdmittedCapabilityNames: [capabilityName] });
-    if (!authorization?.authorized) throw localError(authorization?.reason || "direct_full_access_capability_not_authorized", "The current task grant does not authorize this local capability.");
-    return { grant, expected, authorization };
   }
 
   resolveTarget(input, grant, rawPath, label) {
-    const rootCandidate = this.workspaceRootResolver(input, grant.executionEnvironment);
+    const rootCandidate = this.workspaceRootResolver(input, grant?.executionEnvironment);
     if (!rootCandidate || !fs.existsSync(String(rootCandidate))) throw localError("direct_full_access_environment_unavailable", "The selected local execution environment is unavailable.");
     const root = path.resolve(String(rootCandidate));
     const text = pathText(rawPath, label);
     const target = path.resolve(path.isAbsolute(text) ? text : path.join(root, text));
-    return { root, target, pathEvidenceKey: safePathEvidence(target) };
+    return {
+      root,
+      target,
+      canonicalTarget: process.platform === "win32" ? target.toLowerCase() : target,
+      pathEvidenceKey: safePathEvidence(target),
+    };
   }
 
-  async request(input = {}, method, params = {}) {
-    const capability = method === "readFile" ? "read_file" : "apply_patch";
-    const { grant, expected, authorization } = this.resolveGrant(input, capability);
-    if (method === "readFile") return this.readFile(input, params, grant, expected, authorization);
-    if (method === "applyPatch") return this.applyPatch(input, params, grant, expected, authorization);
-    throw localError("direct_full_access_method_invalid", `Unsupported full-access local method: ${method}`);
+  // Sandboxed profiles see what their sandboxed shell sees: no Windows drives
+  // from WSL, no interop sockets, no credential stores.
+  assertReadable(grant, resolved) {
+    if (grant?.sandboxMode === "danger-full-access") return;
+    let real = resolved.target;
+    try { real = fs.realpathSync(resolved.target); } catch {}
+    let realRoot = resolved.root;
+    try { realRoot = fs.realpathSync(resolved.root); } catch {}
+    const refusal = sandboxedReadRefusal(real, { workspaceRoot: realRoot });
+    if (refusal) {
+      throw localError(
+        refusal,
+        refusal === "direct_access_profile_credential_store_hidden"
+          ? "Workspace and Read-only access cannot read credential stores. Ask the user to switch Access to Full access if this file is needed."
+          : "Workspace and Read-only access cannot read outside this environment's own filesystem. Ask the user to switch Access to Full access if this file is needed.",
+      );
+    }
   }
 
-  async readFile(input, params, grant, expected, authorization) {
-    const resolved = this.resolveTarget(input, grant, params.relPath || params.path, "read_file path");
+  async readFile(resolved, maxBytesInput) {
     let handle;
     try {
       handle = await fsp.open(resolved.target, "r");
@@ -300,7 +288,7 @@ class DirectFullAccessLocalEnvironmentExecutor {
     try {
       const initialStat = await handle.stat();
       if (!initialStat.isFile()) throw localError("direct_full_access_file_invalid", "The selected local path is not a regular file.");
-      const requestedBytes = Number(params.maxBytes);
+      const requestedBytes = Number(maxBytesInput);
       const maxBytes = Math.min(
         Number.isFinite(requestedBytes) && requestedBytes > 0 ? Math.floor(requestedBytes) : MAX_READ_FILE_BYTES,
         MAX_READ_FILE_BYTES,
@@ -313,32 +301,16 @@ class DirectFullAccessLocalEnvironmentExecutor {
         bytesRead += readResult.bytesRead;
       }
       const finalStat = await handle.stat();
-      const limited = buffer.subarray(0, bytesRead);
-      const binary = limited.includes(0);
-      return {
-        schema: "workspace_read_file_result@1",
-        relPath: resolved.pathEvidenceKey,
-        pathEvidenceKey: resolved.pathEvidenceKey,
-        text: binary ? "" : limited.toString("utf8"),
-        size: finalStat.size,
-        truncated: finalStat.size > bytesRead,
-        binary,
-        source: "direct_full_access_local_environment",
-        grantId: grant.grantId,
-        grantRevision: Number(grant.grantRevision),
-        executionEnvironmentDigest: expected.executionEnvironmentDigest,
-        authorizationMode: authorization.authorityMode || "full_access_task_grant",
-        rawPathIncluded: false,
-      };
+      return { size: finalStat.size, bytes: buffer.subarray(0, bytesRead) };
     } finally {
       await handle.close().catch(() => {});
     }
   }
 
-  async readPatchTarget(target, operation) {
+  async readPatchTarget(resolved, operation) {
     let handle;
     try {
-      handle = await fsp.open(target, "r");
+      handle = await fsp.open(resolved.target, "r");
     } catch (error) {
       if (operation === "create" && error?.code === "ENOENT") return { exists: false, bytes: Buffer.alloc(0) };
       throw localError("direct_full_access_patch_target_unavailable", "The selected local patch target is unavailable.");
@@ -365,7 +337,7 @@ class DirectFullAccessLocalEnvironmentExecutor {
     }
   }
 
-  assertPatchTargetAllowed(grant, resolved) {
+  async assertWritable(grant, resolved) {
     if (grant.sandboxMode === "danger-full-access") return;
     if (grant.sandboxMode === "read-only") {
       throw localError(
@@ -383,23 +355,140 @@ class DirectFullAccessLocalEnvironmentExecutor {
     }
   }
 
-  async applyPatch(input, params, grant, expected, authorization) {
+  // Revalidates every target (profile, existence, before-digest) before
+  // mutating any of them, preserving validate-all-before-mutate under races.
+  async commit(grant, plans) {
+    for (const plan of plans) {
+      await this.assertWritable(grant, plan._resolved);
+      if (!plan.beforeExists) {
+        const current = await this.readPatchTarget(plan._resolved, "create");
+        if (current.exists) throw localError("direct_full_access_patch_target_exists", "Patch create target appeared before apply.");
+        continue;
+      }
+      const current = await this.readPatchTarget(plan._resolved, plan.operation === "delete" ? "delete" : "update");
+      if (!current.exists || sha256(current.bytes.toString("utf8")) !== plan.beforeDigest) {
+        throw localError("direct_full_access_patch_conflict", "The selected local patch target changed before apply.");
+      }
+    }
+    for (const plan of plans) {
+      const target = plan._resolved.target;
+      if (plan.operation === "delete") {
+        await fsp.unlink(target);
+        continue;
+      }
+      await fsp.mkdir(path.dirname(target), { recursive: true });
+      const tempPath = `${target}.codex-direct-patch-${process.pid}-${Date.now()}.tmp`;
+      await fsp.writeFile(tempPath, plan._afterText, "utf8");
+      await fsp.rename(tempPath, target);
+    }
+  }
+}
+
+function resolveFileEnvironmentGrant(input = {}, capabilityName, grantStore = null) {
+  const supplied = isPlainObject(input.harnessGrant) ? input.harnessGrant : null;
+  const taskId = normalizeString(input.taskId || input.threadId, "");
+  const threadId = normalizeString(input.threadId || input.taskId, taskId);
+  const projectId = normalizeString(input.projectId || input.project?.id || input.project?.projectId, "");
+  const environmentDigest = normalizeString(input.executionEnvironmentDigest || supplied?.executionEnvironmentDigest, "");
+  if (!taskId || !threadId || !projectId || !environmentDigest) {
+    throw localError("direct_full_access_scope_mismatch", "Full-access file execution requires exact task, thread, project, and environment binding.");
+  }
+  const expected = { taskId, threadId, projectId, executionEnvironmentDigest: environmentDigest };
+  const grantId = normalizeString(input.grantId || supplied?.grantId, "");
+  let grant = supplied;
+  if (grantStore && grantId && typeof grantStore.reconstruct === "function") {
+    try { grant = grantStore.reconstruct(grantId, { ...expected, grantId, requireCurrent: true }); } catch { grant = null; }
+  } else if (grantStore && typeof grantStore.currentForScope === "function") {
+    try { grant = grantStore.currentForScope(expected); } catch { grant = null; }
+  }
+  const errors = grant ? validateDirectThreadHarnessGrant(grant, { ...expected, requireCurrent: true }) : ["grant_missing"];
+  if (errors.length || !LOCAL_EXECUTOR_SANDBOX_MODES.has(grant?.sandboxMode)) {
+    throw localError(errors.includes("grant_missing") ? "direct_full_access_grant_missing" : "direct_full_access_grant_not_current", "The exact current local full-access grant is required.");
+  }
+  const authorization = grantStore?.authorize && grant.grantId
+    ? grantStore.authorize(grant.grantId, capabilityName, expected)
+    : authorizeDirectThreadHarnessCapability(grant, capabilityName, { ...expected, runtimeAdmittedCapabilityNames: [capabilityName] });
+  if (!authorization?.authorized) throw localError(authorization?.reason || "direct_full_access_capability_not_authorized", "The current task grant does not authorize this local capability.");
+  return { grant, expected, authorization };
+}
+
+class DirectFullAccessLocalEnvironmentExecutor {
+  constructor(options = {}) {
+    this.grantStore = options.grantStore || null;
+    this.localPort = new LocalFilePort({ workspaceRootResolver: options.workspaceRootResolver });
+    this.executorFilePort = options.executorFilePort || null;
+    this.workspaceLocalityResolver = typeof options.workspaceLocalityResolver === "function"
+      ? options.workspaceLocalityResolver
+      : (kind, project) => workspaceExecutesLocally(kind, project);
+  }
+
+  // The local port serves workspaces local to this host; a WSL workspace
+  // opened from elsewhere is served by that environment's executor.
+  portFor(grant, project = {}) {
+    const kind = grant?.executionEnvironment?.kind;
+    if (this.workspaceLocalityResolver(kind, project)) return this.localPort;
+    if (kind === "wsl" && this.executorFilePort) return this.executorFilePort;
+    return null;
+  }
+
+  canServe(grant, project = {}) {
+    return Boolean(this.portFor(grant, project));
+  }
+
+  resolveGrant(input = {}, capabilityName) {
+    const resolved = resolveFileEnvironmentGrant(input, capabilityName, this.grantStore);
+    if (!this.portFor(resolved.grant, input.project || {})) {
+      throw localError("direct_full_access_grant_not_current", "The exact current local full-access grant is required.");
+    }
+    return resolved;
+  }
+
+  async request(input = {}, method, params = {}) {
+    const capability = method === "readFile" ? "read_file" : "apply_patch";
+    const { grant, expected, authorization } = this.resolveGrant(input, capability);
+    const port = this.portFor(grant, input.project || {});
+    if (method === "readFile") return this.readFile(port, input, params, grant, expected, authorization);
+    if (method === "applyPatch") return this.applyPatch(port, input, params, grant, expected, authorization);
+    throw localError("direct_full_access_method_invalid", `Unsupported full-access local method: ${method}`);
+  }
+
+  async readFile(port, input, params, grant, expected, authorization) {
+    const resolved = port.resolveTarget(input, grant, params.relPath || params.path, "read_file path");
+    await port.assertReadable(grant, resolved, input);
+    const { size, bytes } = await port.readFile(resolved, params.maxBytes, input, grant);
+    const binary = bytes.includes(0);
+    return {
+      schema: "workspace_read_file_result@1",
+      relPath: resolved.pathEvidenceKey,
+      pathEvidenceKey: resolved.pathEvidenceKey,
+      text: binary ? "" : bytes.toString("utf8"),
+      size,
+      truncated: size > bytes.length,
+      binary,
+      source: port.kind === "local" ? "direct_full_access_local_environment" : "direct_environment_executor",
+      grantId: grant.grantId,
+      grantRevision: Number(grant.grantRevision),
+      executionEnvironmentDigest: expected.executionEnvironmentDigest,
+      authorizationMode: authorization.authorityMode || "full_access_task_grant",
+      rawPathIncluded: false,
+    };
+  }
+
+  async applyPatch(port, input, params, grant, expected, authorization) {
     const patchText = String(params.patch || "");
     const patches = parseUnifiedPatch(patchText);
     const plans = [];
     const canonicalTargets = new Map();
     for (const filePatch of patches) {
       if (filePatch.relPath === "/dev/null") throw localError("direct_full_access_patch_invalid", "Patch target is missing.");
-      const resolved = this.resolveTarget(input, grant, filePatch.relPath, "patch target");
-      this.assertPatchTargetAllowed(grant, resolved);
-      const canonicalTarget = process.platform === "win32" ? resolved.target.toLowerCase() : resolved.target;
-      if (canonicalTargets.has(canonicalTarget)) {
+      const resolved = port.resolveTarget(input, grant, filePatch.relPath, "patch target");
+      await port.assertWritable(grant, resolved, input);
+      if (canonicalTargets.has(resolved.canonicalTarget)) {
         throw localError("direct_full_access_patch_duplicate_target", "Patch contains duplicate canonical workspace targets.");
       }
-      canonicalTargets.set(canonicalTarget, filePatch.relPath);
-      const beforeTarget = await this.readPatchTarget(resolved.target, filePatch.operation);
-      const beforeBuffer = beforeTarget.bytes;
-      const beforeText = beforeBuffer.toString("utf8");
+      canonicalTargets.set(resolved.canonicalTarget, filePatch.relPath);
+      const beforeTarget = await port.readPatchTarget(resolved, filePatch.operation, input, grant);
+      const beforeText = beforeTarget.bytes.toString("utf8");
       const before = splitLines(beforeText);
       if (filePatch.operation === "update" && !beforeTarget.exists) throw localError("direct_full_access_patch_target_unavailable", "Patch update target does not exist.");
       if (filePatch.operation === "create" && beforeTarget.exists) throw localError("direct_full_access_patch_target_exists", "Patch create target already exists.");
@@ -431,41 +520,17 @@ class DirectFullAccessLocalEnvironmentExecutor {
         addedLineCount: filePatch.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.startsWith("+")).length,
         removedLineCount: filePatch.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.startsWith("-")).length,
         previewText: filePatch.hunks.flatMap((hunk) => hunk.lines).join("\n").slice(0, 8000),
-        _root: resolved.root,
-        _target: resolved.target,
+        _resolved: resolved,
         _afterText: afterText,
       });
     }
     if (params.mode !== "apply") return this.publicPatchResult(patchText, plans, "dryRun", grant, expected, authorization);
-    // Revalidate every existing target with the same bounded reader before
-    // mutating any file, preserving validate-all-before-mutate under races.
-    for (const plan of plans) {
-      this.assertPatchTargetAllowed(grant, { root: plan._root, target: plan._target });
-      if (!plan.beforeExists) {
-        const current = await this.readPatchTarget(plan._target, "create");
-        if (current.exists) throw localError("direct_full_access_patch_target_exists", "Patch create target appeared before apply.");
-        continue;
-      }
-      const current = await this.readPatchTarget(plan._target, plan.operation === "delete" ? "delete" : "update");
-      if (!current.exists || sha256(current.bytes.toString("utf8")) !== plan.beforeDigest) {
-        throw localError("direct_full_access_patch_conflict", "The selected local patch target changed before apply.");
-      }
-    }
-    for (const plan of plans) {
-      if (plan.operation === "delete") {
-        await fsp.unlink(plan._target);
-        continue;
-      }
-      await fsp.mkdir(path.dirname(plan._target), { recursive: true });
-      const tempPath = `${plan._target}.codex-direct-patch-${process.pid}-${Date.now()}.tmp`;
-      await fsp.writeFile(tempPath, plan._afterText, "utf8");
-      await fsp.rename(tempPath, plan._target);
-    }
+    await port.commit(grant, plans, input);
     return this.publicPatchResult(patchText, plans, "apply", grant, expected, authorization);
   }
 
   publicPatchResult(patchText, plans, mode, grant, expected, authorization) {
-    const files = plans.map(({ _root, _target, _afterText, ...file }) => ({ ...file, previewTruncated: file.previewText.length >= 8000 }));
+    const files = plans.map(({ _resolved, _afterText, ...file }) => ({ ...file, previewTruncated: file.previewText.length >= 8000 }));
     return {
       schema: "workspace_apply_patch_result@1",
       mode,
@@ -501,5 +566,13 @@ class DirectFullAccessLocalEnvironmentExecutor {
 
 module.exports = {
   DirectFullAccessLocalEnvironmentExecutor,
+  LocalFilePort,
+  MAX_PATCH_TARGET_BYTES,
+  MAX_READ_FILE_BYTES,
+  localError,
   parseUnifiedPatch,
+  pathText,
+  resolveFileEnvironmentGrant,
+  safePathEvidence,
+  sha256,
 };

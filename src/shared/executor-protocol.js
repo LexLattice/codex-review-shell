@@ -36,6 +36,9 @@ const IMPLEMENTED_EXECUTOR_METHODS = Object.freeze([
   EXECUTOR_METHODS.processStart,
   EXECUTOR_METHODS.processWrite,
   EXECUTOR_METHODS.processSignal,
+  EXECUTOR_METHODS.fsRead,
+  EXECUTOR_METHODS.fsStat,
+  EXECUTOR_METHODS.fsApplyPlannedPatch,
 ]);
 
 // Events the executor pushes for a process session. Each carries

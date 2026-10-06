@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-06, after turn 3.
+Last updated: 2026-10-06, after turn 4.
 
 ## How to use this document
 
@@ -100,7 +100,7 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 4: WSL executor filesystem.**
+**Turn 5: model contract per environment.**
 
 ## Gates for every turn
 
@@ -301,7 +301,7 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ### Turn 4: WSL executor filesystem
 
-- Status: planned
+- Status: done with deviations
 - Scope:
   - `fs/read` and `fs/applyPlannedPatch` in the executor; the host still plans
     patches and the executor rechecks the root.
@@ -314,7 +314,47 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
     it through `workspaceBackends.ensureForProject(project)` like
     `EnvironmentExecutorProcessBackend` does.
 - Done when: `direct-access-profiles` passes against the executor backend too.
-- Outcome: _(fill in)_
+- Outcome:
+  - `full-access-local-environment.js` now splits into the host executor
+    class (grant check, patch parsing, hunk planning, results) and a file
+    port that does everything touching files: resolve target, read rules,
+    bounded reads, writable check, and a verify-then-write `commit`.
+    `LocalFilePort` is the old code; the WSL executor runs the same
+    `LocalFilePort` natively behind new `fs/read`, `fs/stat`, and
+    `fs/applyPlannedPatch`. The host reaches it through the new
+    `executor-file-port.js` (`ExecutorFilePort`). Local behavior is unchanged
+    (all existing file regressions pass untouched).
+  - Routing: `DirectFullAccessLocalEnvironmentExecutor.portFor` picks the
+    local port when the workspace is local to the host and the executor port
+    for a WSL workspace opened from elsewhere. `fullAccessLocalBinding` in the
+    controller uses `canServe` instead of the locality gate, so WSL threads
+    from Windows get access-profile file semantics (absolute paths under full
+    access, Workspace write boundary, Read only) instead of falling back to
+    the restricted workspace-backend path. `src/main.js` passes the executor
+    port, sharing one lazy executor adapter with the exec backend.
+  - Credential exposure decision (see **Decisions**): Full access is
+    unrestricted. Workspace and Read only can't reach Windows drives
+    (`/mnt/*`, except a workspace that lives there), WSL interop (`/run/WSL`),
+    or the two credential stores (`.codex/auth.json`,
+    `direct-auth/auth.json`), in both `read_file` and sandboxed commands.
+  - Deviation: deciding that policy uncovered a sandbox escape that predates
+    this track's WSL work. Inside a Workspace or Read-only sandbox in WSL,
+    `/mnt/c/Windows/System32/cmd.exe` launched through interop and ran on
+    Windows outside bubblewrap. Fixed in `exec-sandbox.js` (tmpfs over `/mnt`
+    and `/run/WSL`, credential files masked with `/dev/null`), which covers
+    both local Linux sandboxing and the WSL executor.
+  - The done-when check runs as the new
+    `direct-wsl-executor-files-regression` rather than by modifying
+    `direct-access-profiles`. It repeats that regression's file cases
+    (workspace-relative, absolute, `../`, and symlink escapes; nested create;
+    Read-only write refusal; full-access writes outside) against the executor,
+    and adds commit revalidation (stale before-digest refused), the
+    sandboxed read policy, the interop escape, and policy unit checks.
+  - Checks: the new regression passes on both hosts (Windows through
+    `wsl.exe`); turn 3's regression still passes on both hosts;
+    `check:syntax`, `validate`, and the file, exec, and lifecycle regressions
+    pass; full sweep 261 of 281 passing, failures identical to **Known
+    failing checks**.
 
 ### Turn 5: model contract per environment
 
@@ -480,6 +520,13 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 - Full-access executor sessions run inside a user namespace (as all contained
   backend processes already did), so `sudo` and other setuid programs don't
   work there.
+- The credential policy names two stores (`.codex/auth.json`,
+  `direct-auth/auth.json`). Other user secrets (SSH keys, cloud CLI tokens)
+  stay readable in Workspace and Read only, as in vanilla Codex's workspace
+  mode. Widening the list is a product decision, not a bug.
+- The restricted (no-grant) read path in `read-only-authority.js` and the
+  workspace backend's own `readFile`/`applyPatch` still exist for threads
+  without a task grant; they were not changed this turn.
 
 ## Decisions
 
@@ -493,6 +540,8 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | Remote process sessions start asynchronously behind a synchronous `launch` | The router's `start()` and its callers are synchronous; a handle that starts the remote process on the next tick keeps every caller unchanged, and refusals still reach the model as failed sessions. |
 | 2026-10-06 | Executor sessions use the native login shell (`bash -lc`) | That is what a WSL user's terminal runs, so PATH and tools (nvm, pyenv) match what the agent would see natively. |
 | 2026-10-06 | Process sessions die with their executor, however it stops | A lost executor can never report on or clean up its processes later, so leaving them running would leak unsupervised work. |
+| 2026-10-06 | Credential exposure: Full access unrestricted; Workspace and Read only can't reach Windows drives, WSL interop, or credential stores | Full access matches a native full-access agent on either OS (and vanilla Codex). The sandboxed profiles keep a WSL agent on its own Linux filesystem, which is the track's goal, and keep tokens out of model context. Hiding interop is also what makes the sandbox a sandbox: otherwise a sandboxed command can start an unsandboxed Windows process. |
+| 2026-10-06 | One file implementation, two placements | The executor runs the host's `LocalFilePort` natively, so local and WSL file rules can't drift apart; the host only plans. |
 
 ## Plan changes
 
