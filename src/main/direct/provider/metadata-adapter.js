@@ -8,8 +8,14 @@ const DIRECT_PROVIDER_METADATA_PROFILE_SCHEMA = "direct_provider_metadata_profil
 const DIRECT_METADATA_DRIFT_REPORT_SCHEMA = "direct_metadata_drift_report@1";
 const DEFAULT_CODEX_MODELS_ENDPOINT = "https://chatgpt.com/backend-api/codex/models";
 const DEFAULT_CHATGPT_WHAM_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
-const DEFAULT_CLIENT_VERSION = "0.0.0-codex-review-shell";
-const DEFAULT_TTL_MS = 15 * 60 * 1000;
+// The server tailors the catalog to the client version (models a client is
+// too old for are left out), so Direct reports the installed Codex CLI's
+// version, falling back to the release the Direct harness tracks.
+const PINNED_CODEX_CLIENT_VERSION = "0.160.0";
+const DEFAULT_CLIENT_VERSION = PINNED_CODEX_CLIENT_VERSION;
+// Codex keeps its catalog for 5 minutes.
+const DEFAULT_TTL_MS = 5 * 60 * 1000;
+const ACCOUNT_KEY_MEMO_MS = 2000;
 const DEFAULT_TIMEOUT_MS = 3500;
 const DEFAULT_REFRESH_BEFORE_MS = 60_000;
 const KNOWN_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
@@ -168,12 +174,18 @@ function normalizeModelDescriptor(raw = {}, index = 0, validation = {}) {
       value: defaultServiceTier,
     });
   }
+  // Codex's catalog says `visibility: "list" | "hide" | "none"`; only "list"
+  // belongs in the picker.
+  const visibility = normalizeString(raw.visibility, "").toLowerCase();
   return {
     id: modelId || model,
     model: model || modelId,
     displayName: normalizeString(raw.displayName || raw.display_name, model || modelId),
     description: normalizeString(raw.description, ""),
-    hidden: normalizeBoolean(raw.hidden, normalizeString(raw.visibility, "") === "hidden"),
+    hidden: normalizeBoolean(raw.hidden, visibility ? visibility !== "list" : false),
+    visibility: visibility || "list",
+    priority: numberOrUndefined(raw.priority),
+    supportedInApi: typeof (raw.supportedInApi ?? raw.supported_in_api) === "boolean" ? (raw.supportedInApi ?? raw.supported_in_api) : undefined,
     isDefault: normalizeBoolean(raw.isDefault || raw.is_default, false),
     upgrade: raw.upgrade === undefined ? null : raw.upgrade,
     upgradeInfo: raw.upgradeInfo || raw.upgrade_info || null,
@@ -348,10 +360,17 @@ function buildDirectProviderMetadataProfile(input = {}) {
   if (!rawModels.length && input.modelSource === "server_model_list") {
     validation.missingRequiredFields.push("modelCatalog.items");
   }
+  // Ordered by the server's priority, like Codex; the default is the first
+  // model the picker shows.
   const items = rawModels
     .map((entry, index) => normalizeModelDescriptor(entry, index, validation))
-    .filter(Boolean);
-  const defaultItem = items.find((entry) => entry.isDefault) || items[0] || null;
+    .filter(Boolean)
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) => (a.entry.priority ?? Number.MAX_SAFE_INTEGER) - (b.entry.priority ?? Number.MAX_SAFE_INTEGER) || a.index - b.index)
+    .map(({ entry }) => entry);
+  const listedItems = items.filter((entry) => !entry.hidden);
+  const defaultItem = listedItems.find((entry) => entry.isDefault) || listedItems[0] ||
+    items.find((entry) => entry.isDefault) || items[0] || null;
   const quota = normalizeQuotaSnapshot(input.rawRateLimits);
   const accountTokenProfile = normalizeAccountTokenProfile(input.rawAccountTokenProfile);
   const modelSource = items.length
@@ -515,6 +534,47 @@ function buildDirectMetadataDriftReport(input = {}) {
   return report;
 }
 
+/**
+ * The installed Codex CLI's version (from its npm package), without spawning
+ * it; prerelease suffixes are dropped, as Codex does for `client_version`.
+ * Falls back to the pinned release.
+ */
+function detectCodexClientVersion(options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  const readFile = options.readFile || ((file) => fs.readFileSync(file, "utf8"));
+  const listDir = options.listDir || ((dir) => fs.readdirSync(dir));
+  const releaseOf = (value) => /^(\d+\.\d+\.\d+)/.exec(normalizeString(value, ""))?.[1] || "";
+  const override = releaseOf(env.CODEX_DIRECT_CLIENT_VERSION);
+  if (override) return { version: override, source: "env" };
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const packageSuffix = ["node_modules", "@openai", "codex", "package.json"];
+  const candidates = [];
+  const pathDirs = String(env.PATH || env.Path || "").split(platform === "win32" ? ";" : ":").filter(Boolean);
+  if (platform === "win32") {
+    if (env.APPDATA) candidates.push(pathApi.join(env.APPDATA, "npm", ...packageSuffix));
+    for (const dir of pathDirs) candidates.push(pathApi.join(dir, ...packageSuffix));
+  } else {
+    for (const dir of pathDirs) candidates.push(pathApi.join(dir, "..", "lib", ...packageSuffix));
+    const home = normalizeString(env.HOME, "");
+    if (home) {
+      candidates.push(pathApi.join(home, ".npm-global", "lib", ...packageSuffix));
+      const nvmRoot = pathApi.join(home, ".nvm", "versions", "node");
+      try {
+        for (const nodeVersion of listDir(nvmRoot)) candidates.push(pathApi.join(nvmRoot, nodeVersion, "lib", ...packageSuffix));
+      } catch {}
+    }
+    candidates.push(pathApi.join("/usr/local/lib", ...packageSuffix), pathApi.join("/usr/lib", ...packageSuffix));
+  }
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      const version = releaseOf(JSON.parse(readFile(candidate)).version);
+      if (version) return { version, source: "installed_codex_cli" };
+    } catch {}
+  }
+  return { version: PINNED_CODEX_CLIENT_VERSION, source: "pinned" };
+}
+
 function cacheKeyForProject(projectId = "") {
   return normalizeString(projectId, "global").replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 96) || "global";
 }
@@ -570,6 +630,29 @@ class DirectServerMetadataAdapter {
     this.modelsEndpoint = normalizeString(options.modelsEndpoint || process.env.CODEX_DIRECT_METADATA_MODELS_ENDPOINT, DEFAULT_CODEX_MODELS_ENDPOINT);
     this.usageEndpoint = normalizeString(options.usageEndpoint || process.env.CODEX_DIRECT_METADATA_USAGE_ENDPOINT, DEFAULT_CHATGPT_WHAM_USAGE_ENDPOINT);
     this.ttlMs = Number(options.ttlMs ?? DEFAULT_TTL_MS);
+    this.accountKeyMemo = { at: 0, key: "" };
+  }
+
+  // A catalog belongs to the account that fetched it; another account's
+  // catalog is never served (Codex keys its cache by auth identity).
+  currentAccountEvidenceKey() {
+    const now = Date.now();
+    if (now - this.accountKeyMemo.at < ACCOUNT_KEY_MEMO_MS) return this.accountKeyMemo.key;
+    let key = "";
+    try {
+      const authStore = typeof this.authStoreFactory === "function" ? this.authStoreFactory() : null;
+      const credentials = authStore && typeof authStore.readCredentials === "function" ? authStore.readCredentials() : null;
+      const authStatus = authStore && typeof authStore.readStatus === "function" ? authStore.readStatus() : null;
+      key = accountEvidenceKey(credentials || {}, authStatus || {});
+    } catch {}
+    this.accountKeyMemo = { at: now, key };
+    return key;
+  }
+
+  belongsToCurrentAccount(profile = {}) {
+    const cachedKey = normalizeString(profile?.account?.accountEvidenceKey, "");
+    const currentKey = this.currentAccountEvidenceKey();
+    return !cachedKey || !currentKey || cachedKey === currentKey;
   }
 
   cachePath(projectId = "") {
@@ -587,7 +670,8 @@ class DirectServerMetadataAdapter {
 
   cachedStatus(projectId = "") {
     const cached = this.readCached(projectId);
-    if (!cached?.profile) {
+    const accountChanged = Boolean(cached?.profile) && !this.belongsToCurrentAccount(cached.profile);
+    if (!cached?.profile || accountChanged) {
       const profile = buildDirectProviderMetadataProfile({
         projectId,
         modelSource: "unknown",
@@ -597,6 +681,7 @@ class DirectServerMetadataAdapter {
         profile,
         driftReport: buildDirectMetadataDriftReport({ projectId, profile, fetchStatus: "unavailable", cacheState: "missing" }),
         cacheState: "missing",
+        ...(accountChanged ? { reason: "provider_metadata_account_changed" } : {}),
       };
     }
     const ageMs = Date.now() - (Date.parse(cached.updatedAt || cached.profile.generatedAt || "") || 0);
@@ -610,7 +695,9 @@ class DirectServerMetadataAdapter {
 
   async refreshForProject(project = {}, options = {}) {
     const projectId = normalizeString(project.id || options.projectId, "");
-    const previous = this.readCached(projectId);
+    this.accountKeyMemo = { at: 0, key: "" };
+    const cachedPrevious = this.readCached(projectId);
+    const previous = cachedPrevious?.profile && this.belongsToCurrentAccount(cachedPrevious.profile) ? cachedPrevious : null;
     const authStore = typeof this.authStoreFactory === "function" ? this.authStoreFactory() : null;
     let credentials = null;
     let authStatus = null;
@@ -775,7 +862,9 @@ module.exports = {
   DIRECT_METADATA_DRIFT_REPORT_SCHEMA,
   DIRECT_PROVIDER_METADATA_PROFILE_SCHEMA,
   DirectServerMetadataAdapter,
+  PINNED_CODEX_CLIENT_VERSION,
   buildDirectMetadataDriftReport,
+  detectCodexClientVersion,
   buildDirectProviderMetadataProfile,
   normalizeModelDescriptor,
   validateDirectProviderMetadataProfile,

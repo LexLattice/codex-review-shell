@@ -277,25 +277,40 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function liveModelEvidenceBlockerReason(reason = "") {
-  const normalized = normalizeString(reason, "");
-  if ([
-    "expired",
-    "missing",
-    "scope_mismatch",
-    "candidate",
-    "unstable",
-    "rejected",
-  ].includes(normalized)) {
-    return `live_probe_evidence_${normalized}`;
-  }
-  return normalized;
+// The account's /models catalog as the picker sees it: listed (not hidden)
+// models from the server, in priority order, and the default among them.
+function providerModelCatalogView(metadata = {}) {
+  const profile = isPlainObject(metadata?.profile) ? metadata.profile : {};
+  const fromServer = normalizeString(profile.modelCatalog?.source, "") === "server_model_list";
+  const items = fromServer && Array.isArray(profile.modelCatalog?.items) ? profile.modelCatalog.items : [];
+  const listed = items
+    .filter((item) => isPlainObject(item) && item.hidden !== true && normalizeString(item.model || item.id, ""))
+    .map((item) => ({ id: normalizeString(item.id, ""), model: normalizeString(item.model || item.id, "") }));
+  const declaredDefault = normalizeString(profile.modelCatalog?.defaultModel, "");
+  return {
+    available: listed.length > 0,
+    state: normalizeString(metadata?.cacheState, "missing"),
+    listed,
+    defaultModel: listed.some((item) => item.model === declaredDefault || item.id === declaredDefault)
+      ? declaredDefault
+      : normalizeString(listed[0]?.model, ""),
+  };
+}
+
+/**
+ * A clear message when the provider refused the turn's model (for example
+ * a model this account or client can't use), or "" for other failures.
+ */
+function modelRejectionMessage(error = {}, httpStatus = 0, model = "") {
+  const status = Number(httpStatus) || Number(error?.status) || Number(/^http_(\d{3})$/.exec(normalizeString(error?.code, ""))?.[1]) || 0;
+  const message = normalizeString(error?.message, "");
+  if (![400, 403, 404].includes(status) || !/\bmodel\b/i.test(`${message} ${normalizeString(error?.code, "")}`)) return "";
+  const reason = (message || `HTTP ${status}`).replace(/[.\s]*$/, ".");
+  return `The provider refused model ${model || "(unknown)"}: ${reason} The model list is being refreshed; pick another model to continue.`;
 }
 
 function liveTextReadinessErrorMessage(status = {}) {
-  if (status.reason === "live_probe_evidence_expired") {
-    return "Direct live-model capability evidence expired. Run the scoped Direct live probe before starting another turn.";
-  }
+  if (status.status === "auth_required") return "Direct isn't signed in. Sign in to ChatGPT, then try again.";
   return status.reason || status.status;
 }
 
@@ -773,8 +788,12 @@ function buildDirectLiveTextCapabilities(status = {}, options = {}) {
     providerAttachmentCapability: status.providerAttachmentCapability,
   });
   const metadata = isPlainObject(status.providerMetadataProfile) ? status.providerMetadataProfile : null;
-  const metadataFresh = !["stale", "missing", "failed", "invalid"].includes(normalizeString(status.providerMetadataCacheState, ""));
-  const modelCatalogAvailable = ready && metadataFresh && metadata?.modelCatalog?.status === "available" &&
+  // Listing doesn't depend on the selected model or readiness, and a stale
+  // catalog from the same account is still offered while a refresh runs (as
+  // Codex does).
+  const metadataUsable = !["missing", "failed", "invalid"].includes(normalizeString(status.providerMetadataCacheState, ""));
+  const metadataFresh = metadataUsable && normalizeString(status.providerMetadataCacheState, "") !== "stale";
+  const modelCatalogAvailable = metadataUsable && metadata?.modelCatalog?.status === "available" &&
     Array.isArray(metadata.modelCatalog.items) && metadata.modelCatalog.items.length > 0;
   const hostedToolNames = providerHostedToolNames(status);
   const externalToolNames = externalPromotedToolNames(status);
@@ -1957,6 +1976,8 @@ class DirectLiveTextController {
     this.workThreadStore = options.workThreadStore || null;
     this.refreshCredentials = typeof options.refreshCredentials === "function" ? options.refreshCredentials : null;
     this.modelEvidenceResolver = typeof options.modelEvidenceResolver === "function" ? options.modelEvidenceResolver : null;
+    // Refreshes the account's /models catalog for a project; returns a promise.
+    this.providerCatalogRefresher = typeof options.providerCatalogRefresher === "function" ? options.providerCatalogRefresher : null;
     this.implementationProofEvidenceResolver = typeof options.implementationProofEvidenceResolver === "function" ? options.implementationProofEvidenceResolver : null;
     this.activationStatusResolver = typeof options.activationStatusResolver === "function" ? options.activationStatusResolver : null;
     this.subAgentStatusSurfaceResolver = typeof options.subAgentStatusSurfaceResolver === "function" ? options.subAgentStatusSurfaceResolver : null;
@@ -2616,6 +2637,20 @@ class DirectLiveTextController {
     );
   }
 
+  // Like Codex: a response whose X-Models-Etag differs from the catalog's
+  // ETag means /models changed, and a refused model means the catalog may be
+  // out of date. Either refreshes the catalog in the background.
+  noteProviderCatalogSignal(project = {}, signal = {}) {
+    if (!this.providerCatalogRefresher || !normalizeString(project?.id, "")) return;
+    const modelsEtag = normalizeString(signal.modelsEtag, "");
+    const catalogEtag = normalizeString(this.resolveProviderMetadataStatus(project)?.profile?.modelCatalog?.etag, "");
+    const etagChanged = Boolean(modelsEtag) && modelsEtag !== catalogEtag;
+    if (!etagChanged && signal.modelRejected !== true) return;
+    Promise.resolve()
+      .then(() => this.providerCatalogRefresher({ project, reason: signal.modelRejected ? "model_rejected" : "models_etag_changed" }))
+      .catch(() => {});
+  }
+
   resolveLiveModelEvidence(project = {}, requestedModel = "") {
     if (!this.modelEvidenceResolver) return null;
     try {
@@ -2781,15 +2816,34 @@ class DirectLiveTextController {
     };
   }
 
-  modelEvidenceForProject(project = {}, options = {}) {
+  /**
+   * Which model a turn uses and what is known about it. As in Codex, the
+   * account's /models catalog is what the picker offers and supplies the
+   * default; it does not gate a turn, and neither does an optional "Test
+   * model" probe: a signed-in account may call any model, and the server's
+   * answer is authoritative (see modelRejectionMessage).
+   */
+  modelEvidenceForProject(project = {}, options = {}, providerMetadataStatus = null) {
     const requestedModel = this.requestedModelForProject(project, options);
+    const metadata = isPlainObject(providerMetadataStatus) ? providerMetadataStatus : this.resolveProviderMetadataStatus(project);
+    const catalog = providerModelCatalogView(metadata);
     const staticEvidence = modelEvidenceFor(this.profileDoc, requestedModel);
-    const liveEvidence = this.resolveLiveModelEvidence(project, requestedModel || staticEvidence.model);
-    if (liveEvidence?.accepted) return liveEvidence;
+    const model = requestedModel || catalog.defaultModel || staticEvidence.model;
+    const listed = catalog.listed.find((item) => item.model === model || item.id === model) || null;
+    const liveEvidence = this.resolveLiveModelEvidence(project, model);
     return {
-      ...staticEvidence,
-      reason: liveModelEvidenceBlockerReason(liveEvidence?.reason) ||
-        (staticEvidence.accepted ? "" : "accepted_text_model_required"),
+      model,
+      modelSource: requestedModel
+        ? (listed ? "provider_model_catalog" : "configured")
+        : catalog.defaultModel ? "provider_model_catalog_default" : staticEvidence.modelSource,
+      modelEvidenceState: listed
+        ? "provider_listed"
+        : catalog.available ? "provider_unlisted" : "provider_catalog_unavailable",
+      accepted: true,
+      reason: "",
+      providerListed: Boolean(listed),
+      providerCatalogState: catalog.state,
+      evidenceId: liveEvidence?.accepted ? normalizeString(liveEvidence.evidenceId, "") : "",
       liveProbeEvidence: liveEvidence?.liveProbeEvidence || null,
       liveProbeEvidenceId: normalizeString(liveEvidence?.evidenceId, ""),
     };
@@ -2852,10 +2906,10 @@ class DirectLiveTextController {
 
   statusForProject(project = {}, options = {}) {
     const auth = this.authStatus();
-    const evidence = this.modelEvidenceForProject(project, options);
+    const providerMetadataStatus = this.resolveProviderMetadataStatus(project);
+    const evidence = this.modelEvidenceForProject(project, options, providerMetadataStatus);
     const implementationLaneProof = this.resolveImplementationProofEvidence(project, evidence.model);
     const externalCapabilityProfile = this.resolveExternalCapabilityProfile(project);
-    const providerMetadataStatus = this.resolveProviderMetadataStatus(project);
     const providerHostedToolsStatus = this.resolveProviderHostedToolsStatus(project, providerMetadataStatus);
     const readOnlyToolContinuation = mergeScopedProofWithProfileEvidence(
       readOnlyContinuationEvidenceFor(this.profileDoc),
@@ -2875,21 +2929,17 @@ class DirectLiveTextController {
       "run_command",
       "scoped_command_execution_proof_required",
     );
-    let status = "ready";
-    let reason = "";
-    if (auth.status !== "authenticated") {
-      status = "auth_required";
-      reason = "direct_auth_required";
-    } else if (!evidence.accepted) {
-      status = "profile_required";
-      reason = evidence.reason || "accepted_text_model_required";
-    }
+    // Signed in is ready, as in Codex.
+    const status = auth.status === "authenticated" ? "ready" : "auth_required";
+    const reason = status === "ready" ? "" : "direct_auth_required";
     return {
       status,
       turnRunnable: status === "ready",
       model: evidence.model,
       modelSource: evidence.modelSource,
       modelEvidenceState: evidence.modelEvidenceState,
+      providerListed: evidence.providerListed,
+      providerCatalogState: evidence.providerCatalogState,
       transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       workspaceKind: normalizeString(project.workspace?.kind, ""),
       appServerRequired: false,
@@ -10735,12 +10785,19 @@ class DirectLiveTextController {
       else if (terminalCode === "max_output" || terminalCode === "max_output_terminal") terminalState = "max_output_terminal";
       else if (terminal.state === "completed" && !assistantItem.text) terminalState = "empty_output_terminal";
     }
+    const rejectedModelMessage = terminal.state === "failed"
+      ? modelRejectionMessage(terminal.error || result.error || {}, result.response?.status, model)
+      : "";
+    const turnError = rejectedModelMessage
+      ? { ...(terminal.error || {}), code: "model_unavailable", message: rejectedModelMessage }
+      : terminal.error;
+    this.noteProviderCatalogSignal(project, { modelsEtag: result.modelsEtag, modelRejected: Boolean(rejectedModelMessage) });
     const completedTurn = this.sessionStore.updateTurnState(sessionId, turnId, terminalState, {
       ...(toolBlockedTextOnly
         ? { error: { code: "provider_tool_call_in_text_only_tier", message: "Direct text-only does not execute or continue tool calls." } }
         : terminalState === "empty_output_terminal"
           ? { error: { code: "empty_output_terminal", message: "Direct text-only response completed without assistant text." } }
-          : terminal.error ? { error: terminal.error } : {}),
+          : turnError ? { error: turnError } : {}),
       responseId: result.responseId || "",
       responseStatus: result.response?.status || 0,
       responseContentType: result.response?.contentType || "",

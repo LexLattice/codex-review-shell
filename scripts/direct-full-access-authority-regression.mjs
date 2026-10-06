@@ -74,14 +74,15 @@ async function main() {
     assert.match(rendererSource, /rpc\("thread\/selectAccessProfile", \{ sessionId, accessProfile: preferredDirectAccessProfile\(\) \}\)/);
     assert.match(rendererSource, /DEFAULT_DIRECT_ACCESS_PROFILE\s*=\s*"full_access"/);
     assert.match(rendererSource, /isDirectFullAccessSurface\(\)\)\s*params\.accessProfile\s*=\s*preferredDirectAccessProfile\(\)/);
-    // It only selects Access while main declares it (Direct ready), and a
-    // readiness refusal for the thread's own model (readiness is verified per
-    // model) shows the readiness prompt instead of failing the thread.
+    // It only selects Access while main declares it (Direct signed in), and
+    // a sign-in refusal shows the refresh prompt instead of failing the
+    // thread. Readiness is not per model, so no probe codes remain.
     assert.match(rendererSource, /function canSelectDirectAccessProfile\(\)\s*\{\s*return isDirectFullAccessSurface\(\)\s*&&\s*hasCapabilityForMutation\("threads", "canSelectAccessProfile"\);/);
     const helper = rendererSource.slice(rendererSource.indexOf("async function selectPreferredAccessForThread("), rendererSource.indexOf("async function selectDirectAccessProfile("));
     assert.match(helper, /if \(!canSelectDirectAccessProfile\(\) \|\| !sessionId\) return false;/);
     assert.match(helper, /const code = directReadinessCodeFromError\(error\);\s*if \(!code\) throw error;\s*addDirectReadinessActionMessage\(/);
-    assert.match(rendererSource, /live_probe_evidence_\(\?:expired\|missing\|scope_mismatch\)/);
+    assert.match(rendererSource, /function directReadinessCodeFromError\(error\) \{[\s\S]*?auth_required/);
+    assert.doesNotMatch(rendererSource, /live_probe_evidence_/);
 
     const grant = DirectThreadHarnessGrant.issue({
       taskId: threadId,

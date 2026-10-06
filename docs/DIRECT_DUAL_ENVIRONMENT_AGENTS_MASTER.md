@@ -716,6 +716,59 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
       readiness prompt with its Refresh button, which verifies that thread's
       model, instead of failing the thread. A successful refresh then applies
       the preferred Access.
+  - **Follow-up: models work like Codex.** Per-model readiness was the wrong
+    design (the owner's call: "the picker should only offer models the API
+    says are available"). Codex (`upstream-0.160.0`) never probes a model
+    before a turn. It fetches
+    `GET chatgpt.com/backend-api/codex/models?client_version=<version>`,
+    offers the `visibility: "list"` models by `priority`, caches the list for
+    5 minutes per account, refreshes it every 4.5 minutes, on sign-in
+    changes, and when a response's `X-Models-Etag` differs, and lets the
+    server reject a model. Direct now does the same:
+    - **Readiness is sign-in.** `statusForProject` is ready when signed in.
+      List membership is reported (`providerListed`, `modelEvidenceState`
+      `provider_listed`, `provider_unlisted`, or
+      `provider_catalog_unavailable`) but never blocks. The experimental
+      activation path follows the same rule (`liveTextReady` no longer needs
+      probe evidence).
+    - **The list.** `metadata-adapter.js` keeps `visibility` and `priority`,
+      orders by priority, and takes the first listed model as the default.
+      `client_version` is the installed Codex CLI's version (npm package,
+      prerelease dropped; 0.160.0 in WSL and 0.160.1 on Windows here), with
+      `CODEX_DIRECT_CLIENT_VERSION` as an override and 0.160.0 pinned as the
+      fallback. The cache lives 5 minutes and is never served to another
+      account. Main refreshes it every 270 s for the current Direct project,
+      when the account changes, and when the controller reports a refused
+      model or a changed `X-Models-Etag`. Concurrent refreshes share one
+      request.
+    - **A refused model.** The transport reads the provider's reason from the
+      JSON body (`detail` or `error.message`). A 400, 403, or 404 that names
+      the model fails the turn with `model_unavailable`: "The provider
+      refused model X: <reason> The model list is being refreshed; pick
+      another model to continue." The renderer then reloads the picker.
+    - **Renderer.** The picker shows only listed models, by priority, with
+      no fallback to hidden models or an older list. A current model that
+      isn't listed stays visible as "· unavailable" and can't be picked.
+      Opening the picker refetches the list only when the cache is stale.
+      **Refresh Direct readiness** became **Refresh models** (sign-in plus
+      the list, no prompt sent). The old probe survives only as the optional
+      **Test model** in the runtime drawer (`direct-runtime:test-model`);
+      nothing waits on it. Prompts about readiness now appear only when
+      signed out.
+    - Updated pinned checks in `direct-codex-smoke`,
+      `direct-runtime-path-switch-regression`,
+      `direct-full-access-authority-regression`, and
+      `direct-provider-external-parity-regression` (a stale list keeps
+      `model/list` while it refreshes; a missing one doesn't).
+      `direct-runtime-path-electron-regression` now reaches its Direct switch
+      branch, which per-model readiness had always skipped here. Two of its
+      expectations were stale: the backend picker selects ordinary Direct
+      (`runtimeMode: "direct"`), and it persists the choice across restarts.
+      New
+      `direct-model-catalog-regression` (9 checks) passes in WSL and under
+      Windows Node. `check:syntax` and `validate` pass, the headless
+      Workbench Electron smoke passes, and the full sweep is 267 of 286
+      passing, failures identical to **Known failing checks**.
 
 ### Turn 10: cross-environment delegation
 
@@ -905,6 +958,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | MCP servers run in the project's environment by default | That is where the agent's tools run, and it matches Codex. A server explicitly named for another environment needs a `cwd` there to anchor its executor, since executors are per project folder until turn 11. |
 | 2026-10-06 | Only the MCP transport crosses to an executor | The executor runs the same one-request exchange as the host and returns the raw result; trust, freshness, scope, and every envelope check stay on the host, so a remote server can't widen what a local one could do. Variable values come from the server's own environment, never from the host. |
 | 2026-10-06 | One file implementation, two placements | The executor runs the host's `LocalFilePort` natively, so local and WSL file rules can't drift apart; the host only plans. |
+| 2026-10-07 | Model availability follows Codex: the account's `/models` list, signed in is ready, the server rejects | A per-model probe gated every new model behind a manual refresh and expired after 7 days; Codex trusts the list and handles rejection. The probe stays as an optional "Test model". `client_version` is the installed Codex CLI's, so the list matches what Codex itself would offer. |
 
 ## Plan changes
 

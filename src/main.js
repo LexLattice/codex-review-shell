@@ -205,6 +205,7 @@ const {
 } = require("./main/direct/readiness/usage-readiness");
 const {
   DirectServerMetadataAdapter,
+  detectCodexClientVersion,
 } = require("./main/direct/provider/metadata-adapter");
 const {
   assertProviderHostedToolsStatusSafe,
@@ -3557,13 +3558,39 @@ function ensureDirectProviderMetadataAdapter() {
     rootDir: directProviderMetadataRootDir(),
     authStoreFactory: () => directRuntimeAuthStore(),
     refreshCredentials: (options) => refreshDirectRuntimeCredentials(options),
+    clientVersion: detectCodexClientVersion().version,
   });
+  startDirectModelCatalogRefreshTimer();
   return directProviderMetadataAdapter;
+}
+
+// Codex refreshes its model catalog in the background every 4.5 minutes so
+// the picker never waits on the network; Direct does the same for the
+// active project.
+const DIRECT_MODEL_CATALOG_REFRESH_MS = 270_000;
+let directModelCatalogRefreshTimer = null;
+const directModelCatalogRefreshes = new Map();
+
+function startDirectModelCatalogRefreshTimer() {
+  if (directModelCatalogRefreshTimer) return;
+  directModelCatalogRefreshTimer = setInterval(() => {
+    const project = currentProject;
+    const runtimeMode = normalizeDirectRuntimeModeForStatus(project?.surfaceBinding?.codex?.runtimeMode);
+    if (project?.id && runtimeMode !== "legacy-app-server") {
+      refreshDirectProviderMetadataForProject(project).catch(() => {});
+    }
+  }, DIRECT_MODEL_CATALOG_REFRESH_MS);
+  directModelCatalogRefreshTimer.unref?.();
 }
 
 function directProviderMetadataStatusForProject(project = {}) {
   try {
-    return ensureDirectProviderMetadataAdapter().cachedStatus(project?.id || "");
+    const status = ensureDirectProviderMetadataAdapter().cachedStatus(project?.id || "");
+    // Another account's catalog is never shown; fetch this account's.
+    if (status?.reason === "provider_metadata_account_changed" && project?.id) {
+      refreshDirectProviderMetadataForProject(project).catch(() => {});
+    }
+    return status;
   } catch (error) {
     return {
       profile: null,
@@ -3589,16 +3616,26 @@ function directProviderMetadataStatusForProject(project = {}) {
   }
 }
 
-async function refreshDirectProviderMetadataForProject(project = {}) {
-  try {
-    return await ensureDirectProviderMetadataAdapter().refreshForProject(project);
-  } catch (error) {
-    return {
-      ...directProviderMetadataStatusForProject(project),
-      cacheState: "failed",
-      error,
-    };
-  }
+// Concurrent refreshes for one project (background timer, account change,
+// a refused model, the picker) share a single request.
+function refreshDirectProviderMetadataForProject(project = {}) {
+  const key = normalizeString(project?.id, "");
+  if (directModelCatalogRefreshes.has(key)) return directModelCatalogRefreshes.get(key);
+  const pending = (async () => {
+    try {
+      return await ensureDirectProviderMetadataAdapter().refreshForProject(project);
+    } catch (error) {
+      return {
+        ...ensureDirectProviderMetadataAdapter().cachedStatus(project?.id || ""),
+        cacheState: "failed",
+        error,
+      };
+    } finally {
+      directModelCatalogRefreshes.delete(key);
+    }
+  })();
+  directModelCatalogRefreshes.set(key, pending);
+  return pending;
 }
 
 function ensureDirectCodexProfileDoc() {
@@ -4625,6 +4662,7 @@ function ensureDirectLiveTextController() {
     refreshCredentials: () => refreshDirectRuntimeCredentials(),
     modelEvidenceResolver: (context) =>
       resolveDirectLiveModelEvidence(context),
+    providerCatalogRefresher: ({ project }) => refreshDirectProviderMetadataForProject(project),
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     subAgentPool: ensureDirectNativeAgentPool(),
@@ -7059,13 +7097,23 @@ async function refreshDirectRuntimeReadiness(payload = {}) {
     };
   }
 
+  // Refreshing readiness is what Codex does: renew sign-in (above) and fetch
+  // the account's model list. "Test model" additionally sends one short
+  // prompt to the model as an optional diagnostic; it gates nothing.
   let probeResult = null;
-  try {
+  let catalog = null;
+  if (payload.testModel !== true) {
+    steps.push(directEmbarkStep("model_catalog_refresh", "started"));
+    catalog = await refreshDirectProviderMetadataForProject(project);
+    steps.push(directEmbarkStep("model_catalog_refresh", catalog?.fetched ? "completed" : "failed", {
+      cacheState: normalizeString(catalog?.cacheState, "unknown"),
+    }));
+  } else try {
     const probe = await recordDirectEmbarkLiveProbe(
       project,
       buildDirectRuntimeStatusForProject(project),
       steps,
-      { model: runtimeScope.model, source: "direct-runtime-readiness-refresh" },
+      { model: runtimeScope.model, source: "direct-runtime-model-test" },
     );
     probeResult = probe.probeResult;
   } catch (error) {
@@ -7106,17 +7154,21 @@ async function refreshDirectRuntimeReadiness(payload = {}) {
     liveTextStatus,
     directProviderMetadata: directProviderMetadataStatusForProject(project),
   });
+  const runnable = liveTextStatus.status === "ready" || liveTextStatus.turnRunnable === true;
   return {
     schema: "direct_runtime_readiness_refresh@1",
-    ok: liveTextStatus.status === "ready" || liveTextStatus.turnRunnable === true,
+    ok: payload.testModel === true ? runnable && probeResult?.evidenceUsable === true : runnable,
     status: liveTextStatus.status,
     reason: liveTextStatus.reason || "",
     projectId,
     threadId: runtimeScope.threadId,
-    model: runtimeScope.model,
+    model: runtimeScope.model || liveTextStatus.model,
     reasoningEffort: runtimeScope.reasoningEffort,
     evidenceId: normalizeString(liveTextStatus.evidenceId, ""),
     evidenceState: liveTextStatus.modelEvidenceState || "unknown",
+    modelListed: liveTextStatus.providerListed === true,
+    catalogState: normalizeString(catalog?.cacheState, liveTextStatus.providerCatalogState || ""),
+    testedModel: payload.testModel === true,
     authStatus: directRuntimeAuthStore().readStatus(),
     probeResult,
     steps,
@@ -13190,6 +13242,24 @@ ipcMain.handle("direct-runtime:refresh-readiness", async (event, payload) => {
   return refreshDirectRuntimeReadiness({
     projectId,
     threadId: normalizeString(payload?.threadId, ""),
+  });
+});
+
+// Optional diagnostic: one short prompt to the thread's model. Never required
+// before a turn.
+ipcMain.handle("direct-runtime:test-model", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(event.sender, "direct-runtime:test-model");
+  requireDirectWorkbenchExperience("direct-runtime:test-model");
+  const projectId = normalizeString(payload?.projectId, authority.projectId);
+  if (!projectId || (authority.projectId && authority.projectId !== projectId)) {
+    const error = new Error("The Direct model test is bound to the active project.");
+    error.code = "direct_readiness_project_scope_mismatch";
+    throw error;
+  }
+  return refreshDirectRuntimeReadiness({
+    projectId,
+    threadId: normalizeString(payload?.threadId, ""),
+    testModel: true,
   });
 });
 

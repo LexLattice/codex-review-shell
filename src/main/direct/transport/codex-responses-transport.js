@@ -958,6 +958,22 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
   };
 }
 
+// The provider explains HTTP refusals in its JSON body (`detail` on the
+// ChatGPT backend, `error.message` on the API shape); surface that sentence
+// instead of the raw body.
+function providerErrorMessage(text = "") {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  try {
+    const body = JSON.parse(raw);
+    const detail = typeof body?.detail === "string" ? body.detail : typeof body?.detail?.message === "string" ? body.detail.message : "";
+    const nested = typeof body?.error?.message === "string" ? body.error.message : typeof body?.error === "string" ? body.error : "";
+    const message = normalizeString(detail || nested || (typeof body?.message === "string" ? body.message : ""), "");
+    if (message) return message.slice(0, 500);
+  } catch {}
+  return raw.slice(0, 500);
+}
+
 function errorRawEvent(status, message, code = "") {
   return {
     event: "error",
@@ -1160,7 +1176,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
       }
       if (!ok) {
         rawText = await responseText(response, options);
-        rawEvents = [errorRawEvent(response.status, rawText || response.statusText || "HTTP request failed.")];
+        rawEvents = [errorRawEvent(response.status, providerErrorMessage(rawText) || response.statusText || "HTTP request failed.")];
       } else {
         const streamed = await readStreamingSseResponse(response, options, requestBody);
         rawText = streamed.rawText;
@@ -1278,6 +1294,8 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
     unknownRawTypes,
     terminal,
     error,
+    // The server's model-catalog version; a change means /models changed.
+    modelsEtag: typeof response?.headers?.get === "function" ? normalizeString(response.headers.get("x-models-etag"), "") : "",
     responseId: responseIdFromNormalizedEvents(normalizedEvents),
     continuation: isPlainObject(resultOptions.continuation) ? resultOptions.continuation : null,
     toolDetection: {

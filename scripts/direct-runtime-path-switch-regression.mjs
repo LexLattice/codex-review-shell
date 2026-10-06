@@ -238,8 +238,9 @@ assertIncludes(openDirectThreadSource, "guardThreadId: requestedThreadId", "dire
 assertIncludes(openDirectThreadSource, "state.directThreadOpenRequestId !== openRequestId || state.threadId !== requestedThreadId", "direct thread open rechecks stale requests after preference load");
 assertIncludes(codexSurfaceSource, "hasGuardSourceHome", "runtime preference guard distinguishes omitted source-home guard from explicit empty string");
 assertIncludes(codexSurfaceSource, "hasGuardSessionFilePath", "runtime preference guard distinguishes omitted session-file guard from explicit empty string");
-assertIncludes(codexSurfaceSource, "Refresh Direct readiness", "Direct runtime drawer exposes an in-place readiness action");
-assertIncludes(codexSurfaceSource, "Changes the task backend. This is separate from refreshing Direct readiness.", "backend transition remains distinct from readiness refresh");
+assertIncludes(codexSurfaceSource, "refreshModelsButton(\"Renew ChatGPT sign-in if needed and reload this account's model list, without changing backend.\")", "Direct runtime drawer exposes an in-place model list refresh");
+assertIncludes(codexSurfaceSource, "const test = refreshButton(\"Test model\", () => testDirectModel()", "Direct runtime drawer offers the optional model test");
+assertIncludes(codexSurfaceSource, "Changes the task backend. This is separate from refreshing models.", "backend transition remains distinct from the model list refresh");
 assertIncludes(codexSurfaceSource, "flushRuntimePreferenceWrites", "turn submission waits for the canonical task runtime binding");
 assertIncludes(codexSurfaceHtml, "runtime-preference-write-coordinator.js", "runtime preference coordinator loads before the Codex surface");
 assertIncludes(codexSurfaceSource, "The task binding is canonical for subsequent turns", "model controls explain task-level persistence");

@@ -2125,8 +2125,11 @@ try {
     },
   });
   const liveStatus = liveController.statusForProject(liveProject);
-  assert(liveStatus.status === "ready", "Expected accepted model and auth to make live text controller ready.");
-  assert(liveStatus.modelEvidenceState === "accepted", "Expected live text status to expose accepted model evidence.");
+  assert(liveStatus.status === "ready", "Expected auth to make live text controller ready.");
+  // Like Codex, membership in the account's model list is informational;
+  // without a fetched list it is reported as unavailable, not blocking.
+  assert(liveStatus.modelEvidenceState === "provider_catalog_unavailable", "Expected live text status to report that no model list was fetched.");
+  assert(liveStatus.providerListed === false, "Expected no provider listing without a model list.");
   assert(liveStatus.appServerRequired === false, "Live text controller must not require app-server.");
   assert(liveStatus.auth.rawTokensExposed === false, "Live text status must not expose raw tokens.");
   const activationBlockedLiveController = new DirectLiveTextController({
@@ -2157,11 +2160,9 @@ try {
     authStore: liveAuthStore,
     fetchImpl: async () => textResponse(liveSse, 200, { "content-type": "text/event-stream" }),
   });
-  assert(candidateController.statusForProject(liveProject).status === "profile_required", "Observed baseline models must not make live turns runnable.");
-  await assertRejects(
-    () => candidateController.startThread({}, { project: liveProject }),
-    "Expected live text thread start to require accepted or runtime-probed model evidence.",
-  );
+  // Signed in is ready, as in Codex: an unprobed model is not blocked, and the
+  // provider decides whether it accepts the model.
+  assert(candidateController.statusForProject(liveProject).status === "ready", "Unprobed models must not block live turns when signed in.");
 
   const promotionSse = [
     "event: response.created",
@@ -2280,10 +2281,10 @@ try {
     fetchImpl: async () => textResponse(promotionSse, 200, { "content-type": "text/event-stream" }),
   });
   const evidenceBackedStatus = evidenceBackedController.statusForProject(liveProject);
-  assert(evidenceBackedStatus.status === "ready", "Expected live probe evidence to unlock the candidate-profile live text controller.");
-  assert(evidenceBackedStatus.modelSource === "live-probe", "Expected live probe evidence to drive model source.");
-  assert(evidenceBackedStatus.modelEvidenceState === "runtime_probed", "Expected live probe evidence state to be runtime_probed.");
+  assert(evidenceBackedStatus.status === "ready", "Expected the candidate-profile live text controller to be ready when signed in.");
+  // A "Test model" result is still exposed as a diagnostic.
   assert(evidenceBackedStatus.liveProbeEvidence.usable === true, "Expected controller status to expose renderer-safe live evidence view.");
+  assert(evidenceBackedStatus.evidenceId === "live_probe_evidence_runtime_probed", "Expected the model test evidence id to stay visible.");
   let explicitlyScopedModel = "";
   const explicitlyScopedController = new DirectLiveTextController({
     sessionStore: liveSessionStore,
@@ -2365,17 +2366,9 @@ try {
     fetchImpl: async () => textResponse(promotionSse, 200, { "content-type": "text/event-stream" }),
   });
   const expiredEvidenceStatus = expiredEvidenceController.statusForProject(liveProject);
-  assert(expiredEvidenceStatus.status === "profile_required", "Expired live probe evidence must leave Direct blocked.");
-  assert(expiredEvidenceStatus.reason === "live_probe_evidence_expired", "Expired live probe evidence must expose a specific blocker reason.");
-  let expiredReadinessError = null;
-  try {
-    expiredEvidenceController.assertReady(liveProject);
-  } catch (error) {
-    expiredReadinessError = error;
-  }
-  assert(expiredReadinessError?.code === "profile_required", "Expired evidence must preserve the controller readiness error class.");
-  assert(expiredReadinessError?.blockerCode === "live_probe_evidence_expired", "Expired evidence must preserve the specific blocker code.");
-  assert(/capability evidence expired/i.test(expiredReadinessError?.message || ""), "Expired evidence must produce an actionable operator message.");
+  assert(expiredEvidenceStatus.status === "ready", "An expired model test must not block Direct.");
+  assert(expiredEvidenceStatus.liveProbeEvidence?.status === "expired", "An expired model test must be reported as expired, not passing.");
+  expiredEvidenceController.assertReady(liveProject);
 
   const nonRunnableEvidenceStore = new DirectLiveProbeEvidenceStore({
     rootDir: path.join(liveTextControllerParent, "non-runnable-direct-probe-evidence"),
@@ -2542,8 +2535,8 @@ try {
   const livePersisted = liveSessionStore.readSession(liveThread.thread.id);
   assert(livePersisted.runtimeMode === "direct-experimental", "Expected live text session runtime metadata.");
   assert(livePersisted.directTransport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT, "Expected live text session transport metadata.");
-  assert(livePersisted.modelSource === "odeu-profile", "Expected live text session model source metadata.");
-  assert(livePersisted.modelEvidenceState === "accepted", "Expected live text session model evidence metadata.");
+  assert(livePersisted.modelSource === "configured", "Expected live text session model source metadata.");
+  assert(livePersisted.modelEvidenceState === "provider_catalog_unavailable", "Expected live text session model evidence metadata.");
   assert(livePersisted.workspaceDisplayPath === "[REDACTED:private-path]", "Expected live text session workspace display path metadata.");
   assert(livePersisted.clientTurnRequests.client_req_live_text_1 === liveAck.turn.id, "Expected live text session to persist client turn id mapping.");
   const liveAssistant = livePersisted.messages[0].items.find((item) => item.type === "agentMessage");

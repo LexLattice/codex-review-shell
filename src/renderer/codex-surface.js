@@ -165,6 +165,7 @@ const state = {
   runtimePreferencesError: "",
   directReadinessRefreshStatus: "idle",
   directReadinessRefreshError: "",
+  directModelTestStatus: "idle",
   runtimePathSelection: "",
   runtimePathTransitionStatus: "idle",
   runtimePathTransitionError: "",
@@ -1179,9 +1180,25 @@ function directMetadataModels() {
     .filter(Boolean);
 }
 
+// Direct offers exactly what the account's model list says, like Codex: no
+// fallback to an older list or to hidden models.
 function effectiveModels() {
-  const directModels = isDirectLiveTextSurface() ? directMetadataModels() : [];
-  return directModels.length ? directModels : state.models;
+  return isDirectLiveTextSurface() ? directMetadataModels() : state.models;
+}
+
+function directListedModels() {
+  return directMetadataModels().filter((model) => !model.hidden);
+}
+
+function directModelListed(value) {
+  const id = String(value || "").trim();
+  return Boolean(id) && directListedModels().some((model) => model.id === id || model.model === id);
+}
+
+// Only meaningful once the list has loaded; an empty or missing list says
+// nothing about a model.
+function directModelUnavailable(value) {
+  return isDirectLiveTextSurface() && directListedModels().length > 0 && Boolean(value) && !directModelListed(value);
 }
 
 function applyDirectMetadataModels(projection = directSurfaceProjection()) {
@@ -1191,6 +1208,7 @@ function applyDirectMetadataModels(projection = directSurfaceProjection()) {
     ? directMetadataModels()
     : [];
   if (!models.length) {
+    state.models = [];
     state.modelListStatus = projection.metadataCacheState === "missing" ? "unavailable" : state.modelListStatus;
     return;
   }
@@ -1241,6 +1259,12 @@ function selectedModel() {
 }
 
 function defaultModelId() {
+  if (isDirectLiveTextSurface()) {
+    const declared = String(directProviderMetadataProfile()?.modelCatalog?.defaultModel || "").trim();
+    if (directModelListed(declared)) return declared;
+    const first = directListedModels()[0];
+    return first?.model || first?.id || "";
+  }
   const models = effectiveModels();
   const defaultModel = models.find((model) => model?.isDefault) || null;
   return defaultModel?.model || defaultModel?.id || "";
@@ -3127,6 +3151,10 @@ function composerMenuSection(title, options, selectedValue, onSelect) {
     button.setAttribute("aria-pressed", selected ? "true" : "false");
     button.textContent = label || "Runtime default";
     button.title = `${title}: ${label || "Runtime default"}`;
+    if (typeof option === "object" && option.disabled) {
+      button.disabled = true;
+      button.title = `${title}: ${label} isn't offered to this account right now.`;
+    }
     button.addEventListener("click", () => {
       const nextValue = String(value || "");
       for (const item of section.querySelectorAll(".composer-menu-item")) {
@@ -3163,6 +3191,14 @@ function toggleComposerMenu(menu) {
   state.composerMenu = state.composerMenu === menu ? "" : menu;
   renderComposerRuntimeBand();
   updateComposerGeometry();
+  // Like Codex, the picker uses the cached list and fetches only when it is
+  // older than the cache window.
+  if (state.composerMenu === "model" && isDirectLiveTextSurface() &&
+    directSurfaceProjection()?.metadataCacheState !== "fresh" && state.modelListStatus !== "loading") {
+    refreshModelList(false).then(() => {
+      if (state.composerMenu === "model") renderComposerRuntimeBand();
+    }).catch(() => {});
+  }
 }
 
 function eventPathContains(event, selector) {
@@ -3490,7 +3526,9 @@ function refreshButton(label, onClick, config = {}) {
 function modelOptions() {
   const models = effectiveModels();
   const visible = models.filter((model) => !model?.hidden);
-  const rows = visible.length ? visible : models;
+  // Direct never falls back to hidden models; other runtimes keep their
+  // historical fallback when every model is hidden.
+  const rows = visible.length || isDirectLiveTextSurface() ? visible : models;
   const providerDefaultId = defaultModelId();
   const clearDefaultId = clearedModelId();
   const options = rows
@@ -3503,13 +3541,20 @@ function modelOptions() {
         label: `${label}${value === providerDefaultId ? " · provider default" : ""}`,
       };
     });
+  // A model the account's list no longer offers stays visible so the user
+  // sees why turns fail, but it can't be picked again.
   const current = activeModelId();
   if (current && current !== clearDefaultId && !options.some((option) => option.value === current)) {
-    options.unshift({ value: current, label: current });
+    options.unshift(directModelUnavailable(current)
+      ? { value: current, label: `${current} · unavailable`, disabled: true }
+      : { value: current, label: current });
   }
+  const clearLabel = modelById(clearDefaultId)?.displayName || clearDefaultId;
   options.unshift({
     value: "",
-    label: defaultOptionLabel(modelById(clearDefaultId)?.displayName || clearDefaultId),
+    label: directModelUnavailable(clearDefaultId)
+      ? `${defaultOptionLabel(clearLabel)} · unavailable`
+      : defaultOptionLabel(clearLabel),
   });
   return options;
 }
@@ -4489,7 +4534,9 @@ function runtimeDrawerSections(c, tab) {
       ["task model", activeModelId() || readiness?.model || "unknown"],
       ...(readiness ? [
         ["readiness", state.directReadinessRefreshStatus === "refreshing" ? "refreshing" : readiness.status || "unknown"],
-        ["evidence", readiness.modelEvidenceState || "unknown"],
+        ["model list", !directListedModels().length
+          ? "unavailable"
+          : directModelListed(activeModelId() || readiness.model) ? "lists this model" : "doesn't list this model"],
         ["blocker", state.directReadinessRefreshError || readiness.reason || "none"],
       ] : []),
     ]);
@@ -4514,17 +4561,16 @@ function runtimeDrawerSections(c, tab) {
         ...(readiness ? [["readiness evidence id", readiness.evidenceId || "—"]] : []),
       ], [...(c.provider?.evidenceRefs || []), ...c.runtime.evidenceRefs, ...c.thread.evidenceRefs]);
     if (readiness) {
-      controlSection.appendChild(refreshButton(
-        "Refresh Direct readiness",
-        () => refreshDirectReadiness().catch((error) => {
-          addSystemMessage(`Direct readiness refresh failed: ${error.message}`);
-        }),
-        {
-          busy: state.directReadinessRefreshStatus === "refreshing",
-          disabled: state.directReadinessRefreshStatus === "refreshing",
-          description: "Refresh Direct OAuth if needed and run the bounded readiness probe for this task's canonical model without changing backend.",
-        },
-      ));
+      controlSection.appendChild(refreshModelsButton("Renew ChatGPT sign-in if needed and reload this account's model list, without changing backend."));
+      if (typeof bridge?.testDirectModel === "function") {
+        const test = refreshButton("Test model", () => testDirectModel(), {
+          busy: state.directModelTestStatus === "testing",
+          disabled: state.directModelTestStatus === "testing" || !directLiveTextReady(),
+          description: "Optional: send one short prompt to this thread's model to check it answers. Turns never wait on this.",
+        });
+        test.classList.add("secondary");
+        controlSection.appendChild(test);
+      }
     }
     if (isDirectWorkbenchExperience() && typeof bridge?.setDirectWorkbenchRuntimePath === "function") {
       controlSection.appendChild(selectField(
@@ -4541,7 +4587,7 @@ function runtimeDrawerSections(c, tab) {
         },
         {
           disabled: ["transitioning", "reloading"].includes(state.runtimePathTransitionStatus),
-          description: "Changes the task backend. This is separate from refreshing Direct readiness.",
+          description: "Changes the task backend. This is separate from refreshing models.",
         },
       ));
       controlSection.appendChild(refreshButton(
@@ -6323,15 +6369,14 @@ function canSelectDirectAccessProfile() {
 }
 
 function directReadinessCodeFromError(error) {
-  const match = /\b(live_probe_evidence_(?:expired|missing|scope_mismatch)|profile_required|auth_required)\b/
-    .exec(String(error?.message || error || ""));
-  return match ? match[1] : "";
+  // Errors crossing IPC can lose their code, so the message counts too.
+  const text = `${error?.code || ""} ${error?.message || error || ""}`;
+  return /\bauth_required\b|isn't signed in/.test(text) ? "auth_required" : "";
 }
 
-// Readiness is verified per model, and selecting Access checks the thread's
-// own model. A thread on a model that hasn't been verified (or whose check
-// expired) must still open: show the readiness prompt instead of failing,
-// and apply Access after a successful refresh.
+// Selecting Access needs a signed-in Direct runtime. If sign-in lapsed
+// between the capability check and the call, the thread still opens: show
+// the refresh prompt instead of failing, and apply Access after a refresh.
 async function selectPreferredAccessForThread(sessionId) {
   if (!canSelectDirectAccessProfile() || !sessionId) return false;
   try {
@@ -6340,7 +6385,7 @@ async function selectPreferredAccessForThread(sessionId) {
   } catch (error) {
     const code = directReadinessCodeFromError(error);
     if (!code) throw error;
-    addDirectReadinessActionMessage(`${directReadinessFailureMessage(code)} This thread's Access will be set once Direct is ready for its model.`);
+    addDirectReadinessActionMessage(`${directReadinessFailureMessage(code)} This thread's Access will be set once you're signed in.`);
     return false;
   }
 }
@@ -6453,18 +6498,26 @@ function directLiveTextBlockedMessage() {
 function directReadinessFailureMessage(value = "") {
   const code = String(value || "").trim();
   const labels = {
-    live_probe_evidence_expired: "Readiness evidence for this task's selected model has expired.",
-    live_probe_evidence_missing: "This task's selected model has not been verified on the Direct path.",
-    live_probe_evidence_scope_mismatch: "The available readiness evidence belongs to a different runtime scope.",
-    profile_required: "The selected model needs a fresh Direct readiness check.",
-    auth_required: "Direct authentication must be refreshed before this task can run.",
+    auth_required: "Direct isn't signed in. Sign in to ChatGPT, then refresh.",
   };
-  return labels[code] || code || "Direct readiness could not be established.";
+  return labels[code] || code || "Direct couldn't refresh sign-in and the model list.";
 }
 
+function directModelListSummary(response = {}) {
+  const count = directListedModels().length;
+  const model = String(response.model || activeModelId() || "").trim();
+  if (!count) return "Signed in, but the model list couldn't be loaded. Turns still run; refresh again later.";
+  const listed = `Model list refreshed: ${count} model${count === 1 ? "" : "s"} available.`;
+  return model && !directModelListed(model)
+    ? `${listed} ${model} isn't in this account's list; pick another model.`
+    : listed;
+}
+
+// Like Codex, refreshing renews sign-in and reloads the account's model
+// list. It never sends a prompt; "Test model" is the optional diagnostic.
 async function refreshDirectReadiness(options = {}) {
   if (!isDirectLiveTextSurface() || typeof bridge?.refreshDirectRuntimeReadiness !== "function" || !project?.id) {
-    throw new Error("Direct readiness refresh is unavailable in this surface.");
+    throw new Error("Refreshing models is unavailable in this surface.");
   }
   await flushRuntimePreferenceWrites();
   state.directReadinessRefreshStatus = "refreshing";
@@ -6473,7 +6526,7 @@ async function refreshDirectReadiness(options = {}) {
   try {
     const response = await bridge.refreshDirectRuntimeReadiness(project.id, state.threadId || "");
     applyDirectSurfaceProjection(response?.projection);
-    // A thread opened before its model was ready has no Access yet.
+    // A thread opened while signed out has no Access yet.
     if (response?.ok && state.threadId && !currentDirectAccessProfile() &&
       await selectPreferredAccessForThread(state.threadId).catch(() => false)) {
       addSystemMessage(`Access for this thread is now ${directAccessProfileOption(preferredDirectAccessProfile())?.label || "set"}.`);
@@ -6490,39 +6543,72 @@ async function refreshDirectReadiness(options = {}) {
       );
     }
     renderRuntimeConstitution();
+    renderComposerRuntimeBand();
     if (options.report !== false) {
       addSystemMessage(response?.ok
-        ? `Direct readiness verified for ${response.model || activeModelId() || "the selected model"}.`
-        : `Direct readiness refresh did not complete: ${state.directReadinessRefreshError}`);
+        ? directModelListSummary(response)
+        : `Refresh didn't complete: ${state.directReadinessRefreshError}`);
     }
     return response;
   } catch (error) {
     state.directReadinessRefreshStatus = "failed";
-    state.directReadinessRefreshError = String(error?.message || error || "Direct readiness refresh failed.");
+    state.directReadinessRefreshError = String(error?.message || error || "Refreshing models failed.");
     renderRuntimeConstitution();
     throw error;
   }
 }
 
+// Optional diagnostic: sends one short prompt to the thread's model. Nothing
+// waits on it; turns run whether or not it has been used.
+async function testDirectModel() {
+  if (!isDirectLiveTextSurface() || typeof bridge?.testDirectModel !== "function" || !project?.id) {
+    throw new Error("Testing a model is unavailable in this surface.");
+  }
+  await flushRuntimePreferenceWrites();
+  state.directModelTestStatus = "testing";
+  renderRuntimeConstitution();
+  try {
+    const response = await bridge.testDirectModel(project.id, state.threadId || "");
+    applyDirectSurfaceProjection(response?.projection);
+    const model = response?.model || activeModelId() || "the selected model";
+    const detail = String(response?.probeResult?.error?.message || response?.probeResult?.reason || response?.reason || "").trim();
+    state.directModelTestStatus = response?.ok ? "passed" : "failed";
+    addSystemMessage(response?.ok
+      ? `Test prompt to ${model} succeeded.`
+      : `Test prompt to ${model} failed${detail ? `: ${detail}` : "."}`);
+    return response;
+  } catch (error) {
+    state.directModelTestStatus = "failed";
+    addSystemMessage(`Test prompt failed: ${error?.message || error}`);
+    return null;
+  } finally {
+    renderRuntimeConstitution();
+  }
+}
+
+function refreshModelsButton(description) {
+  return refreshButton(
+    "Refresh models",
+    () => refreshDirectReadiness().catch((error) => {
+      addSystemMessage(`Refreshing models failed: ${error.message}`);
+    }),
+    {
+      busy: state.directReadinessRefreshStatus === "refreshing",
+      disabled: state.directReadinessRefreshStatus === "refreshing",
+      description,
+    },
+  );
+}
+
 function addDirectReadinessActionMessage(text) {
   const id = `system_direct_readiness_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  setMessageText(id, "system", text, "Direct readiness");
+  setMessageText(id, "system", text, "Direct");
   const node = state.itemMap.get(id);
   const bubble = node?.querySelector(".bubble");
   if (!bubble) return;
   const actions = document.createElement("div");
   actions.className = "system-message-actions";
-  actions.appendChild(refreshButton(
-    "Refresh Direct readiness",
-    () => refreshDirectReadiness().catch((error) => {
-      addSystemMessage(`Direct readiness refresh failed: ${error.message}`);
-    }),
-    {
-      busy: state.directReadinessRefreshStatus === "refreshing",
-      disabled: state.directReadinessRefreshStatus === "refreshing",
-      description: "Refresh Direct OAuth if needed, run the bounded probe for this task's selected model, and remain on Direct.",
-    },
-  ));
+  actions.appendChild(refreshModelsButton("Renew ChatGPT sign-in if needed and reload this account's model list."));
   const inspect = refreshButton("Inspect runtime", () => openRuntimeDrawer("runtime"));
   inspect.classList.add("secondary");
   actions.appendChild(inspect);
@@ -6532,12 +6618,11 @@ function addDirectReadinessActionMessage(text) {
 function handleTurnSubmissionFailure(error) {
   const message = String(error?.message || error || "Turn failed.");
   if (isDirectLiveTextSurface() && (
-    message.includes("live_probe_evidence") ||
-    message.includes("profile_required") ||
     message.includes("auth_required") ||
+    message.includes("isn't signed in") ||
     message.includes("Direct runtime is not ready")
   )) {
-    addDirectReadinessActionMessage(`Turn blocked. ${directReadinessFailureMessage(message.replace(/^.*?(live_probe_evidence_[a-z_]+).*$/, "$1"))}`);
+    addDirectReadinessActionMessage(`Turn blocked. ${directReadinessFailureMessage(directReadinessCodeFromError(message) || directLiveTextBlockedMessage())}`);
     return;
   }
   addSystemMessage(`Turn failed: ${message}`);
@@ -9943,6 +10028,11 @@ function handleNotification(method, params) {
       error.additionalDetails || "",
     ].filter(Boolean).join("\n");
     addSystemMessage(message);
+    // Main already refetches the list after a refused model; pick it up so
+    // the picker marks the model unavailable.
+    if (error.code === "model_unavailable" && isDirectLiveTextSurface()) {
+      refreshModelList(false).then(() => renderComposerRuntimeBand()).catch(() => {});
+    }
     return;
   }
   if (method === "warning") {

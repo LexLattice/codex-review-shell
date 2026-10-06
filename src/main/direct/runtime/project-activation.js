@@ -212,19 +212,10 @@ function workspaceGateFor(project = {}, workspaceStatus = {}, options = {}) {
   };
 }
 
-function liveProbeUsable(liveTextStatus = {}) {
-  const evidence = liveTextStatus.liveProbeEvidence;
-  if (!isPlainObject(evidence)) return false;
-  if (evidence.source === "fake-smoke" && process.env.CODEX_DIRECT_ALLOW_FAKE_EVIDENCE !== "1") return false;
-  return evidence.usable === true || evidence.status === "runtime_probed";
-}
-
+// Live text is ready when the controller says the turn can run, which (as in
+// Codex) means signed in; models no longer need a per-model probe.
 function liveTextReady(liveTextStatus = {}) {
-  const state = normalizeString(liveTextStatus.status, "");
-  const modelEvidence = normalizeString(liveTextStatus.modelEvidenceState, "");
-  return state === "ready" &&
-    liveTextStatus.turnRunnable === true &&
-    (modelEvidence === "accepted" || modelEvidence === "runtime_probed" || liveProbeUsable(liveTextStatus));
+  return normalizeString(liveTextStatus.status, "") === "ready" && liveTextStatus.turnRunnable === true;
 }
 
 function readOnlyToolReady(liveTextStatus = {}) {
