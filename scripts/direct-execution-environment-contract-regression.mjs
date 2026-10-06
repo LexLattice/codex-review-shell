@@ -135,7 +135,8 @@ async function main() {
       fileExists: (file) => file.toLowerCase() === pwshPath.toLowerCase(),
     });
     assert.equal(winPwsh.flavor, "pwsh");
-    assert.deepEqual(winPwsh.args, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-Date"]);
+    assert.deepEqual(winPwsh.args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+    assert.match(winPwsh.args[4], /^\[Console\]::OutputEncoding=\[Text\.UTF8Encoding\]::new\(\$false\);.*Get-Date$/, "PowerShell output is UTF-8");
     const winPs51 = nativeShellCommand("Get-Date", { platform: "win32", env: { SystemRoot: "C:\\Windows" }, fileExists: () => false });
     assert.equal(winPs51.flavor, "windows-powershell");
     assert.equal(winPs51.command, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
@@ -188,7 +189,11 @@ async function main() {
     assert.equal(restrictedFacts.writableScope, "per_call_approval");
     const readOnlyFacts = resolveExecutionEnvironmentFacts({ grant: grantFor("facts_ro", "windows", "read_only"), project: { workspace: { kind: "windows" } }, hostPlatform: "linux", env: {} });
     assert.equal(readOnlyFacts.writableScope, "none");
-    assert.deepEqual(readOnlyFacts.hidden, ["credential_stores"]);
+    assert.deepEqual(readOnlyFacts.hidden, ["wsl", "credential_stores"]);
+    assert.equal(readOnlyFacts.networkAccess, true, "Windows can't block the network without admin rights");
+    assert.equal(readOnlyFacts.networkEnforced, false);
+    assert.match(renderExecutionEnvironmentInstructions(readOnlyFacts), /The network is not blocked on Windows/);
+    assert.equal(wslFacts.networkEnforced, true);
     assert.equal(readOnlyFacts.shell.flavor, "", "a non-Windows host cannot know which PowerShell is installed");
 
     for (const facts of [wslFacts, windowsFacts]) {

@@ -14,6 +14,9 @@ const { workspaceExecutesLocally } = require("../tools/exec-sandbox");
 
 const EXECUTION_ENVIRONMENT_FACTS_SCHEMA = "direct_execution_environment_facts@1";
 const POWERSHELL_ARGS = Object.freeze(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+// Redirected PowerShell output otherwise uses the console's OEM code page,
+// which mangles anything outside ASCII.
+const POWERSHELL_UTF8_PRELUDE = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding;";
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -42,11 +45,12 @@ function nativeShellCommand(shellCommand, options = {}) {
       findExecutableOnPath("pwsh", { platform, env, fileExists }),
       path.win32.join(programFiles, "PowerShell", "7", "pwsh.exe"),
     ].find((candidate) => candidate && fileExists(candidate));
-    if (pwsh) return { command: pwsh, args: [...POWERSHELL_ARGS, shellCommand], shell: "powershell", flavor: "pwsh" };
+    const script = shellCommand ? `${POWERSHELL_UTF8_PRELUDE}${shellCommand}` : shellCommand;
+    if (pwsh) return { command: pwsh, args: [...POWERSHELL_ARGS, script], shell: "powershell", flavor: "pwsh" };
     const systemRoot = normalizeString(env.SystemRoot || env.SYSTEMROOT, "C:\\Windows");
     return {
       command: path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-      args: [...POWERSHELL_ARGS, shellCommand],
+      args: [...POWERSHELL_ARGS, script],
       shell: "powershell",
       flavor: "windows-powershell",
     };
@@ -90,22 +94,25 @@ function shellFactsFor(kind, options) {
 function accessFactsFor(grant, kind) {
   const profile = grant ? grantAccessProfile(grant) : "";
   if (profile === "full_access") {
-    return { accessProfile: profile, sandboxMode: "danger-full-access", networkAccess: true, writableScope: "anywhere", hidden: [] };
+    return { accessProfile: profile, sandboxMode: "danger-full-access", networkAccess: true, networkEnforced: false, writableScope: "anywhere", hidden: [] };
   }
   if (profile === "workspace" || profile === "read_only") {
     const posix = kind !== "windows";
+    // Windows has no way to block a command's network without admin rights
+    // (see DIRECT_WINDOWS_CONTAINMENT_DECISION.md), so it is reported open.
     return {
       accessProfile: profile,
       sandboxMode: profile === "workspace" ? "workspace-write" : "read-only",
-      networkAccess: false,
-      writableScope: profile === "workspace" ? (posix ? "workspace_and_tmp" : "workspace") : "none",
+      networkAccess: !posix,
+      networkEnforced: posix,
+      writableScope: profile === "workspace" ? "workspace_and_tmp" : "none",
       hidden: [
-        ...(posix ? ["windows_drives", "wsl_interop"] : []),
+        ...(posix ? ["windows_drives", "wsl_interop"] : ["wsl"]),
         "credential_stores",
       ],
     };
   }
-  return { accessProfile: "restricted", sandboxMode: "", networkAccess: null, writableScope: "per_call_approval", hidden: [] };
+  return { accessProfile: "restricted", sandboxMode: "", networkAccess: null, networkEnforced: false, writableScope: "per_call_approval", hidden: [] };
 }
 
 function resolveExecutionEnvironmentFacts(input = {}) {
@@ -158,13 +165,20 @@ function accessSentence(facts) {
     return "Access: Full access. No sandbox; commands and file changes can reach the whole machine and the network.";
   }
   if (facts.accessProfile === "workspace" || facts.accessProfile === "read_only") {
+    const windows = facts.environmentKind === "windows";
+    const tmp = windows ? "a private TEMP folder" : "/tmp";
     const writes = facts.accessProfile === "workspace"
-      ? `File changes and command writes are limited to the project folder${facts.writableScope === "workspace_and_tmp" ? " and /tmp" : ""}.`
+      ? `File changes and command writes are limited to the project folder${facts.writableScope === "workspace_and_tmp" ? ` and ${tmp}` : ""}.`
       : "No file changes; commands run read-only.";
+    const network = facts.networkEnforced
+      ? " No network."
+      : " The network is not blocked on Windows; use it only when the task needs it.";
     const hidden = facts.hidden.includes("windows_drives")
       ? " Windows drives (/mnt), WSL interop, and credential stores are not visible."
-      : facts.hidden.includes("credential_stores") ? " Credential stores are not readable." : "";
-    return `Access: ${facts.accessProfile === "workspace" ? "Workspace" : "Read only"}. ${writes} No network.${hidden} If a task needs more, ask the user to switch Access.`;
+      : facts.hidden.includes("wsl")
+        ? " WSL and credential stores are not reachable."
+        : facts.hidden.includes("credential_stores") ? " Credential stores are not readable." : "";
+    return `Access: ${facts.accessProfile === "workspace" ? "Workspace" : "Read only"}. ${writes}${network}${hidden} If a task needs more, ask the user to switch Access.`;
   }
   return "Access: restricted. File reads, patches, and commands each need the user's approval.";
 }

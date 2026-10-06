@@ -95,8 +95,8 @@ function environmentKindFor(platform, env, release) {
 }
 
 // Shell facts come from the filesystem and environment only. Describing an
-// environment must not spawn processes: the Windows executor refuses to create
-// processes until Job Object containment exists.
+// environment must not spawn processes, so it works before the Windows job
+// runner has been built.
 function windowsShellFor(env, fileExists, platformOptions) {
   const programFiles = normalizeString(env.ProgramFiles || env.PROGRAMFILES, "C:\\Program Files");
   const pwshCandidates = [
@@ -137,7 +137,7 @@ function posixShellFor(fileExists) {
       path: bash,
       version: "",
       versionSource: "unprobed",
-      invocation: ["-lc"],
+      invocation: ["-c"],
     };
   }
   return {
@@ -165,6 +165,9 @@ function describeExecutionEnvironment(options = {}) {
   const shell = platform === "win32" ? windowsShellFor(env, fileExists, platformOptions) : posixShellFor(fileExists);
   const containment = isPlainObject(options.containment) ? options.containment : { available: false, kind: "unknown" };
   const bubblewrap = platform === "linux" ? findExecutableOnPath("bwrap", platformOptions) : "";
+  const sandbox = isPlainObject(options.sandbox)
+    ? { available: options.sandbox.available === true, kind: normalizeString(options.sandbox.kind, "none") }
+    : bubblewrap ? { available: true, kind: "bubblewrap" } : { available: false, kind: "none" };
   return {
     schema: ENVIRONMENT_DESCRIPTION_SCHEMA,
     protocol: { name: EXECUTOR_PROTOCOL_NAME, version: EXECUTOR_PROTOCOL_VERSION },
@@ -190,9 +193,7 @@ function describeExecutionEnvironment(options = {}) {
         kind: normalizeString(containment.kind, "unknown"),
         blockerCode: normalizeString(containment.blockerCode, ""),
       },
-      sandbox: bubblewrap
-        ? { available: true, kind: "bubblewrap" }
-        : { available: false, kind: "none" },
+      sandbox,
       pty: { available: false, kind: "none" },
     },
     methods: [...IMPLEMENTED_EXECUTOR_METHODS],

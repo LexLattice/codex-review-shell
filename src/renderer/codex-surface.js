@@ -3271,7 +3271,7 @@ function renderComposerAccessMenu() {
     ));
     const note = document.createElement("p");
     note.className = "composer-menu-note";
-    note.textContent = `${directAccessProfileOption(selected)?.description || ""} Applies to this thread and to new threads in this project.`;
+    note.textContent = `${directAccessProfileDescription(selected)} Applies to this thread and to new threads in this project.`;
     els.composerAccessMenu.appendChild(note);
     return;
   }
@@ -6259,6 +6259,22 @@ const DEFAULT_DIRECT_ACCESS_PROFILE = "full_access";
 
 function directAccessProfileOption(profile) {
   return DIRECT_ACCESS_PROFILE_OPTIONS.find((option) => option.value === profile) || null;
+}
+
+// Windows can't block a command's network without admin rights, so the
+// sandboxed profiles say so for Windows projects.
+const DIRECT_WINDOWS_ACCESS_PROFILE_DESCRIPTIONS = Object.freeze({
+  read_only: "Reads files and runs commands that cannot change files. Network isn't blocked on Windows.",
+  workspace: "Changes files and runs commands inside the project folder. Network isn't blocked on Windows.",
+});
+
+function directAccessProfileDescription(profile) {
+  const option = directAccessProfileOption(profile);
+  if (!option) return "";
+  if (project?.workspace?.kind === "windows" && DIRECT_WINDOWS_ACCESS_PROFILE_DESCRIPTIONS[profile]) {
+    return DIRECT_WINDOWS_ACCESS_PROFILE_DESCRIPTIONS[profile];
+  }
+  return option.description;
 }
 
 function directAccessPreferenceKey() {

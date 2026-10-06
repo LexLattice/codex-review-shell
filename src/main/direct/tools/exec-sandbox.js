@@ -21,26 +21,35 @@ function isCredentialStorePath(target) {
 function discoverCredentialStoreFiles(options = {}) {
   const fileSystem = options.fs || fs;
   const env = options.env || process.env;
-  const home = normalizeString(options.homedir, "");
+  const windows = (options.platform || process.platform) === "win32";
+  const pathApi = windows ? path.win32 : path.posix;
+  const home = normalizeString(windows ? env.USERPROFILE || options.homedir : options.homedir, "");
   const isFile = (candidate) => {
     try { return fileSystem.statSync(candidate).isFile(); } catch { return false; }
   };
   const candidates = new Set();
-  if (normalizeString(env.CODEX_HOME, "")) candidates.add(path.posix.join(env.CODEX_HOME, "auth.json"));
+  if (normalizeString(env.CODEX_HOME, "")) candidates.add(pathApi.join(env.CODEX_HOME, "auth.json"));
   if (home) {
-    candidates.add(path.posix.join(home, ".codex", "auth.json"));
-    // Direct's store lives in the app's userData: ~/.config/<app>/direct-auth
-    // or ~/.config/<app>/<profile>/direct-auth.
-    const configRoot = path.posix.join(home, ".config");
+    candidates.add(pathApi.join(home, ".codex", "auth.json"));
+    // The auth store's own default outside Electron.
+    candidates.add(pathApi.join(home, ".codex-review-shell", "direct-auth", "auth.json"));
+  }
+  // Direct's store lives in the app's userData: <config>/<app>/direct-auth or
+  // <config>/<app>/<profile>/direct-auth, where <config> is ~/.config on
+  // Linux and %APPDATA% on Windows.
+  const configRoot = windows
+    ? normalizeString(env.APPDATA, home ? pathApi.join(home, "AppData", "Roaming") : "")
+    : (home ? pathApi.join(home, ".config") : "");
+  if (configRoot) {
     let apps = [];
     try { apps = fileSystem.readdirSync(configRoot); } catch {}
     for (const app of apps.slice(0, 200)) {
-      const appRoot = path.posix.join(configRoot, app);
-      candidates.add(path.posix.join(appRoot, "direct-auth", "auth.json"));
+      const appRoot = pathApi.join(configRoot, app);
+      candidates.add(pathApi.join(appRoot, "direct-auth", "auth.json"));
       let profiles = [];
-      try { profiles = fileSystem.readdirSync(path.posix.join(appRoot)); } catch {}
+      try { profiles = fileSystem.readdirSync(appRoot); } catch {}
       for (const profile of profiles.slice(0, 50)) {
-        candidates.add(path.posix.join(appRoot, profile, "direct-auth", "auth.json"));
+        candidates.add(pathApi.join(appRoot, profile, "direct-auth", "auth.json"));
       }
     }
   }
@@ -76,12 +85,14 @@ function sandboxError(code, message) {
 }
 
 // A WSL workspace is directly reachable only when this process itself runs
-// inside that distro.  From a Windows host the Linux path is not a local path.
+// inside that distro, and a Windows workspace only from Windows. Otherwise
+// the environment's own executor runs it.
 function workspaceExecutesLocally(kind, project = {}, options = {}) {
   const workspaceKind = normalizeString(kind, "local");
-  if (workspaceKind === "local") return true;
-  if (workspaceKind !== "wsl") return false;
   const platform = options.platform || process.platform;
+  if (workspaceKind === "local") return true;
+  if (workspaceKind === "windows") return platform === "win32";
+  if (workspaceKind !== "wsl") return false;
   const env = options.env || process.env;
   const currentDistro = normalizeString(env.WSL_DISTRO_NAME, "");
   if (platform !== "linux" || !currentDistro) return false;
@@ -117,7 +128,7 @@ class BubblewrapExecSandbox {
   }
 
   credentialStoreFiles() {
-    return discoverCredentialStoreFiles({ homedir: this.homedir, env: this.env, fs: this.fs });
+    return discoverCredentialStoreFiles({ platform: "linux", homedir: this.homedir, env: this.env, fs: this.fs });
   }
 
   resolveExecutable() {

@@ -1,6 +1,7 @@
 # Windows Containment and Sandbox: Decision
 
-Status: decided (turn 6 of `DIRECT_DUAL_ENVIRONMENT_AGENTS_MASTER.md`).
+Status: decided (turn 6 of `DIRECT_DUAL_ENVIRONMENT_AGENTS_MASTER.md`);
+implemented in turn 7 (`src/main/direct/tools/windows-job-runner.*`).
 Date: 2026-10-06. Machine: Windows 11 IoT Enterprise LTSC 2024 (26100),
 Node 24.19.0, PowerShell 7.6, Codex CLI 0.160.1.
 

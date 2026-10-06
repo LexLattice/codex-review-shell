@@ -42,7 +42,8 @@ const {
   describeExecutionEnvironment,
   findExecutableOnPath,
 } = require("../shared/executor-protocol");
-const { LocalChildProcessBackend } = require("../main/direct/tools/exec-process-backends");
+const { BASE_COMMAND_ENVIRONMENT_KEYS, LocalChildProcessBackend } = require("../main/direct/tools/exec-process-backends");
+const { WINDOWS_JOB_LAUNCHER } = require("../main/direct/tools/windows-job-runner");
 const { LocalFilePort } = require("../main/direct/tools/full-access-local-environment");
 
 const PROTOCOL_VERSION = 1;
@@ -2677,7 +2678,7 @@ async function runCommand(params = {}) {
 
 function minimalCommandEnv(extraEnv = {}) {
   const base = {};
-  for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot", "ComSpec"]) {
+  for (const key of BASE_COMMAND_ENVIRONMENT_KEYS) {
     if (process.env[key]) base[key] = process.env[key];
   }
   base.CI = "1";
@@ -5994,9 +5995,11 @@ async function readJsonlFirstLine(fullPath) {
 // Executor process sessions (`process/*`). Unlike request-scoped backend
 // processes, a session outlives the request that started it: output, errors,
 // and exit are pushed as events keyed by the host router's session id, and
-// every session is killed when the executor shuts down. Containment: full
-// access runs under the PID-namespace launcher; sandboxed modes run under
-// bubblewrap, which unshares the PID namespace and dies with this process.
+// every session is killed when the executor shuts down. Containment on
+// Linux: full access runs under the PID-namespace launcher; sandboxed modes
+// run under bubblewrap, which unshares the PID namespace and dies with this
+// process. On Windows every profile runs under the job runner, whose Job
+// Object dies with it.
 const EXECUTOR_OUTPUT_CHUNK_BYTES = 64 * 1024;
 const EXECUTOR_OUTPUT_FORWARD_CAP_BYTES = 1024 * 1024;
 const EXECUTOR_ACTIVITY_INTERVAL_MS = 500;
@@ -6100,7 +6103,11 @@ function startExecutorProcessSession(params = {}) {
     args: Array.isArray(params.args) ? params.args.map(String) : [],
   });
   const env = minimalCommandEnv(params.env);
-  const child = plan.launcher === "bubblewrap"
+  // Windows: the job runner contains every profile, so the planner's own
+  // launch (which also cleans up the scratch TEMP) starts it directly.
+  const child = plan.launcher === WINDOWS_JOB_LAUNCHER
+    ? planner.launch(plan, { cwd: workspace.cwd, env }).child
+    : plan.launcher === "bubblewrap"
     ? spawn(plan.command, plan.args, {
         cwd: workspace.cwd,
         env,
@@ -6148,7 +6155,7 @@ function startExecutorProcessSession(params = {}) {
   return {
     processSessionId: id,
     cwdRelPath: workspace.cwdRelPath,
-    launcher: plan.launcher === "bubblewrap" ? "bubblewrap" : "linux_pid_namespace",
+    launcher: [WINDOWS_JOB_LAUNCHER, "bubblewrap"].includes(plan.launcher) ? plan.launcher : "linux_pid_namespace",
     networkAccess: plan.networkAccess !== false,
     shell: plan.shellName || "",
   };
@@ -6313,8 +6320,12 @@ async function handleRequest(method, params = {}) {
   if (method === EXECUTOR_METHODS.processWrite) return writeExecutorProcessSession(params);
   if (method === EXECUTOR_METHODS.processSignal) return signalExecutorProcessSessionRequest(params);
   if (method === EXECUTOR_METHODS.environmentDescribe) {
+    // On Windows, process sessions are contained by the job runner, which
+    // also provides the Workspace and Read-only sandbox.
+    const windowsRunner = process.platform === "win32" ? executorPlanner().sandbox.runner?.status?.() : null;
     return describeExecutionEnvironment({
-      containment: await workspaceProcessContainmentStatus(),
+      containment: windowsRunner || await workspaceProcessContainmentStatus(),
+      sandbox: windowsRunner ? { available: windowsRunner.available, kind: windowsRunner.kind } : undefined,
       root,
       workspaceKind,
     });

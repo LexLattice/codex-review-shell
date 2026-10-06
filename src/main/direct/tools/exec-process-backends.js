@@ -27,9 +27,25 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { BubblewrapExecSandbox, workspaceExecutesLocally } = require("./exec-sandbox");
+const { WindowsJobSandbox } = require("./windows-job-runner");
 const { nativeShellCommand } = require("../runtime/execution-environment-contract");
 
 const LOCAL_CHILD_BACKEND_ID = "local-child";
+
+// Variables every command inherits from the process that starts it. Windows
+// programs need far more than POSIX ones: without USERPROFILE, APPDATA,
+// PATHEXT, and friends, pwsh, git, and npm misbehave or fail.
+const BASE_COMMAND_ENVIRONMENT_KEYS = Object.freeze([
+  "PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot", "ComSpec",
+  "PATHEXT", "windir", "SystemDrive", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+  "APPDATA", "LOCALAPPDATA", "ProgramData", "ProgramFiles", "ProgramFiles(x86)",
+  "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432",
+  "USERNAME", "USERDOMAIN", "COMPUTERNAME", "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS",
+]);
+
+function defaultExecSandbox(platform) {
+  return platform === "win32" ? new WindowsJobSandbox({ platform }) : new BubblewrapExecSandbox({ platform });
+}
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -119,14 +135,14 @@ class LocalChildProcessBackend {
     this.workspaceRootResolver = typeof options.workspaceRootResolver === "function"
       ? options.workspaceRootResolver
       : (input = {}) => input.workspaceRoot || input.project?.workspaceRoot || "";
+    this.platform = options.platform || process.platform;
+    this.env = options.env || process.env;
     this.sandbox = options.sandbox && typeof options.sandbox.wrap === "function"
       ? options.sandbox
-      : new BubblewrapExecSandbox();
+      : defaultExecSandbox(this.platform);
     this.workspaceLocalityResolver = typeof options.workspaceLocalityResolver === "function"
       ? options.workspaceLocalityResolver
       : (kind, project) => workspaceExecutesLocally(kind, project);
-    this.platform = options.platform || process.platform;
-    this.env = options.env || process.env;
   }
 
   resolveWorkspace(input = {}, grant = null) {
@@ -196,7 +212,9 @@ class LocalChildProcessBackend {
     const command = native ? native.command : spec.command;
     const args = native ? native.args : spec.args;
     const shellName = native ? native.shell : "";
-    if (sandboxMode === "danger-full-access") {
+    // On Windows the sandbox also wraps Full access: the job that stops the
+    // whole process tree applies to every profile.
+    if (sandboxMode === "danger-full-access" && this.sandbox.containsFullAccess !== true) {
       return {
         command,
         args,
@@ -221,19 +239,26 @@ class LocalChildProcessBackend {
   }
 
   launch(plan, options = {}) {
+    const env = plan.env && Object.keys(plan.env).length ? { ...(options.env || {}), ...plan.env } : options.env;
     const child = this.spawnImpl(plan.command, plan.args, {
       cwd: options.cwd,
-      env: options.env,
+      env,
       shell: plan.shell,
       detached: process.platform !== "win32",
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    if (plan.scratchDir && typeof child?.once === "function") {
+      child.once("close", () => {
+        fs.rm(plan.scratchDir, { recursive: true, force: true, maxRetries: 3 }, () => {});
+      });
+    }
     return new LocalChildProcessHandle(child, plan);
   }
 }
 
 module.exports = {
+  BASE_COMMAND_ENVIRONMENT_KEYS,
   LOCAL_CHILD_BACKEND_ID,
   LocalChildProcessBackend,
   LocalChildProcessHandle,

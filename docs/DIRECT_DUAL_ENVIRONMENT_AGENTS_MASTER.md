@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-06, after turn 6.
+Last updated: 2026-10-06, after turn 7.
 
 ## How to use this document
 
@@ -100,7 +100,7 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 7: Windows executor.**
+**Turn 8: MCP servers and hooks per environment.**
 
 ## Gates for every turn
 
@@ -462,7 +462,7 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ### Turn 7: Windows executor
 
-- Status: planned
+- Status: done with deviations
 - Scope:
   - PowerShell sessions (`pwsh`, fallback Windows PowerShell 5.1,
     `-NoProfile -NonInteractive`, UTF-8 output). The shell planning already
@@ -481,7 +481,76 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   - Filesystem read and patch with CRLF preserved.
 - Done when: the regression passes under Windows Node.
 - Milestone: Windows-native agents.
-- Outcome: _(fill in)_
+- Outcome:
+  - **Runner.** `src/main/direct/tools/windows-job-runner.cs` is the
+    production version of the spike runner. It also prepares what a command
+    needs before starting it:
+    - `--label-low` labels the project folder, checking first so only the
+      first Workspace command pays for the tree walk.
+    - `--hide` gives credential files a Medium no-read-up label.
+    - `--scratch` creates the private `TEMP`, with a Low label and a DACL for
+      the user and logon SID only.
+  - **Build and plan.** `windows-job-runner.js` builds the runner at first
+    use with the in-box `csc.exe` and caches it under
+    `%LOCALAPPDATA%\codex-review-shell\direct-job-runner\<source digest>`,
+    keeping parallel builds race-safe. It reports a spawn-free `status()` for
+    `environment/describe`, quotes Windows command lines by
+    CommandLineToArgvW rules, and plans launches through `WindowsJobSandbox`,
+    which wraps every profile, Full access included.
+  - **Refusal.** If the runner can't be built, commands are refused with
+    `direct_stateful_exec_windows_containment_unavailable` and a plain
+    message.
+  - **Wiring.**
+    - `LocalChildProcessBackend` defaults to that sandbox on Windows, so the
+      host's own Windows commands (previously uncontained) and the Windows
+      executor's `process/start` share one path. `launch` merges the scratch
+      `TEMP` and removes it when the command closes.
+    - Routing sends a Windows workspace to the in-process backend and file
+      port on a Windows host, and to the Windows executor from anywhere else
+      (`workspaceExecutesLocally`, the exec resolver, `portFor`).
+    - Commands get the Windows variables they need (`USERPROFILE`,
+      `APPDATA`, `PATHEXT`, and others; one list,
+      `BASE_COMMAND_ENVIRONMENT_KEYS`, shared by host and executor).
+    - PowerShell output is UTF-8.
+  - **Files.** Patches keep each file's dominant line ending; new files in a
+    Windows environment get CRLF, as the model is told. Before this, patching
+    a CRLF file rewrote it as LF on every host.
+  - **Model and UI.**
+    - Facts report the network as open (`networkEnforced: false`) for Windows
+      Workspace and Read only. The model is told that and that WSL and
+      credential stores are unreachable.
+    - The Access menu says "Network isn't blocked on Windows" for Windows
+      projects.
+    - `environment/describe` reports `windows_job_object` containment, and
+      bash's invocation as `-c`.
+  - **Session results.** They now report `networkAccess` from the executor's
+    start reply instead of the host's guess.
+  - **Checks.**
+    - New `direct-windows-executor-regression` passes on the Windows host (16
+      checks: in-process backend and executor) and from the Linux host (9
+      checks: executor launched with Windows `node.exe`). It covers:
+      - quoting and routing;
+      - describe and building the runner from source;
+      - PowerShell cwd, exit code, UTF-8, and stdin;
+      - tree kill on cancel and on exit;
+      - Workspace and Read only writes, scratch `TEMP`, FullLanguage
+        PowerShell, WSL blocked, and credential fixture hidden;
+      - CRLF, LF, and new-file CRLF patches, and the Workspace boundary,
+        through both file ports.
+    - Turns 1–5 executor regressions re-pass on both hosts. The turn 4 one
+      now names the platform in its credential-discovery unit check.
+    - `check:syntax` and `validate` pass; full sweep 263 of 283 passing,
+      failures identical to **Known failing checks**.
+  - **Effect on this machine (intended behavior).** The executor runs used
+    real credential discovery, so `%USERPROFILE%\.codex\auth.json` and
+    `%APPDATA%\codex-review-shell-direct\direct-auth\auth.json` now carry a
+    Medium no-read-up label. `codex login status` still works.
+  - **Deviations.**
+    - No live Electron turn was run.
+    - The workspace backend's request-scoped command paths (`run_command`
+      without a task grant, workspace-worker test profiles) still refuse on
+      Windows with `workspace_windows_job_object_containment_unavailable`;
+      only process sessions moved to the runner (see **Findings**).
 
 ### Turn 8: MCP servers and hooks per environment
 
@@ -578,9 +647,23 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 - Configured MCP stdio servers are spawned by the host
   (`configured-mcp-adapter.js:572`), so a WSL-configured server cannot run from
   a Windows host until turn 8.
-- The Windows workspace backend refuses commands
-  (`workspace_windows_job_object_containment_unavailable`) until Job Object
-  containment exists (turn 7, using the job runner decided in turn 6).
+- Since turn 7, process sessions (`exec_command`) on Windows run under the
+  job runner. The workspace backend's request-scoped command paths still
+  refuse on Windows (`workspace_windows_job_object_containment_unavailable`
+  from `containedWorkspaceProcessSpawn`): `run_command` for threads without a
+  task grant, and workspace-worker test profiles. Moving them to the runner
+  means giving its process groups and quiescence receipts a Windows
+  counterpart.
+- Scratch `TEMP` folders are removed when a command closes. If the host or
+  executor dies abruptly, leftovers stay under
+  `%LOCALAPPDATA%\codex-review-shell\direct-job-runner\scratch`; nothing
+  sweeps them yet.
+- The patch parser rejects a bare `@@` hunk header (vanilla Codex accepts
+  it); hunks need `@@ -a,b +c,d @@`.
+- The Windows credential discovery labels whatever stores exist under
+  `%USERPROFILE%\.codex`, `%CODEX_HOME%`, `%USERPROFILE%\.codex-review-shell`,
+  and `%APPDATA%\<app>[\<profile>]\direct-auth`. To undo a label:
+  `icacls <file> /setintegritylevel M`.
 - The transport reports a provider body it can't read incrementally as
   `max_output`, which surfaces to users as `max_output_terminal`. A distinct
   code (for example `provider_body_not_streamable`) would be clearer.
@@ -650,6 +733,8 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | Credential exposure: Full access unrestricted; Workspace and Read only can't reach Windows drives, WSL interop, or credential stores | Full access matches a native full-access agent on either OS (and vanilla Codex). The sandboxed profiles keep a WSL agent on its own Linux filesystem, which is the track's goal, and keep tokens out of model context. Hiding interop is also what makes the sandbox a sandbox: otherwise a sandboxed command can start an unsandboxed Windows process. |
 | 2026-10-06 | Windows containment uses a Direct-owned job runner, not Codex's sandbox | Codex's jobs allow breakaway and keep descendants alive by design; its unelevated network blocking is advisory and its real isolation needs accounts, firewall rules, and UAC; it has no stable third-party interface. A ~300-line runner built by the in-box `csc.exe` covers containment fully without admin rights. Details in `DIRECT_WINDOWS_CONTAINMENT_DECISION.md`. |
 | 2026-10-06 | Windows Workspace and Read only use integrity levels; network stays unenforced | Low integrity with a Low-labeled project folder confines writes; adding a write-restricted token gives Read only; a Medium no-read-up label hides credential stores; WSL interop is blocked for free. Nothing short of admin-provisioned firewall rules can block the network, so Direct states that instead of claiming it. |
+| 2026-10-06 | A Windows workspace runs in-process on a Windows host | The host is then that environment, so the in-process backend with the job runner is the native executor; going through a second Node process would add nothing. From WSL or Linux, the Windows executor runs it. |
+| 2026-10-06 | Patches keep each file's line ending; new files follow the environment | Normalizing to LF silently rewrote every line of CRLF files. New files use CRLF on Windows because that is what the model is told. |
 | 2026-10-06 | One file implementation, two placements | The executor runs the host's `LocalFilePort` natively, so local and WSL file rules can't drift apart; the host only plans. |
 
 ## Plan changes

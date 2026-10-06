@@ -61,7 +61,7 @@ const fakeFs = {
     throw Object.assign(new Error("missing"), { code: "ENOENT" });
   },
 };
-assert.deepEqual(discoverCredentialStoreFiles({ homedir: "/home/u", env: {}, fs: fakeFs }), [...fakeFiles].sort());
+assert.deepEqual(discoverCredentialStoreFiles({ platform: "linux", homedir: "/home/u", env: {}, fs: fakeFs }), [...fakeFiles].sort());
 const wrapped = new BubblewrapExecSandbox({ platform: "linux", executable: "/usr/bin/bwrap", homedir: "/home/u", env: {}, fs: fakeFs })
   .wrap({ sandboxMode: "workspace-write", root: "/mnt/c/work/p", cwd: "/mnt/c/work/p", shellCommand: "true" });
 const argsText = wrapped.args.join(" ");

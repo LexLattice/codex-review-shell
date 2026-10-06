@@ -49,6 +49,17 @@ function splitLines(text) {
   return { lines, hasFinalNewline };
 }
 
+// Patches are matched on LF-normalized lines; the result is written back
+// with the file's own dominant line ending, and new files use the
+// environment's default (CRLF on Windows, as the model is told).
+function lineEndingFor(existingText, environmentKind) {
+  const text = String(existingText || "");
+  const crlf = (text.match(/\r\n/g) || []).length;
+  const lf = (text.match(/\n/g) || []).length - crlf;
+  if (crlf || lf) return crlf > lf ? "\r\n" : "\n";
+  return environmentKind === "windows" ? "\r\n" : "\n";
+}
+
 function pathText(value, label = "path") {
   const text = normalizeString(value, "").replace(/\\/g, "/");
   if (!text || text.length > 4096 || /[\0-\x1f\x7f]/.test(text)) {
@@ -422,12 +433,12 @@ class DirectFullAccessLocalEnvironmentExecutor {
       : (kind, project) => workspaceExecutesLocally(kind, project);
   }
 
-  // The local port serves workspaces local to this host; a WSL workspace
-  // opened from elsewhere is served by that environment's executor.
+  // The local port serves workspaces local to this host; a WSL or Windows
+  // workspace opened from elsewhere is served by that environment's executor.
   portFor(grant, project = {}) {
     const kind = grant?.executionEnvironment?.kind;
     if (this.workspaceLocalityResolver(kind, project)) return this.localPort;
-    if (kind === "wsl" && this.executorFilePort) return this.executorFilePort;
+    if ((kind === "wsl" || kind === "windows") && this.executorFilePort) return this.executorFilePort;
     return null;
   }
 
@@ -507,7 +518,8 @@ class DirectFullAccessLocalEnvironmentExecutor {
       } else {
         afterLines = applyHunks(before.lines, filePatch.hunks, filePatch.operation);
       }
-      const afterText = filePatch.operation === "delete" ? "" : `${afterLines.join("\n")}${before.hasFinalNewline || filePatch.operation === "create" ? "\n" : ""}`;
+      const eol = lineEndingFor(beforeTarget.exists ? beforeText : "", grant?.executionEnvironment?.kind);
+      const afterText = filePatch.operation === "delete" ? "" : `${afterLines.join(eol)}${before.hasFinalNewline || filePatch.operation === "create" ? eol : ""}`;
       plans.push({
         operation: filePatch.operation,
         displayPath: resolved.pathEvidenceKey,
@@ -569,6 +581,7 @@ module.exports = {
   LocalFilePort,
   MAX_PATCH_TARGET_BYTES,
   MAX_READ_FILE_BYTES,
+  lineEndingFor,
   localError,
   parseUnifiedPatch,
   pathText,

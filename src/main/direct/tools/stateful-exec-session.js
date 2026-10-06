@@ -5,6 +5,7 @@ const path = require("node:path");
 const { EventEmitter } = require("node:events");
 const { StringDecoder } = require("node:string_decoder");
 const {
+  BASE_COMMAND_ENVIRONMENT_KEYS,
   LocalChildProcessBackend,
   statefulExecError,
 } = require("./exec-process-backends");
@@ -562,7 +563,7 @@ function normalizeShellCommand(value) {
 
 function safeExecEnvironment(extra = {}) {
   const result = {};
-  for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot", "ComSpec", "LANG", "LC_ALL"]) {
+  for (const key of [...BASE_COMMAND_ENVIRONMENT_KEYS, "LANG", "LC_ALL"]) {
     if (process.env[key]) result[key] = process.env[key];
   }
   result.CI = "1";
@@ -1322,7 +1323,11 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       cancellationRequested: record.cancellationRequested === true,
       stdinPolicy: record.stdinPolicy || "blocked_until_policy",
       sandboxMode: record.sandboxMode || "danger-full-access",
-      networkAccess: record.networkAccess !== false,
+      // A remote handle learns the real value from the executor once the
+      // process starts; the plan only guessed it.
+      networkAccess: typeof record.process?.networkAccess === "boolean"
+        ? record.process.networkAccess
+        : record.networkAccess !== false,
       stdinAccepted: extra.stdinAccepted === true,
       eofRequested: extra.eofRequested === true,
       errorCode: record.errorCode || "",

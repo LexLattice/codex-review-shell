@@ -24,6 +24,7 @@ const {
 const { workspaceExecutesLocally } = require("./exec-sandbox");
 
 const ENVIRONMENT_EXECUTOR_BACKEND_ID = "environment-executor";
+const EXECUTOR_ENVIRONMENT_KINDS = new Set(["wsl", "windows"]);
 const PROCESS_START_TIMEOUT_MS = 30_000;
 const PROCESS_CONTROL_TIMEOUT_MS = 10_000;
 
@@ -252,9 +253,8 @@ class EnvironmentExecutorProcessBackend {
 
 /**
  * Picks the process backend for a session: the in-process local backend when
- * the workspace is local to this host, otherwise the environment's executor.
- * Only WSL workspaces route to an executor today; Windows executors refuse
- * process creation until Job Object containment exists (turn 7).
+ * the workspace is local to this host, otherwise the environment's executor
+ * (WSL from Windows or another distro, Windows from WSL or Linux).
  */
 function createEnvironmentExecBackendResolver(options = {}) {
   const localBackend = options.localBackend;
@@ -264,13 +264,14 @@ function createEnvironmentExecBackendResolver(options = {}) {
     : (kind, project) => workspaceExecutesLocally(kind, project);
   return (input = {}, grant = null) => {
     const kind = normalizeString(grant?.executionEnvironment?.kind || input.executionEnvironment?.kind, "local");
-    if (kind === "wsl" && executorBackend && !locality(kind, input.project || {})) return executorBackend;
+    if (EXECUTOR_ENVIRONMENT_KINDS.has(kind) && executorBackend && !locality(kind, input.project || {})) return executorBackend;
     return localBackend;
   };
 }
 
 module.exports = {
   ENVIRONMENT_EXECUTOR_BACKEND_ID,
+  EXECUTOR_ENVIRONMENT_KINDS,
   EnvironmentExecutorProcessBackend,
   ExecutorProcessHandle,
   LOCAL_CHILD_BACKEND_ID,
