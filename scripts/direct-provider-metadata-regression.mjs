@@ -151,7 +151,8 @@ assert.deepEqual(
   profile.modelCatalog.items[0].supportedReasoningEfforts.map((item) => item.reasoningEffort),
   ["low", "medium", "high", "xhigh"],
 );
-assert.deepEqual(profile.modelCatalog.items[0].serviceTiers.map((item) => item.id), ["standard", "fast"]);
+// "fast" is Codex's legacy alias for the "priority" (Fast) tier.
+assert.deepEqual(profile.modelCatalog.items[0].serviceTiers.map((item) => item.id), ["standard", "priority"]);
 assert.equal(profile.modelCatalog.items[0].contextWindow, 272000);
 assert.equal(profile.modelCatalog.items[0].availabilityState, "available_with_nux");
 assert.equal(profile.modelCatalog.items[0].upgradeInfo.model, "gpt-5.6");

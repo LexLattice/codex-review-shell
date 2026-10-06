@@ -32,6 +32,7 @@
   const editorLocalFields = document.getElementById("directProjectBindingLocalFields");
   const editorLocalPath = document.getElementById("directProjectBindingLocalPath");
   const editorRuntimePath = document.getElementById("directProjectBindingRuntimePath");
+  const editorDefaultModel = document.getElementById("directProjectBindingDefaultModel");
   const editorEvidence = document.getElementById("directProjectBindingEvidence");
   const editorCommit = document.getElementById("directProjectBindingCommit");
   const lifecyclePanel = document.getElementById("directProjectLifecyclePanel");
@@ -586,8 +587,31 @@
     editorWindowsPath.value = workspace.windowsPath || "";
     editorLocalPath.value = workspace.localPath || "";
     editorRuntimePath.value = fields.runtimePath || "app-server";
+    fillDefaultModelOptions(fields.defaultModel || "");
     syncWorkspaceFields();
     if (environmentModel) refreshEnvironmentOptions();
+  }
+
+  // Choices come from the account's model list, the same list the composer
+  // picker shows (codex-surface.js publishes it as DirectModelCatalog).
+  function fillDefaultModelOptions(selected = "") {
+    if (!editorDefaultModel) return;
+    const catalog = globalThis.DirectModelCatalog;
+    const models = typeof catalog?.pickerModels === "function" ? catalog.pickerModels() : [];
+    const recommended = typeof catalog?.recommendedModel === "function" ? catalog.recommendedModel() : null;
+    editorDefaultModel.innerHTML = "";
+    const add = (value, label) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      editorDefaultModel.appendChild(option);
+    };
+    add("", recommended ? `Recommended (now ${recommended.displayName})` : "Recommended");
+    for (const model of models) add(model.model, model.displayName);
+    if (selected && !models.some((model) => model.model === selected)) {
+      add(selected, models.length ? `${selected} · not offered, Recommended is used` : selected);
+    }
+    editorDefaultModel.value = selected;
   }
 
   async function openBindingEditor(projectId = "") {
@@ -668,6 +692,7 @@
           displayName: editorName.value.trim(),
           workspace: bindingWorkspaceFromForm(),
           runtimePath: editorRuntimePath.value,
+          ...(editorDefaultModel ? { defaultModel: editorDefaultModel.value } : {}),
         },
       });
       if (!receipt?.ok || !["accepted", "completed"].includes(receipt.status)) {

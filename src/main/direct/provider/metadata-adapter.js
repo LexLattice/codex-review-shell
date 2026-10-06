@@ -96,19 +96,40 @@ function normalizeReasoningOption(value) {
   };
 }
 
+// Codex sends Fast as `service_tier: "priority"`; "fast" is its legacy
+// alias (the catalog's `additional_speed_tiers` still says "fast"), so both
+// collapse into one tier.
+function canonicalServiceTierId(value) {
+  const id = normalizeString(value, "");
+  return id.toLowerCase() === "fast" ? "priority" : id;
+}
+
 function normalizeServiceTier(value) {
   if (typeof value === "string") {
-    const id = normalizeString(value, "");
-    return id ? { id, name: id, description: "" } : null;
+    const id = canonicalServiceTierId(value);
+    return id ? { id, name: id === "priority" ? "Fast" : id, description: "" } : null;
   }
   if (!isPlainObject(value)) return null;
-  const id = normalizeString(value.id || value.serviceTier || value.service_tier || value.name, "");
+  const id = canonicalServiceTierId(value.id || value.serviceTier || value.service_tier || value.name);
   if (!id) return null;
   return {
     id,
-    name: normalizeString(value.name || value.displayName || value.display_name, id),
+    name: normalizeString(value.name || value.displayName || value.display_name, id === "priority" ? "Fast" : id),
     description: normalizeString(value.description, ""),
   };
+}
+
+const KNOWN_CYBER_ACCESS_PROGRAMS = new Set(["standard", "daybreak_blue", "daybreak_red"]);
+
+// `available_access_programs` is caller-specific: which explicit treatments
+// this account may request for the model. `null` means the catalog didn't
+// say, which is not the same as an empty list. Unknown programs are ignored.
+function normalizeAccessPrograms(raw) {
+  if (!isPlainObject(raw)) return null;
+  const cyber = arrayValue(raw.cyber)
+    .map((value) => normalizeString(value, "").replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase())
+    .filter((value) => KNOWN_CYBER_ACCESS_PROGRAMS.has(value));
+  return { cyber: [...new Set(cyber)] };
 }
 
 function uniqueByKey(items, keyFn) {
@@ -165,7 +186,7 @@ function normalizeModelDescriptor(raw = {}, index = 0, validation = {}) {
     ...arrayValue(raw.serviceTiers || raw.service_tiers),
     ...arrayValue(raw.additionalSpeedTiers || raw.additional_speed_tiers),
   ].map(normalizeServiceTier).filter(Boolean), (entry) => entry.id);
-  const defaultServiceTier = normalizeString(raw.defaultServiceTier || raw.default_service_tier, "");
+  const defaultServiceTier = canonicalServiceTierId(raw.defaultServiceTier || raw.default_service_tier);
   const serviceTierIds = new Set(serviceTiers.map((entry) => entry.id));
   if (defaultServiceTier && serviceTierIds.size && !serviceTierIds.has(defaultServiceTier)) {
     validation.changedFields.push({
@@ -199,6 +220,10 @@ function normalizeModelDescriptor(raw = {}, index = 0, validation = {}) {
     defaultReasoningEffort,
     serviceTiers,
     defaultServiceTier,
+    accessPrograms: normalizeAccessPrograms(raw.availableAccessPrograms ?? raw.available_access_programs),
+    // "cyber" marks a dedicated Daybreak model; the picker reaches Daybreak
+    // through the toggle instead.
+    modelSpecialty: normalizeString(raw.modelSpecialty || raw.model_specialty, ""),
     inputModalities: normalizeInputModalities(raw.inputModalities || raw.input_modalities),
     supportsPersonality: raw.supportsPersonality ?? raw.supports_personality,
     contextWindow: numberOrUndefined(raw.contextWindow ?? raw.context_window),
@@ -866,6 +891,7 @@ module.exports = {
   buildDirectMetadataDriftReport,
   detectCodexClientVersion,
   buildDirectProviderMetadataProfile,
+  canonicalServiceTierId,
   normalizeModelDescriptor,
   validateDirectProviderMetadataProfile,
 };

@@ -231,6 +231,8 @@ function buildDirectWorkbenchProjectBindingDraft(config = {}, options = {}) {
       displayName: normalizeString(project?.name, normalizeString(defaults.displayName, "New project")),
       workspace: workspaceBindingDraft(workspace),
       runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || defaults.codexBinding || {}),
+      // "" is Recommended: new threads follow the account's model list.
+      defaultModel: project ? normalizeString(project.surfaceBinding?.codex?.model, "") : "",
     },
     evidence: {
       projectIdentityAssignedByMain: mode === "create",
@@ -317,7 +319,13 @@ function validateDirectWorkbenchProjectBindingMutation(directory = {}, config = 
   if (!["app-server", "direct-text", "direct-implementation"].includes(runtimePath)) {
     throw projectDirectoryError("project_binding_runtime_path_invalid");
   }
+  const hasDefaultModel = typeof request.fields?.defaultModel === "string";
+  const defaultModel = hasDefaultModel ? request.fields.defaultModel.trim() : "";
+  if (defaultModel.length > 120 || !/^[A-Za-z0-9._:-]*$/.test(defaultModel)) {
+    throw projectDirectoryError("project_binding_default_model_invalid");
+  }
   return {
+    ...(hasDefaultModel ? { defaultModel } : {}),
     mode,
     clientMutationId,
     sourceProjectId,

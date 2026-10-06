@@ -165,7 +165,14 @@ function accessProfileCapabilityNames(profile, names = []) {
 }
 
 const DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text";
-const DIRECT_SERVICE_TIERS = new Set(["fast", "flex"]);
+// "priority" is Codex's Fast; "fast" is its legacy alias and is stored as
+// "priority".
+const DIRECT_SERVICE_TIERS = new Set(["priority", "fast", "flex"]);
+
+function canonicalDirectServiceTier(value) {
+  const tier = normalizeString(value, "");
+  return tier.toLowerCase() === "fast" ? "priority" : tier;
+}
 const DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE = "direct_fork_preview_start_live_text@1";
 const DIRECT_MERGE_PREVIEW_START_REQUEST_SHAPE = "direct_merge_preview_start_live_text@1";
 const DIRECT_PRUNE_PREVIEW_START_REQUEST_SHAPE = "direct_prune_preview_start_live_text@1";
@@ -865,7 +872,7 @@ function buildDirectLiveTextCapabilities(status = {}, options = {}) {
     },
     serviceTier: {
       canSetNextTurn: ready,
-      availableTiers: [...DIRECT_SERVICE_TIERS],
+      availableTiers: [...DIRECT_SERVICE_TIERS].filter((tier) => tier === canonicalDirectServiceTier(tier)),
     },
     usage: {
       canReadRateLimits: modelCatalogAvailable && metadataFresh && Boolean(metadata?.usage?.quota),
@@ -2638,6 +2645,38 @@ class DirectLiveTextController {
     return normalizeString(project.surfaceBinding?.codex?.model || project.codex?.model, "");
   }
 
+  // The model's entry in the account's model list, or null when the list
+  // isn't loaded or doesn't include it.
+  catalogModelDescriptor(project = {}, model = "") {
+    const id = normalizeString(model, "");
+    if (!id) return null;
+    const profile = this.resolveProviderMetadataStatus(project)?.profile;
+    if (normalizeString(profile?.modelCatalog?.source, "") !== "server_model_list") return null;
+    const items = Array.isArray(profile.modelCatalog.items) ? profile.modelCatalog.items : [];
+    return items.find((item) => isPlainObject(item) && (item.model === id || item.id === id)) || null;
+  }
+
+  // Like Codex, a tier the model doesn't offer is dropped rather than sent.
+  // Without the model's entry the tier is passed through for the provider
+  // to judge.
+  effectiveServiceTier(project = {}, model = "", tier = "") {
+    const canonical = canonicalDirectServiceTier(tier);
+    if (!canonical) return "";
+    const descriptor = this.catalogModelDescriptor(project, model);
+    if (!descriptor || !Array.isArray(descriptor.serviceTiers)) return canonical;
+    const offered = descriptor.serviceTiers.map((entry) => canonicalDirectServiceTier(entry?.id));
+    return offered.includes(canonical) ? canonical : "";
+  }
+
+  // Daybreak is requested only when the account's list says this model
+  // accepts it (`available_access_programs.cyber`); otherwise the field is
+  // omitted and the backend keeps its automatic behavior.
+  cyberAccessProgramFor(project = {}, model = "", daybreakEnabled = false) {
+    if (daybreakEnabled !== true) return "";
+    const programs = this.catalogModelDescriptor(project, model)?.accessPrograms?.cyber;
+    return Array.isArray(programs) && programs.includes("daybreak_blue") ? "daybreak_blue" : "";
+  }
+
   // A project's model is only a default. Once the account's list stops
   // offering it, the list's default takes over; an explicit thread or turn
   // model is never replaced.
@@ -3108,6 +3147,8 @@ class DirectLiveTextController {
       defaultReasoningEffort: normalizeString(item.defaultReasoningEffort, ""),
       serviceTiers: Array.isArray(item.serviceTiers) ? item.serviceTiers : [],
       defaultServiceTier: normalizeString(item.defaultServiceTier, ""),
+      accessPrograms: isPlainObject(item.accessPrograms) ? item.accessPrograms : null,
+      modelSpecialty: normalizeString(item.modelSpecialty, ""),
       inputModalities: Array.isArray(item.inputModalities) ? item.inputModalities : [],
       contextWindow: item.contextWindow,
       maxContextWindow: item.maxContextWindow,
@@ -3306,7 +3347,7 @@ class DirectLiveTextController {
     }
     const model = normalizeString(params.model, "") || status.model;
     const reasoningEffort = normalizeString(params.reasoningEffort || params.reasoning_effort, "");
-    const serviceTier = normalizeString(params.serviceTier || params.service_tier, "");
+    const serviceTier = canonicalDirectServiceTier(params.serviceTier || params.service_tier);
     if (serviceTier && !DIRECT_SERVICE_TIERS.has(serviceTier)) {
       const error = new Error(`Direct service tier is not supported: ${serviceTier}`);
       error.code = "direct_service_tier_unsupported";
@@ -3321,6 +3362,7 @@ class DirectLiveTextController {
       model,
       reasoningEffort,
       serviceTier,
+      daybreakEnabled: params.daybreakEnabled === true,
       runtimeMode: normalizeCodexBinding(project.surfaceBinding?.codex || {}).runtimeMode,
       directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       modelSource: status.modelSource,
@@ -6905,6 +6947,7 @@ class DirectLiveTextController {
       model: normalizeString(turn.model, ""),
       reasoningEffort: normalizeString(turn.reasoningEffort, ""),
       serviceTier: normalizeString(turn.serviceTier || turn.service_tier, ""),
+      cyberAccessProgram: normalizeString(turn.cyberAccessProgram, ""),
       fetchImpl: this.fetchImpl || undefined,
       contextInput: this.boundUtilityContinuationInput(turn.admittedProviderContext, boundContinuationContext),
       instructions: [
@@ -9703,18 +9746,23 @@ class DirectLiveTextController {
       error.canonicalReasoningEffort = boundSessionReasoningEffort;
       throw error;
     }
-    const requestedServiceTier = normalizeString(params.serviceTier || params.service_tier, "");
-    const serviceTier = requestedServiceTier || normalizeString(session.serviceTier, "");
-    if (serviceTier && !DIRECT_SERVICE_TIERS.has(serviceTier)) {
-      const error = new Error(`Direct service tier is not supported: ${serviceTier}`);
+    const requestedServiceTier = canonicalDirectServiceTier(params.serviceTier || params.service_tier);
+    const selectedServiceTier = requestedServiceTier || canonicalDirectServiceTier(session.serviceTier);
+    if (selectedServiceTier && !DIRECT_SERVICE_TIERS.has(selectedServiceTier)) {
+      const error = new Error(`Direct service tier is not supported: ${selectedServiceTier}`);
       error.code = "direct_service_tier_unsupported";
       throw error;
     }
-    if (requestedServiceTier && !ownerControlled && requestedServiceTier !== session.serviceTier) {
+    if (requestedServiceTier && !ownerControlled && requestedServiceTier !== canonicalDirectServiceTier(session.serviceTier)) {
       const error = new Error("The turn service tier is not owner-controlled for this Direct task.");
       error.code = "direct_turn_service_tier_not_owner_controlled";
       throw error;
     }
+    const serviceTier = this.effectiveServiceTier(project, model, selectedServiceTier);
+    const daybreakEnabled = ownerControlled && typeof params.daybreakEnabled === "boolean"
+      ? params.daybreakEnabled
+      : session.daybreakEnabled === true;
+    const cyberAccessProgram = this.cyberAccessProgramFor(project, model, daybreakEnabled);
     const existingTurnIds = this.sessionStore.listTurnIdsFromDisk(session.sessionId);
     const existingTurnCount = existingTurnIds.length;
     const summaries = Array.isArray(session.turns) ? session.turns : [];
@@ -9879,6 +9927,7 @@ class DirectLiveTextController {
             prompt,
             reasoningEffort,
             serviceTier,
+            cyberAccessProgram,
             tools: this.withEnvironmentTools(implementationToolComposition, project, session.sessionId, harnessGrant).tools,
             toolChoicePolicy: "auto",
           })
@@ -9888,18 +9937,21 @@ class DirectLiveTextController {
           prompt,
           reasoningEffort,
           serviceTier,
+          cyberAccessProgram,
         });
     const turn = this.sessionStore.createTurn(session.sessionId, {
       input: [{ role: "user", text: prompt }],
       model: requestBody.model,
       reasoningEffort,
-      serviceTier,
+      serviceTier: serviceTier || null,
+      cyberAccessProgram,
       clientTurnRequestId,
       requestShape: {
         ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
         directTurnOwnerControlled: ownerControlled,
         directTurnServiceTier: serviceTier,
         serviceTier,
+        ...(cyberAccessProgram ? { cyberAccessProgram } : {}),
         ...(activeSubAgentPolicySemanticResult?.settlement
           ? {
               activeSubAgentPolicySemanticSettlementId:
@@ -10107,6 +10159,7 @@ class DirectLiveTextController {
               ),
               reasoningEffort,
               serviceTier,
+              cyberAccessProgram,
               tools: environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot),
               toolChoicePolicy: "auto",
             })
@@ -10117,6 +10170,7 @@ class DirectLiveTextController {
               instructions: contextResult.providerInput.instructions,
               reasoningEffort,
               serviceTier,
+              cyberAccessProgram,
             });
       }
       if (implementationTier && !selfConstitutionSnapshot) {
@@ -10143,6 +10197,7 @@ class DirectLiveTextController {
           ),
           reasoningEffort,
           serviceTier,
+          cyberAccessProgram,
           tools: environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot),
           toolChoicePolicy: "auto",
         });
@@ -10153,6 +10208,7 @@ class DirectLiveTextController {
         directTurnOwnerControlled: ownerControlled,
         directTurnServiceTier: serviceTier,
         serviceTier,
+        ...(cyberAccessProgram ? { cyberAccessProgram } : {}),
         ...selfConstitutionRequestShapeFields(selfConstitutionSnapshot),
         ...(activeSubAgentPolicySemanticResult?.settlement
           ? {
@@ -10324,6 +10380,7 @@ class DirectLiveTextController {
       model: requestBody.model,
       reasoningEffort,
       serviceTier,
+      cyberAccessProgram,
       project,
       surfaceSession,
       userItem,
@@ -10555,6 +10612,7 @@ class DirectLiveTextController {
       model,
       reasoningEffort,
       serviceTier,
+      cyberAccessProgram,
       project,
       surfaceSession,
       userItem,
@@ -10680,6 +10738,7 @@ class DirectLiveTextController {
       model,
       reasoningEffort,
       serviceTier,
+      cyberAccessProgram,
       prompt,
       instructions,
       fetchImpl: this.fetchImpl || undefined,

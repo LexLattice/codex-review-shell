@@ -785,6 +785,73 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
         list, the configured model is kept. On the owner's account this
         makes `gpt-6.1-sol` the default.
       - `direct-model-catalog-regression` grew to 11 checks.
+  - **Follow-up: the picker redone after Codex's.** The owner asked for
+    Fast and Daybreak as on/off modifiers, Daybreak driven by live data,
+    and the default set somewhere other than the picker. Sources: the Codex
+    source (`upstream-0.160.0`; the desktop UI itself isn't in it), the
+    owner's screenshots of the Codex app, and this account's live
+    `/codex/models` and `/accounts/verified_access` responses.
+    - **Live data.** Each model in `/codex/models` carries
+      `available_access_programs.cyber`, the treatments this account may
+      request. Here GPT-6.1 Sol and GPT-6 Astra list only `standard`. GPT-6
+      Sol, GPT-6 Luna, and the GPT-5.6 models add `daybreak_blue`. The
+      dedicated `gpt-daybreak-blue-latest` (`model_specialty: "cyber"`) lists
+      only `daybreak_blue`. Fast is the `priority` tier on every listed model
+      except Daybreak Blue. `verified_access` shows the cyber program
+      active (`tac1`); it says nothing per model, so it isn't used.
+    - **Requests.** Codex sends Daybreak as `access_programs: {cyber:
+      "daybreak_blue"}` in the Responses body, with the model unchanged, and
+      Fast as `service_tier: "priority"` (`fast` is a legacy alias). Direct
+      now does both. Each is sent only when the turn's model offers it.
+      Otherwise the field is omitted, and omission keeps the backend's
+      automatic behavior. The turn records its tier and program, and tool
+      continuations take effort, tier, and program from the turn. Before
+      this change, read, patch, and command continuations dropped the
+      thread's effort and tier.
+    - **Bug fixed on the way.** Direct accepted only `fast` and `flex`, so
+      choosing the catalog's "priority" tier was refused. `priority` is now
+      the canonical Fast; `fast` is stored as `priority`.
+    - **Per thread.** Fast and Daybreak are saved on the Direct session
+      (`serviceTier`, `daybreakEnabled`) through the thread runtime
+      preferences, like model and effort. New threads start with both off
+      (owner's choice). A choice the current model can't use stays saved
+      and applies again on a model that can. Before, Fast was renderer-wide
+      and leaked between threads.
+    - **Picker.** The composer button reads like Codex's: "⚡ GPT-6 Luna High
+      · Daybreak". Opening it shows the effort view:
+      - the Fast toggle, disabled with a reason when the model has no Fast
+        tier;
+      - the effort name;
+      - the model name, which opens the model view;
+      - a slider over the model's own effort levels;
+      - reset to the model's default effort.
+      The model view has the Daybreak switch. It is disabled with "Daybreak
+      isn't available for GPT-6.1 Sol." when the model doesn't offer it, and
+      with a different note when the list doesn't say. Below it is the
+      model list with a check on the current model. Dedicated Daybreak
+      models are hidden (owner's choice). The thread picker no longer has a
+      Default row.
+    - **Default model.** The default moved to the Workbench project editor
+      as "Model for new threads": "Recommended (now GPT-6.1 Sol)" or a
+      pinned model. Recommended is stored as an empty project model and
+      follows the account's list. A pinned model the list stops offering is
+      shown as such and falls back to Recommended. New threads now start
+      from this setting instead of inheriting the open thread's model.
+    - **Not changed.** Direct sends `ultra` effort literally. Codex instead
+      maps it to the model's `multi_agent_reasoning_effort` (or `max`) and
+      turns on proactive delegation. Recorded under **Findings**.
+    - Updated pins: `direct-thread-turn-parity-regression` (advertised
+      tiers are `priority`, `flex`) and `direct-provider-metadata-regression`
+      (the `fast` alias becomes `priority`). `direct-model-catalog-regression`
+      is now 16 checks, including real turns that check the request body for
+      each model. The picker was also rendered from the real code and CSS in
+      headless Electron, with stub data shaped like this account's list, and
+      checked by screenshot. The Workbench smoke still runs Direct in fixture
+      mode, so it shows the old menu.
+    - Checks: the catalog regression passes in WSL and under Windows Node;
+      `check:syntax`, `validate`, and the Workbench Electron smoke pass; the
+      full sweep is 267 of 286, failures identical to **Known failing
+      checks**. No live turn with Fast or Daybreak was run.
 
 ### Turn 10: cross-environment delegation
 
@@ -849,6 +916,14 @@ when a turn fixes it; never add a row for a failure a turn introduced.
 ## Findings to carry forward
 
 Discovered during planning; not in any turn's scope unless a turn adopts them.
+
+- Direct sends the `ultra` effort literally as `reasoning.effort: "ultra"`.
+  Codex never does: it sends the model's `multi_agent_reasoning_effort` (else
+  `max`, else the highest non-Ultra level) and turns on proactive
+  multi-agent delegation. Whether the provider accepts a literal `ultra` is
+  unverified.
+- Fork, derived-fork, and import-checkpoint requests pass neither effort nor
+  speed tier (nor Daybreak).
 
 - Every Workbench implementation turn first runs a separate model call for the
   sub-agent policy preflight (latency and quota).
@@ -974,6 +1049,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | MCP servers run in the project's environment by default | That is where the agent's tools run, and it matches Codex. A server explicitly named for another environment needs a `cwd` there to anchor its executor, since executors are per project folder until turn 11. |
 | 2026-10-06 | Only the MCP transport crosses to an executor | The executor runs the same one-request exchange as the host and returns the raw result; trust, freshness, scope, and every envelope check stay on the host, so a remote server can't widen what a local one could do. Variable values come from the server's own environment, never from the host. |
 | 2026-10-06 | One file implementation, two placements | The executor runs the host's `LocalFilePort` natively, so local and WSL file rules can't drift apart; the host only plans. |
+| 2026-10-07 | Fast and Daybreak are per-thread modifiers sent only when the model's catalog entry offers them; the default model lives in project settings | Matches Codex's request shape (`service_tier: "priority"`, `access_programs.cyber`) and its live per-model data. Choosing a default is a different act from switching a thread's model, so the picker only switches (owner's call). |
 | 2026-10-07 | Model availability follows Codex: the account's `/models` list, signed in is ready, the server rejects | A per-model probe gated every new model behind a manual refresh and expired after 7 days; Codex trusts the list and handles rejection. The probe stays as an optional "Test model". `client_version` is the installed Codex CLI's, so the list matches what Codex itself would offer. |
 
 ## Plan changes

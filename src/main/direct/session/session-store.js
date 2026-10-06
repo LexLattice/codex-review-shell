@@ -987,6 +987,9 @@ class DirectSessionStore {
       model: normalizeString(input.model, ""),
       reasoningEffort: normalizeString(input.reasoningEffort, ""),
       serviceTier: normalizeString(input.serviceTier, ""),
+      // The thread's Daybreak choice; each turn sends it only when the
+      // turn's model offers Daybreak.
+      daybreakEnabled: input.daybreakEnabled === true,
       agentId: normalizeString(input.agentId, ""),
       agentRunId: normalizeString(input.agentRunId, ""),
       parentAgentId: normalizeString(input.parentAgentId, ""),
@@ -1291,7 +1294,10 @@ class DirectSessionStore {
       updatedAt: normalizeString(input.updatedAt, now),
       model: normalizeString(input.model, session.model),
       reasoningEffort: normalizeString(input.reasoningEffort, session.reasoningEffort),
-      serviceTier: normalizeString(input.serviceTier, session.serviceTier),
+      // null means "no tier for this turn" (e.g. the model lacks the
+      // thread's tier); only an omitted tier falls back to the session's.
+      serviceTier: input.serviceTier === null ? "" : normalizeString(input.serviceTier, session.serviceTier),
+      cyberAccessProgram: normalizeString(input.cyberAccessProgram, ""),
       profileSnapshotId: normalizeString(input.profileSnapshotId, session.profileSnapshotId),
       clientTurnRequestId: normalizeString(input.clientTurnRequestId, ""),
       requestBuiltAt: "",

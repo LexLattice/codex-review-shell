@@ -171,6 +171,15 @@ function modelFromProfile(profileDoc = {}, fallback = "gpt-5.4") {
   return normalizeString(accepted?.id, fallback);
 }
 
+// Daybreak, like Codex: an explicit cyber treatment for this request, sent as
+// `access_programs.cyber`. Omitted, the backend keeps its automatic behavior.
+const CYBER_ACCESS_PROGRAMS = new Set(["standard", "daybreak_blue", "daybreak_red"]);
+
+function applyCyberAccessProgram(requestBody, options = {}) {
+  const program = normalizeString(options.cyberAccessProgram, "");
+  if (CYBER_ACCESS_PROGRAMS.has(program)) requestBody.access_programs = { cyber: program };
+}
+
 function buildTextOnlyProbeRequest(options = {}) {
   const prompt = normalizeString(options.prompt, DEFAULT_TEXT_PROBE_PROMPT);
   const instructions = normalizeString(options.instructions, DEFAULT_TEXT_PROBE_INSTRUCTIONS);
@@ -196,6 +205,7 @@ function buildTextOnlyProbeRequest(options = {}) {
   };
   if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
   if (serviceTier) requestBody.service_tier = serviceTier;
+  applyCyberAccessProgram(requestBody, options);
   const outputSchema =
     isPlainObject(options.outputSchema)
       ? options.outputSchema
@@ -346,6 +356,7 @@ function buildImplementationToolInitialRequest(options = {}) {
   }
   if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
   if (serviceTier) requestBody.service_tier = serviceTier;
+  applyCyberAccessProgram(requestBody, options);
   return requestBody;
 }
 
@@ -416,6 +427,7 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
     const serviceTier = normalizeString(options.serviceTier || options.service_tier, "");
     if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
     if (serviceTier) requestBody.service_tier = serviceTier;
+    applyCyberAccessProgram(requestBody, options);
     const continuationTools = Array.isArray(options.continuationTools)
       ? options.continuationTools.filter(Boolean)
       : [];
@@ -455,6 +467,7 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
   const serviceTier = normalizeString(options.serviceTier || options.service_tier, "");
   if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
   if (serviceTier) requestBody.service_tier = serviceTier;
+  applyCyberAccessProgram(requestBody, options);
   if (metadata.resultId) {
     requestBody.metadata = {
       direct_tool_result_id: normalizeString(metadata.resultId, ""),
@@ -487,6 +500,7 @@ function requestShapeForDiagnostic(requestBody = {}) {
     parallelToolCalls: requestBody.parallel_tool_calls === true,
     reasoningEffort: normalizeString(requestBody.reasoning?.effort || requestBody.reasoning_effort, ""),
     serviceTier: normalizeString(requestBody.service_tier || requestBody.serviceTier, ""),
+    ...(requestBody.access_programs?.cyber ? { cyberAccessProgram: normalizeString(requestBody.access_programs.cyber, "") } : {}),
     ...(isPlainObject(requestBody.text?.format)
       ? {
           textFormatType: normalizeString(
@@ -1496,6 +1510,14 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
   if (!sessionStore) throw new Error("Persisted read-only tool continuation requires a session store.");
   const existingTurn = sessionStore.readTurn(options.sessionId, options.turnId);
   if (!existingTurn) throw new Error(`Direct turn not found: ${options.turnId}`);
+  // Every request in a turn runs with the turn's effort, speed, and Daybreak
+  // choice, not just the first one.
+  options = {
+    ...options,
+    reasoningEffort: options.reasoningEffort ?? normalizeString(existingTurn.reasoningEffort, ""),
+    serviceTier: options.serviceTier ?? normalizeString(existingTurn.serviceTier, ""),
+    cyberAccessProgram: options.cyberAccessProgram ?? normalizeString(existingTurn.cyberAccessProgram, ""),
+  };
   const recorded = recordReadOnlyToolContinuationRequest({
     ...options,
     continuationRequest: options.continuationRequest,

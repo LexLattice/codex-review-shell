@@ -169,20 +169,25 @@ const state = {
   runtimePathSelection: "",
   runtimePathTransitionStatus: "idle",
   runtimePathTransitionError: "",
+  // On Direct the project's model is only a default (directDefaultModelId),
+  // so it never starts as an explicit override.
   runtimeOverrides: {
-    model: project?.codex?.model || "",
+    model: DIRECT_TRANSPORTS.has(connection?.transport) ? "" : project?.codex?.model || "",
     reasoningEffort: project?.codex?.reasoningEffort || "",
     approvalPolicy: "",
     sandboxMode: "",
     serviceTier: "",
+    daybreakEnabled: false,
   },
   runtimeConfirmedOverrides: {
-    model: project?.codex?.model || "",
+    model: DIRECT_TRANSPORTS.has(connection?.transport) ? "" : project?.codex?.model || "",
     reasoningEffort: project?.codex?.reasoningEffort || "",
     approvalPolicy: "",
     sandboxMode: "",
     serviceTier: "",
+    daybreakEnabled: false,
   },
+  composerModelView: "effort",
   workspaceStatus: payload.workspaceStatus || null,
   connectionStatus: connectionAvailable() ? "loading" : (payload.runtimeStartupPending ? "starting" : "unavailable"),
   runtimeConstitution: null,
@@ -3202,6 +3207,7 @@ function closeComposerMenus() {
 
 function toggleComposerMenu(menu) {
   state.composerMenu = state.composerMenu === menu ? "" : menu;
+  if (state.composerMenu === "model") state.composerModelView = "effort";
   renderComposerRuntimeBand();
   updateComposerGeometry();
   // Like Codex, the picker uses the cached list and fetches only when it is
@@ -3347,8 +3353,296 @@ function composerSelectedOverride(name) {
   return value;
 }
 
+const DIRECT_EFFORT_LABELS = Object.freeze({
+  none: "None",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+  ultra: "Ultra",
+});
+
+function directEffortLabel(value) {
+  const effort = String(value || "").trim();
+  return DIRECT_EFFORT_LABELS[effort] || effort || "Default";
+}
+
+// What the picker offers: the account's listed models, minus dedicated
+// Daybreak models ("cyber" specialty), which the Daybreak toggle stands in for.
+function directPickerModels() {
+  return directListedModels().filter((model) => String(model?.modelSpecialty || "") !== "cyber");
+}
+
+function directModelName(model, fallback = "") {
+  return String(model?.displayName || model?.model || fallback || "model").replace(/^GPT-/i, "GPT-");
+}
+
+function directModelSupportsFast(model = selectedModel()) {
+  const tiers = Array.isArray(model?.serviceTiers) ? model.serviceTiers : [];
+  return tiers.some((tier) => ["priority", "fast"].includes(String(tier?.id || tier || "").toLowerCase()));
+}
+
+function directFastTierDescription(model = selectedModel()) {
+  const tiers = Array.isArray(model?.serviceTiers) ? model.serviceTiers : [];
+  const tier = tiers.find((entry) => ["priority", "fast"].includes(String(entry?.id || "").toLowerCase()));
+  return String(tier?.description || "").trim();
+}
+
+// From the account's model list (`available_access_programs.cyber`):
+// "supported", "unsupported", or "unknown" when the list doesn't say.
+function directModelDaybreakSupport(model = selectedModel()) {
+  const programs = model?.accessPrograms?.cyber;
+  if (!Array.isArray(programs)) return "unknown";
+  return programs.includes("daybreak_blue") ? "supported" : "unsupported";
+}
+
+// A thread's choices stay saved when the model can't use them; they apply
+// again after switching back to a model that can.
+function directFastActive() {
+  return state.runtimeOverrides.serviceTier === "priority" && directModelSupportsFast();
+}
+
+function directDaybreakActive() {
+  return state.runtimeOverrides.daybreakEnabled === true && directModelDaybreakSupport() === "supported";
+}
+
+function directCurrentEffort() {
+  return state.runtimeOverrides.reasoningEffort || selectedModel()?.defaultReasoningEffort || "";
+}
+
+function directComposerButtonText() {
+  const model = selectedModel();
+  const id = activeModelId();
+  const name = directModelName(model, id || directModelLabel());
+  const effort = directCurrentEffort();
+  return [
+    directFastActive() ? "⚡" : "",
+    `${name}${directModelUnavailable(id) ? " · unavailable" : ""}`,
+    effort ? directEffortLabel(effort) : "",
+    directDaybreakActive() ? "· Daybreak" : "",
+  ].filter(Boolean).join(" ");
+}
+
+// The project editor's "Model for new threads" reads the same list.
+globalThis.DirectModelCatalog = Object.freeze({
+  pickerModels: () => directPickerModels().map((model) => ({ model: model.model, displayName: directModelName(model) })),
+  recommendedModel: () => {
+    const id = defaultModelId();
+    return id ? { model: id, displayName: directModelName(modelById(id), id) } : null;
+  },
+});
+
+const DIRECT_ICON_FAST = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.2 1.5 3.5 9h4l-.9 5.5L12.5 7h-4z" fill="currentColor"/></svg>';
+const DIRECT_ICON_RESET = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 6.2A5 5 0 1 1 3 9.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M2.6 2.8v3.6h3.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function directIconButton(icon, label, onClick, options = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `direct-icon-button${options.className ? ` ${options.className}` : ""}`;
+  button.innerHTML = icon;
+  button.setAttribute("aria-label", label);
+  button.title = options.title || label;
+  if (options.pressed !== undefined) button.setAttribute("aria-pressed", options.pressed ? "true" : "false");
+  button.disabled = Boolean(options.disabled);
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+// Effort view: Fast toggle, effort name, the model (opens the list), a
+// slider over the model's own effort levels, and reset to its default.
+function directEffortView() {
+  const model = selectedModel();
+  const id = activeModelId();
+  const name = directModelName(model, id);
+  const efforts = supportedReasoningOptions();
+  const current = directCurrentEffort();
+  const modelDefault = String(model?.defaultReasoningEffort || "").trim();
+  const view = document.createElement("div");
+  view.className = "direct-effort-view";
+
+  const header = document.createElement("div");
+  header.className = "direct-effort-header";
+  const fastSupported = directModelSupportsFast(model);
+  const fastOn = directFastActive();
+  const fastDescription = directFastTierDescription(model);
+  header.appendChild(directIconButton(DIRECT_ICON_FAST, fastOn ? "Turn Fast off" : "Turn Fast on", () => {
+    setRuntimeOverride("serviceTier", fastOn ? "" : "priority");
+  }, {
+    className: "direct-fast-toggle",
+    pressed: fastOn,
+    disabled: !fastSupported,
+    title: !fastSupported
+      ? `Fast isn't available for ${name}.`
+      : `Fast ${fastOn ? "on" : "off"} for this thread${fastDescription ? ` (${fastDescription})` : ""}.`,
+  }));
+
+  const title = document.createElement("div");
+  title.className = "direct-effort-title";
+  const effortName = document.createElement("strong");
+  effortName.textContent = directEffortLabel(current);
+  const modelLink = document.createElement("button");
+  modelLink.type = "button";
+  modelLink.className = "direct-effort-model-link";
+  modelLink.textContent = `${name}${directModelUnavailable(id) ? " · unavailable" : ""} ›`;
+  modelLink.title = "Choose this thread's model";
+  modelLink.addEventListener("click", () => {
+    state.composerModelView = "models";
+    renderComposerModelMenu();
+  });
+  title.append(effortName, modelLink);
+  header.appendChild(title);
+
+  header.appendChild(directIconButton(DIRECT_ICON_RESET, "Reset effort to the model default", () => {
+    setRuntimeOverride("reasoningEffort", modelDefault);
+  }, {
+    disabled: !modelDefault || current === modelDefault,
+    title: modelDefault ? `Reset to ${directEffortLabel(modelDefault)}, ${name}'s default.` : "This model has no default effort.",
+  }));
+  view.appendChild(header);
+
+  const description = document.createElement("p");
+  description.className = "direct-effort-description";
+  const describe = (effort) => String(
+    (model?.supportedReasoningEfforts || []).find((entry) => entry?.reasoningEffort === effort)?.description || "",
+  ).trim();
+  description.textContent = describe(current);
+
+  if (efforts.length > 1) {
+    const sliderWrap = document.createElement("div");
+    sliderWrap.className = "direct-effort-slider";
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = "0";
+    slider.max = String(efforts.length - 1);
+    slider.step = "1";
+    slider.value = String(Math.max(0, efforts.indexOf(current)));
+    slider.setAttribute("aria-label", "Reasoning effort");
+    const ticks = document.createElement("div");
+    ticks.className = "direct-effort-ticks";
+    ticks.setAttribute("aria-hidden", "true");
+    for (let index = 0; index < efforts.length; index += 1) ticks.appendChild(document.createElement("span"));
+    const paint = () => {
+      const effort = efforts[Number(slider.value)] || current;
+      sliderWrap.style.setProperty("--direct-effort-fill-ratio", String(Number(slider.value) / (efforts.length - 1)));
+      slider.setAttribute("aria-valuetext", directEffortLabel(effort));
+      effortName.textContent = directEffortLabel(effort);
+      description.textContent = describe(effort);
+    };
+    // Dragging only previews; the choice is saved when the slider settles,
+    // because saving re-renders this menu.
+    slider.addEventListener("input", paint);
+    slider.addEventListener("change", () => setRuntimeOverride("reasoningEffort", efforts[Number(slider.value)] || ""));
+    paint();
+    sliderWrap.append(ticks, slider);
+    view.appendChild(sliderWrap);
+  }
+  view.appendChild(description);
+  return view;
+}
+
+// Model view: Daybreak for this thread, then the account's models.
+function directModelListView() {
+  const model = selectedModel();
+  const id = activeModelId();
+  const name = directModelName(model, id);
+  const view = document.createElement("div");
+  view.className = "direct-model-view";
+
+  const daybreakSupport = directModelDaybreakSupport(model);
+  const daybreakOn = directDaybreakActive();
+  const daybreakRow = document.createElement("div");
+  daybreakRow.className = "direct-daybreak-row";
+  const daybreakLabel = document.createElement("span");
+  daybreakLabel.className = "direct-daybreak-label";
+  daybreakLabel.textContent = "Daybreak";
+  const daybreakSwitch = document.createElement("button");
+  daybreakSwitch.type = "button";
+  daybreakSwitch.className = "direct-switch";
+  daybreakSwitch.setAttribute("role", "switch");
+  daybreakSwitch.setAttribute("aria-checked", daybreakOn ? "true" : "false");
+  daybreakSwitch.setAttribute("aria-label", "Daybreak for this thread");
+  daybreakSwitch.disabled = daybreakSupport !== "supported";
+  daybreakSwitch.addEventListener("click", () => setRuntimeOverride("daybreakEnabled", !daybreakOn));
+  daybreakRow.append(daybreakLabel, daybreakSwitch);
+  view.appendChild(daybreakRow);
+  if (daybreakSupport !== "supported") {
+    const note = document.createElement("p");
+    note.className = "direct-menu-note";
+    note.textContent = daybreakSupport === "unsupported"
+      ? `Daybreak isn't available for ${name}.`
+      : `The model list doesn't say whether ${name} supports Daybreak.`;
+    view.appendChild(note);
+  }
+
+  const heading = document.createElement("div");
+  heading.className = "direct-model-heading";
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "direct-model-back";
+  back.textContent = "‹";
+  back.setAttribute("aria-label", "Back to effort");
+  back.addEventListener("click", () => {
+    state.composerModelView = "effort";
+    renderComposerModelMenu();
+  });
+  const headingText = document.createElement("span");
+  headingText.textContent = "Select model";
+  heading.append(back, headingText);
+  view.appendChild(heading);
+
+  const list = document.createElement("div");
+  list.className = "direct-model-list";
+  const rows = directPickerModels();
+  if (id && !rows.some((row) => row.model === id || row.id === id)) {
+    rows.unshift({ model: id, displayName: name, unavailable: directModelUnavailable(id) });
+  }
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "direct-menu-note";
+    empty.textContent = state.modelListStatus === "loading" ? "Loading this account's models…" : "This account's model list isn't loaded yet.";
+    list.appendChild(empty);
+  }
+  for (const row of rows) {
+    const value = row.model || row.id;
+    const selected = value === id;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `direct-model-row${selected ? " selected" : ""}`;
+    button.dataset.value = value;
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+    button.textContent = `${directModelName(row, value)}${row.unavailable ? " · unavailable" : ""}`;
+    if (row.description) button.title = row.description;
+    if (row.unavailable) {
+      button.disabled = true;
+      button.title = `${value} isn't offered to this account right now.`;
+    }
+    button.addEventListener("click", () => {
+      state.composerModelView = "effort";
+      if (!selected) setRuntimeOverride("model", value);
+      else renderComposerModelMenu();
+    });
+    list.appendChild(button);
+  }
+  view.appendChild(list);
+  return view;
+}
+
+function renderDirectComposerMenu() {
+  const menu = els.composerModelMenu;
+  menu.innerHTML = "";
+  menu.classList.add("direct-runtime-popover");
+  menu.appendChild(state.composerModelView === "models" ? directModelListView() : directEffortView());
+}
+
 function renderComposerModelMenu() {
   if (!els.composerModelMenu) return;
+  if (isDirectLiveTextSurface()) {
+    renderDirectComposerMenu();
+    return;
+  }
+  els.composerModelMenu.classList.remove("direct-runtime-popover");
   els.composerModelMenu.innerHTML = "";
   const body = document.createElement("div");
   body.className = "composer-cascade-grid";
@@ -3408,7 +3702,9 @@ function renderComposerRuntimeBand() {
   const accessText = state.runtimeOverrides.sandboxMode === "danger-full-access"
     ? "Full access"
     : state.runtimeOverrides.sandboxMode || state.runtimeOverrides.approvalPolicy || "Access";
-  const modelText = `${compactModelLabel()} · ${reasoningLabel()}${state.runtimeOverrides.serviceTier ? ` · ${state.runtimeOverrides.serviceTier}` : ""}`;
+  const modelText = isDirectLiveTextSurface()
+    ? directComposerButtonText()
+    : `${compactModelLabel()} · ${reasoningLabel()}${state.runtimeOverrides.serviceTier ? ` · ${state.runtimeOverrides.serviceTier}` : ""}`;
   const quotaText = composerQuotaLabel();
   const contextProjection = contextUsageProjection();
   const contextText = contextProjection.compactLabel;
@@ -3428,7 +3724,9 @@ function renderComposerRuntimeBand() {
   }
 
   els.composerModelButton.textContent = modelText;
-  els.composerModelButton.title = `Next-turn model settings. Model: ${compactModelLabel()}. Reasoning: ${reasoningLabel()}. Speed: ${serviceTierLabel()}.`;
+  els.composerModelButton.title = isDirectLiveTextSurface()
+    ? `This thread's model and effort: ${modelText}. Fast ${directFastActive() ? "on" : "off"}, Daybreak ${directDaybreakActive() ? "on" : "off"}.`
+    : `Next-turn model settings. Model: ${compactModelLabel()}. Reasoning: ${reasoningLabel()}. Speed: ${serviceTierLabel()}.`;
   els.composerModelButton.setAttribute("aria-label", `Model override: ${modelText}`);
 
   renderComposerEnvironmentChip();
@@ -3604,8 +3902,11 @@ function sandboxModeOptions() {
 }
 
 function normalizeRuntimeOverrideValue(name, value) {
+  if (name === "daybreakEnabled") return value === true;
   const candidate = String(value || "").trim();
   if (!candidate) return "";
+  // Codex sends Fast as "priority"; "fast" is the legacy alias.
+  if (name === "serviceTier" && isDirectLiveTextSurface() && candidate.toLowerCase() === "fast") return "priority";
   if (name === "approvalPolicy") return APPROVAL_POLICY_OPTIONS.includes(candidate) ? candidate : "";
   if (name === "sandboxMode") return SANDBOX_MODE_OPTIONS.includes(candidate) ? candidate : "";
   if (name === "reasoningEffort") return supportedReasoningOptions().includes(candidate) ? candidate : "";
@@ -3642,6 +3943,14 @@ function applyThreadRuntimePreferences(defaults = {}) {
   }
   state.runtimeConfirmedOverrides.model = state.runtimeOverrides.model;
   state.runtimeConfirmedOverrides.reasoningEffort = state.runtimeOverrides.reasoningEffort;
+  // A Direct thread's Fast and Daybreak choices belong to that thread; a
+  // thread that never set them has both off.
+  if (isDirectLiveTextSurface()) {
+    for (const field of ["serviceTier", "daybreakEnabled"]) {
+      state.runtimeOverrides[field] = normalizeRuntimeOverrideValue(field, defaults[field]);
+      state.runtimeConfirmedOverrides[field] = state.runtimeOverrides[field];
+    }
+  }
 }
 
 async function loadRuntimePreferences(options = {}) {
@@ -3709,6 +4018,12 @@ async function persistRuntimePreferences(scope, overrides = {}) {
       ...request,
       model: overrides.model ?? state.runtimeOverrides.model,
       reasoningEffort: overrides.reasoningEffort ?? state.runtimeOverrides.reasoningEffort,
+      ...(isDirectLiveTextSurface()
+        ? {
+            serviceTier: overrides.serviceTier ?? state.runtimeOverrides.serviceTier,
+            daybreakEnabled: (overrides.daybreakEnabled ?? state.runtimeOverrides.daybreakEnabled) === true,
+          }
+        : {}),
     });
   }
   return null;
@@ -3718,17 +4033,24 @@ const RUNTIME_PREFERENCE_FIELDS_BY_SCOPE = Object.freeze({
   "global-access": Object.freeze(["approvalPolicy", "sandboxMode"]),
   "thread-model": Object.freeze(["model", "reasoningEffort"]),
 });
+// Direct threads also keep their own Fast and Daybreak choice.
+const DIRECT_THREAD_MODEL_PREFERENCE_FIELDS = Object.freeze(["model", "reasoningEffort", "serviceTier", "daybreakEnabled"]);
+
+function runtimePreferenceFields(scope = "") {
+  if (scope === "thread-model" && isDirectLiveTextSurface()) return DIRECT_THREAD_MODEL_PREFERENCE_FIELDS;
+  return RUNTIME_PREFERENCE_FIELDS_BY_SCOPE[scope] || [];
+}
 
 function runtimePreferenceScopeValues(source = {}, scope = "") {
   const values = {};
-  for (const field of RUNTIME_PREFERENCE_FIELDS_BY_SCOPE[scope] || []) {
+  for (const field of runtimePreferenceFields(scope)) {
     values[field] = normalizeRuntimeOverrideValue(field, source?.[field]);
   }
   return values;
 }
 
 function applyRuntimePreferenceScopeValues(target = {}, scope = "", values = {}) {
-  for (const field of RUNTIME_PREFERENCE_FIELDS_BY_SCOPE[scope] || []) {
+  for (const field of runtimePreferenceFields(scope)) {
     target[field] = normalizeRuntimeOverrideValue(field, values?.[field]);
   }
 }
@@ -3846,7 +4168,7 @@ function setRuntimeOverride(name, value) {
   }
   const scope = name === "approvalPolicy" || name === "sandboxMode"
     ? "global-access"
-    : name === "model" || name === "reasoningEffort"
+    : runtimePreferenceFields("thread-model").includes(name)
       ? "thread-model"
       : "";
   if (scope) {
@@ -9585,7 +9907,20 @@ function renderThreadHistory(thread, options = {}) {
   renderRuntimeConstitution();
 }
 
+// A new Direct thread starts from the project's settings, not from the
+// thread that was open: the project's model for new threads (Recommended
+// unless pinned), its effort, and Fast and Daybreak off.
+function resetDirectThreadRuntimeOverrides() {
+  for (const target of [state.runtimeOverrides, state.runtimeConfirmedOverrides]) {
+    target.model = "";
+    target.reasoningEffort = normalizeRuntimeOverrideValue("reasoningEffort", project?.codex?.reasoningEffort);
+    target.serviceTier = "";
+    target.daybreakEnabled = false;
+  }
+}
+
 async function startNewThread() {
+  if (isDirectLiveTextSurface()) resetDirectThreadRuntimeOverrides();
   if (isDirectLiveTextSurface() && typeof bridge?.createDirectWorkThreadDraftSession === "function" && project?.id) {
     state.directThreadOpenRequestId += 1;
     const result = await bridge.createDirectWorkThreadDraftSession(project.id, {
@@ -9702,6 +10037,7 @@ async function startCodexTurn(text, options = {}) {
   }
   if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
   if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
+  if (isDirectLiveTextSurface()) params.daybreakEnabled = state.runtimeOverrides.daybreakEnabled === true;
   const sandboxPolicy = sandboxPolicyForMode(state.runtimeOverrides.sandboxMode);
   if (sandboxPolicy) params.sandboxPolicy = sandboxPolicy;
   const result = await rpc("turn/start", params);

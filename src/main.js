@@ -2892,6 +2892,14 @@ async function saveConfig(nextConfig) {
   return normalized;
 }
 
+// A Direct thread's speed: "priority" (Fast; "fast" is its legacy alias),
+// "flex", or "" for standard.
+function normalizeDirectThreadServiceTier(value) {
+  const tier = normalizeString(value, "").toLowerCase();
+  const canonical = tier === "fast" ? "priority" : tier;
+  return ["priority", "flex"].includes(canonical) ? canonical : "";
+}
+
 function codexRuntimePreferenceLookup(config, payload = {}) {
   const normalizedConfig = config || {};
   const runtimeDefaults = normalizeRuntimeDefaults(normalizedConfig.runtimeDefaults);
@@ -2923,6 +2931,8 @@ function codexRuntimePreferenceLookup(config, payload = {}) {
           sessionFilePath: "",
           model: normalizeString(directSession.model, normalizeString(threadMatch.value?.model, "")),
           reasoningEffort: normalizeReasoningEffort(directSession.reasoningEffort) || normalizeReasoningEffort(threadMatch.value?.reasoningEffort),
+          serviceTier: normalizeDirectThreadServiceTier(directSession.serviceTier),
+          daybreakEnabled: directSession.daybreakEnabled === true,
           updatedAt: normalizeString(directSession.runtimeBindingUpdatedAt || directSession.updatedAt, normalizeString(threadMatch.value?.updatedAt, "")),
         }
       : threadMatch.value,
@@ -2995,6 +3005,14 @@ async function updateCodexRuntimePreferences(payload = {}, options = {}) {
         ...directSession,
         model: effectiveModel,
         reasoningEffort: effectiveReasoningEffort,
+        // Fast and Daybreak are per thread. Callers that don't send them
+        // leave the thread's choice as it is.
+        serviceTier: Object.prototype.hasOwnProperty.call(payload, "serviceTier")
+          ? normalizeDirectThreadServiceTier(payload.serviceTier)
+          : normalizeString(directSession.serviceTier, ""),
+        daybreakEnabled: Object.prototype.hasOwnProperty.call(payload, "daybreakEnabled")
+          ? payload.daybreakEnabled === true
+          : directSession.daybreakEnabled === true,
         modelSource: "thread-runtime-binding",
         modelEvidenceState: evidence.modelEvidenceState || "unknown",
         modelEvidenceId: normalizeString(evidence.evidenceId, ""),
@@ -3030,6 +3048,8 @@ async function updateCodexRuntimePreferences(payload = {}, options = {}) {
         threadId: options.directSessionMutation.nextSession.sessionId,
         model: options.directSessionMutation.nextSession.model,
         reasoningEffort: options.directSessionMutation.nextSession.reasoningEffort,
+        serviceTier: normalizeDirectThreadServiceTier(options.directSessionMutation.nextSession.serviceTier),
+        daybreakEnabled: options.directSessionMutation.nextSession.daybreakEnabled === true,
         modelSource: options.directSessionMutation.nextSession.modelSource,
         modelEvidenceState: options.directSessionMutation.nextSession.modelEvidenceState,
         modelEvidenceId: options.directSessionMutation.nextSession.modelEvidenceId,
@@ -7684,12 +7704,17 @@ function projectWithDirectWorkbenchBinding(project = {}, operation = {}, index =
   const runtimePathBinding = directRuntimePathFromBinding(existingCodexBinding) === operation.runtimePath
     ? existingCodexBinding
     : bindingForDirectRuntimePath(existingCodexBinding, operation.runtimePath, { ordinary: true });
-  const codexBinding = alignCodexHostRuntimeWithWorkspace(runtimePathBinding, {
+  const alignedBinding = alignCodexHostRuntimeWithWorkspace(runtimePathBinding, {
     mode: operation.mode,
     currentWorkspace: project.workspace,
     nextWorkspace: operation.workspace,
     platform: process.platform,
   });
+  // The model for new threads: "" means Recommended (the account's list
+  // default). An operation without the field keeps the project's setting.
+  const codexBinding = typeof operation.defaultModel === "string"
+    ? { ...alignedBinding, model: operation.defaultModel }
+    : alignedBinding;
   return normalizeProject({
     ...project,
     id: project.id,
@@ -7749,6 +7774,7 @@ async function performDirectWorkbenchProjectBindingMutation(operation = {}) {
         displayName: operation.displayName,
         workspace: operation.workspace,
         runtimePath: operation.runtimePath,
+        ...(typeof operation.defaultModel === "string" ? { defaultModel: operation.defaultModel } : {}),
       },
     });
 

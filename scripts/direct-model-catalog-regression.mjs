@@ -16,8 +16,16 @@ const {
   PINNED_CODEX_CLIENT_VERSION,
   buildDirectProviderMetadataProfile,
   detectCodexClientVersion,
+  normalizeModelDescriptor,
   validateDirectProviderMetadataProfile,
 } = require("../src/main/direct/provider/metadata-adapter.js");
+const {
+  buildReadOnlyToolContinuationProbeRequest,
+  buildTextOnlyProbeRequest,
+} = require("../src/main/direct/transport/codex-responses-transport.js");
+const {
+  buildDirectWorkbenchProjectBindingDraft,
+} = require("../src/main/direct/project/project-directory.js");
 const {
   DirectLiveTextController,
   DirectLiveTextSurfaceSession,
@@ -66,12 +74,29 @@ function textResponse(text, status = 200, headers = {}) {
   };
 }
 
+// Shapes follow the live /codex/models response: Fast is the "priority" tier
+// (with "fast" repeated in additional_speed_tiers), and Daybreak support is
+// `available_access_programs.cyber`.
+const fastTier = [{ id: "priority", name: "Fast", description: "2x speed, increased usage" }];
 const catalogPayload = {
   models: [
     { slug: "gpt-old", display_name: "Old", visibility: "hide", priority: 0 },
-    { slug: "gpt-luna", display_name: "Luna", visibility: "list", priority: 2 },
-    { slug: "gpt-sol", display_name: "Sol", visibility: "list", priority: 1 },
+    {
+      slug: "gpt-luna", display_name: "Luna", visibility: "list", priority: 2,
+      service_tiers: fastTier, additional_speed_tiers: ["fast"],
+      available_access_programs: { cyber: ["standard", "daybreak_blue"] },
+    },
+    {
+      slug: "gpt-sol", display_name: "Sol", visibility: "list", priority: 1,
+      service_tiers: fastTier, additional_speed_tiers: ["fast"],
+      available_access_programs: { cyber: ["standard"] },
+    },
     { slug: "gpt-internal", display_name: "Internal", visibility: "none", priority: 3 },
+    {
+      slug: "gpt-daybreak", display_name: "Daybreak Blue", visibility: "list", priority: 11,
+      model_specialty: "cyber", service_tiers: [],
+      available_access_programs: { cyber: ["daybreak_blue"] },
+    },
   ],
 };
 
@@ -109,11 +134,30 @@ try {
       credentials: { accessToken: "x", accountId: "a" },
     });
     const items = profile.modelCatalog.items;
-    assert.deepEqual(items.map((item) => item.model), ["gpt-old", "gpt-sol", "gpt-luna", "gpt-internal"]);
-    assert.deepEqual(items.filter((item) => !item.hidden).map((item) => item.model), ["gpt-sol", "gpt-luna"]);
+    assert.deepEqual(items.map((item) => item.model), ["gpt-old", "gpt-sol", "gpt-luna", "gpt-internal", "gpt-daybreak"]);
+    assert.deepEqual(items.filter((item) => !item.hidden).map((item) => item.model), ["gpt-sol", "gpt-luna", "gpt-daybreak"]);
     assert.equal(profile.modelCatalog.defaultModel, "gpt-sol");
     assert.equal(items.find((item) => item.model === "gpt-internal").visibility, "none");
     assert.deepEqual(validateDirectProviderMetadataProfile(profile), [], "new descriptor fields must validate");
+  });
+
+  await check("the catalog keeps Fast as one 'priority' tier and each model's Daybreak support", () => {
+    const profile = buildDirectProviderMetadataProfile({
+      projectId: "p",
+      rawModelsResponse: catalogPayload,
+      modelSource: "server_model_list",
+      credentials: { accessToken: "x", accountId: "a" },
+    });
+    const byModel = Object.fromEntries(profile.modelCatalog.items.map((item) => [item.model, item]));
+    assert.deepEqual(byModel["gpt-sol"].serviceTiers.map((tier) => [tier.id, tier.name]), [["priority", "Fast"]], "the 'fast' alias collapses into 'priority'");
+    assert.deepEqual(byModel["gpt-sol"].accessPrograms, { cyber: ["standard"] });
+    assert.deepEqual(byModel["gpt-luna"].accessPrograms, { cyber: ["standard", "daybreak_blue"] });
+    assert.equal(byModel["gpt-old"].accessPrograms, null, "a missing field stays unknown, not unsupported");
+    assert.equal(byModel["gpt-daybreak"].modelSpecialty, "cyber");
+    const camel = normalizeModelDescriptor({ slug: "x", availableAccessPrograms: { cyber: ["daybreakBlue", "someday_new"] } }, 0, { missingRequiredFields: [], changedFields: [], unknownValues: [] });
+    assert.deepEqual(camel.accessPrograms, { cyber: ["daybreak_blue"] }, "camelCase is accepted and unknown programs are ignored");
+    const empty = normalizeModelDescriptor({ slug: "y", available_access_programs: { cyber: [] } }, 0, { missingRequiredFields: [], changedFields: [], unknownValues: [] });
+    assert.deepEqual(empty.accessPrograms, { cyber: [] }, "an explicit empty list stays distinct from missing");
   });
 
   await check("client_version comes from the installed Codex CLI, else env override, else the pinned release", () => {
@@ -251,7 +295,7 @@ try {
     assert.ok(label.indexOf("activeModelId()") < label.indexOf("directModelLabel()"), "the picked model wins over the saved-binding witness");
   });
 
-  async function runOneTurn({ fetchImpl, refresher, model = "gpt-luna" }) {
+  async function runOneTurn({ fetchImpl, refresher, model = "gpt-luna", threadOptions = {}, turnOptions = {} }) {
     const sessionStore = new DirectSessionStore({ rootDir: fs.mkdtempSync(path.join(tempRoot, "sessions-")) });
     const controller = new DirectLiveTextController({
       sessionStore,
@@ -264,8 +308,8 @@ try {
     const events = [];
     const surface = new DirectLiveTextSurfaceSession({ isDestroyed: () => false, send: (_channel, payload) => events.push(payload) }, { controller, project });
     await surface.connect({});
-    const thread = await surface.request("thread/start", { model });
-    const ack = await surface.request("turn/start", { threadId: thread.thread.id, promptText: "hello", clientTurnRequestId: `req_${Date.now()}`, model });
+    const thread = await surface.request("thread/start", { model, ...threadOptions });
+    const ack = await surface.request("turn/start", { threadId: thread.thread.id, promptText: "hello", clientTurnRequestId: `req_${Date.now()}`, model, ...turnOptions });
     const deadline = Date.now() + 10_000;
     while (!events.some((event) => event.method === "turn/completed" && event.params?.turnId === ack.turn.id)) {
       if (Date.now() > deadline) throw new Error("turn did not complete");
@@ -274,6 +318,119 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 20));
     return { events, turnId: ack.turn.id, threadId: thread.thread.id, sessionStore };
   }
+
+  await check("a thread's Fast and Daybreak are sent only when its model offers them", async () => {
+    const captureTurn = async (model, threadOptions, turnOptions = {}) => {
+      let body = null;
+      const run = await runOneTurn({
+        model,
+        threadOptions,
+        turnOptions,
+        fetchImpl: async (_url, init) => {
+          body = JSON.parse(init.body);
+          return textResponse(sse("ok"), 200, { "content-type": "text/event-stream" });
+        },
+      });
+      const turn = run.sessionStore.readTurn(run.threadId, run.turnId);
+      return { body, turn, session: run.sessionStore.readSession(run.threadId) };
+    };
+    // "fast" (the legacy alias) is stored as "priority".
+    const luna = await captureTurn("gpt-luna", { serviceTier: "fast", daybreakEnabled: true });
+    assert.equal(luna.session.serviceTier, "priority");
+    assert.equal(luna.session.daybreakEnabled, true);
+    assert.equal(luna.body.service_tier, "priority");
+    assert.deepEqual(luna.body.access_programs, { cyber: "daybreak_blue" });
+    assert.equal(luna.turn.cyberAccessProgram, "daybreak_blue", "the turn records Daybreak for its continuations");
+
+    const sol = await captureTurn("gpt-sol", { serviceTier: "priority", daybreakEnabled: true });
+    assert.equal(sol.body.service_tier, "priority");
+    assert.equal(sol.body.access_programs, undefined, "Sol doesn't offer Daybreak, so it isn't requested");
+    assert.equal(sol.session.daybreakEnabled, true, "the thread keeps its choice for a model that offers it");
+
+    const daybreakModel = await captureTurn("gpt-daybreak", { serviceTier: "priority" });
+    assert.equal(daybreakModel.body.service_tier, undefined, "a model without the Fast tier gets none");
+    assert.equal(daybreakModel.turn.serviceTier, "", "and the turn records no tier, so continuations send none");
+
+    const off = await captureTurn("gpt-luna", {});
+    assert.equal(off.body.service_tier, undefined);
+    assert.equal(off.body.access_programs, undefined, "Daybreak off omits the field (backend default)");
+    assert.equal(off.session.daybreakEnabled, false, "new threads start with Daybreak off");
+
+    const turnOff = await captureTurn("gpt-luna", { daybreakEnabled: true }, { daybreakEnabled: false });
+    assert.equal(turnOff.body.access_programs, undefined, "the owner's turn choice wins over the thread's");
+  });
+
+  await check("every request in a turn carries the turn's effort, Fast, and Daybreak", () => {
+    const continuation = buildReadOnlyToolContinuationProbeRequest({
+      model: "gpt-luna",
+      reasoningEffort: "high",
+      serviceTier: "priority",
+      cyberAccessProgram: "daybreak_blue",
+      continuationRequest: {
+        toolResult: { callId: "call_1", outputType: "function_call_output", content: [{ type: "text", text: "file contents" }] },
+        source: { previousResponseId: "resp_1" },
+      },
+      prompt: "continue",
+    });
+    assert.equal(continuation.service_tier, "priority");
+    assert.deepEqual(continuation.access_programs, { cyber: "daybreak_blue" });
+    const chained = buildReadOnlyToolContinuationProbeRequest({
+      model: "gpt-luna",
+      serviceTier: "priority",
+      cyberAccessProgram: "daybreak_blue",
+      continuationTransportMode: "previous_response_id",
+      continuationRequest: {
+        toolResult: { callId: "call_2", outputType: "function_call_output", content: [{ type: "text", text: "more" }] },
+        source: { previousResponseId: "resp_2" },
+      },
+    });
+    assert.deepEqual(chained.access_programs, { cyber: "daybreak_blue" }, "the previous_response_id path carries it too");
+    const plain = buildTextOnlyProbeRequest({ model: "gpt-luna", prompt: "hi", cyberAccessProgram: "not-a-program" });
+    assert.equal(plain.access_programs, undefined, "unknown programs are never sent");
+    const transport = fs.readFileSync(path.join(repoRoot, "src/main/direct/transport/codex-responses-transport.js"), "utf8");
+    const persisted = transport.slice(transport.indexOf("async function runPersistedReadOnlyToolContinuation("));
+    assert.match(persisted, /reasoningEffort: options\.reasoningEffort \?\? normalizeString\(existingTurn\.reasoningEffort, ""\),\s*serviceTier: options\.serviceTier \?\? normalizeString\(existingTurn\.serviceTier, ""\),\s*cyberAccessProgram: options\.cyberAccessProgram \?\? normalizeString\(existingTurn\.cyberAccessProgram, ""\),/);
+  });
+
+  await check("Fast and Daybreak are saved per thread; the project sets the model for new threads", () => {
+    const main = fs.readFileSync(path.join(repoRoot, "src/main.js"), "utf8");
+    assert.match(main, /serviceTier: normalizeDirectThreadServiceTier\(directSession\.serviceTier\),\s*daybreakEnabled: directSession\.daybreakEnabled === true,/);
+    assert.match(main, /daybreakEnabled: Object\.prototype\.hasOwnProperty\.call\(payload, "daybreakEnabled"\)/);
+    assert.match(main, /daybreakEnabled: options\.directSessionMutation\.nextSession\.daybreakEnabled === true,/);
+    assert.match(main, /const codexBinding = typeof operation\.defaultModel === "string"\s*\? \{ \.\.\.alignedBinding, model: operation\.defaultModel \}/);
+
+    const config = {
+      selectedProjectId: "p1",
+      projects: [{ id: "p1", name: "One", workspace: { kind: "local", localPath: "/tmp/one" }, surfaceBinding: { codex: { runtimeMode: "direct", directTransport: "live-text", directTier: "implementation-lane", model: "gpt-5.5" } } }],
+    };
+    const draft = buildDirectWorkbenchProjectBindingDraft(config, { projectId: "p1" });
+    assert.equal(draft.fields.defaultModel, "gpt-5.5");
+    assert.equal(buildDirectWorkbenchProjectBindingDraft(config, {}).fields.defaultModel, "", "a new project starts on Recommended");
+    const validator = fs.readFileSync(path.join(repoRoot, "src/main/direct/project/project-directory.js"), "utf8");
+    assert.match(validator, /project_binding_default_model_invalid/);
+  });
+
+  await check("the composer picker: effort view with Fast and reset, model view with Daybreak; no Default row", () => {
+    const renderer = fs.readFileSync(path.join(repoRoot, "src/renderer/codex-surface.js"), "utf8");
+    assert.match(renderer, /if \(isDirectLiveTextSurface\(\)\) \{\s*renderDirectComposerMenu\(\);\s*return;\s*\}/);
+    assert.match(renderer, /return directListedModels\(\)\.filter\(\(model\) => String\(model\?\.modelSpecialty \|\| ""\) !== "cyber"\);/);
+    assert.match(renderer, /`Daybreak isn't available for \$\{name\}\.`/);
+    assert.match(renderer, /daybreakSwitch\.disabled = daybreakSupport !== "supported";/);
+    assert.match(renderer, /disabled: !fastSupported,/);
+    assert.match(renderer, /setRuntimeOverride\("serviceTier", fastOn \? "" : "priority"\);/);
+    assert.match(renderer, /setRuntimeOverride\("reasoningEffort", modelDefault\);/);
+    assert.match(renderer, /const DIRECT_THREAD_MODEL_PREFERENCE_FIELDS = Object\.freeze\(\["model", "reasoningEffort", "serviceTier", "daybreakEnabled"\]\);/);
+    assert.match(renderer, /async function startNewThread\(\) \{\s*if \(isDirectLiveTextSurface\(\)\) resetDirectThreadRuntimeOverrides\(\);/);
+    assert.match(renderer, /target\.serviceTier = "";\s*target\.daybreakEnabled = false;/);
+    assert.match(renderer, /globalThis\.DirectModelCatalog = Object\.freeze\(/);
+    const view = renderer.slice(renderer.indexOf("function directModelListView()"), renderer.indexOf("function renderDirectComposerMenu()"));
+    assert.doesNotMatch(view, /defaultOptionLabel|Recommended/, "the thread picker has no Default row; the default lives in project settings");
+    const editor = fs.readFileSync(path.join(repoRoot, "src/renderer/direct-project-directory-surface.js"), "utf8");
+    assert.match(editor, /add\("", recommended \? `Recommended \(now \$\{recommended\.displayName\}\)` : "Recommended"\);/);
+    assert.match(editor, /\.\.\.\(editorDefaultModel \? \{ defaultModel: editorDefaultModel\.value \} : \{\}\),/);
+    const html = fs.readFileSync(path.join(repoRoot, "src/renderer/t3-direct-surface.html"), "utf8");
+    assert.match(html, /<select id="directProjectBindingDefaultModel" name="defaultModel">/);
+  });
 
   await check("a refused model fails the turn with the provider's reason and refreshes the list", async () => {
     const refreshes = [];
