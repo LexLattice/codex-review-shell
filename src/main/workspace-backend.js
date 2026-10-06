@@ -31,6 +31,7 @@ const MUTATION_COMMIT_KINDS_BY_METHOD = Object.freeze({
   importFile: new Set(["import_file"]),
 });
 const PUBLIC_BACKEND_CAPABILITY_NAMES = Object.freeze([
+  "environmentDescribe",
   "listTree",
   "readFilePreview",
   "applyPatch",

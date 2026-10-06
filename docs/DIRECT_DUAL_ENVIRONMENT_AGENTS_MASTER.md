@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-06, after turn 0.
+Last updated: 2026-10-06, after turn 1.
 
 ## How to use this document
 
@@ -100,7 +100,7 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 1: executor protocol, `environment/describe`, environment registry.**
+**Turn 2: host exec router.**
 
 ## Gates for every turn
 
@@ -112,6 +112,9 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   the background). Its `FAILED` lines must match **Known failing checks**
   exactly. Any new failure is a regression introduced by the turn.
 - The turn's own regressions.
+- Executor regressions also run on the Windows host, straight from the WSL
+  repo: `& 'C:\Program Files\nodejs\node.exe' \\wsl.localhost\Ubuntu\home\rose\work\LexLattice\codex-review-shell-direct\scripts\<name>.mjs`.
+  Every executor turn's regression must pass on both hosts.
 
 ## Turns
 
@@ -159,7 +162,7 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ### Turn 1: executor protocol, `environment/describe`, environment registry
 
-- Status: planned
+- Status: done
 - Scope:
   - Shared protocol module (proposed `src/shared/executor-protocol.js`) with
     method names and schemas.
@@ -169,7 +172,36 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   - Keep one executor per project for now (consolidation is turn 11).
 - Done when: describe reports bash/Linux inside WSL and PowerShell/Windows
   under Windows Node.
-- Outcome: _(fill in)_
+- Outcome:
+  - `src/shared/executor-protocol.js`: protocol name and version, the full
+    method-name table (`environment/describe`, `process/*`, `fs/*`), the list
+    of methods actually implemented (only describe so far),
+    `describeExecutionEnvironment`, a validator, and a public projection that
+    strips raw paths. It has no dependencies, so both the host and executors
+    load it.
+  - `describeExecutionEnvironment` spawns nothing: shell facts come from the
+    filesystem and environment. Windows prefers `pwsh` (major version from its
+    install path) and falls back to Windows PowerShell 5.1. Linux reports bash
+    at `/bin/bash`. Bash's exact version is left `unprobed`.
+  - The agent answers `environment/describe`, and its `hello` now carries
+    `executorProtocol` and an `environmentDescribe` capability.
+  - `src/main/environment-registry.js`: discovers environments for whichever
+    host it runs on, records how each executor would be launched
+    (`local-child`, `wsl.exe`, or `windows-native-resident`), and describes an
+    environment by attaching a throwaway probe executor with hygiene off,
+    asking it, validating the answer, and disposing it. It is not wired into
+    the app yet; turn 9 consumes it.
+  - Verified on both hosts with real executors
+    (`direct-environment-describe-regression`):
+    - Linux host: Windows executor through interop reports `pwsh 7`, Windows
+      paths, no containment; WSL executor reports bash, PID-namespace
+      containment, and bubblewrap.
+    - Windows host (Windows Node running the script over its UNC path): WSL
+      executor through `wsl.exe` reports bash; local Windows executor reports
+      `pwsh 7`.
+  - Checks: `check:syntax` and `validate` pass; the new regression passes on
+    both hosts; full sweep 258 of 278 passing, failures identical to
+    **Known failing checks**.
 
 ### Turn 2: host exec router
 
@@ -346,6 +378,15 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 - In WSL, a non-login shell resolves a Node without `node:sqlite`. Executor
   launch (turn 1 onward) must use a login shell, as `launchDescriptor` already
   does with `bash -lc`.
+- This distro has no `wsl.exe` on PATH (Windows path not appended). The
+  registry falls back to `/mnt/c/Windows/System32/wsl.exe`; any other code
+  calling `wsl.exe` from inside WSL needs the same fallback.
+- From a WSL host, executors for other WSL distros are listed but marked
+  unavailable (`cross_distro_launch_unsupported`); `launchDescriptor` would
+  start them locally in the wrong distro. Windows hosts are unaffected.
+- The executor is already symmetric: from a WSL host it launches a Windows
+  executor with Windows `node.exe` over a UNC path (`windows-native-resident`),
+  which makes Windows behavior testable without leaving Linux.
 
 ## Decisions
 
@@ -354,6 +395,8 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | One host, one native executor per environment | Single UI, DB, auth, and grants; each agent stays native. Matches Codex's `exec-server` direction. |
 | 2026-10-06 | Extend our own Node executor; model its protocol on Codex `exec-server` | Already runs in both environments over stdio and carries existing custody work; `exec-server` is experimental and websocket-based. Matching shapes keeps a swap possible. |
 | 2026-10-06 | Keep per-project executors until turn 11 | Equivalent for agent nativeness; avoids an early refactor with no user-visible value. |
+| 2026-10-06 | `environment/describe` never spawns a process | The Windows executor may not create processes before Job Object containment exists, and describe must work everywhere. Versions that need a process (bash) stay `unprobed`. |
+| 2026-10-06 | Executor regressions run on both hosts from one file | Windows Node can run the WSL repo's scripts over the UNC path, so each executor turn verifies both launch directions without syncing the Windows mirror. |
 
 ## Plan changes
 

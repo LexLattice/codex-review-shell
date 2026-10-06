@@ -33,6 +33,13 @@ const {
   searchBoundedWorkspaceRepositoryText,
 } = require("../shared/workspace-repository-boundary");
 const { terminateWorkspaceProcessTree } = require("./workspace-process-tree");
+const {
+  EXECUTOR_METHODS,
+  EXECUTOR_PROTOCOL_NAME,
+  EXECUTOR_PROTOCOL_VERSION,
+  IMPLEMENTED_EXECUTOR_METHODS,
+  describeExecutionEnvironment,
+} = require("../shared/executor-protocol");
 
 const PROTOCOL_VERSION = 1;
 // Keep the protocol line bounded while still admitting the largest supported
@@ -5970,7 +5977,13 @@ async function handleRequest(method, params = {}) {
       pid: process.pid,
       node: process.version,
       cwd: process.cwd(),
+      executorProtocol: {
+        name: EXECUTOR_PROTOCOL_NAME,
+        version: EXECUTOR_PROTOCOL_VERSION,
+        methods: [...IMPLEMENTED_EXECUTOR_METHODS],
+      },
       capabilities: {
+        environmentDescribe: true,
         listTree: true,
         readFilePreview: true,
         applyPatch: true,
@@ -6003,6 +6016,13 @@ async function handleRequest(method, params = {}) {
         importFile: true,
       },
     };
+  }
+  if (method === EXECUTOR_METHODS.environmentDescribe) {
+    return describeExecutionEnvironment({
+      containment: await workspaceProcessContainmentStatus(),
+      root,
+      workspaceKind,
+    });
   }
   if (method === "listTree") return listTree(params);
   if (method === "readFile") return readFilePreview(params);
