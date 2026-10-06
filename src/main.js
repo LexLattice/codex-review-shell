@@ -285,6 +285,10 @@ const {
   DirectFullAccessLocalEnvironmentExecutor,
 } = require("./main/direct/tools/full-access-local-environment");
 const {
+  EnvironmentExecutorProcessBackend,
+  createEnvironmentExecBackendResolver,
+} = require("./main/direct/tools/executor-process-backend");
+const {
   assertCodeModeExecutionLaneSafe,
   buildCodeModeExecutionLaneStatus,
 } = require("./main/direct/tools/code-mode-execution-lane");
@@ -4577,9 +4581,23 @@ function resolveDirectWorkspaceWorkerDelegationPolicy(input = {}) {
 function ensureDirectLiveTextController() {
   if (directLiveTextController) return directLiveTextController;
   const directHarnessGrantStore = new DirectThreadHarnessGrantStore({ rootDir: directSessionRootDir() });
+  // Sessions for workspaces that aren't local to this host (a WSL workspace
+  // opened from Windows) run inside that environment's executor.
+  const environmentExecutorBackend = new EnvironmentExecutorProcessBackend({
+    workspaceBackends: {
+      ensureForProject: (project) => {
+        if (!workspaceBackends) throw new Error("Workspace backends are not initialized.");
+        return workspaceBackends.ensureForProject(project);
+      },
+    },
+  });
   const statefulExecSessionManager = new DirectStatefulExecSessionManager({
     grantStore: directHarnessGrantStore,
     workspaceRootResolver: (input) => workspaceRoot(input?.project || input, repoRoot),
+    backendResolver: (input, grant) => createEnvironmentExecBackendResolver({
+      localBackend: statefulExecSessionManager.localBackend,
+      executorBackend: environmentExecutorBackend,
+    })(input, grant),
   });
   const fullAccessLocalEnvironmentExecutor = new DirectFullAccessLocalEnvironmentExecutor({
     grantStore: directHarnessGrantStore,

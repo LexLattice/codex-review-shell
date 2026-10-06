@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-06, after turn 2.
+Last updated: 2026-10-06, after turn 3.
 
 ## How to use this document
 
@@ -100,7 +100,7 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 3: WSL executor process sessions.**
+**Turn 4: WSL executor filesystem.**
 
 ## Gates for every turn
 
@@ -244,7 +244,7 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ### Turn 3: WSL executor process sessions
 
-- Status: planned
+- Status: done
 - Scope:
   - `process/*` in the agent: bash, PID-namespace containment, and bubblewrap
     (sandbox wrapping moves into the executor).
@@ -257,7 +257,47 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   - Executor death marks its sessions interrupted, never silently re-run.
 - Done when: the regression passes on a Linux host, and a cross-host smoke
   run under Windows Node drives the WSL executor over `wsl.exe`.
-- Outcome: _(fill in)_
+- Outcome:
+  - Executor (`src/backend/wsl-agent.js`): `process/start`, `process/write`,
+    `process/signal`. Sessions outlive the starting request and push
+    `process/output` (base64, 64 KiB chunks, 1 MiB forwarded per session),
+    `process/activity` (throttled, after the cap), `process/error`, and
+    `process/exited`, all keyed by `processSessionId`. Shell commands run as
+    the native `bash -lc`. Workspace/cwd checks and sandbox planning reuse
+    `LocalChildProcessBackend` natively; full access runs under the
+    PID-namespace launcher, Workspace and Read only under bubblewrap.
+  - Shutdown: the agent now handles SIGTERM, SIGHUP, and SIGINT through its
+    graceful shutdown, which kills every session. For abrupt death, full-access
+    sessions are started through `setpriv --pdeathsig SIGKILL` (new opt-in
+    `dieWithParent` on the contained spawn; request-scoped processes are
+    unchanged). Before that fix a SIGKILLed executor left full-access
+    processes running; bubblewrap sessions were already covered by
+    `--die-with-parent`.
+  - Host: `WorkspaceSession` relays `process/*` events privately (not through
+    the sanitized agent-event path) and emits `transport-closed`. New
+    `src/main/direct/tools/executor-process-backend.js` provides
+    `EnvironmentExecutorProcessBackend` and its handle, which starts the
+    remote process asynchronously, queues stdin and signals until the start
+    is acknowledged, and reports executor loss.
+  - Router: optional handle hooks `onActivity` (keeps the idle timer honest
+    past the forwarding cap) and `onLost` (settles the session as failed with
+    `direct_stateful_exec_executor_lost`; nothing is re-run). Launch options
+    now carry `project`, `sessionId`, and `requestedEnv`.
+  - `src/main.js` wires `createEnvironmentExecBackendResolver`: WSL
+    workspaces that aren't local to the host use the executor; everything
+    else keeps the local backend.
+  - New `direct-wsl-executor-process-regression`: resolver choice per host,
+    native bash and cwd, exit codes, interactive stdin (including a write
+    queued before start), lexical versus executor-side cwd refusals,
+    Workspace and Read-only sandboxing inside WSL (no writes outside, no
+    network), cancel, 3 MB output, graceful executor loss with no surviving
+    process, and (Linux host) abrupt executor SIGKILL in both containment
+    paths.
+  - Checks: the new regression passes on both hosts (on Windows through
+    `wsl.exe`); `direct-environment-describe` and `direct-exec-backend-router`
+    pass on both hosts; `check:syntax`, `validate`, and the agent-sensitive
+    regressions pass; full sweep 260 of 280 passing, failures identical to
+    **Known failing checks**.
 
 ### Turn 4: WSL executor filesystem
 
@@ -269,6 +309,10 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
     environment.
   - Decide the credential exposure policy (Full access in WSL can read the
     host auth store through `/mnt/c`).
+  - Reuse turn 3's pieces: the executor already instantiates
+    `LocalChildProcessBackend` natively for path checks, and the host reaches
+    it through `workspaceBackends.ensureForProject(project)` like
+    `EnvironmentExecutorProcessBackend` does.
 - Done when: `direct-access-profiles` passes against the executor backend too.
 - Outcome: _(fill in)_
 
@@ -277,7 +321,9 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 - Status: planned
 - Scope: environment context block in every turn; shell-specific
   `exec_command` and `apply_patch` descriptions; the self-constitution
-  snapshot reports the environment.
+  snapshot reports the environment. Also make the local backend's shell
+  match the executor's: same-distro local sessions still run `cmd` through
+  `/bin/sh -c`, while executor sessions use `bash -lc`.
 - Done when: a request-shape regression shows bash descriptions for WSL
   threads and PowerShell descriptions for Windows threads. Optional: one live
   WSL turn from the Windows launcher.
@@ -420,6 +466,20 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 - The executor is already symmetric: from a WSL host it launches a Windows
   executor with Windows `node.exe` over a UNC path (`windows-native-resident`),
   which makes Windows behavior testable without leaving Linux.
+- Executor sessions build their environment with the agent's
+  `minimalCommandEnv`, which admits fewer caller variables
+  (`SAFE_COMMAND_ENV_OVERRIDES`: CI, NO_COLOR, TERM, LANG, LC_ALL, TZ) than the
+  host router's `safeExecEnvironment` (most uppercase names). A model setting
+  other variables through `env` gets them locally but not in WSL from Windows.
+  Align the two policies before relying on `env`.
+- With the executor backend, cwd problems the host can't see lexically
+  (missing directory, symlink escape) arrive as a failed session carrying the
+  executor's message, not as a thrown error. The controller's
+  actionable-error path therefore doesn't fire for them; the model still sees
+  the message in the failed result.
+- Full-access executor sessions run inside a user namespace (as all contained
+  backend processes already did), so `sudo` and other setuid programs don't
+  work there.
 
 ## Decisions
 
@@ -430,6 +490,9 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | Keep per-project executors until turn 11 | Equivalent for agent nativeness; avoids an early refactor with no user-visible value. |
 | 2026-10-06 | `environment/describe` never spawns a process | The Windows executor may not create processes before Job Object containment exists, and describe must work everywhere. Versions that need a process (bash) stay `unprobed`. |
 | 2026-10-06 | Executor regressions run on both hosts from one file | Windows Node can run the WSL repo's scripts over the UNC path, so each executor turn verifies both launch directions without syncing the Windows mirror. |
+| 2026-10-06 | Remote process sessions start asynchronously behind a synchronous `launch` | The router's `start()` and its callers are synchronous; a handle that starts the remote process on the next tick keeps every caller unchanged, and refusals still reach the model as failed sessions. |
+| 2026-10-06 | Executor sessions use the native login shell (`bash -lc`) | That is what a WSL user's terminal runs, so PATH and tools (nvm, pyenv) match what the agent would see natively. |
+| 2026-10-06 | Process sessions die with their executor, however it stops | A lost executor can never report on or clean up its processes later, so leaving them running would leak unsupervised work. |
 
 ## Plan changes
 

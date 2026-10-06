@@ -814,7 +814,15 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     record.resolveCompletion = resolveCompletion;
     this.sessions.set(sessionId, record);
     try {
-      const handle = backend.launch(spawnPlan, { cwd: workspace.cwd, env: record.env });
+      const handle = backend.launch(spawnPlan, {
+        cwd: workspace.cwd,
+        env: record.env,
+        // Remote backends build the base environment natively in their own
+        // environment and only receive the caller's requested additions.
+        requestedEnv: input.env,
+        project: input.project,
+        sessionId,
+      });
       record.process = handle;
       // Local backends expose the raw ChildProcess for diagnostics and tests;
       // remote backends have none.
@@ -850,6 +858,22 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     handle.onStdinError((error) => this.handleStdinWriteError(record, error));
     handle.onError((error) => {
       this.recordProcessFailure(record, "direct_stateful_exec_child_error", error);
+    });
+    // Optional hooks for remote backends: output dropped by the executor's
+    // forwarding cap still counts as activity, and a lost executor settles the
+    // session at once (there is no process left to wait for, and it is never
+    // re-run).
+    handle.onActivity?.(() => {
+      if (!record.settled) record.resetIdle?.();
+    });
+    handle.onLost?.((error) => {
+      if (record.settled) return;
+      this.flushOutput(record);
+      this.settle(record, {
+        sessionState: "failed",
+        errorCode: error?.code || "direct_stateful_exec_executor_lost",
+        spawnError: boundedString(error?.message || "The execution environment's executor stopped.", 500),
+      });
     });
     handle.onClose((exitCode, signal) => {
       if (record.settled) return;

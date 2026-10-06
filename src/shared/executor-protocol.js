@@ -33,7 +33,19 @@ const EXECUTOR_METHODS = Object.freeze({
 // as each method is implemented.
 const IMPLEMENTED_EXECUTOR_METHODS = Object.freeze([
   EXECUTOR_METHODS.environmentDescribe,
+  EXECUTOR_METHODS.processStart,
+  EXECUTOR_METHODS.processWrite,
+  EXECUTOR_METHODS.processSignal,
 ]);
+
+// Events the executor pushes for a process session. Each carries
+// `processSessionId` (the host router's session id).
+const EXECUTOR_PROCESS_EVENTS = Object.freeze({
+  output: "process/output",
+  activity: "process/activity",
+  error: "process/error",
+  exited: "process/exited",
+});
 
 const ENVIRONMENT_KINDS = new Set(["windows", "wsl", "linux", "macos", "unknown"]);
 const SHELL_NAMES = new Set(["powershell", "bash", "sh", "unknown"]);
@@ -236,6 +248,7 @@ function publicEnvironmentDescription(description) {
 module.exports = {
   ENVIRONMENT_DESCRIPTION_SCHEMA,
   EXECUTOR_METHODS,
+  EXECUTOR_PROCESS_EVENTS,
   EXECUTOR_PROTOCOL_NAME,
   EXECUTOR_PROTOCOL_VERSION,
   IMPLEMENTED_EXECUTOR_METHODS,

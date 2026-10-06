@@ -35,11 +35,14 @@ const {
 const { terminateWorkspaceProcessTree } = require("./workspace-process-tree");
 const {
   EXECUTOR_METHODS,
+  EXECUTOR_PROCESS_EVENTS,
   EXECUTOR_PROTOCOL_NAME,
   EXECUTOR_PROTOCOL_VERSION,
   IMPLEMENTED_EXECUTOR_METHODS,
   describeExecutionEnvironment,
+  findExecutableOnPath,
 } = require("../shared/executor-protocol");
+const { LocalChildProcessBackend } = require("../main/direct/tools/exec-process-backends");
 
 const PROTOCOL_VERSION = 1;
 // Keep the protocol line bounded while still admitting the largest supported
@@ -389,6 +392,7 @@ function scheduleProcessExit(code = 0, delayMs = STDIN_CLOSE_EXIT_GRACE_MS) {
 function requestShutdown(code = 0) {
   stdinClosed = true;
   requestExitCode(code);
+  terminateAllExecutorProcessSessions("SIGKILL");
   for (const child of activeChildProcesses) {
     terminateChild(child);
   }
@@ -2758,35 +2762,60 @@ function containedWorkspaceProcessSpawn(command, args, options = {}) {
     ? options.stdio.slice(0, 3)
     : ["ignore", "pipe", "pipe"];
   while (requestedStdio.length < 3) requestedStdio.push("pipe");
+  const unshareArgs = [
+    "--user",
+    "--map-current-user",
+    "--pid",
+    "--fork",
+    "--kill-child=SIGKILL",
+    "--mount-proc",
+    "--",
+    command,
+    ...args,
+  ];
+  // unshare does not die with its parent, so a SIGKILLed executor would
+  // orphan the namespace. setpriv sets PDEATHSIG and execs the launcher in
+  // place; the signal survives exec, and --kill-child then takes the tree.
+  const dieWithParent = options.dieWithParent === true && trustedSetprivAvailable();
+  const { dieWithParent: _dieWithParent, ...spawnOptions } = options;
   let child;
   try {
-    child = spawn("/proc/self/fd/3", [
-      "--user",
-      "--map-current-user",
-      "--pid",
-      "--fork",
-      "--kill-child=SIGKILL",
-      "--mount-proc",
-      "--",
-      command,
-      ...args,
-    ], {
-      ...options,
+    child = spawn(
+      dieWithParent ? TRUSTED_SETPRIV_PATH : "/proc/self/fd/3",
+      dieWithParent ? ["--pdeathsig", "SIGKILL", "--", "/proc/self/fd/3", ...unshareArgs] : unshareArgs,
+      {
+      ...spawnOptions,
       env: minimalCommandEnv(options.env),
       stdio: [...requestedStdio, fd],
       shell: false,
       windowsHide: true,
       detached: true,
-    });
+      },
+    );
     child.workspaceProcessContainment = {
       guaranteed: true,
       kind: "linux_pid_namespace",
       launcherDigest: identity.digest,
+      diesWithParent: dieWithParent,
     };
     return child;
   } finally {
     fsSync.closeSync(fd);
   }
+}
+
+const TRUSTED_SETPRIV_PATH = "/usr/bin/setpriv";
+let trustedSetprivChecked = null;
+
+function trustedSetprivAvailable() {
+  if (trustedSetprivChecked !== null) return trustedSetprivChecked;
+  try {
+    const stat = fsSync.statSync(TRUSTED_SETPRIV_PATH);
+    trustedSetprivChecked = stat.isFile() && stat.uid === 0 && (stat.mode & 0o022) === 0 && (stat.mode & 0o111) !== 0;
+  } catch {
+    trustedSetprivChecked = false;
+  }
+  return trustedSetprivChecked;
 }
 
 function spawnWorkspaceProcess(command, args, options = {}) {
@@ -5961,6 +5990,212 @@ async function readJsonlFirstLine(fullPath) {
   }
 }
 
+// Executor process sessions (`process/*`). Unlike request-scoped backend
+// processes, a session outlives the request that started it: output, errors,
+// and exit are pushed as events keyed by the host router's session id, and
+// every session is killed when the executor shuts down. Containment: full
+// access runs under the PID-namespace launcher; sandboxed modes run under
+// bubblewrap, which unshares the PID namespace and dies with this process.
+const EXECUTOR_OUTPUT_CHUNK_BYTES = 64 * 1024;
+const EXECUTOR_OUTPUT_FORWARD_CAP_BYTES = 1024 * 1024;
+const EXECUTOR_ACTIVITY_INTERVAL_MS = 500;
+const executorProcessSessions = new Map();
+let executorProcessPlanner = null;
+
+function executorProcessError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function executorPlanner() {
+  if (!executorProcessPlanner) {
+    executorProcessPlanner = new LocalChildProcessBackend({
+      workspaceRootResolver: () => root,
+      workspaceLocalityResolver: () => true,
+    });
+  }
+  return executorProcessPlanner;
+}
+
+function nativeShellInvocation(shellCommand) {
+  const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fsSync.existsSync(candidate));
+  return bash ? { command: bash, args: ["-lc", shellCommand] } : { command: "/bin/sh", args: ["-c", shellCommand] };
+}
+
+function emitExecutorProcessEvent(type, session, payload = {}) {
+  sendEvent(type, { processSessionId: session.id, ...payload });
+}
+
+function forwardExecutorOutput(session, stream, chunk) {
+  const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk || ""), "utf8");
+  if (!buffer.length) return;
+  const remaining = EXECUTOR_OUTPUT_FORWARD_CAP_BYTES - session.forwardedBytes;
+  const admitted = remaining > 0 ? buffer.subarray(0, remaining) : Buffer.alloc(0);
+  for (let offset = 0; offset < admitted.length; offset += EXECUTOR_OUTPUT_CHUNK_BYTES) {
+    const slice = admitted.subarray(offset, offset + EXECUTOR_OUTPUT_CHUNK_BYTES);
+    emitExecutorProcessEvent(EXECUTOR_PROCESS_EVENTS.output, session, { stream, dataBase64: slice.toString("base64") });
+  }
+  session.forwardedBytes += admitted.length;
+  const dropped = buffer.length - admitted.length;
+  if (dropped > 0) {
+    // Past the cap only activity is reported, so the host's idle timer still
+    // sees a busy process without the executor flooding the transport.
+    session.droppedBytes += dropped;
+    const now = Date.now();
+    if (now - session.lastActivityAt >= EXECUTOR_ACTIVITY_INTERVAL_MS) {
+      session.lastActivityAt = now;
+      emitExecutorProcessEvent(EXECUTOR_PROCESS_EVENTS.activity, session, { droppedBytes: session.droppedBytes });
+    }
+  }
+}
+
+function signalExecutorProcessSession(session, signal) {
+  const child = session.child;
+  if (!child || session.exited) return false;
+  if (process.platform !== "win32" && Number.isInteger(child.pid) && child.pid > 0) {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch (error) {
+      if (!["ESRCH", "EINVAL"].includes(error?.code)) throw error;
+    }
+  }
+  try { return child.kill(signal); } catch { return false; }
+}
+
+function terminateAllExecutorProcessSessions(signal = "SIGKILL") {
+  for (const session of executorProcessSessions.values()) {
+    try { signalExecutorProcessSession(session, signal); } catch {}
+  }
+}
+
+function startExecutorProcessSession(params = {}) {
+  const id = String(params.processSessionId || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(id)) {
+    throw executorProcessError("direct_stateful_exec_session_id_invalid", "process/start requires a bounded session id.");
+  }
+  if (executorProcessSessions.has(id)) {
+    throw executorProcessError("direct_stateful_exec_session_exists", "The process session id is already in use.");
+  }
+  if (stdinClosed) {
+    throw executorProcessError("direct_stateful_exec_executor_shutting_down", "The executor is shutting down.");
+  }
+  const sandboxMode = ["read-only", "workspace-write", "danger-full-access"].includes(params.sandboxMode)
+    ? params.sandboxMode
+    : "danger-full-access";
+  const planner = executorPlanner();
+  const workspace = planner.resolveWorkspace(
+    { cwd: typeof params.cwd === "string" ? params.cwd : "" },
+    { sandboxMode, executionEnvironment: { kind: "local" } },
+  );
+  const shellCommand = typeof params.shellCommand === "string" ? params.shellCommand : "";
+  const invocation = shellCommand
+    ? nativeShellInvocation(shellCommand)
+    : {
+        command: String(params.command || ""),
+        args: Array.isArray(params.args) ? params.args.map(String) : [],
+      };
+  if (!invocation.command) {
+    throw executorProcessError("direct_stateful_exec_command_invalid", "process/start requires a command.");
+  }
+  const plan = planner.planLaunch({
+    sandboxMode,
+    workspace,
+    shellCommand: "",
+    command: invocation.command,
+    args: invocation.args,
+  });
+  const env = minimalCommandEnv(params.env);
+  const child = plan.launcher === "bubblewrap"
+    ? spawn(plan.command, plan.args, {
+        cwd: workspace.cwd,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        shell: false,
+        detached: true,
+        windowsHide: true,
+      })
+    : containedWorkspaceProcessSpawn(plan.command, plan.args, {
+        cwd: workspace.cwd,
+        env: params.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        dieWithParent: true,
+      });
+  const session = {
+    id,
+    child,
+    exited: false,
+    forwardedBytes: 0,
+    droppedBytes: 0,
+    lastActivityAt: 0,
+  };
+  executorProcessSessions.set(id, session);
+  child.stdout?.on("data", (chunk) => forwardExecutorOutput(session, "stdout", chunk));
+  child.stderr?.on("data", (chunk) => forwardExecutorOutput(session, "stderr", chunk));
+  const reportError = (source) => (error) => emitExecutorProcessEvent(EXECUTOR_PROCESS_EVENTS.error, session, {
+    source,
+    code: String(error?.code || ""),
+    message: String(error?.message || error || "").slice(0, 500),
+  });
+  child.stdout?.on("error", reportError("stdout"));
+  child.stderr?.on("error", reportError("stderr"));
+  child.stdin?.on("error", reportError("stdin"));
+  child.on("error", reportError("child"));
+  child.on("close", (exitCode, signal) => {
+    session.exited = true;
+    executorProcessSessions.delete(id);
+    emitExecutorProcessEvent(EXECUTOR_PROCESS_EVENTS.exited, session, {
+      exitCode: exitCode === undefined ? null : exitCode,
+      signal: signal || "",
+      droppedBytes: session.droppedBytes,
+    });
+  });
+  if (stdinClosed) signalExecutorProcessSession(session, "SIGKILL");
+  return {
+    processSessionId: id,
+    cwdRelPath: workspace.cwdRelPath,
+    launcher: plan.launcher === "bubblewrap" ? "bubblewrap" : "linux_pid_namespace",
+    networkAccess: plan.networkAccess !== false,
+    shell: shellCommand ? path.basename(invocation.command) : "",
+  };
+}
+
+function executorProcessSessionFor(params = {}) {
+  const session = executorProcessSessions.get(String(params.processSessionId || ""));
+  if (!session) {
+    throw executorProcessError("direct_stateful_exec_session_missing", "The process session is not known to this executor.");
+  }
+  return session;
+}
+
+function writeExecutorProcessSession(params = {}) {
+  const session = executorProcessSessionFor(params);
+  const stdin = session.child.stdin;
+  if (!stdin || stdin.destroyed || stdin.writableEnded) {
+    throw executorProcessError("direct_stateful_exec_session_not_live", "The process session no longer accepts input.");
+  }
+  const text = typeof params.data === "string" ? params.data : "";
+  return new Promise((resolve, reject) => {
+    const finish = (error) => (error ? reject(Object.assign(error, { code: error.code || "EPIPE" })) : resolve({ accepted: true, eof: params.eof === true }));
+    if (text && params.eof === true) {
+      stdin.write(text, (error) => (error ? finish(error) : stdin.end(finish)));
+    } else if (text) {
+      stdin.write(text, finish);
+    } else if (params.eof === true) {
+      stdin.end(finish);
+    } else {
+      resolve({ accepted: false, eof: false });
+    }
+  });
+}
+
+function signalExecutorProcessSessionRequest(params = {}) {
+  const session = executorProcessSessionFor(params);
+  const signal = ["SIGTERM", "SIGKILL", "SIGINT"].includes(params.signal) ? params.signal : "SIGTERM";
+  return { delivered: signalExecutorProcessSession(session, signal), signal };
+}
+
 async function handleRequest(method, params = {}) {
   if (method === "hello") {
     const stat = await fs.stat(root);
@@ -5981,9 +6216,13 @@ async function handleRequest(method, params = {}) {
         name: EXECUTOR_PROTOCOL_NAME,
         version: EXECUTOR_PROTOCOL_VERSION,
         methods: [...IMPLEMENTED_EXECUTOR_METHODS],
+        sandbox: process.platform === "linux" && findExecutableOnPath("bwrap")
+          ? { available: true, kind: "bubblewrap" }
+          : { available: false, kind: "none" },
       },
       capabilities: {
         environmentDescribe: true,
+        processSessions: processBacked,
         listTree: true,
         readFilePreview: true,
         applyPatch: true,
@@ -6017,6 +6256,9 @@ async function handleRequest(method, params = {}) {
       },
     };
   }
+  if (method === EXECUTOR_METHODS.processStart) return startExecutorProcessSession(params);
+  if (method === EXECUTOR_METHODS.processWrite) return writeExecutorProcessSession(params);
+  if (method === EXECUTOR_METHODS.processSignal) return signalExecutorProcessSessionRequest(params);
   if (method === EXECUTOR_METHODS.environmentDescribe) {
     return describeExecutionEnvironment({
       containment: await workspaceProcessContainmentStatus(),
@@ -6247,6 +6489,13 @@ async function main() {
     sendEvent("startup-error", { root, workspaceKind, projectId, error: error.message });
     process.exitCode = 2;
     return;
+  }
+
+  // The host stops executors with SIGTERM (and wsl.exe teardown can deliver
+  // SIGHUP). Without a handler Node exits at once and session processes under
+  // the PID-namespace launcher would be orphaned.
+  for (const signal of ["SIGTERM", "SIGHUP", "SIGINT"]) {
+    process.on(signal, () => requestShutdown(0));
   }
 
   sendEvent("ready", {

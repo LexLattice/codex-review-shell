@@ -32,6 +32,7 @@ const MUTATION_COMMIT_KINDS_BY_METHOD = Object.freeze({
 });
 const PUBLIC_BACKEND_CAPABILITY_NAMES = Object.freeze([
   "environmentDescribe",
+  "processSessions",
   "listTree",
   "readFilePreview",
   "applyPatch",
@@ -1179,6 +1180,12 @@ class WorkspaceSession extends EventEmitter {
     });
     this.transport = new NdjsonTransport(this.child);
     this.transport.on("event", (event) => {
+      // Executor process-session events carry output bytes for the host
+      // router; they stay host-private and skip the sanitized agent-event path.
+      if (typeof event.event === "string" && event.event.startsWith("process/")) {
+        this.emit("executor-process-event", event);
+        return;
+      }
       this.emit("agent-event", {
         session: this.publicSnapshot(),
         event: this.publicAgentEvent(event),
@@ -1203,7 +1210,9 @@ class WorkspaceSession extends EventEmitter {
         this.emitStatus("backend-stderr", { stderr: text.slice(0, 2000) });
       }
     });
+    const attachedTransport = this.transport;
     this.transport.on("closed", (error) => {
+      this.emit("transport-closed", { transport: attachedTransport, error });
       if (this.status !== "failed" && this.status !== "disposed") {
         this.status = "closed";
         this.lastError = error?.message || "Backend closed.";
