@@ -1,5 +1,13 @@
 # Direct Harness Project Master Status
 
+## Active Track: Dual-Environment Agents (2026-10-06)
+
+Native Windows and native WSL agents in one UX: one host (UI, model loop,
+stores, grants) and one native executor per environment. The plan, the
+next turn, and the log of completed turns live in
+[DIRECT_DUAL_ENVIRONMENT_AGENTS_MASTER.md](./DIRECT_DUAL_ENVIRONMENT_AGENTS_MASTER.md).
+Read it first when resuming this track.
+
 ## Wave 26 Local Status (2026-07-15)
 
 Internal slices PR151–PR157 are implemented locally as one fixture/headless
