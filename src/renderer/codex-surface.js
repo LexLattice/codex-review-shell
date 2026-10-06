@@ -6322,6 +6322,29 @@ function canSelectDirectAccessProfile() {
   return isDirectFullAccessSurface() && hasCapabilityForMutation("threads", "canSelectAccessProfile");
 }
 
+function directReadinessCodeFromError(error) {
+  const match = /\b(live_probe_evidence_(?:expired|missing|scope_mismatch)|profile_required|auth_required)\b/
+    .exec(String(error?.message || error || ""));
+  return match ? match[1] : "";
+}
+
+// Readiness is verified per model, and selecting Access checks the thread's
+// own model. A thread on a model that hasn't been verified (or whose check
+// expired) must still open: show the readiness prompt instead of failing,
+// and apply Access after a successful refresh.
+async function selectPreferredAccessForThread(sessionId) {
+  if (!canSelectDirectAccessProfile() || !sessionId) return false;
+  try {
+    await rpc("thread/selectAccessProfile", { sessionId, accessProfile: preferredDirectAccessProfile() });
+    return true;
+  } catch (error) {
+    const code = directReadinessCodeFromError(error);
+    if (!code) throw error;
+    addDirectReadinessActionMessage(`${directReadinessFailureMessage(code)} This thread's Access will be set once Direct is ready for its model.`);
+    return false;
+  }
+}
+
 async function selectDirectAccessProfile(profile) {
   const option = directAccessProfileOption(profile);
   if (!option) return;
@@ -6450,6 +6473,11 @@ async function refreshDirectReadiness(options = {}) {
   try {
     const response = await bridge.refreshDirectRuntimeReadiness(project.id, state.threadId || "");
     applyDirectSurfaceProjection(response?.projection);
+    // A thread opened before its model was ready has no Access yet.
+    if (response?.ok && state.threadId && !currentDirectAccessProfile() &&
+      await selectPreferredAccessForThread(state.threadId).catch(() => false)) {
+      addSystemMessage(`Access for this thread is now ${directAccessProfileOption(preferredDirectAccessProfile())?.label || "set"}.`);
+    }
     state.directReadinessRefreshStatus = response?.ok ? "ready" : "failed";
     state.directReadinessRefreshError = response?.ok
       ? ""
@@ -6837,11 +6865,7 @@ async function openDirectThread(threadId) {
   const openRequestId = state.directThreadOpenRequestId + 1;
   state.directThreadOpenRequestId = openRequestId;
   let result = await readThreadById(requestedThreadId);
-  if (canSelectDirectAccessProfile() && result?.taskBinding?.current !== true) {
-    await rpc("thread/selectAccessProfile", {
-      sessionId: requestedThreadId,
-      accessProfile: preferredDirectAccessProfile(),
-    });
+  if (result?.taskBinding?.current !== true && await selectPreferredAccessForThread(requestedThreadId)) {
     result = await readThreadById(requestedThreadId);
   }
   if (state.directThreadOpenRequestId !== openRequestId) return;
@@ -9475,13 +9499,8 @@ async function startNewThread() {
       state.sourceHome = "";
       state.sessionFilePath = "";
       bindThread(result.thread, result.thread.model || activeModelId() || null);
-      if (canSelectDirectAccessProfile()) {
-        await rpc("thread/selectAccessProfile", {
-          sessionId: result.thread.id || result.thread.threadId,
-          accessProfile: preferredDirectAccessProfile(),
-        });
-      }
-      addSystemMessage(canSelectDirectAccessProfile()
+      const accessApplied = await selectPreferredAccessForThread(result.thread.id || result.thread.threadId);
+      addSystemMessage(accessApplied
         ? `Started a new thread with ${directAccessProfileOption(preferredDirectAccessProfile())?.label || "default"} access.`
         : "Started a new thread.");
       await persistRuntimePreferences("thread-model");

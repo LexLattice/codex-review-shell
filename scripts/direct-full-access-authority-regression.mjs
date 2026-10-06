@@ -68,14 +68,20 @@ async function main() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "direct-full-access-authority-"));
   try {
     const rendererSource = await fs.readFile(new URL("../src/renderer/codex-surface.js", import.meta.url), "utf8");
-    assert.match(rendererSource, /rpc\("thread\/selectAccessProfile",\s*\{\s*sessionId:\s*result\.thread\.(?:id\s*\|\|\s*result\.thread\.threadId|threadId)/s);
-    assert.match(rendererSource, /accessProfile:\s*preferredDirectAccessProfile\(\)/);
+    // New and opened threads get the preferred Access through one helper.
+    assert.match(rendererSource, /const accessApplied = await selectPreferredAccessForThread\(result\.thread\.id \|\| result\.thread\.threadId\);/);
+    assert.match(rendererSource, /result\?\.taskBinding\?\.current !== true && await selectPreferredAccessForThread\(requestedThreadId\)/);
+    assert.match(rendererSource, /rpc\("thread\/selectAccessProfile", \{ sessionId, accessProfile: preferredDirectAccessProfile\(\) \}\)/);
     assert.match(rendererSource, /DEFAULT_DIRECT_ACCESS_PROFILE\s*=\s*"full_access"/);
     assert.match(rendererSource, /isDirectFullAccessSurface\(\)\)\s*params\.accessProfile\s*=\s*preferredDirectAccessProfile\(\)/);
-    assert.match(rendererSource, /canSelectDirectAccessProfile\(\)\s*&&\s*result\?\.taskBinding\?\.current\s*!==\s*true[\s\S]*thread\/selectAccessProfile/);
-    // Opening or creating a thread only selects Access while main declares it
-    // (Direct ready); otherwise the call is refused and the thread would fail.
+    // It only selects Access while main declares it (Direct ready), and a
+    // readiness refusal for the thread's own model (readiness is verified per
+    // model) shows the readiness prompt instead of failing the thread.
     assert.match(rendererSource, /function canSelectDirectAccessProfile\(\)\s*\{\s*return isDirectFullAccessSurface\(\)\s*&&\s*hasCapabilityForMutation\("threads", "canSelectAccessProfile"\);/);
+    const helper = rendererSource.slice(rendererSource.indexOf("async function selectPreferredAccessForThread("), rendererSource.indexOf("async function selectDirectAccessProfile("));
+    assert.match(helper, /if \(!canSelectDirectAccessProfile\(\) \|\| !sessionId\) return false;/);
+    assert.match(helper, /const code = directReadinessCodeFromError\(error\);\s*if \(!code\) throw error;\s*addDirectReadinessActionMessage\(/);
+    assert.match(rendererSource, /live_probe_evidence_\(\?:expired\|missing\|scope_mismatch\)/);
 
     const grant = DirectThreadHarnessGrant.issue({
       taskId: threadId,

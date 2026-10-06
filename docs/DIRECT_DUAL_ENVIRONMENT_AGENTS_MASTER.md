@@ -704,8 +704,18 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
       ready. When it isn't, opening the thread failed. That was a regression
       from `1c65a49`. The renderer now checks the declared capability first
       (`canSelectDirectAccessProfile`). A manual Access change while Direct
-      isn't ready says it will apply once Direct is ready. Why Direct wasn't
-      ready on the owner's machine is still open.
+      isn't ready says it will apply once Direct is ready.
+    - **Readiness is per model.** Direct wasn't ready on the owner's machine
+      because the model readiness evidence had expired (August). After
+      **Refresh Direct readiness**, which verified the project's
+      `gpt-5.6-sol`, new threads still failed with
+      `live_probe_evidence_scope_mismatch`. They used other models
+      (`gpt-6-luna`, `gpt-5.5`), and selecting Access checks the thread's own
+      model. The renderer now routes Access for new and opened threads
+      through `selectPreferredAccessForThread`. A readiness refusal shows the
+      readiness prompt with its Refresh button, which verifies that thread's
+      model, instead of failing the thread. A successful refresh then applies
+      the preferred Access.
 
 ### Turn 10: cross-environment delegation
 
