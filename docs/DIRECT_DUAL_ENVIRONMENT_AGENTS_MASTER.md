@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-06, after turn 7.
+Last updated: 2026-10-06, after turn 8.
 
 ## How to use this document
 
@@ -83,7 +83,7 @@ presentation run once, in the host.
 | `src/main/direct/tools/stateful-exec-session.js` | Session registry, grant check, budgets, timeouts, events | Spawn, stdin, kill, sandbox wrapping, containment |
 | `src/main/direct/tools/full-access-local-environment.js` | Grant check, patch parsing and planning, result projection | Read bytes, apply planned writes, root check again |
 | Context building | Selection, budgeting, rendering | Fetch `AGENTS.md`, file contents, git status |
-| `src/main/direct/external/configured-mcp-adapter.js` | Trust, freshness, result envelope, authorization | Run the server process |
+| `src/main/direct/external/configured-mcp-adapter.js` | Trust, freshness, result envelope, authorization | Run the server process (done in turn 8: `mcp-stdio-transport.js` behind `mcp/request`) |
 | `src/main/direct/tools/exec-sandbox.js` | Choose policy from the access profile | Run the OS-specific sandbox |
 
 ### Executor contract
@@ -100,7 +100,7 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 8: MCP servers and hooks per environment.**
+**Turn 9: Workbench UX.**
 
 ## Gates for every turn
 
@@ -554,11 +554,66 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ### Turn 8: MCP servers and hooks per environment
 
-- Status: planned
+- Status: done with deviations (hooks and skill scripts had nothing to route)
 - Scope: MCP server configs name their environment; executors run stdio
   servers (`mcp/*`); the host keeps trust, freshness, and the result envelope.
   Hooks and skill scripts use the same routing.
-- Outcome: _(fill in)_
+- Outcome:
+  - **Where a server runs.** Configured MCP servers take a `runsIn` field:
+    - `"project"`, the default: the project's own environment, as Codex runs
+      MCP servers where the agent runs.
+    - `"host"`.
+    - `{ kind: "wsl", distro }` or `{ kind: "windows" }`.
+
+    Flat `environmentKind` and `distro` are also accepted.
+  - **Placement** (`mcpPlacementFor` in `configured-mcp-adapter.js`):
+    - A server local to the host runs there.
+    - A server in the project's environment uses the project's executor.
+    - A server in another named environment uses an executor anchored at
+      its `cwd` there. Without a `cwd` it is refused with
+      `direct_mcp_environment_root_required`.
+  - **Shared transport.** The stdio exchange (initialize, one request, reap)
+    moved unchanged into `external/mcp-stdio-transport.js`, which host and
+    executor share, the same pattern as the file port. The executor serves
+    it as new `mcp/request` and `mcp/cancel`.
+  - **Containment.** In a WSL executor the server runs in the PID-namespace
+    launcher; the new `exactEnv` option keeps the server's own allowlist. On
+    Windows (executor or host) it runs under the job runner.
+  - **What stays on the host.** Trust, freshness, scope, owner-interaction
+    refusal, and the result envelope (URI-laundering checks, payload
+    bounds).
+  - **What crosses to the executor.** Only command, args, cwd, and the
+    names of allowlisted variables cross. Their values come from the
+    server's own environment.
+  - **Environment variables.** Servers now also get the base command
+    variables (PATH, HOME, SystemRoot, and others), on the host as well, so
+    `npx`-style commands resolve. Nothing else beyond the allowlist crosses.
+  - **Cancel.** It reaches the executor (`mcp/cancel`) and returns at once.
+  - **Hooks and skill scripts: nothing to route.** Direct classifies hooks,
+    skills, and apps but never executes them (`skills-hooks-apps.js`:
+    `executionAllowedInThisPr: false`), and no other Direct code spawns
+    processes besides configured MCP and the WSL-pinned semantic service. A
+    skill's scripts can only run through `exec_command`, which already runs
+    in the thread's own environment. See **Plan changes**.
+  - **Checks.**
+    - New `direct-mcp-per-environment-regression` passes on both hosts:
+      - placement rules;
+      - a host server with the env allowlist;
+      - a server in the project's other environment (WSL from Windows,
+        Windows from Linux) with the allowlist enforced across `WSLENV`;
+      - an explicitly named other environment, and the missing-`cwd`
+        refusal;
+      - host-side laundering and owner-interaction refusals and discovery
+        through the executor;
+      - a server's detached child reaped in WSL and Windows;
+      - prompt remote cancel.
+    - No fixture processes were left in either environment.
+    - `direct-provider-external-production-wiring` passes on both hosts. Its
+      reap-timing lower bound is now POSIX-only: a SIGTERM-ignoring fixture
+      only delays cleanup on POSIX, and it had never been run on Windows.
+    - Turns 1–7 executor regressions re-pass on both hosts.
+    - `check:syntax` and `validate` pass; full sweep 264 of 284 passing,
+      failures identical to **Known failing checks**.
 
 ### Turn 9: Workbench UX
 
@@ -644,9 +699,15 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   continuation declares no tools.
 - A blocking `request_permissions` prompt is deferred until the continuation
   loop can keep tools available after human decisions.
-- Configured MCP stdio servers are spawned by the host
-  (`configured-mcp-adapter.js:572`), so a WSL-configured server cannot run from
-  a Windows host until turn 8.
+- Since turn 8, configured MCP servers run in their own environment. Two
+  gaps remain:
+  - **Linux host-local servers aren't tree-contained.** A server that runs on
+    a Linux host itself (`runsIn: "host"`, or a local project) is still a
+    plain `spawn`, so anything it starts outlives it. Servers in a WSL
+    executor and every Windows server are contained.
+  - **One process per request.** Servers are started for each request, so
+    stateful servers and server-initiated sessions aren't supported (as
+    before).
 - Since turn 7, process sessions (`exec_command`) on Windows run under the
   job runner. The workspace backend's request-scoped command paths still
   refuse on Windows (`workspace_windows_job_object_containment_unavailable`
@@ -735,6 +796,8 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | Windows Workspace and Read only use integrity levels; network stays unenforced | Low integrity with a Low-labeled project folder confines writes; adding a write-restricted token gives Read only; a Medium no-read-up label hides credential stores; WSL interop is blocked for free. Nothing short of admin-provisioned firewall rules can block the network, so Direct states that instead of claiming it. |
 | 2026-10-06 | A Windows workspace runs in-process on a Windows host | The host is then that environment, so the in-process backend with the job runner is the native executor; going through a second Node process would add nothing. From WSL or Linux, the Windows executor runs it. |
 | 2026-10-06 | Patches keep each file's line ending; new files follow the environment | Normalizing to LF silently rewrote every line of CRLF files. New files use CRLF on Windows because that is what the model is told. |
+| 2026-10-06 | MCP servers run in the project's environment by default | That is where the agent's tools run, and it matches Codex. A server explicitly named for another environment needs a `cwd` there to anchor its executor, since executors are per project folder until turn 11. |
+| 2026-10-06 | Only the MCP transport crosses to an executor | The executor runs the same one-request exchange as the host and returns the raw result; trust, freshness, scope, and every envelope check stay on the host, so a remote server can't widen what a local one could do. Variable values come from the server's own environment, never from the host. |
 | 2026-10-06 | One file implementation, two placements | The executor runs the host's `LocalFilePort` natively, so local and WSL file rules can't drift apart; the host only plans. |
 
 ## Plan changes
@@ -747,3 +810,5 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | 6 | Turn 7 builds Workspace and Read only on Windows instead of refusing them, and also wraps the host's local Windows backend in the job runner. | The spike proved both profiles without admin rights, and measured that the local Windows backend leaks process trees today. |
 | 2026-10-06 | 6 | Network is reported as not enforced for Windows Workspace and Read only. | No non-admin mechanism blocks it; see **Decisions**. |
 | 2026-10-06 | 5 | Turn 7 reuses `nativeShellCommand` for its PowerShell sessions. | The planner already picks `pwsh` or Windows PowerShell 5.1 with `-NoLogo -NoProfile -NonInteractive`; turn 7 adds UTF-8 output and Job Object containment around it. |
+| 2026-10-06 | 8 | Hook and skill-script routing is dropped from turn 8; whoever enables hook execution must route it through the environment's process sessions. | Direct never executes hooks or skills; skill scripts run only through `exec_command`, which is already per-environment. |
+| 2026-10-06 | 8 | Turn 11 should also contain host-local MCP servers on Linux and consider long-lived MCP sessions per environment. | Both surfaced here; neither blocks per-environment placement. |

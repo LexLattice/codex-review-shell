@@ -189,7 +189,10 @@ try {
   const childPid = Number(reaped.providerOutput.excerpt.match(/fixture-child-pid:(\d+)/)?.[1]);
   assert(Number.isInteger(childPid) && childPid > 0, "the reaping fixture must expose its child pid only in bounded test output");
   assert.match(reaped.providerOutput.excerpt, new RegExp(`fixture-child-pid:${childPid}`));
-  assert.ok(reapingElapsedMs >= 150 && reapingElapsedMs < 2_000, `MCP completion must await bounded SIGKILL cleanup: ${reapingElapsedMs}ms`);
+  // The fixture ignores SIGTERM, so on POSIX completion waits for the SIGKILL
+  // escalation; on Windows every kill terminates at once.
+  const minimumReapMs = process.platform === "win32" ? 0 : 150;
+  assert.ok(reapingElapsedMs >= minimumReapMs && reapingElapsedMs < 2_000, `MCP completion must await bounded SIGKILL cleanup: ${reapingElapsedMs}ms`);
   assert.throws(() => process.kill(childPid, 0), (error) => error?.code === "ESRCH", "the MCP child must be reaped before request completion");
 
   const callsBeforeDynamic = discoveryCalls + readCalls;

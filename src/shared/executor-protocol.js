@@ -27,6 +27,8 @@ const EXECUTOR_METHODS = Object.freeze({
   fsList: "fs/list",
   fsSearch: "fs/search",
   fsStat: "fs/stat",
+  mcpRequest: "mcp/request",
+  mcpCancel: "mcp/cancel",
 });
 
 // Methods this executor build actually serves. Later turns add to this list
@@ -39,6 +41,8 @@ const IMPLEMENTED_EXECUTOR_METHODS = Object.freeze([
   EXECUTOR_METHODS.fsRead,
   EXECUTOR_METHODS.fsStat,
   EXECUTOR_METHODS.fsApplyPlannedPatch,
+  EXECUTOR_METHODS.mcpRequest,
+  EXECUTOR_METHODS.mcpCancel,
 ]);
 
 // Events the executor pushes for a process session. Each carries

@@ -44,6 +44,7 @@ const {
 } = require("../shared/executor-protocol");
 const { BASE_COMMAND_ENVIRONMENT_KEYS, LocalChildProcessBackend } = require("../main/direct/tools/exec-process-backends");
 const { WINDOWS_JOB_LAUNCHER } = require("../main/direct/tools/windows-job-runner");
+const { mcpServerEnvironment, requestMcpStdio } = require("../main/direct/external/mcp-stdio-transport");
 const { LocalFilePort } = require("../main/direct/tools/full-access-local-environment");
 
 const PROTOCOL_VERSION = 1;
@@ -395,6 +396,7 @@ function requestShutdown(code = 0) {
   stdinClosed = true;
   requestExitCode(code);
   terminateAllExecutorProcessSessions("SIGKILL");
+  abortAllExecutorMcpRequests();
   for (const child of activeChildProcesses) {
     terminateChild(child);
   }
@@ -2779,7 +2781,10 @@ function containedWorkspaceProcessSpawn(command, args, options = {}) {
   // orphan the namespace. setpriv sets PDEATHSIG and execs the launcher in
   // place; the signal survives exec, and --kill-child then takes the tree.
   const dieWithParent = options.dieWithParent === true && trustedSetprivAvailable();
-  const { dieWithParent: _dieWithParent, ...spawnOptions } = options;
+  // exactEnv: the caller already built the environment (configured MCP
+  // servers get their own allowlist, not the command one).
+  const exactEnv = options.exactEnv === true && options.env && typeof options.env === "object";
+  const { dieWithParent: _dieWithParent, exactEnv: _exactEnv, ...spawnOptions } = options;
   let child;
   try {
     child = spawn(
@@ -2787,7 +2792,7 @@ function containedWorkspaceProcessSpawn(command, args, options = {}) {
       dieWithParent ? ["--pdeathsig", "SIGKILL", "--", "/proc/self/fd/3", ...unshareArgs] : unshareArgs,
       {
       ...spawnOptions,
-      env: minimalCommandEnv(options.env),
+      env: exactEnv ? { ...options.env } : minimalCommandEnv(options.env),
       stdio: [...requestedStdio, fd],
       shell: false,
       windowsHide: true,
@@ -6196,6 +6201,80 @@ function signalExecutorProcessSessionRequest(params = {}) {
   return { delivered: signalExecutorProcessSession(session, signal), signal };
 }
 
+// Configured MCP servers that live in this environment (`mcp/*`). The host
+// keeps trust, freshness, scope, and the result envelope; the executor runs
+// the same one-request stdio exchange the host runs for its own servers,
+// with the server contained like a full-access process session and its
+// allowlisted variables read from this environment.
+const executorMcpRequests = new Map();
+
+function spawnContainedMcpServer(command, args, options = {}) {
+  if (process.platform === "win32") {
+    const planner = executorPlanner();
+    const plan = planner.planLaunch({ sandboxMode: "danger-full-access", command, args });
+    return planner.launch(plan, { cwd: options.cwd, env: options.env }).child;
+  }
+  return containedWorkspaceProcessSpawn(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    exactEnv: true,
+    stdio: ["pipe", "pipe", "pipe"],
+    dieWithParent: true,
+  });
+}
+
+async function executorMcpRequest(params = {}) {
+  const id = String(params.mcpRequestId || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(id)) {
+    throw executorProcessError("direct_mcp_request_id_invalid", "mcp/request requires a bounded request id.");
+  }
+  if (executorMcpRequests.has(id)) {
+    throw executorProcessError("direct_mcp_request_exists", "The MCP request id is already in use.");
+  }
+  if (stdinClosed) {
+    throw executorProcessError("direct_stateful_exec_executor_shutting_down", "The executor is shutting down.");
+  }
+  const source = params.server && typeof params.server === "object" ? params.server : {};
+  const processEnv = Array.isArray(source.processEnv)
+    ? source.processEnv.filter((name) => typeof name === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+    : [];
+  const server = {
+    transportKind: "stdio",
+    command: typeof source.command === "string" ? source.command : "",
+    args: Array.isArray(source.args) ? source.args.map(String) : [],
+    cwd: typeof source.cwd === "string" && source.cwd.trim() ? source.cwd : root,
+    processEnv,
+  };
+  const controller = new AbortController();
+  executorMcpRequests.set(id, controller);
+  try {
+    const result = await requestMcpStdio(
+      server,
+      String(params.method || ""),
+      params.params && typeof params.params === "object" ? params.params : {},
+      {
+        timeoutMs: params.timeoutMs,
+        signal: controller.signal,
+        env: mcpServerEnvironment(processEnv),
+        spawnProcess: spawnContainedMcpServer,
+      },
+    );
+    return { result };
+  } finally {
+    executorMcpRequests.delete(id);
+  }
+}
+
+function cancelExecutorMcpRequest(params = {}) {
+  const controller = executorMcpRequests.get(String(params.mcpRequestId || ""));
+  controller?.abort();
+  return { cancelled: Boolean(controller) };
+}
+
+function abortAllExecutorMcpRequests() {
+  for (const controller of executorMcpRequests.values()) controller.abort();
+}
+
 // Executor file operations (`fs/*`). The host plans patches and checks
 // grants; the executor resolves paths natively, applies the access profile's
 // read and write rules, and revalidates before-digests immediately before
@@ -6319,6 +6398,8 @@ async function handleRequest(method, params = {}) {
   if (method === EXECUTOR_METHODS.processStart) return startExecutorProcessSession(params);
   if (method === EXECUTOR_METHODS.processWrite) return writeExecutorProcessSession(params);
   if (method === EXECUTOR_METHODS.processSignal) return signalExecutorProcessSessionRequest(params);
+  if (method === EXECUTOR_METHODS.mcpRequest) return executorMcpRequest(params);
+  if (method === EXECUTOR_METHODS.mcpCancel) return cancelExecutorMcpRequest(params);
   if (method === EXECUTOR_METHODS.environmentDescribe) {
     // On Windows, process sessions are contained by the job runner, which
     // also provides the Workspace and Read-only sandbox.

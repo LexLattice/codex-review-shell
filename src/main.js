@@ -3515,7 +3515,15 @@ function ensureDirectAuthLoginCoordinator() {
 
 function ensureDirectConfiguredMcpResolvers() {
   if (directConfiguredMcpResolvers) return directConfiguredMcpResolvers;
-  directConfiguredMcpResolvers = createDirectConfiguredMcpResolvers();
+  directConfiguredMcpResolvers = createDirectConfiguredMcpResolvers({
+    // MCP servers that live in another environment run in its executor.
+    executors: {
+      requestForProject: (project, method, params, timeoutMs) => {
+        if (!workspaceBackends) throw new Error("Workspace backends are not initialized.");
+        return workspaceBackends.requestForProject(project, method, params, timeoutMs);
+      },
+    },
+  });
   return directConfiguredMcpResolvers;
 }
 
