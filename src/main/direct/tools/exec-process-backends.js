@@ -1,0 +1,229 @@
+"use strict";
+
+// Process backends for Direct stateful exec. The session manager in
+// stateful-exec-session.js is the host-side router: it owns session identity,
+// grant checks, budgets, timeouts, output admission, and events. A backend
+// owns everything that touches the execution environment itself: resolving
+// the workspace and cwd natively, wrapping the command in that environment's
+// sandbox, starting the process, and killing its tree.
+//
+// Backend contract:
+//   id                                   stable backend identifier
+//   resolveWorkspace(input, grant)       -> { root, cwd, cwdRelPath }; throws
+//   planLaunch(spec)                     -> launch plan; throws before any
+//                                           session exists (e.g. no sandbox)
+//   launch(plan, { cwd, env })           -> process handle; a throw here
+//                                           becomes a failed session
+//
+// Process handle contract:
+//   onStdout(fn) / onStderr(fn)          raw output chunks (Buffer or string)
+//   onStdoutError / onStderrError / onStdinError / onError (fn(error))
+//   onClose(fn(exitCode, signal))
+//   stdinWritable() -> boolean
+//   writeStdin(text, callback) / endStdin(callback)
+//   kill(signal) -> boolean              terminates the whole process tree
+
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawn } = require("node:child_process");
+const { BubblewrapExecSandbox, workspaceExecutesLocally } = require("./exec-sandbox");
+
+const LOCAL_CHILD_BACKEND_ID = "local-child";
+
+function normalizeString(value, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function statefulExecError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function normalizeExecRelativePath(value, label) {
+  const text = normalizeString(value, "").replace(/\\/g, "/");
+  if (!text) return "";
+  if (
+    text.startsWith("/") ||
+    /^[A-Za-z]:\//.test(text) ||
+    text.split("/").includes("..") ||
+    /[\0-\x1f\x7f]/.test(text)
+  ) {
+    throw statefulExecError("direct_stateful_exec_cwd_invalid", `${label} must be a workspace-relative directory.`);
+  }
+  return text.replace(/^\.\/+/, "");
+}
+
+function processTreeKill(child, signal = "SIGTERM") {
+  if (!child) return false;
+  let killed = false;
+  if (process.platform !== "win32" && Number.isInteger(child.pid) && child.pid > 0) {
+    try {
+      process.kill(-child.pid, signal);
+      killed = true;
+    } catch (error) {
+      if (!['ESRCH', 'EINVAL'].includes(error?.code)) throw error;
+    }
+  }
+  if (!killed && typeof child.kill === "function" && !child.killed) {
+    try { killed = child.kill(signal) || killed; } catch {}
+  }
+  return killed;
+}
+
+// Wraps a Node ChildProcess. The raw child stays reachable as `child`, and
+// stdin methods are looked up at call time rather than bound at launch.
+class LocalChildProcessHandle {
+  constructor(child, plan = {}) {
+    this.child = child;
+    this.launcher = plan.launcher || "none";
+    this.networkAccess = plan.networkAccess !== false;
+  }
+
+  onStdout(fn) { this.child?.stdout?.on("data", fn); }
+
+  onStderr(fn) { this.child?.stderr?.on("data", fn); }
+
+  onStdoutError(fn) { this.child?.stdout?.on("error", fn); }
+
+  onStderrError(fn) { this.child?.stderr?.on("error", fn); }
+
+  onStdinError(fn) { this.child?.stdin?.on?.("error", fn); }
+
+  onError(fn) { this.child?.on?.("error", fn); }
+
+  onClose(fn) { this.child?.on?.("close", fn); }
+
+  stdinWritable() {
+    return Boolean(this.child?.stdin) && !this.child.stdin.destroyed;
+  }
+
+  writeStdin(text, callback) {
+    this.child.stdin.write(text, callback);
+  }
+
+  endStdin(callback) {
+    this.child.stdin.end(callback);
+  }
+
+  kill(signal) {
+    return processTreeKill(this.child, signal);
+  }
+}
+
+class LocalChildProcessBackend {
+  constructor(options = {}) {
+    this.id = LOCAL_CHILD_BACKEND_ID;
+    this.spawnImpl = typeof options.spawnImpl === "function" ? options.spawnImpl : spawn;
+    this.workspaceRootResolver = typeof options.workspaceRootResolver === "function"
+      ? options.workspaceRootResolver
+      : (input = {}) => input.workspaceRoot || input.project?.workspaceRoot || "";
+    this.sandbox = options.sandbox && typeof options.sandbox.wrap === "function"
+      ? options.sandbox
+      : new BubblewrapExecSandbox();
+    this.workspaceLocalityResolver = typeof options.workspaceLocalityResolver === "function"
+      ? options.workspaceLocalityResolver
+      : (kind, project) => workspaceExecutesLocally(kind, project);
+  }
+
+  resolveWorkspace(input = {}, grant = null) {
+    const kind = normalizeString(grant?.executionEnvironment?.kind || input.executionEnvironment?.kind, "local");
+    if (!this.workspaceLocalityResolver(kind, input.project || {})) {
+      const error = statefulExecError(
+        "direct_stateful_exec_environment_not_local",
+        "Direct cannot run commands in this workspace from this host yet (for example, a WSL workspace opened from a Windows host).",
+      );
+      error.userActionable = true;
+      throw error;
+    }
+    const rootCandidate = this.workspaceRootResolver(input, grant?.executionEnvironment || {});
+    const root = path.resolve(String(rootCandidate || ""));
+    if (!rootCandidate || !fs.existsSync(root)) {
+      throw statefulExecError("direct_stateful_exec_workspace_unavailable", "The selected local execution environment has no available workspace root.");
+    }
+    const fullAccess = grant?.sandboxMode === "danger-full-access";
+    const requestedCwd = normalizeString(input.cwdRelPath || input.cwd, "");
+    const rel = fullAccess
+      ? requestedCwd.replace(/\\/g, "/")
+      : normalizeExecRelativePath(requestedCwd, "cwd");
+    if (/[\0-\x1f\x7f]/.test(rel)) {
+      throw statefulExecError("direct_stateful_exec_cwd_invalid", "Stateful exec cwd contains control characters.");
+    }
+    const cwd = path.resolve(root, rel || ".");
+    if (fullAccess) {
+      let cwdReal;
+      try {
+        cwdReal = fs.realpathSync(cwd);
+        if (!fs.statSync(cwdReal).isDirectory()) throw new Error("not a directory");
+      } catch (error) {
+        if (error?.code?.startsWith("direct_stateful_exec_")) throw error;
+        throw statefulExecError("direct_stateful_exec_cwd_unavailable", "Stateful exec cwd is unavailable in the selected local environment.");
+      }
+      return { root, cwd: cwdReal, cwdRelPath: path.relative(root, cwdReal).split(path.sep).join("/") || "." };
+    }
+    const relative = path.relative(root, cwd);
+    if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
+      throw statefulExecError("direct_stateful_exec_cwd_outside_workspace", "Stateful exec cwd must remain inside the selected workspace.");
+    }
+    let rootReal;
+    let cwdReal;
+    try {
+      rootReal = fs.realpathSync(root);
+      cwdReal = fs.realpathSync(cwd);
+      const realRelative = path.relative(rootReal, cwdReal);
+      if (realRelative.startsWith(`..${path.sep}`) || realRelative === ".." || path.isAbsolute(realRelative)) {
+        throw statefulExecError("direct_stateful_exec_cwd_outside_workspace", "Stateful exec cwd resolves outside the selected workspace.");
+      }
+      if (!fs.statSync(cwdReal).isDirectory()) throw new Error("not a directory");
+    } catch (error) {
+      if (error?.code?.startsWith("direct_stateful_exec_")) throw error;
+      throw statefulExecError("direct_stateful_exec_cwd_unavailable", "Stateful exec cwd is unavailable in the selected workspace.");
+    }
+    return { root: rootReal, cwd: cwdReal, cwdRelPath: relative.split(path.sep).join("/") };
+  }
+
+  planLaunch(spec = {}) {
+    const sandboxMode = normalizeString(spec.sandboxMode, "danger-full-access");
+    if (sandboxMode === "danger-full-access") {
+      return {
+        command: spec.command,
+        args: spec.args,
+        shell: Boolean(spec.shellCommand),
+        launcher: "none",
+        networkAccess: true,
+      };
+    }
+    return {
+      ...this.sandbox.wrap({
+        sandboxMode,
+        root: spec.workspace?.root,
+        cwd: spec.workspace?.cwd,
+        shellCommand: spec.shellCommand,
+        command: spec.command,
+        args: spec.args,
+      }),
+      shell: false,
+    };
+  }
+
+  launch(plan, options = {}) {
+    const child = this.spawnImpl(plan.command, plan.args, {
+      cwd: options.cwd,
+      env: options.env,
+      shell: plan.shell,
+      detached: process.platform !== "win32",
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return new LocalChildProcessHandle(child, plan);
+  }
+}
+
+module.exports = {
+  LOCAL_CHILD_BACKEND_ID,
+  LocalChildProcessBackend,
+  LocalChildProcessHandle,
+  normalizeExecRelativePath,
+  processTreeKill,
+  statefulExecError,
+};

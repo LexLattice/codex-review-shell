@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-06, after turn 1.
+Last updated: 2026-10-06, after turn 2.
 
 ## How to use this document
 
@@ -100,7 +100,7 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 2: host exec router.**
+**Turn 3: WSL executor process sessions.**
 
 ## Gates for every turn
 
@@ -205,13 +205,42 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ### Turn 2: host exec router
 
-- Status: planned
+- Status: done
 - Scope: split `stateful-exec-session.js` into a host router (registry, grant
   check, budgets, timeouts, events) and an executor backend interface. The
   existing in-process local spawner becomes backend #1.
 - Done when: no behavior change; all existing exec, harness, continuation, and
   access-profile regressions pass unchanged.
-- Outcome: _(fill in)_
+- Outcome:
+  - New `src/main/direct/tools/exec-process-backends.js` defines the backend
+    contract and `LocalChildProcessBackend`, a verbatim move of the old
+    workspace/cwd resolution, sandbox planning, spawn, and process-tree kill.
+  - The backend contract has three steps, matching where errors must land:
+    - `resolveWorkspace(input, grant)` and `planLaunch(spec)` may throw
+      before any session exists (bad cwd, no sandbox). The controller's
+      actionable-error path depends on these being thrown.
+    - `launch(plan, { cwd, env })` returns a process handle; a throw here
+      becomes a `failed` session, as before.
+  - The process handle contract: `onStdout`, `onStderr`, `onStdoutError`,
+    `onStderrError`, `onStdinError`, `onError`, `onClose`, `stdinWritable`,
+    `writeStdin`, `endStdin`, `kill(signal)` (whole tree). UTF-8 decoding,
+    budgets, timers, and settlement stay in the router.
+  - `DirectStatefulExecSessionManager` keeps its public API and constructor
+    options (`spawnImpl`, `sandbox`, `workspaceRootResolver`,
+    `workspaceLocalityResolver` now configure the local backend) and gains
+    `backendResolver(input, grant)`. Turn 3 plugs the WSL executor backend in
+    through it. Records gain `backendId` and `process` (the handle);
+    `record.child` remains the raw ChildProcess for local sessions and is
+    `null` otherwise.
+  - New `direct-exec-backend-router-regression`: a scripted child-less backend
+    (UTF-8 split chunks, stdin and EOF, cancel and failure kill paths,
+    plan-time refusals versus launch failures, missing backend) and a relay
+    backend that hides a real process behind a forwarding handle, whose public
+    result matches the local backend's exactly.
+  - Checks: the 10 exec-related regressions pass unchanged; the router
+    regression and `direct-stateful-exec-session` pass on both hosts;
+    `check:syntax` and `validate` pass; full sweep 259 of 279 passing,
+    failures identical to **Known failing checks**.
 
 ### Turn 3: WSL executor process sessions
 
@@ -220,7 +249,11 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   - `process/*` in the agent: bash, PID-namespace containment, and bubblewrap
     (sandbox wrapping moves into the executor).
   - Output streamed over NDJSON with bounded buffers.
-  - Router backend #2 forwards to the thread environment's executor.
+  - Router backend #2 forwards to the thread environment's executor. It
+    implements the turn 2 backend contract: `resolveWorkspace` and
+    `planLaunch` become executor requests (or host-side checks), and `launch`
+    returns a handle fed by executor output and exit events. Wire it in
+    through `backendResolver`, keyed on the grant's environment kind and host.
   - Executor death marks its sessions interrupted, never silently re-run.
 - Done when: the regression passes on a Linux host, and a cross-host smoke
   run under Windows Node drives the WSL executor over `wsl.exe`.
