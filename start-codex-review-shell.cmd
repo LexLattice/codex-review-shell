@@ -4,6 +4,23 @@ setlocal EnableExtensions EnableDelayedExpansion
 set "ROOT_DIR=%~dp0"
 if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
 
+rem Started from the WSL checkout (\\wsl.localhost\...): cmd.exe can't use a
+rem UNC working directory, and syncing or installing there would write Windows
+rem packages into the WSL node_modules. Hand over to the Windows mirror.
+if "%ROOT_DIR:~0,2%"=="\\" (
+  set "MIRROR_ROOT=%CODEX_REVIEW_SHELL_WINDOWS_MIRROR%"
+  if not defined MIRROR_ROOT set "MIRROR_ROOT=C:\LexLattice\codex-review-shell-direct"
+  if exist "!MIRROR_ROOT!\start-codex-review-shell.cmd" (
+    echo [Direct Shell] Started from a WSL path; launching the Windows mirror at !MIRROR_ROOT!
+    call "!MIRROR_ROOT!\start-codex-review-shell.cmd"
+    exit /b !ERRORLEVEL!
+  )
+  echo [Direct Shell] This launcher runs from a Windows folder, not from %ROOT_DIR%.
+  echo [Direct Shell] Run it from the Windows mirror, or set CODEX_REVIEW_SHELL_WINDOWS_MIRROR.
+  "%SystemRoot%\System32\timeout.exe" /t 30 >nul
+  exit /b 1
+)
+
 set "PATH=C:\Program Files\nodejs;C:\Program Files\Git\cmd;C:\Users\%USERNAME%\AppData\Roaming\npm;%PATH%"
 if not defined CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO set "CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO=Ubuntu"
 if not defined CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH set "CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH=/home/rose/work/LexLattice/codex-review-shell-direct"

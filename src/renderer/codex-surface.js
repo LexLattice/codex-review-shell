@@ -6315,6 +6315,13 @@ function currentDirectAccessProfile() {
   return directAccessProfileOption(binding.accessProfile) ? binding.accessProfile : "";
 }
 
+// Main declares this only while Direct is ready (signed in, model and
+// runtime available). Calling it otherwise is refused, so callers check
+// first instead of failing the thread they are opening or creating.
+function canSelectDirectAccessProfile() {
+  return isDirectFullAccessSurface() && hasCapabilityForMutation("threads", "canSelectAccessProfile");
+}
+
 async function selectDirectAccessProfile(profile) {
   const option = directAccessProfileOption(profile);
   if (!option) return;
@@ -6324,7 +6331,9 @@ async function selectDirectAccessProfile(profile) {
     return;
   }
   localStorageSet(directAccessPreferenceKey(), profile);
-  if (state.threadId && isDirectFullAccessSurface()) {
+  if (state.threadId && isDirectFullAccessSurface() && !canSelectDirectAccessProfile()) {
+    addSystemMessage(`${option.label} will apply once Direct is ready; check the runtime status for what it is waiting on.`);
+  } else if (state.threadId && isDirectFullAccessSurface()) {
     try {
       await rpc("thread/selectAccessProfile", { sessionId: state.threadId, accessProfile: profile });
       addSystemMessage(`Access for this thread is now ${option.label}.`);
@@ -6828,7 +6837,7 @@ async function openDirectThread(threadId) {
   const openRequestId = state.directThreadOpenRequestId + 1;
   state.directThreadOpenRequestId = openRequestId;
   let result = await readThreadById(requestedThreadId);
-  if (isDirectFullAccessSurface() && result?.taskBinding?.current !== true) {
+  if (canSelectDirectAccessProfile() && result?.taskBinding?.current !== true) {
     await rpc("thread/selectAccessProfile", {
       sessionId: requestedThreadId,
       accessProfile: preferredDirectAccessProfile(),
@@ -9466,13 +9475,13 @@ async function startNewThread() {
       state.sourceHome = "";
       state.sessionFilePath = "";
       bindThread(result.thread, result.thread.model || activeModelId() || null);
-      if (isDirectFullAccessSurface()) {
+      if (canSelectDirectAccessProfile()) {
         await rpc("thread/selectAccessProfile", {
           sessionId: result.thread.id || result.thread.threadId,
           accessProfile: preferredDirectAccessProfile(),
         });
       }
-      addSystemMessage(isDirectFullAccessSurface()
+      addSystemMessage(canSelectDirectAccessProfile()
         ? `Started a new thread with ${directAccessProfileOption(preferredDirectAccessProfile())?.label || "default"} access.`
         : "Started a new thread.");
       await persistRuntimePreferences("thread-model");

@@ -72,7 +72,10 @@ async function main() {
     assert.match(rendererSource, /accessProfile:\s*preferredDirectAccessProfile\(\)/);
     assert.match(rendererSource, /DEFAULT_DIRECT_ACCESS_PROFILE\s*=\s*"full_access"/);
     assert.match(rendererSource, /isDirectFullAccessSurface\(\)\)\s*params\.accessProfile\s*=\s*preferredDirectAccessProfile\(\)/);
-    assert.match(rendererSource, /isDirectFullAccessSurface\(\)\s*&&\s*result\?\.taskBinding\?\.current\s*!==\s*true[\s\S]*thread\/selectAccessProfile/);
+    assert.match(rendererSource, /canSelectDirectAccessProfile\(\)\s*&&\s*result\?\.taskBinding\?\.current\s*!==\s*true[\s\S]*thread\/selectAccessProfile/);
+    // Opening or creating a thread only selects Access while main declares it
+    // (Direct ready); otherwise the call is refused and the thread would fail.
+    assert.match(rendererSource, /function canSelectDirectAccessProfile\(\)\s*\{\s*return isDirectFullAccessSurface\(\)\s*&&\s*hasCapabilityForMutation\("threads", "canSelectAccessProfile"\);/);
 
     const grant = DirectThreadHarnessGrant.issue({
       taskId: threadId,

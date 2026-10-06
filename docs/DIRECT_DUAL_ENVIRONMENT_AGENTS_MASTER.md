@@ -681,6 +681,31 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
     - All related Workbench regressions pass, and `check:syntax` and
       `validate` pass; full sweep 266 of 285 passing, failures identical to the updated **Known failing checks** (19).
   - **Deviation.** The owner's manual Electron smoke is still pending.
+  - **Follow-up after the owner's first launch attempt.** I had verified the
+    Workbench only in Linux Electron, headless, never through
+    `start-direct-workbench.cmd`. Three problems showed up there:
+    - **Launcher run from the WSL checkout.** Started over its UNC path,
+      `cmd.exe` fell back to `C:\Windows`, so Electron couldn't find
+      `scripts\run-electron.mjs`. Worse, the sync mirrored the repo onto
+      itself and ran Windows `npm install` in the WSL `node_modules`. That
+      replaced 6 packages with Windows shims and removed Linux Electron (npm
+      12 blocked Electron's postinstall). I restored it with `npm ci` in WSL.
+      `start-codex-review-shell.cmd` now hands over to the Windows mirror
+      (`C:\LexLattice\codex-review-shell-direct`, or
+      `CODEX_REVIEW_SHELL_WINDOWS_MIRROR`) when started from `\\...`, and
+      `sync-from-wsl.cmd` refuses to sync into a UNC folder.
+    - **npm 12 blocks Electron's install script.** Windows npm 12.2 refuses
+      unapproved install scripts, so a fresh mirror install would have no
+      `electron.exe`. `package.json` now approves `electron@41.2.1`
+      (`allowScripts`); re-approve when Electron is upgraded.
+    - **Access selection refused while Direct isn't ready.** Opening a
+      thread without a grant, or creating one, called
+      `thread/selectAccessProfile`, which main declares only while Direct is
+      ready. When it isn't, opening the thread failed. That was a regression
+      from `1c65a49`. The renderer now checks the declared capability first
+      (`canSelectDirectAccessProfile`). A manual Access change while Direct
+      isn't ready says it will apply once Direct is ready. Why Direct wasn't
+      ready on the owner's machine is still open.
 
 ### Turn 10: cross-environment delegation
 
@@ -784,6 +809,14 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 - On a WSL host the environment picker offers the current distro as "this
   machine", so projects created there are `wsl` projects (run locally, same
   distro) rather than `local` ones.
+- The Windows launcher syncs the mirror from WSL, launchers included, while
+  `cmd.exe` is executing them. `cmd` reads batch files from disk as it goes,
+  so the first launch after a launcher change runs garbled lines (`'an' is
+  not recognized…`, `robocopy failed … 9009`) before it recovers. A fix would
+  copy the launcher to a temp file and run that copy.
+- UI turns must be checked through `start-direct-workbench.cmd` on Windows
+  too, not only in WSL's Electron: the Windows launch path (mirror sync,
+  Windows npm, Windows Electron) differs.
 - The Windows credential discovery labels whatever stores exist under
   `%USERPROFILE%\.codex`, `%CODEX_HOME%`, `%USERPROFILE%\.codex-review-shell`,
   and `%APPDATA%\<app>[\<profile>]\direct-auth`. To undo a label:
