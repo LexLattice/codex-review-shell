@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-06, after the plan was agreed (no turn started yet).
+Last updated: 2026-10-06, after turn 0.
 
 ## How to use this document
 
@@ -100,13 +100,24 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 0: green baseline and spec.**
+**Turn 1: executor protocol, `environment/describe`, environment registry.**
+
+## Gates for every turn
+
+Run through a login shell (`wsl.exe -d Ubuntu -e bash -lc ...`): a non-login
+shell picks up a Node without `node:sqlite`, and most regressions then fail.
+
+- `npm run validate` must pass.
+- `bash -l scripts/direct-regression-sweep.sh` (about 5 minutes; start it in
+  the background). Its `FAILED` lines must match **Known failing checks**
+  exactly. Any new failure is a regression introduced by the turn.
+- The turn's own regressions.
 
 ## Turns
 
 ### Turn 0: green baseline and spec
 
-- Status: planned
+- Status: done with deviations
 - Scope:
   - Fix the `normalizeConfiguredMcpServer is not defined` ReferenceError in the
     config-migration smoke so `npm run validate` runs end to end.
@@ -115,7 +126,36 @@ executor could later be swapped for it.
   - This document already serves as the spec; extend it only if triage
     changes the plan.
 - Done when: `npm run validate` passes.
-- Outcome: _(fill in)_
+- Outcome:
+  - `npm run validate` passes end to end. The migration smoke's VM sandbox was
+    missing `normalizeConfiguredMcpServer`, which `main.js` now imports.
+  - Fixed 10 regressions that failed before this track:
+    - Stale provider fixtures returning objects with only `text()`. The
+      transport deliberately requires a streaming body (PR #312 bounding) and
+      rejects others as `max_output`. Switched to real `Response` objects:
+      `direct-self-constitution`, `direct-fresh-fork-start`,
+      `direct-import-checkpoint-continuation`, `direct-world-manager-k4`,
+      `direct-world-manager-semantic-split`, `direct-world-manager-project-genesis`.
+    - Fixtures missing the admitted provider context that utility continuations
+      have required since the September 7 repair: `direct-native-agent-tool-routing`,
+      `direct-sub-agent-status-tool-routing`, `direct-external-promoted-tool-routing`.
+      They now record it with the controller's own `captureAdmittedProviderContext`.
+    - `direct-self-constitution` also read only `input[0]`; continuations now
+      replay the original input first.
+  - One product fix: `src/main/direct/worldmanager/role-runtime.js` now passes
+    `ownerControlled: true` when it starts manager turns. Without it, its
+    per-turn effort choice was rejected as a stale runtime binding
+    (`direct_turn_runtime_binding_stale`), failing every WorldManager role turn.
+  - Added `scripts/direct-regression-sweep.sh` and the **Gates for every turn**
+    section.
+  - Deviation: the first full sweep found 20 more failures beyond the four
+    originally listed (all also failing on `8ecf16e`). None are in this track's
+    code; they are recorded under **Known failing checks** instead of fixed.
+    Covering `direct.inspect_self_constitution` in the tool-class example pack
+    was tried and reverted, because five downstream regressions pin example
+    counts; fixing that cluster needs a classification decision.
+  - Checks: `npm run validate` passes; full sweep 257 of 277 passing, with
+    every failure listed below; `direct-access-profiles` passes.
 
 ### Turn 1: executor protocol, `environment/describe`, environment registry
 
@@ -216,7 +256,8 @@ executor could later be swapped for it.
 - Scope: environment picker at project creation; native folder browsing
   through the executor; environment and Access badges on projects, threads,
   and the composer; both environments side by side; remove Direct · text as a
-  top-level choice.
+  top-level choice; fix `direct-t3-alternate-gui-regression` (missing
+  `morphicObservationsButton` id in the Workbench HTML).
 - Done when: a renderer regression passes and a manual Electron smoke by the
   owner succeeds.
 - Outcome: _(fill in)_
@@ -247,14 +288,39 @@ executor could later be swapped for it.
 
 ## Known failing checks
 
-These failed on the unmodified commit before this track started (`8ecf16e`).
+Expected `FAILED` lines from `scripts/direct-regression-sweep.sh` as of turn 0.
+All of these also fail on `8ecf16e`, before this track started. Remove a row
+when a turn fixes it; never add a row for a failure a turn introduced.
 
-| Check | Failure |
+**Need something this machine doesn't provide (7):**
+
+| Regression | Needs |
 |---|---|
-| `npm run validate` | Stops at `migration:smoke`: `ReferenceError: normalizeConfiguredMcpServer is not defined` (`main-config-slice.js:2251`). |
-| `scripts/direct-self-constitution-regression.mjs` | Line 344 expects `completed`, gets `max_output_terminal`. |
-| `scripts/direct-fresh-fork-start-regression.mjs` | 8 of 10 cases pass. |
-| `scripts/direct-native-agent-tool-routing-regression.mjs` | `direct_utility_continuation_context_missing`. |
+| `direct-arcagi3-workspace-workers-regression` | ArcAGI3 repo at `/home/rose/work/arcagi3-odeu-local` |
+| `direct-container-ui-test-stack-regression` | Docker image build |
+| `direct-electron-read-approval-regression` | Live provider opt-in (`--allow-live-provider-call`) |
+| `direct-governance-live-non-authority-regression` | Live provider opt-in |
+| `direct-semantic-service-commissioning-regression` | `DIRECT_SEMANTIC_COMPILER_ROOT` |
+| `direct-semantic-service-commissioning-recovery-regression` | `DIRECT_SEMANTIC_COMPILER_ROOT` |
+| `direct-semantic-service-dss04-regression` | `DSS04_COMPILER_ROOT` at the pinned commit |
+
+**Stale expectations outside this track (13):**
+
+| Regression | Failure |
+|---|---|
+| `direct-headless-tool-class-examples-regression` | Example pack doesn't cover `direct.inspect_self_constitution`. |
+| `direct-headless-tool-live-candidate-gate-regression` | Same example-pack validation failure. |
+| `direct-headless-tool-live-smoke-report-regression` | Same. |
+| `direct-headless-tool-realism-report-regression` | Same. |
+| `direct-tool-activation-registry-regression` | Same. |
+| `direct-tool-promotion-decision-report-regression` | Same. |
+| `direct-manual-smoke-gate-regression` | Pins 38 registry rows; there are 111. |
+| `direct-module-context-intake-regression` | Pins 37 registry rows; there are 111. |
+| `direct-manual-smoke-gate-surface-regression` | Gate state `blocked`, expected `passed`. |
+| `direct-external-wave18-usability-gate-regression` | `mcp_resource_read_binary_not_ref_only`. |
+| `direct-t3-alternate-gui-regression` | Workbench HTML lacks the `morphicObservationsButton` id (see turn 9). |
+| `direct-world-manager-semantic-ingress-regression` | Tool-output count mismatch. |
+| `direct-world-manager-semantic-ui-regression` | Contract text no longer says "completion has not been claimed". |
 
 ## Findings to carry forward
 
@@ -274,6 +340,12 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 - The Windows workspace backend refuses commands
   (`workspace_windows_job_object_containment_unavailable`) until Job Object
   containment exists (turn 7).
+- The transport reports a provider body it can't read incrementally as
+  `max_output`, which surfaces to users as `max_output_terminal`. A distinct
+  code (for example `provider_body_not_streamable`) would be clearer.
+- In WSL, a non-login shell resolves a Node without `node:sqlite`. Executor
+  launch (turn 1 onward) must use a login shell, as `launchDescriptor` already
+  does with `bash -lc`.
 
 ## Decisions
 
@@ -287,4 +359,5 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 
 | Date | After turn | Change | Reason |
 |---|---|---|---|
-| | | _(none yet)_ | |
+| 2026-10-06 | 0 | Added a full regression sweep to every turn's gates, with an expected-failures list. | The four originally known failures were a sample; the sweep found 20 more, so "validate passes" alone can't detect regressions. |
+| 2026-10-06 | 0 | Turn 9 also fixes `direct-t3-alternate-gui-regression`. | It pins Workbench DOM ids, which turn 9 changes anyway. |

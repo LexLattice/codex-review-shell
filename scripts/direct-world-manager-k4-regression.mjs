@@ -40,16 +40,14 @@ const {
   DirectWorldManagerEpistemicFabricRuntime,
 } = require("../src/main/direct/worldmanager/epistemic-fabric-runtime");
 
+// The transport reads provider bodies incrementally to enforce its output
+// budget, so fixtures must return a real streaming Response.
 function textResponse(text, status = 200, headers = {}) {
-  return {
-    ok: status >= 200 && status < 300,
+  return new Response(text, {
     status,
     statusText: status >= 200 && status < 300 ? "OK" : "Error",
-    headers: {
-      get: (name) => headers[String(name || "").toLowerCase()] || "",
-    },
-    text: async () => text,
-  };
+    headers,
+  });
 }
 
 function sseFor(id, payload) {

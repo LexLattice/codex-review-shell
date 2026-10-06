@@ -248,11 +248,7 @@ try {
     fetchImpl: async (_url, init) => {
       providerRequests.push(JSON.parse(init.body));
       if (providerRequests.length === 2) {
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: () => "text/event-stream" },
-          text: async () => [
+        return new Response([
             "event: response.created",
             'data: {"response":{"id":"resp_self_inspect_call","model":"gpt-5.6-sol"}}',
             "",
@@ -268,14 +264,9 @@ try {
             "event: response.completed",
             'data: {"response":{"id":"resp_self_inspect_call","status":"completed"}}',
             "",
-          ].join("\n"),
-        };
+        ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
       }
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => "text/event-stream" },
-        text: async () => [
+      return new Response([
           "event: response.created",
           `data: {"response":{"id":"resp_self_constitution_${providerRequests.length}","model":"gpt-5.6-sol"}}`,
           "",
@@ -285,8 +276,7 @@ try {
           "event: response.completed",
           'data: {"response":{"id":"resp_self_constitution","status":"completed"}}',
           "",
-        ].join("\n"),
-      };
+      ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
     },
     activationStatusResolver: () => ({ state: "enabled" }),
     subAgentPool: {
@@ -373,7 +363,12 @@ try {
   await controller.activeRuns.get(inspectStart.turn.id).promise;
   assert.equal(providerRequests.length, 3);
   assert(providerRequests[2].instructions.includes("owner-issued inspect_self_constitution result"));
-  const continuationOutput = providerRequests[2].input?.[0]?.content?.[0]?.text || "";
+  // Continuations replay the admitted original input first and append the
+  // quoted tool result after it, so search the whole input.
+  const continuationOutput = (providerRequests[2].input || [])
+    .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
+    .map((part) => part?.text || "")
+    .join("\n");
   assert(continuationOutput, "self-inspection should continue with typed quoted evidence");
   assert(continuationOutput.includes("direct_self_constitution_snapshot@1"));
   assert(continuationOutput.includes("persistent_project_checkout"));
