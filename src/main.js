@@ -2985,7 +2985,7 @@ async function updateCodexRuntimePreferences(payload = {}, options = {}) {
         error.code = "codex_runtime_preference_project_unknown";
         throw error;
       }
-      const effectiveModel = model || normalizeString(project.surfaceBinding?.codex?.model, directSession.model);
+      const effectiveModel = model || ensureDirectLiveTextController().defaultModelForProject(project) || directSession.model;
       const effectiveReasoningEffort = reasoningEffort ||
         normalizeReasoningEffort(project.surfaceBinding?.codex?.reasoningEffort) ||
         normalizeReasoningEffort(directSession.reasoningEffort);
@@ -6093,9 +6093,16 @@ function directMetadataSelectedModel(profile = {}, project = {}, runtimeStatus =
   const codexBinding = project.surfaceBinding?.codex || {};
   const liveText = runtimeStatus.liveTextRuntime || {};
   const modelIds = Array.isArray(runtimeStatus.models?.ids) ? runtimeStatus.models.ids.filter(Boolean) : [];
+  // The project's model is only a default; one the account's list no longer
+  // offers gives way to the list's default (as defaultModelForProject does).
+  const listed = profile?.modelCatalog?.source === "server_model_list" && Array.isArray(profile.modelCatalog.items)
+    ? profile.modelCatalog.items.filter((item) => item && item.hidden !== true)
+    : [];
+  const configuredListed = !listed.length ||
+    listed.some((item) => item.model === codexBinding.model || item.id === codexBinding.model);
   const candidate = normalizeString(
-    codexBinding.model ||
-      profile?.runtimeSettings?.active?.model ||
+    (configuredListed ? codexBinding.model : "") ||
+      (configuredListed ? profile?.runtimeSettings?.active?.model : "") ||
       profile?.modelCatalog?.defaultModel ||
       liveText.liveProbeEvidence?.model ||
       modelIds[0],

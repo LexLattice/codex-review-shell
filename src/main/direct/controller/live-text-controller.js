@@ -2630,11 +2630,25 @@ class DirectLiveTextController {
   }
 
   requestedModelForProject(project = {}, options = {}) {
-    return normalizeString(
-      options.model || options.requestedModel ||
-        project.surfaceBinding?.codex?.model || project.codex?.model || "",
-      "",
-    );
+    return normalizeString(options.model || options.requestedModel, "") ||
+      this.defaultModelForProject(project);
+  }
+
+  configuredModelForProject(project = {}) {
+    return normalizeString(project.surfaceBinding?.codex?.model || project.codex?.model, "");
+  }
+
+  // A project's model is only a default. Once the account's list stops
+  // offering it, the list's default takes over; an explicit thread or turn
+  // model is never replaced.
+  defaultModelForProject(project = {}, providerMetadataStatus = null) {
+    const configured = this.configuredModelForProject(project);
+    const metadata = isPlainObject(providerMetadataStatus) ? providerMetadataStatus : this.resolveProviderMetadataStatus(project);
+    const catalog = providerModelCatalogView(metadata);
+    if (configured && (!catalog.available || catalog.listed.some((item) => item.model === configured || item.id === configured))) {
+      return configured;
+    }
+    return catalog.defaultModel || configured;
   }
 
   // Like Codex: a response whose X-Models-Etag differs from the catalog's
@@ -2824,18 +2838,26 @@ class DirectLiveTextController {
    * answer is authoritative (see modelRejectionMessage).
    */
   modelEvidenceForProject(project = {}, options = {}, providerMetadataStatus = null) {
-    const requestedModel = this.requestedModelForProject(project, options);
     const metadata = isPlainObject(providerMetadataStatus) ? providerMetadataStatus : this.resolveProviderMetadataStatus(project);
     const catalog = providerModelCatalogView(metadata);
+    const explicitModel = normalizeString(options.model || options.requestedModel, "");
+    const configuredModel = this.configuredModelForProject(project);
+    const requestedModel = explicitModel || this.defaultModelForProject(project, metadata);
     const staticEvidence = modelEvidenceFor(this.profileDoc, requestedModel);
     const model = requestedModel || catalog.defaultModel || staticEvidence.model;
     const listed = catalog.listed.find((item) => item.model === model || item.id === model) || null;
     const liveEvidence = this.resolveLiveModelEvidence(project, model);
+    const fromCatalogDefault = !explicitModel && Boolean(catalog.defaultModel) && model === catalog.defaultModel && model !== configuredModel;
     return {
       model,
-      modelSource: requestedModel
-        ? (listed ? "provider_model_catalog" : "configured")
-        : catalog.defaultModel ? "provider_model_catalog_default" : staticEvidence.modelSource,
+      modelSource: fromCatalogDefault
+        ? "provider_model_catalog_default"
+        : requestedModel
+          ? (listed ? "provider_model_catalog" : "configured")
+          : staticEvidence.modelSource,
+      // The project's configured model when the account's list no longer
+      // offers it (it has been replaced by the list's default).
+      configuredModelUnavailable: !explicitModel && configuredModel && model !== configuredModel ? configuredModel : "",
       modelEvidenceState: listed
         ? "provider_listed"
         : catalog.available ? "provider_unlisted" : "provider_catalog_unavailable",

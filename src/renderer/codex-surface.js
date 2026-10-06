@@ -1245,7 +1245,17 @@ function runtimeStateStatusFromConnection(value) {
 }
 
 function activeModelId() {
+  if (isDirectLiveTextSurface()) return state.runtimeOverrides.model || state.activeModel || directDefaultModelId();
   return state.runtimeOverrides.model || state.activeModel || project?.codex?.model || defaultModelId();
+}
+
+// Same rule as main's defaultModelForProject: the project's model is only a
+// default, and once the account's list stops offering it the list's default
+// takes over.
+function directDefaultModelId() {
+  const configured = String(project?.codex?.model || "").trim();
+  if (configured && (!directListedModels().length || directModelListed(configured))) return configured;
+  return defaultModelId() || configured;
 }
 
 function modelLabel() {
@@ -1322,6 +1332,9 @@ function defaultReasoningEffort() {
 }
 
 function clearedModelId() {
+  // Clearing a Direct thread's model rebinds it to the project default
+  // (main's defaultModelForProject), not to the model it had.
+  if (isDirectLiveTextSurface()) return directDefaultModelId();
   return state.activeModel || project?.codex?.model || defaultModelId();
 }
 
@@ -3811,8 +3824,12 @@ function serviceTierOptions() {
 
 function compactModelLabel() {
   if (isDirectLiveTextSurface()) {
-    const directLabel = directModelLabel();
-    if (directLabel) return directLabel.replace(/^GPT-/i, "GPT-");
+    // The picked model shows at once; main's saved binding (the witness)
+    // only fills in when the renderer has no model of its own.
+    const id = activeModelId();
+    const model = selectedModel();
+    const label = model?.displayName || model?.model || id || directModelLabel() || "default";
+    return `${label}${directModelUnavailable(id) ? " · unavailable" : ""}`;
   }
   const model = selectedModel();
   const label = model?.displayName || model?.model || activeModelId() || "default";

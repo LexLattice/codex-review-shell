@@ -769,6 +769,22 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
       Windows Node. `check:syntax` and `validate` pass, the headless
       Workbench Electron smoke passes, and the full sweep is 267 of 286
       passing, failures identical to **Known failing checks**.
+    - **Owner check of the picker found two more bugs.**
+      - Picking a model didn't change the button. On Direct, the button
+        showed main's saved thread binding, which a new-thread composer
+        never writes. It now shows the picked model at once and falls back
+        to the saved binding only when there is no pick.
+      - `gpt-5.5` was still offered as "· default" although the account's
+        list hides it. The project's configured model was used as the
+        default without checking the list. A project model is now only a
+        default: when a fetched list doesn't offer it, the list's default
+        replaces it (`defaultModelForProject` in the controller, the
+        runtime witness, clearing a thread's model in main, and
+        `directDefaultModelId` in the renderer). A thread's own explicit
+        model is never replaced; it shows as unavailable instead. Without a
+        list, the configured model is kept. On the owner's account this
+        makes `gpt-6.1-sol` the default.
+      - `direct-model-catalog-regression` grew to 11 checks.
 
 ### Turn 10: cross-environment delegation
 

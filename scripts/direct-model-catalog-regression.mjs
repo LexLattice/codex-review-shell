@@ -213,6 +213,44 @@ try {
     assert.throws(() => signedOut.assertReady(project), (error) => error.code === "auth_required" && /isn't signed in/.test(error.message));
   });
 
+  await check("a project model the list no longer offers gives way to the list's default; explicit models stay", () => {
+    const controller = new DirectLiveTextController({
+      sessionStore: new DirectSessionStore({ rootDir: path.join(tempRoot, "sessions-stale-default") }),
+      profileDoc,
+      authStore: signedInStore(),
+      providerMetadataResolver: () => metadataStatus(),
+    });
+    const staleProject = { ...project, surfaceBinding: { codex: { ...project.surfaceBinding.codex, model: "gpt-5.5" } } };
+    assert.equal(controller.defaultModelForProject(staleProject), "gpt-sol");
+    const status = controller.statusForProject(staleProject);
+    assert.equal(status.model, "gpt-sol");
+    assert.equal(status.modelSource, "provider_model_catalog_default");
+    assert.equal(controller.modelEvidenceForProject(staleProject).configuredModelUnavailable, "gpt-5.5");
+    const explicit = controller.statusForProject(staleProject, { model: "gpt-5.5" });
+    assert.equal(explicit.model, "gpt-5.5", "an explicit thread model is never replaced");
+    assert.equal(explicit.providerListed, false);
+    assert.equal(controller.defaultModelForProject(project), "gpt-luna", "a listed project model stays the default");
+    const noList = new DirectLiveTextController({
+      sessionStore: new DirectSessionStore({ rootDir: path.join(tempRoot, "sessions-no-list") }),
+      profileDoc,
+      authStore: signedInStore(),
+    });
+    assert.equal(noList.defaultModelForProject(staleProject), "gpt-5.5", "without a list the configured model is kept");
+
+    const main = fs.readFileSync(path.join(repoRoot, "src/main.js"), "utf8");
+    assert.match(main, /const effectiveModel = model \|\| ensureDirectLiveTextController\(\)\.defaultModelForProject\(project\) \|\| directSession\.model;/);
+    assert.match(main, /\(configuredListed \? codexBinding\.model : ""\) \|\|/);
+  });
+
+  await check("the picker button shows the picked model at once, and the default follows the list", () => {
+    const renderer = fs.readFileSync(path.join(repoRoot, "src/renderer/codex-surface.js"), "utf8");
+    assert.match(renderer, /if \(isDirectLiveTextSurface\(\)\) return state\.runtimeOverrides\.model \|\| state\.activeModel \|\| directDefaultModelId\(\);/);
+    assert.match(renderer, /function directDefaultModelId\(\) \{[\s\S]*?directModelListed\(configured\)[\s\S]*?return defaultModelId\(\) \|\| configured;/);
+    assert.match(renderer, /function clearedModelId\(\) \{[\s\S]*?if \(isDirectLiveTextSurface\(\)\) return directDefaultModelId\(\);/);
+    const label = renderer.slice(renderer.indexOf("function compactModelLabel()"), renderer.indexOf("function setRuntimeOverride("));
+    assert.ok(label.indexOf("activeModelId()") < label.indexOf("directModelLabel()"), "the picked model wins over the saved-binding witness");
+  });
+
   async function runOneTurn({ fetchImpl, refresher, model = "gpt-luna" }) {
     const sessionStore = new DirectSessionStore({ rootDir: fs.mkdtempSync(path.join(tempRoot, "sessions-")) });
     const controller = new DirectLiveTextController({
