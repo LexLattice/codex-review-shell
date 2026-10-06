@@ -564,6 +564,7 @@ const els = {
   morphicNewThreadButton: document.getElementById("morphicNewThreadButton"),
   morphicAnalyticsButton: document.getElementById("morphicAnalyticsButton"),
   morphicObservationsButton: document.getElementById("morphicObservationsButton"),
+  composerEnvironmentChip: document.getElementById("composerEnvironmentChip"),
   morphicSettingsButton: document.getElementById("morphicSettingsButton"),
   morphicThreadRail: document.getElementById("morphicThreadRail"),
   morphicThreadRailList: document.getElementById("morphicThreadRailList"),
@@ -3324,6 +3325,26 @@ function updateComposerStatusTicker(active) {
   }
 }
 
+function directEnvironmentModel() {
+  return globalThis.DirectEnvironmentUxModel || null;
+}
+
+// Every thread in a Workbench project runs in the project's environment, so
+// the chip names it (and its shell) next to the composer.
+function renderComposerEnvironmentChip() {
+  const chip = els.composerEnvironmentChip;
+  if (!chip) return;
+  const model = directEnvironmentModel();
+  const workspace = project?.workspace;
+  const show = Boolean(model) && isDirectWorkbenchExperience() && Boolean(workspace?.kind);
+  chip.hidden = !show;
+  if (!show) return;
+  const badge = model.environmentBadge(workspace);
+  chip.textContent = model.composerEnvironmentLabel(workspace);
+  chip.dataset.environmentKind = badge.kind;
+  chip.title = `${badge.title} Every thread in this project runs here.`;
+}
+
 function renderComposerRuntimeBand() {
   if (!els.composerAccessButton || !els.composerModelButton || !els.sendButton) return;
   if (els.composerForm) els.composerForm.dataset.composerMenu = state.composerMenu || "";
@@ -3361,6 +3382,7 @@ function renderComposerRuntimeBand() {
   els.composerModelButton.title = `Next-turn model settings. Model: ${compactModelLabel()}. Reasoning: ${reasoningLabel()}. Speed: ${serviceTierLabel()}.`;
   els.composerModelButton.setAttribute("aria-label", `Model override: ${modelText}`);
 
+  renderComposerEnvironmentChip();
   els.composerQuotaChip.textContent = quotaText;
   els.composerQuotaChip.title = `Provider quota: ${quotaText}. Shown only when exposed by runtime/account evidence.`;
   els.composerContextChip.textContent = contextText;
@@ -6594,6 +6616,29 @@ function renderMorphicThreadRail() {
         ? threadDirectoryBlockerLabel(posture.blockerCodes[0])
         : [row.sourceLabel, row.runtimeLabel, directThreadTimeLabel(row.updatedAt || row.createdAt)].filter(Boolean).join(" · ");
       copy.append(title, evidence);
+      const environmentModel = directEnvironmentModel();
+      if (environmentModel && project?.workspace?.kind) {
+        const badges = document.createElement("span");
+        badges.className = "morphic-thread-tab-badges";
+        const environmentBadge = environmentModel.environmentBadge(project.workspace);
+        const environmentChip = document.createElement("span");
+        environmentChip.className = "direct-environment-badge";
+        environmentChip.dataset.environmentKind = environmentBadge.kind;
+        environmentChip.textContent = environmentBadge.text;
+        environmentChip.title = environmentBadge.title;
+        badges.append(environmentChip);
+        // Access is known for the focused thread only.
+        const accessOption = posture.selected ? directAccessProfileOption(currentDirectAccessProfile()) : null;
+        if (accessOption) {
+          const accessChip = document.createElement("span");
+          accessChip.className = "direct-access-badge";
+          accessChip.dataset.accessProfile = accessOption.value;
+          accessChip.textContent = accessOption.label;
+          accessChip.title = directAccessProfileDescription(accessOption.value);
+          badges.append(accessChip);
+        }
+        copy.append(badges);
+      }
       const stateLabel = document.createElement("span");
       stateLabel.className = "morphic-thread-tab-state";
       stateLabel.textContent = posture.state === "opening"

@@ -6275,6 +6275,71 @@ function abortAllExecutorMcpRequests() {
   for (const controller of executorMcpRequests.values()) controller.abort();
 }
 
+// Folder browsing (`fs/list`) for picking a project folder in this
+// environment. Lists one directory natively, directories first; with no
+// path it starts at the user's home (and on Windows, also offers drives).
+const FS_LIST_DEFAULT_LIMIT = 500;
+const FS_LIST_MAX_LIMIT = 2000;
+
+async function windowsDriveRoots() {
+  const drives = [];
+  for (const letter of "CDEFGHIJKLMNOPQRSTUVWXYZ") {
+    const drive = `${letter}:\\`;
+    try {
+      await fs.access(drive);
+      drives.push({ name: drive, path: drive, kind: "directory", hidden: false });
+    } catch {}
+  }
+  return drives;
+}
+
+async function executorFsList(params = {}) {
+  const windows = process.platform === "win32";
+  const requested = typeof params.path === "string" ? params.path.trim() : "";
+  const home = os.homedir();
+  if (windows && requested === "drives") {
+    return { path: "", parent: "", home, pathStyle: "windows", entries: await windowsDriveRoots(), truncated: false };
+  }
+  const target = requested || home;
+  if (!path.isAbsolute(target) || /[\0]/.test(target)) {
+    throw executorProcessError("direct_fs_list_path_invalid", "fs/list requires an absolute path in this environment.");
+  }
+  const resolved = path.resolve(target);
+  let dirents;
+  try {
+    dirents = await fs.readdir(resolved, { withFileTypes: true });
+  } catch (error) {
+    throw executorProcessError(
+      error?.code === "ENOENT" || error?.code === "ENOTDIR" ? "direct_fs_list_not_found" : "direct_fs_list_unavailable",
+      `This folder can't be listed (${error?.code || "error"}).`,
+    );
+  }
+  const includeFiles = params.includeFiles === true;
+  const limit = Math.max(1, Math.min(FS_LIST_MAX_LIMIT, Number.parseInt(params.limit, 10) || FS_LIST_DEFAULT_LIMIT));
+  const entries = [];
+  for (const dirent of dirents) {
+    let kind = dirent.isDirectory() ? "directory" : dirent.isFile() ? "file" : dirent.isSymbolicLink() ? "symlink" : "other";
+    if (kind === "symlink") {
+      try {
+        if ((await fs.stat(path.join(resolved, dirent.name))).isDirectory()) kind = "directory";
+      } catch {}
+    }
+    if (kind !== "directory" && !includeFiles) continue;
+    entries.push({ name: dirent.name, path: path.join(resolved, dirent.name), kind, hidden: dirent.name.startsWith(".") });
+  }
+  entries.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) : a.kind === "directory" ? -1 : 1));
+  const parent = path.dirname(resolved);
+  return {
+    path: resolved,
+    // On Windows a drive root's parent is the drive list.
+    parent: parent !== resolved ? parent : windows ? "drives" : "",
+    home,
+    pathStyle: windows ? "windows" : "posix",
+    entries: entries.slice(0, limit),
+    truncated: entries.length > limit,
+  };
+}
+
 // Executor file operations (`fs/*`). The host plans patches and checks
 // grants; the executor resolves paths natively, applies the access profile's
 // read and write rules, and revalidates before-digests immediately before
@@ -6398,6 +6463,7 @@ async function handleRequest(method, params = {}) {
   if (method === EXECUTOR_METHODS.processStart) return startExecutorProcessSession(params);
   if (method === EXECUTOR_METHODS.processWrite) return writeExecutorProcessSession(params);
   if (method === EXECUTOR_METHODS.processSignal) return signalExecutorProcessSessionRequest(params);
+  if (method === EXECUTOR_METHODS.fsList) return executorFsList(params);
   if (method === EXECUTOR_METHODS.mcpRequest) return executorMcpRequest(params);
   if (method === EXECUTOR_METHODS.mcpCancel) return cancelExecutorMcpRequest(params);
   if (method === EXECUTOR_METHODS.environmentDescribe) {

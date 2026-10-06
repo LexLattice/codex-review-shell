@@ -41,6 +41,7 @@ const IMPLEMENTED_EXECUTOR_METHODS = Object.freeze([
   EXECUTOR_METHODS.fsRead,
   EXECUTOR_METHODS.fsStat,
   EXECUTOR_METHODS.fsApplyPlannedPatch,
+  EXECUTOR_METHODS.fsList,
   EXECUTOR_METHODS.mcpRequest,
   EXECUTOR_METHODS.mcpCancel,
 ]);

@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-06, after turn 8.
+Last updated: 2026-10-06, after turn 9.
 
 ## How to use this document
 
@@ -100,7 +100,8 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 9: Workbench UX.**
+**Turn 10: cross-environment delegation.** (Turn 9 still needs the owner's
+manual Electron smoke.)
 
 ## Gates for every turn
 
@@ -617,7 +618,7 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ### Turn 9: Workbench UX
 
-- Status: planned
+- Status: done with deviations (owner Electron smoke pending)
 - Scope: environment picker at project creation; native folder browsing
   through the executor; environment and Access badges on projects, threads,
   and the composer; both environments side by side; remove Direct · text as a
@@ -625,7 +626,61 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   `morphicObservationsButton` id in the Workbench HTML).
 - Done when: a renderer regression passes and a manual Electron smoke by the
   owner succeeds.
-- Outcome: _(fill in)_
+- Outcome:
+  - **Environment picker.** The project editor lists this machine's
+    environments from the registry: Windows, each WSL distro, with this
+    machine first. System distros like `docker-desktop` are left out, and
+    distros this host can't launch are shown disabled. The picker replaces
+    the raw kind select and the free-text distro field. If listing fails,
+    the typed fields come back with a note. An existing project's
+    environment is always offered, even if it isn't found.
+  - **Folder browsing.** Each path field has Browse, which opens an in-editor
+    folder browser:
+    - It lists folders through that environment's own executor (new
+      `fs/list` in the agent, `DirectEnvironmentRegistry.listDirectory`,
+      reusing the probe executor). A WSL folder is picked as a Linux path and
+      a Windows folder as a Windows path, from either host.
+    - It has Up, Home, and a Windows drive list.
+    - A typed folder that's missing falls back to home.
+    - "Use this folder" fills the path and names an unnamed project after it.
+  - **IPC.** `direct-workbench:environments` and
+    `direct-workbench:browse-environment-folder` use the same authority
+    checks as the other Workbench handlers. They are exposed only in the
+    Workbench preload.
+  - **Badges.**
+    - Project rows show an environment badge. The directory projection now
+      carries the WSL distro name, an identity rather than a path.
+    - Thread rail rows show the project's environment, and the focused
+      thread also shows its Access level.
+    - The composer has an environment chip with the shell, such as
+      "WSL · Ubuntu · bash" or "Windows · PowerShell".
+  - **Side by side.** WSL and Windows projects appear together in the one
+    project directory, each badged, and switching between them rebinds the
+    runtime as before.
+  - **Direct · text.** It is no longer offered in the editor; a hidden option
+    keeps the value for existing projects, as the legacy shell already did.
+  - **Regression fix.** The Observations button was added, which fixes
+    `direct-t3-alternate-gui-regression`.
+  - **Editor loading.** The editor shows its draft at once and fills the
+    picker in when the environment list arrives; the list asks WSL, which
+    can take a moment. The title reflects the requested mode while loading.
+  - **Checks.**
+    - New `direct-workbench-environment-ux-regression` passes on both hosts:
+      - the model;
+      - project rows without paths;
+      - markup, script-order, and IPC-authority contracts;
+      - the real `direct-project-directory-surface.js` driven in a fake DOM:
+        picker options, environment switch, browse with fallback, folder
+        choice, the submitted workspace, and the no-listing fallback;
+      - live folder listing in WSL and Windows, plus error codes.
+    - The Workbench Electron smoke (`direct-t3-alternate-gui-electron-smoke`,
+      headless under xvfb) passes after updating it to pick the environment
+      and browse to the fixture folder. Its screenshots were used to fix
+      three layout problems: a badge squeezing project names, the path row,
+      and the folder browser overflowing.
+    - All related Workbench regressions pass, and `check:syntax` and
+      `validate` pass; full sweep 266 of 285 passing, failures identical to the updated **Known failing checks** (19).
+  - **Deviation.** The owner's manual Electron smoke is still pending.
 
 ### Turn 10: cross-environment delegation
 
@@ -653,7 +708,7 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ## Known failing checks
 
-Expected `FAILED` lines from `scripts/direct-regression-sweep.sh` as of turn 0.
+Expected `FAILED` lines from `scripts/direct-regression-sweep.sh` (19 as of turn 9).
 All of these also fail on `8ecf16e`, before this track started. Remove a row
 when a turn fixes it; never add a row for a failure a turn introduced.
 
@@ -669,7 +724,8 @@ when a turn fixes it; never add a row for a failure a turn introduced.
 | `direct-semantic-service-commissioning-recovery-regression` | `DIRECT_SEMANTIC_COMPILER_ROOT` |
 | `direct-semantic-service-dss04-regression` | `DSS04_COMPILER_ROOT` at the pinned commit |
 
-**Stale expectations outside this track (13):**
+**Stale expectations outside this track (12; turn 9 fixed
+`direct-t3-alternate-gui-regression`):**
 
 | Regression | Failure |
 |---|---|
@@ -683,7 +739,6 @@ when a turn fixes it; never add a row for a failure a turn introduced.
 | `direct-module-context-intake-regression` | Pins 37 registry rows; there are 111. |
 | `direct-manual-smoke-gate-surface-regression` | Gate state `blocked`, expected `passed`. |
 | `direct-external-wave18-usability-gate-regression` | `mcp_resource_read_binary_not_ref_only`. |
-| `direct-t3-alternate-gui-regression` | Workbench HTML lacks the `morphicObservationsButton` id (see turn 9). |
 | `direct-world-manager-semantic-ingress-regression` | Tool-output count mismatch. |
 | `direct-world-manager-semantic-ui-regression` | Contract text no longer says "completion has not been claimed". |
 
@@ -721,6 +776,14 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   sweeps them yet.
 - The patch parser rejects a bare `@@` hunk header (vanilla Codex accepts
   it); hunks need `@@ -a,b +c,d @@`.
+- The Workbench Electron smoke is not part of the sweep. It runs headless in
+  WSL with
+  `env -u DISPLAY -u WAYLAND_DISPLAY node scripts/direct-t3-alternate-gui-electron-smoke.mjs`
+  (xvfb, throwaway profile) and writes screenshots under `/tmp`. UI turns
+  should run it.
+- On a WSL host the environment picker offers the current distro as "this
+  machine", so projects created there are `wsl` projects (run locally, same
+  distro) rather than `local` ones.
 - The Windows credential discovery labels whatever stores exist under
   `%USERPROFILE%\.codex`, `%CODEX_HOME%`, `%USERPROFILE%\.codex-review-shell`,
   and `%APPDATA%\<app>[\<profile>]\direct-auth`. To undo a label:

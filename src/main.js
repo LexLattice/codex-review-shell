@@ -24,6 +24,7 @@ const {
   workspaceRoot,
   workspaceRootIsAbsolute,
 } = require("./main/workspace-backend");
+const { DirectEnvironmentRegistry } = require("./main/environment-registry");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 const {
   createDirectAuthIpcController,
@@ -13659,6 +13660,63 @@ ipcMain.handle("direct-epistemic:admit-context-delivery", async (event, payload)
 
 ipcMain.handle("direct-workbench:project-directory", async (event) => {
   return directWorkbenchProjectDirectoryForSender(event.sender);
+});
+
+let directEnvironmentRegistry = null;
+
+function ensureDirectEnvironmentRegistry() {
+  if (!workspaceBackends) {
+    const error = new Error("Workspace backends are not initialized.");
+    error.code = "direct_environment_registry_backends_unavailable";
+    throw error;
+  }
+  directEnvironmentRegistry ||= new DirectEnvironmentRegistry({ workspaceBackends });
+  return directEnvironmentRegistry;
+}
+
+// The environments this host can create projects in (Windows, each WSL
+// distro), for the project editor's environment picker.
+ipcMain.handle("direct-workbench:environments", async (event) => {
+  requireFullCodexSurfaceBridge(event.sender, "direct-workbench:environments");
+  requireDirectWorkbenchExperience("direct-workbench:environments");
+  const discovered = await ensureDirectEnvironmentRegistry().discover();
+  return {
+    schema: "direct_workbench_environments@1",
+    hostPlatform: discovered.hostPlatform,
+    environments: discovered.environments.map((environment) => ({
+      environmentId: environment.environmentId,
+      kind: environment.kind,
+      distro: environment.distro,
+      label: environment.label,
+      system: environment.system === true,
+      host: environment.host === true,
+      available: environment.launch?.available === true,
+      reason: normalizeString(environment.launch?.reason, ""),
+    })),
+  };
+});
+
+// Lists one folder in an environment through its own executor, so a WSL
+// project's folder is picked as a Linux path and a Windows one as a Windows
+// path, from either host.
+ipcMain.handle("direct-workbench:browse-environment-folder", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "direct-workbench:browse-environment-folder");
+  requireDirectWorkbenchExperience("direct-workbench:browse-environment-folder");
+  const listing = await ensureDirectEnvironmentRegistry().listDirectory(
+    normalizeString(payload?.environmentId, ""),
+    typeof payload?.path === "string" ? payload.path : "",
+  );
+  return {
+    schema: "direct_workbench_environment_folder@1",
+    environmentId: listing.environmentId,
+    kind: listing.kind,
+    path: listing.path,
+    parent: listing.parent,
+    home: listing.home,
+    pathStyle: listing.pathStyle,
+    entries: (listing.entries || []).map((entry) => ({ name: entry.name, path: entry.path, kind: entry.kind, hidden: entry.hidden === true })),
+    truncated: listing.truncated === true,
+  };
 });
 
 ipcMain.handle("direct-workbench:project-binding-draft", async (event, payload) => {

@@ -256,6 +256,35 @@ class DirectEnvironmentRegistry {
     }
   }
 
+  /**
+   * Lists one folder in an environment, natively, through its executor, for
+   * picking a project folder. The probe executor stays up while the user
+   * browses; it is read-only and writes nothing.
+   */
+  async listDirectory(environmentId, folderPath = "", options = {}) {
+    if (!this.workspaceBackends) {
+      throw registryError("direct_environment_registry_backends_unavailable", "The environment registry has no executor manager.");
+    }
+    if (!this.environments.size) await this.discover();
+    const environment = this.environments.get(environmentId);
+    if (!environment) throw registryError("direct_environment_unknown", `Unknown execution environment: ${environmentId}`);
+    if (environment.launch?.available !== true) {
+      throw registryError(
+        "direct_environment_launch_unavailable",
+        `The ${environment.label} environment can't be browsed from this host (${environment.launch?.reason || "unavailable"}).`,
+      );
+    }
+    const probe = this.probeProjectFor(environment);
+    await this.workspaceBackends.ensureForProject(probe, { workspaceHygiene: false });
+    const listing = await this.workspaceBackends.requestForProject(
+      probe,
+      EXECUTOR_METHODS.fsList,
+      { path: normalizeString(folderPath, ""), includeFiles: options.includeFiles === true, limit: options.limit },
+      options.timeoutMs || DESCRIBE_TIMEOUT_MS,
+    );
+    return { environmentId, kind: environment.kind, distro: environment.distro, label: environment.label, ...listing };
+  }
+
   cachedDescription(environmentId) {
     return this.descriptions.get(environmentId) || null;
   }

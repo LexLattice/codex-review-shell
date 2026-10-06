@@ -347,6 +347,10 @@ if (directWorkbenchPreload) {
       ipcRenderer.invoke("direct-usage:overview", { ...options, projectId }),
     readDirectWorkbenchProjectDirectory: () =>
       ipcRenderer.invoke("direct-workbench:project-directory"),
+    listDirectWorkbenchEnvironments: () =>
+      ipcRenderer.invoke("direct-workbench:environments"),
+    browseDirectWorkbenchEnvironmentFolder: (payload = {}) =>
+      ipcRenderer.invoke("direct-workbench:browse-environment-folder", payload),
     readDirectWorkbenchProjectBindingDraft: (payload = {}) =>
       ipcRenderer.invoke("direct-workbench:project-binding-draft", payload),
     mutateDirectWorkbenchProjectBinding: (payload = {}) =>

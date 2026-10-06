@@ -71,6 +71,7 @@
           <button id="morphicRuntimePathChip" class="compact-thread-chip runtime" type="button" data-runtime-tab="runtime">runtime unknown</button>
           <span id="morphicTurnChip" class="compact-thread-chip status">idle</span>
           <button id="morphicNewThreadButton" class="compact-thread-button primary" type="button" aria-label="Start new Codex thread">+</button>
+          <button id="morphicObservationsButton" class="compact-thread-button" type="button" aria-label="Open runtime observations">Observations</button>
           <button id="morphicAnalyticsButton" class="compact-thread-button" type="button">Analytics</button>
           <button id="morphicSettingsButton" class="compact-thread-button icon" type="button" aria-label="Open Direct runtime settings">⚙</button>
         </div>
@@ -167,7 +168,12 @@
               <h3 id="directProjectBindingWorkspaceHeading">Workspace substrate</h3>
               <span>Project-level invariant</span>
             </div>
-            <label>
+            <label id="directProjectBindingEnvironmentField" hidden>
+              <span>Environment</span>
+              <select id="directProjectBindingEnvironment" name="environmentId"></select>
+            </label>
+            <p id="directProjectBindingEnvironmentNote" class="direct-project-binding-note" hidden></p>
+            <label id="directProjectBindingWorkspaceKindField">
               <span>Environment</span>
               <select id="directProjectBindingWorkspaceKind" name="workspaceKind">
                 <option value="wsl">WSL native</option>
@@ -180,27 +186,50 @@
               <input id="directProjectBindingWorkspaceLabel" name="workspaceLabel" maxlength="160" placeholder="Workspace label" />
             </label>
             <div id="directProjectBindingWslFields" class="direct-project-binding-kind-fields">
-              <label>
+              <label id="directProjectBindingWslDistroField">
                 <span>WSL distribution</span>
                 <input id="directProjectBindingWslDistro" name="wslDistro" placeholder="Ubuntu" />
               </label>
               <label>
                 <span>Linux path</span>
-                <input id="directProjectBindingWslPath" name="wslPath" placeholder="/home/user/work/project" />
+                <span class="direct-project-binding-path-row">
+                  <input id="directProjectBindingWslPath" name="wslPath" placeholder="/home/user/work/project" />
+                  <button type="button" class="direct-project-binding-browse" data-direct-folder-browse="wsl">Browse…</button>
+                </span>
               </label>
             </div>
             <div id="directProjectBindingWindowsFields" class="direct-project-binding-kind-fields" hidden>
               <label>
                 <span>Windows path</span>
-                <input id="directProjectBindingWindowsPath" name="windowsPath" placeholder="C:\Work\project" />
+                <span class="direct-project-binding-path-row">
+                  <input id="directProjectBindingWindowsPath" name="windowsPath" placeholder="C:\Work\project" />
+                  <button type="button" class="direct-project-binding-browse" data-direct-folder-browse="windows">Browse…</button>
+                </span>
               </label>
             </div>
             <div id="directProjectBindingLocalFields" class="direct-project-binding-kind-fields" hidden>
               <label>
                 <span>Local path</span>
-                <input id="directProjectBindingLocalPath" name="localPath" placeholder="/home/user/work/project" />
+                <span class="direct-project-binding-path-row">
+                  <input id="directProjectBindingLocalPath" name="localPath" placeholder="/home/user/work/project" />
+                  <button type="button" class="direct-project-binding-browse" data-direct-folder-browse="local">Browse…</button>
+                </span>
               </label>
             </div>
+            <section id="directProjectFolderBrowser" class="direct-folder-browser" hidden aria-label="Choose a project folder" data-morphic-region="project-folder-browser">
+              <div class="direct-folder-browser-bar">
+                <button id="directProjectFolderBrowserUp" type="button" aria-label="Parent folder">↑</button>
+                <button id="directProjectFolderBrowserHome" type="button">Home</button>
+                <button id="directProjectFolderBrowserDrives" type="button" hidden>Drives</button>
+                <span id="directProjectFolderBrowserPath" class="direct-folder-browser-path mono">—</span>
+              </div>
+              <p id="directProjectFolderBrowserStatus" class="direct-folder-browser-status" data-state="idle">Folders are listed by this environment's own executor.</p>
+              <div id="directProjectFolderBrowserList" class="direct-folder-browser-list" role="listbox" aria-label="Folders"></div>
+              <div class="direct-folder-browser-actions">
+                <button id="directProjectFolderBrowserCancel" type="button">Cancel</button>
+                <button id="directProjectFolderBrowserUse" class="primary" type="button">Use this folder</button>
+              </div>
+            </section>
           </section>
           <section class="direct-project-binding-section" aria-labelledby="directProjectBindingRuntimeHeading">
             <div class="direct-project-binding-section-heading">
@@ -211,7 +240,7 @@
               <span>Default path</span>
               <select id="directProjectBindingRuntimePath" name="runtimePath">
                 <option value="app-server">App Server</option>
-                <option value="direct-text">Direct · text</option>
+                <option value="direct-text" hidden>Direct · text (legacy)</option>
                 <option value="direct-implementation">Direct · implementation</option>
               </select>
             </label>
@@ -329,6 +358,7 @@
             </div>
           </div>
           <div class="composer-runtime-witnesses" aria-label="Runtime usage and quick settings">
+            <span id="composerEnvironmentChip" class="composer-witness direct-environment-badge" hidden></span>
             <span id="composerQuotaChip" class="composer-witness">quota: unknown</span>
             <span id="composerContextChip" class="composer-witness">context: unknown</span>
             <div class="composer-menu-anchor">
@@ -360,6 +390,7 @@
     <script src="./typed-markdown-projection.js"></script>
     <script src="./codex-app-server-evidence.js"></script>
     <script src="./direct-thread-directory-model.js"></script>
+    <script src="./direct-environment-ux-model.js"></script>
     <script src="./codex-surface.js"></script>
     <script src="./t3-direct-surface.js"></script>
     <script src="./direct-project-directory-surface.js"></script>

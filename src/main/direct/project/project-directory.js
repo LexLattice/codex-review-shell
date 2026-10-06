@@ -86,10 +86,14 @@ function substrateProjection(project = {}) {
     unknown: { environmentId: "environment_unknown", displayLabel: "Workspace unavailable" },
   };
   const fallback = defaults[workspaceKind];
+  // A distro name is an environment identity, not a path, so the renderer
+  // may show it on project badges.
+  const distro = workspaceKind === "wsl" ? safeLabel(workspace.distro, "") : "";
   return {
     workspaceKind,
     environmentId: fallback.environmentId,
     displayLabel: safeLabel(workspace.label, fallback.displayLabel),
+    distro,
     configured: workspaceKind !== "unknown",
     rawPathExposed: false,
   };

@@ -47,6 +47,24 @@
   const lifecycleConfirmationLabel = document.getElementById("directProjectLifecycleConfirmationLabel");
   const lifecycleConfirmation = document.getElementById("directProjectLifecycleConfirmation");
   const lifecycleDelete = document.getElementById("directProjectLifecycleDelete");
+  const editorEnvironmentField = document.getElementById("directProjectBindingEnvironmentField");
+  const editorEnvironment = document.getElementById("directProjectBindingEnvironment");
+  const editorEnvironmentNote = document.getElementById("directProjectBindingEnvironmentNote");
+  const editorWorkspaceKindField = document.getElementById("directProjectBindingWorkspaceKindField");
+  const editorWslDistroField = document.getElementById("directProjectBindingWslDistroField");
+  const browseButtons = Array.from(document.querySelectorAll("[data-direct-folder-browse]"));
+  const folderBrowser = document.getElementById("directProjectFolderBrowser");
+  const folderBrowserPath = document.getElementById("directProjectFolderBrowserPath");
+  const folderBrowserStatus = document.getElementById("directProjectFolderBrowserStatus");
+  const folderBrowserList = document.getElementById("directProjectFolderBrowserList");
+  const folderBrowserUp = document.getElementById("directProjectFolderBrowserUp");
+  const folderBrowserHome = document.getElementById("directProjectFolderBrowserHome");
+  const folderBrowserDrives = document.getElementById("directProjectFolderBrowserDrives");
+  const folderBrowserUse = document.getElementById("directProjectFolderBrowserUse");
+  const folderBrowserCancel = document.getElementById("directProjectFolderBrowserCancel");
+  const environmentModel = window.DirectEnvironmentUxModel || null;
+  const canListEnvironments = Boolean(environmentModel) && typeof bridge?.listDirectWorkbenchEnvironments === "function";
+  const canBrowseFolders = Boolean(environmentModel) && typeof bridge?.browseDirectWorkbenchEnvironmentFolder === "function";
 
   if (!directoryPanel || typeof bridge?.readDirectWorkbenchProjectDirectory !== "function") return;
 
@@ -66,6 +84,13 @@
     lifecycleWorking: false,
     lifecycleError: "",
     lifecycleDraftRequestId: 0,
+    environments: null,
+    environmentsError: "",
+    environmentOptions: [],
+    browser: null,
+    browserRequestId: 0,
+    requestedEditorMode: "create",
+    editorSession: 0,
   };
 
   function createElement(tagName, className = "", text = "") {
@@ -176,6 +201,14 @@
       createElement("strong", "", row.displayName || "Unnamed project"),
       createElement("span", "direct-project-state-chip", row.state || "unknown"),
     );
+    const badges = createElement("div", "direct-project-row-badges");
+    if (environmentModel) {
+      const badge = environmentModel.environmentBadge(row.substrate);
+      const chip = createElement("span", "direct-environment-badge", badge.text);
+      chip.dataset.environmentKind = badge.kind;
+      chip.title = badge.title;
+      badges.append(chip);
+    }
     const evidence = createElement(
       "span",
       "direct-project-row-evidence",
@@ -185,7 +218,7 @@
         row.restore?.displayLabel || "thread restore unknown",
       ].join(" · "),
     );
-    copy.append(title, evidence);
+    copy.append(title, ...(badges.children.length ? [badges] : []), evidence);
     if (Array.isArray(row.blockerCodes) && row.blockerCodes.length) {
       copy.append(createElement("span", "direct-project-row-blocker", blockerLabel(row.blockerCodes[0])));
     }
@@ -224,8 +257,168 @@
     if (editorLocalFields) editorLocalFields.hidden = kind !== "local";
   }
 
+  // The picker replaces the raw kind select and distro field when the host
+  // can list its environments; otherwise the typed fields stay as before.
+  function renderEnvironmentPicker() {
+    const picker = Boolean(view.environments) && view.environmentOptions.length > 0;
+    if (editorEnvironmentField) editorEnvironmentField.hidden = !picker;
+    if (editorWorkspaceKindField) editorWorkspaceKindField.hidden = picker;
+    if (editorWslDistroField) editorWslDistroField.hidden = picker;
+    for (const button of browseButtons) button.hidden = !canBrowseFolders || !picker;
+    if (editorEnvironmentNote) {
+      editorEnvironmentNote.hidden = !view.environmentsError;
+      editorEnvironmentNote.textContent = view.environmentsError
+        ? "This machine's environments couldn't be listed, so type the environment and path."
+        : "";
+    }
+    if (!picker || !editorEnvironment) return;
+    editorEnvironment.replaceChildren();
+    for (const option of view.environmentOptions) {
+      const node = document.createElement("option");
+      node.value = option.value;
+      node.textContent = option.disabled ? `${option.label} (unavailable)` : option.label;
+      node.disabled = option.disabled;
+      editorEnvironment.append(node);
+    }
+    editorEnvironment.value = environmentModel.environmentIdForWorkspace({
+      kind: editorWorkspaceKind.value,
+      distro: editorWslDistro.value.trim(),
+    });
+  }
+
+  function refreshEnvironmentOptions() {
+    view.environmentOptions = view.environments
+      ? environmentModel.environmentOptions(view.environments.environments, {
+          kind: editorWorkspaceKind.value,
+          distro: editorWslDistro.value.trim(),
+        })
+      : [];
+    renderEnvironmentPicker();
+  }
+
+  async function loadEnvironments() {
+    if (!canListEnvironments) return;
+    try {
+      const result = await bridge.listDirectWorkbenchEnvironments();
+      if (result?.schema !== "direct_workbench_environments@1") throw new Error("environments_invalid");
+      view.environments = result;
+      view.environmentsError = "";
+    } catch (error) {
+      view.environments = null;
+      view.environmentsError = error?.code || error?.message || "environments_unavailable";
+    }
+  }
+
+  function selectEnvironment() {
+    const option = view.environmentOptions.find((entry) => entry.value === editorEnvironment.value);
+    if (!option) return;
+    editorWorkspaceKind.value = option.kind;
+    editorWslDistro.value = option.distro;
+    syncWorkspaceFields();
+    closeFolderBrowser();
+  }
+
+  function pathInputForKind(kind) {
+    if (kind === "wsl") return editorWslPath;
+    if (kind === "windows") return editorWindowsPath;
+    return editorLocalPath;
+  }
+
+  function closeFolderBrowser() {
+    view.browserRequestId += 1;
+    view.browser = null;
+    if (folderBrowser) folderBrowser.hidden = true;
+  }
+
+  function renderFolderBrowser() {
+    if (!folderBrowser) return;
+    const browser = view.browser;
+    folderBrowser.hidden = !browser;
+    if (!browser) return;
+    const listing = browser.view;
+    folderBrowserPath.textContent = listing?.displayPath || "—";
+    folderBrowserStatus.dataset.state = browser.loading ? "loading" : browser.error ? "failed" : "ready";
+    folderBrowserStatus.textContent = browser.loading
+      ? "Listing folders…"
+      : browser.error
+        ? `This folder can't be listed (${browser.error}).`
+        : listing?.truncated
+          ? "Showing the first folders only."
+          : `Folders in ${browser.label}, listed by its own executor.`;
+    folderBrowserUp.disabled = browser.loading || !listing?.canUp;
+    folderBrowserHome.disabled = browser.loading;
+    folderBrowserDrives.hidden = !listing?.showDrives;
+    folderBrowserUse.disabled = browser.loading || !listing?.canChoose;
+    folderBrowserList.replaceChildren();
+    for (const entry of listing?.entries || []) {
+      const row = createElement("button", "direct-folder-browser-row", entry.name);
+      row.type = "button";
+      row.dataset.hidden = entry.hidden ? "true" : "false";
+      row.title = entry.path;
+      row.addEventListener("click", () => navigateFolderBrowser(entry.path));
+      folderBrowserList.append(row);
+    }
+    if (listing && !listing.entries.length && !browser.loading) {
+      folderBrowserList.append(createElement("p", "direct-folder-browser-empty", "No folders here."));
+    }
+  }
+
+  async function navigateFolderBrowser(targetPath, options = {}) {
+    if (!view.browser) return;
+    const requestId = ++view.browserRequestId;
+    view.browser.loading = true;
+    view.browser.error = "";
+    renderFolderBrowser();
+    try {
+      const listing = await bridge.browseDirectWorkbenchEnvironmentFolder({
+        environmentId: view.browser.environmentId,
+        path: targetPath,
+      });
+      if (requestId !== view.browserRequestId || !view.browser) return;
+      view.browser.view = environmentModel.folderBrowserView(listing);
+    } catch (error) {
+      if (requestId !== view.browserRequestId || !view.browser) return;
+      // A typed path that no longer exists falls back to home.
+      if (options.fallbackHome && targetPath) {
+        view.browser.loading = false;
+        await navigateFolderBrowser("", {});
+        return;
+      }
+      view.browser.error = error?.code || error?.message || "folder_unavailable";
+    }
+    if (requestId !== view.browserRequestId || !view.browser) return;
+    view.browser.loading = false;
+    renderFolderBrowser();
+  }
+
+  function openFolderBrowser(kind) {
+    if (!canBrowseFolders) return;
+    const option = view.environmentOptions.find((entry) => entry.value === editorEnvironment?.value);
+    view.browser = {
+      kind,
+      environmentId: option?.value || environmentModel.environmentIdForWorkspace({ kind, distro: editorWslDistro.value.trim() }),
+      label: option?.label || kind,
+      view: null,
+      loading: false,
+      error: "",
+    };
+    navigateFolderBrowser(pathInputForKind(kind)?.value.trim() || "", { fallbackHome: true });
+  }
+
+  function useBrowsedFolder() {
+    const chosen = view.browser?.view?.path;
+    if (!chosen) return;
+    const input = pathInputForKind(view.browser.kind);
+    if (input) input.value = chosen;
+    if (!editorName.value.trim() || editorName.value.trim() === "New project") {
+      editorName.value = chosen.split(/[\\/]/).filter(Boolean).pop() || editorName.value;
+    }
+    closeFolderBrowser();
+  }
+
   function closeBindingEditor() {
     if (view.editorWorking) return;
+    closeFolderBrowser();
     if (editorPanel) editorPanel.hidden = true;
     shell?.removeAttribute("data-t3-project-editor-open");
     view.bindingDraft = null;
@@ -349,7 +542,7 @@
   function renderBindingEditor() {
     if (!editorPanel) return;
     const draft = view.bindingDraft;
-    const mode = draft?.mode || "create";
+    const mode = draft?.mode || view.requestedEditorMode || "create";
     editorTitle.textContent = mode === "edit" ? "Edit project binding" : "New project binding";
     editorMeta.textContent = draft
       ? `${mode} · catalog ${String(draft.expectedCatalogRevision || "unknown").slice(0, 10)}`
@@ -379,6 +572,7 @@
     }
     if (editorClose) editorClose.disabled = view.editorWorking;
     if (editorCommit) editorCommit.textContent = view.editorWorking ? "Saving…" : mode === "edit" ? "Save binding" : "Create binding";
+    renderFolderBrowser();
   }
 
   function fillBindingEditor(draft) {
@@ -393,6 +587,7 @@
     editorLocalPath.value = workspace.localPath || "";
     editorRuntimePath.value = fields.runtimePath || "app-server";
     syncWorkspaceFields();
+    if (environmentModel) refreshEnvironmentOptions();
   }
 
   async function openBindingEditor(projectId = "") {
@@ -405,10 +600,18 @@
     editorPanel.hidden = false;
     shell?.setAttribute("data-t3-project-editor-open", "true");
     view.bindingDraft = null;
+    view.requestedEditorMode = projectId ? "edit" : "create";
     view.editorLoading = true;
     view.editorWorking = false;
     view.editorError = "";
+    closeFolderBrowser();
     renderBindingEditor();
+    // Listing environments can take a moment (it asks WSL); the draft shows
+    // at once and the picker fills in when the list arrives.
+    const editorSession = ++view.editorSession;
+    loadEnvironments().then(() => {
+      if (editorSession === view.editorSession && view.bindingDraft && !editorPanel.hidden) refreshEnvironmentOptions();
+    });
     try {
       const draft = await bridge.readDirectWorkbenchProjectBindingDraft(projectId ? { projectId } : {});
       if (draft?.schema !== "direct_workbench_project_binding_draft@1") throw new Error("project_binding_draft_invalid");
@@ -572,6 +775,15 @@
   });
   bindingNew?.addEventListener("click", () => openBindingEditor());
   editorWorkspaceKind?.addEventListener("change", syncWorkspaceFields);
+  editorEnvironment?.addEventListener("change", selectEnvironment);
+  for (const button of browseButtons) {
+    button.addEventListener("click", () => openFolderBrowser(button.dataset.directFolderBrowse || "local"));
+  }
+  folderBrowserUp?.addEventListener("click", () => navigateFolderBrowser(view.browser?.view?.upTarget || ""));
+  folderBrowserHome?.addEventListener("click", () => navigateFolderBrowser(""));
+  folderBrowserDrives?.addEventListener("click", () => navigateFolderBrowser("drives"));
+  folderBrowserUse?.addEventListener("click", useBrowsedFolder);
+  folderBrowserCancel?.addEventListener("click", closeFolderBrowser);
   editorClose?.addEventListener("click", closeBindingEditor);
   editorCancel?.addEventListener("click", closeBindingEditor);
   editorForm?.addEventListener("submit", submitBindingEditor);

@@ -436,9 +436,34 @@ try {
   assert.match(await page.locator("#directProjectBindingEditorTitle").innerText(), /New project binding/);
   assert.match(await page.locator("#directProjectBindingEvidence").innerText(), /Main assigns project identity/);
   await page.locator("#directProjectBindingName").fill("Local Direct GUI Fixture");
-  await page.locator("#directProjectBindingWorkspaceKind").selectOption("local");
+  // When the host lists its environments, the picker replaces the typed kind
+  // and distro fields; pick this machine's environment and browse to the
+  // fixture through its executor.
+  const environmentPicker = await page.locator("#directProjectBindingEnvironmentField")
+    .waitFor({ state: "visible", timeout: 30_000 })
+    .then(() => true, () => false);
+  if (environmentPicker) {
+    const hostEnvironment = await page.locator("#directProjectBindingEnvironment option").evaluateAll(
+      (options) => options.find((option) => /this machine/.test(option.textContent || ""))?.value || "",
+    );
+    assert.ok(hostEnvironment, "the picker offers this machine's environment");
+    await page.locator("#directProjectBindingEnvironment").selectOption(hostEnvironment);
+    const kind = await page.locator("#directProjectBindingWorkspaceKind").inputValue();
+    const pathField = kind === "wsl" ? "#directProjectBindingWslPath" : kind === "windows" ? "#directProjectBindingWindowsPath" : "#directProjectBindingLocalPath";
+    await page.locator(pathField).fill(localProjectRoot);
+    await page.locator(`[data-direct-folder-browse="${kind}"]`).click();
+    await page.locator("#directProjectFolderBrowser:not([hidden])").waitFor({ state: "visible" });
+    await page.waitForFunction(() => document.querySelector("#directProjectFolderBrowserStatus")?.dataset?.state === "ready");
+    assert.equal(await page.locator("#directProjectFolderBrowserPath").innerText(), localProjectRoot);
+    await page.screenshot({ path: projectBindingEditorScreenshotPath.replace(/\.png$/i, "-folder-browser.png"), fullPage: true });
+    await page.locator("#directProjectFolderBrowserUse").click();
+    await page.locator("#directProjectFolderBrowser").waitFor({ state: "hidden" });
+    assert.equal(await page.locator(pathField).inputValue(), localProjectRoot);
+  } else {
+    await page.locator("#directProjectBindingWorkspaceKind").selectOption("local");
+    await page.locator("#directProjectBindingLocalPath").fill(localProjectRoot);
+  }
   await page.locator("#directProjectBindingWorkspaceLabel").fill("Local fixture workspace");
-  await page.locator("#directProjectBindingLocalPath").fill(localProjectRoot);
   await page.locator("#directProjectBindingRuntimePath").selectOption("app-server");
   await page.screenshot({ path: projectBindingEditorScreenshotPath, fullPage: true });
   await page.locator("#directProjectBindingCommit").click();
