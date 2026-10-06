@@ -27,6 +27,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { BubblewrapExecSandbox, workspaceExecutesLocally } = require("./exec-sandbox");
+const { nativeShellCommand } = require("../runtime/execution-environment-contract");
 
 const LOCAL_CHILD_BACKEND_ID = "local-child";
 
@@ -124,6 +125,8 @@ class LocalChildProcessBackend {
     this.workspaceLocalityResolver = typeof options.workspaceLocalityResolver === "function"
       ? options.workspaceLocalityResolver
       : (kind, project) => workspaceExecutesLocally(kind, project);
+    this.platform = options.platform || process.platform;
+    this.env = options.env || process.env;
   }
 
   resolveWorkspace(input = {}, grant = null) {
@@ -184,11 +187,21 @@ class LocalChildProcessBackend {
 
   planLaunch(spec = {}) {
     const sandboxMode = normalizeString(spec.sandboxMode, "danger-full-access");
+    // Command strings run in the environment's native shell (bash -c on
+    // Linux, PowerShell on Windows), matching what the model is told and what
+    // the WSL executor does.
+    const native = spec.shellCommand
+      ? nativeShellCommand(spec.shellCommand, { platform: this.platform, env: this.env })
+      : null;
+    const command = native ? native.command : spec.command;
+    const args = native ? native.args : spec.args;
+    const shellName = native ? native.shell : "";
     if (sandboxMode === "danger-full-access") {
       return {
-        command: spec.command,
-        args: spec.args,
-        shell: Boolean(spec.shellCommand),
+        command,
+        args,
+        shell: false,
+        shellName,
         launcher: "none",
         networkAccess: true,
       };
@@ -198,11 +211,12 @@ class LocalChildProcessBackend {
         sandboxMode,
         root: spec.workspace?.root,
         cwd: spec.workspace?.cwd,
-        shellCommand: spec.shellCommand,
-        command: spec.command,
-        args: spec.args,
+        shellCommand: "",
+        command,
+        args,
       }),
       shell: false,
+      shellName,
     };
   }
 

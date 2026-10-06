@@ -6019,11 +6019,6 @@ function executorPlanner() {
   return executorProcessPlanner;
 }
 
-function nativeShellInvocation(shellCommand) {
-  const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fsSync.existsSync(candidate));
-  return bash ? { command: bash, args: ["-lc", shellCommand] } : { command: "/bin/sh", args: ["-c", shellCommand] };
-}
-
 function emitExecutorProcessEvent(type, session, payload = {}) {
   sendEvent(type, { processSessionId: session.id, ...payload });
 }
@@ -6091,21 +6086,18 @@ function startExecutorProcessSession(params = {}) {
     { sandboxMode, executionEnvironment: { kind: "local" } },
   );
   const shellCommand = typeof params.shellCommand === "string" ? params.shellCommand : "";
-  const invocation = shellCommand
-    ? nativeShellInvocation(shellCommand)
-    : {
-        command: String(params.command || ""),
-        args: Array.isArray(params.args) ? params.args.map(String) : [],
-      };
-  if (!invocation.command) {
+  const command = String(params.command || "");
+  if (!shellCommand && !command) {
     throw executorProcessError("direct_stateful_exec_command_invalid", "process/start requires a command.");
   }
+  // planLaunch turns a command string into the native shell invocation
+  // (bash -c here), the same way the host's local backend does.
   const plan = planner.planLaunch({
     sandboxMode,
     workspace,
-    shellCommand: "",
-    command: invocation.command,
-    args: invocation.args,
+    shellCommand,
+    command,
+    args: Array.isArray(params.args) ? params.args.map(String) : [],
   });
   const env = minimalCommandEnv(params.env);
   const child = plan.launcher === "bubblewrap"
@@ -6158,7 +6150,7 @@ function startExecutorProcessSession(params = {}) {
     cwdRelPath: workspace.cwdRelPath,
     launcher: plan.launcher === "bubblewrap" ? "bubblewrap" : "linux_pid_namespace",
     networkAccess: plan.networkAccess !== false,
-    shell: shellCommand ? path.basename(invocation.command) : "",
+    shell: plan.shellName || "",
   };
 }
 

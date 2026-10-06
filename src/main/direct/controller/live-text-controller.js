@@ -71,6 +71,12 @@ const {
 } = require("../tools/read-only-authority");
 const { normalizeCodexBinding } = require("../runtime/runtime-status");
 const {
+  applyEnvironmentToToolSchemas,
+  renderExecutionEnvironmentInstructions,
+  resolveExecutionEnvironmentFacts,
+  selfConstitutionEnvironmentProjection,
+} = require("../runtime/execution-environment-contract");
+const {
   buildAgentGraph,
   buildWorkerGraphAlignment,
   validateWorkerGraphAlignment,
@@ -1467,8 +1473,16 @@ function implementationContextInstructions(contextInstructions = "", selfConstit
   const constitutionText = selfConstitutionSnapshot
     ? renderDirectSelfConstitutionInstructions(selfConstitutionSnapshot)
     : DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS;
-  if (!contextText) return constitutionText;
-  return `${contextText}\n\n${constitutionText}`;
+  const environmentText = renderExecutionEnvironmentInstructions(selfConstitutionSnapshot?.executionEnvironment);
+  const ownText = environmentText ? `${constitutionText}\n\n${environmentText}` : constitutionText;
+  if (!contextText) return ownText;
+  return `${contextText}\n\n${ownText}`;
+}
+
+// Shell- and path-dependent tool descriptions follow the same environment
+// facts the instructions render.
+function environmentToolsFor(tools, selfConstitutionSnapshot = null) {
+  return applyEnvironmentToToolSchemas(tools, selfConstitutionSnapshot?.executionEnvironment);
 }
 
 function selfConstitutionRequestShapeFields(snapshot = {}) {
@@ -1481,6 +1495,10 @@ function selfConstitutionRequestShapeFields(snapshot = {}) {
     selfConstitutionSubstrateKind: normalizeString(snapshot.projectBinding?.substrateKind, ""),
     selfConstitutionDeclaredToolCount: Number(snapshot.capabilities?.declaredThisTurn?.length || 0),
     selfConstitutionOwner: normalizeString(snapshot.currentness?.owner, ""),
+    executionEnvironmentKind: normalizeString(snapshot.executionEnvironment?.environmentKind, ""),
+    executionEnvironmentShell: normalizeString(snapshot.executionEnvironment?.shell?.name, ""),
+    executionEnvironmentAccessProfile: normalizeString(snapshot.executionEnvironment?.accessProfile, ""),
+    executionEnvironmentExecutesVia: normalizeString(snapshot.executionEnvironment?.executesVia, ""),
     selfConstitutionRawWorkspacePathIncluded: snapshot.safety?.rawWorkspacePathIncluded === true,
     selfConstitutionRawSecretIncluded: snapshot.safety?.rawSecretIncluded === true,
   };
@@ -2777,6 +2795,19 @@ class DirectLiveTextController {
     };
   }
 
+  // Continuation requests re-declare tools; they carry the same
+  // environment-specialized descriptions as the turn's first request.
+  withEnvironmentTools(composition, project = {}, sessionId = "", harnessGrant = null) {
+    if (!isPlainObject(composition) || !Array.isArray(composition.tools) || !composition.tools.length) return composition;
+    const session = this.sessionStore.readSession(normalizeString(sessionId, "")) || {};
+    const facts = resolveExecutionEnvironmentFacts({
+      grant: isPlainObject(harnessGrant) ? harnessGrant : this.resolveHarnessGrant(project || {}, session),
+      project: project || {},
+      session,
+    });
+    return { ...composition, tools: applyEnvironmentToToolSchemas(composition.tools, facts) };
+  }
+
   compileSelfConstitutionSnapshot(input = {}) {
     const project = isPlainObject(input.project) ? input.project : {};
     const session = isPlainObject(input.session)
@@ -2799,8 +2830,16 @@ class DirectLiveTextController {
           threadId: normalizeString(session.sessionId, ""),
         })
       : null;
+    const executionEnvironment = isPlainObject(input.executionEnvironment)
+      ? input.executionEnvironment
+      : selfConstitutionEnvironmentProjection(resolveExecutionEnvironmentFacts({
+          grant: isPlainObject(input.harnessGrant) ? input.harnessGrant : this.resolveHarnessGrant(project, session),
+          project,
+          session,
+        }));
     return compileDirectSelfConstitutionSnapshot({
       ...input,
+      executionEnvironment,
       project,
       session,
       status,
@@ -6753,7 +6792,7 @@ class DirectLiveTextController {
               .filter((name) => STATEFUL_EXEC_CAPABILITY_NAMES.includes(name))
         : [];
     const continuationToolComposition = residentContinuation
-      ? composeImplementationToolBundleForRequest({
+      ? this.withEnvironmentTools(composeImplementationToolBundleForRequest({
           projectId: normalizeString(
             project?.id || project?.projectId || project?.name,
             ledgerBinding?.bundle?.scope?.projectId || "",
@@ -6774,7 +6813,7 @@ class DirectLiveTextController {
           providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
           harnessGrant,
           roleLedgerToolBundle: ledgerContinuation ? ledgerBinding?.bundle : null,
-        })
+        }), project, sessionId, harnessGrant)
       : { tools: [], toolNames: [] };
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       status: "continuation_sent",
@@ -8571,7 +8610,7 @@ class DirectLiveTextController {
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
-    const continuationTools = continuationToolComposition.tools;
+    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant).tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
@@ -8813,7 +8852,7 @@ class DirectLiveTextController {
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
-    const continuationTools = continuationToolComposition.tools;
+    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant).tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
@@ -9071,7 +9110,7 @@ class DirectLiveTextController {
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
-    const continuationTools = continuationToolComposition.tools;
+    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant).tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
@@ -9768,7 +9807,7 @@ class DirectLiveTextController {
             prompt,
             reasoningEffort,
             serviceTier,
-            tools: implementationToolComposition.tools,
+            tools: this.withEnvironmentTools(implementationToolComposition, project, session.sessionId, harnessGrant).tools,
             toolChoicePolicy: "auto",
           })
       : buildTextOnlyProbeRequest({
@@ -9996,7 +10035,7 @@ class DirectLiveTextController {
               ),
               reasoningEffort,
               serviceTier,
-              tools: implementationToolComposition.tools,
+              tools: environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot),
               toolChoicePolicy: "auto",
             })
           : buildTextOnlyProbeRequest({
@@ -10032,7 +10071,7 @@ class DirectLiveTextController {
           ),
           reasoningEffort,
           serviceTier,
-          tools: implementationToolComposition.tools,
+          tools: environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot),
           toolChoicePolicy: "auto",
         });
       }

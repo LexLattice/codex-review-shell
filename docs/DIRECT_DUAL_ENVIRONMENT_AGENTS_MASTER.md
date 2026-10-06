@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-06, after turn 4.
+Last updated: 2026-10-06, after turn 5.
 
 ## How to use this document
 
@@ -45,7 +45,7 @@ Electron host (Windows): UI · model transport · auth · grants · stores · mo
    ├── Windows executor: native node on Windows
    │     PowerShell · C:\ paths · Windows sandbox · Job Objects
    └── WSL executor (one per distro): node inside WSL, launched once via wsl.exe
-         bash -lc · /home paths · bubblewrap · PID namespace
+         bash -c · /home paths · bubblewrap · PID namespace
 ```
 
 The only place `wsl.exe` appears is the host launching the WSL executor. It
@@ -100,7 +100,7 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 5: model contract per environment.**
+**Turn 6: Windows containment and sandbox spike (time-boxed).**
 
 ## Gates for every turn
 
@@ -358,7 +358,7 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ### Turn 5: model contract per environment
 
-- Status: planned
+- Status: done with deviations
 - Scope: environment context block in every turn; shell-specific
   `exec_command` and `apply_patch` descriptions; the self-constitution
   snapshot reports the environment. Also make the local backend's shell
@@ -368,7 +368,44 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   threads and PowerShell descriptions for Windows threads. Optional: one live
   WSL turn from the Windows launcher.
 - Milestone: WSL agents fully native from the Windows host.
-- Outcome: _(fill in)_
+- Outcome:
+  - New `src/main/direct/runtime/execution-environment-contract.js`.
+    `resolveExecutionEnvironmentFacts` derives one facts object per thread
+    from the grant and the workspace: environment kind (wsl, windows, linux,
+    macos), distro, shell and its invocation, path style, default line
+    ending, whether tools run on the host or through the environment's
+    executor, and the access profile's writable scope, network, and hidden
+    areas. Facts never carry raw paths.
+  - The same facts feed three places: an "Execution environment" block
+    appended to every implementation turn's instructions; the
+    `exec_command`, `apply_patch`, and `read_file` descriptions (bash and
+    POSIX examples for WSL and Linux, PowerShell and Windows paths for
+    Windows) in the initial request and all four continuation paths; and a
+    new `executionEnvironment` field in the self-constitution snapshot, whose
+    workspace sentence now names the environment, shell, path style, and
+    access profile. The request shape records `executionEnvironmentKind`,
+    `Shell`, `AccessProfile`, and `ExecutesVia`.
+  - One shell planner, `nativeShellCommand`, used by both the host's local
+    backend and the executor: `bash -c` on Linux (`sh -c` without bash);
+    on Windows `pwsh -NoLogo -NoProfile -NonInteractive -Command`, falling
+    back to Windows PowerShell 5.1. The local backend no longer uses Node's
+    `shell: true`, so local Windows commands now run in PowerShell rather than
+    `cmd.exe`, and sandboxed Linux commands run in bash rather than `sh`.
+  - Deviation: commands run in `bash -c`, not `bash -lc` (see **Plan
+    changes**).
+  - Deviation: the optional live WSL turn from the Windows launcher was not
+    run; the regression drives real controller turns against a fixture
+    provider instead.
+  - Checks: new `direct-execution-environment-contract-regression` (shell
+    planning per platform, facts per environment and profile, instruction
+    and tool text, and full controller turns for a WSL thread and a Windows
+    thread with no raw path reaching the provider) passes on both hosts.
+    Turn 2 to 4 executor regressions re-pass on both hosts; self-constitution,
+    access-profiles, full-access-authority, stateful-exec,
+    everyday-continuation, everyday-live-acceptance, full-local-harness,
+    tool-bundle-composer, and active-sub-agent-policy pass; `check:syntax`
+    and `validate` pass; full sweep 262 of 282 passing, failures identical to
+    **Known failing checks**.
 
 ### Turn 6: Windows containment and sandbox spike (time-boxed)
 
@@ -386,6 +423,7 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 - Scope:
   - PowerShell sessions (`pwsh`, fallback Windows PowerShell 5.1,
     `-NoProfile -NonInteractive`, UTF-8 output) with Job Object containment.
+    The shell planning already exists (`nativeShellCommand`, turn 5).
   - Full access first; Workspace and Read only through the sandbox if turn 6
     was positive, otherwise refused with a clear message.
   - Filesystem read and patch with CRLF preserved.
@@ -539,6 +577,8 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | Executor regressions run on both hosts from one file | Windows Node can run the WSL repo's scripts over the UNC path, so each executor turn verifies both launch directions without syncing the Windows mirror. |
 | 2026-10-06 | Remote process sessions start asynchronously behind a synchronous `launch` | The router's `start()` and its callers are synchronous; a handle that starts the remote process on the next tick keeps every caller unchanged, and refusals still reach the model as failed sessions. |
 | 2026-10-06 | Executor sessions use the native login shell (`bash -lc`) | That is what a WSL user's terminal runs, so PATH and tools (nvm, pyenv) match what the agent would see natively. |
+| 2026-10-06 | Commands run in a non-login `bash -c` (supersedes the `bash -lc` row above) | Sourcing the login profile cost about 0.4 s per command (nvm), which broke the 100 ms first-yield expectation in `direct-everyday-continuation`. The executor itself starts through a login shell, so commands still inherit the login PATH. |
+| 2026-10-06 | One environment facts object drives instructions, tool descriptions, and the self-constitution snapshot | The model can't be told one shell in the instructions and another in a tool description if both render from the same facts, and the snapshot shows exactly what the model was told. |
 | 2026-10-06 | Process sessions die with their executor, however it stops | A lost executor can never report on or clean up its processes later, so leaving them running would leak unsupervised work. |
 | 2026-10-06 | Credential exposure: Full access unrestricted; Workspace and Read only can't reach Windows drives, WSL interop, or credential stores | Full access matches a native full-access agent on either OS (and vanilla Codex). The sandboxed profiles keep a WSL agent on its own Linux filesystem, which is the track's goal, and keep tokens out of model context. Hiding interop is also what makes the sandbox a sandbox: otherwise a sandboxed command can start an unsandboxed Windows process. |
 | 2026-10-06 | One file implementation, two placements | The executor runs the host's `LocalFilePort` natively, so local and WSL file rules can't drift apart; the host only plans. |
@@ -549,3 +589,5 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 |---|---|---|---|
 | 2026-10-06 | 0 | Added a full regression sweep to every turn's gates, with an expected-failures list. | The four originally known failures were a sample; the sweep found 20 more, so "validate passes" alone can't detect regressions. |
 | 2026-10-06 | 0 | Turn 9 also fixes `direct-t3-alternate-gui-regression`. | It pins Workbench DOM ids, which turn 9 changes anyway. |
+| 2026-10-06 | 5 | Commands run in `bash -c` instead of turn 3's `bash -lc`. | See **Decisions**: the login profile's startup cost broke a latency expectation, and PATH is inherited from the executor's login shell anyway. |
+| 2026-10-06 | 5 | Turn 7 reuses `nativeShellCommand` for its PowerShell sessions. | The planner already picks `pwsh` or Windows PowerShell 5.1 with `-NoLogo -NoProfile -NonInteractive`; turn 7 adds UTF-8 output and Job Object containment around it. |

@@ -265,7 +265,8 @@ async function main() {
     assert.equal(fakeResult.sandboxMode, "workspace-write");
     assert.equal(fakeResult.networkAccess, false);
     fakeManager.start({ ...executorInput(fullGrant), cmd: "echo hi" });
-    assert.equal(spawned[1].command, "echo hi", "full access keeps the unsandboxed shell path");
+    assert.match(spawned[1].command, /\/bash$/, "full access runs cmd in the native shell without a sandbox");
+    assert.deepEqual(spawned[1].args, ["-c", "echo hi"]);
     const noSandboxManager = new DirectStatefulExecSessionManager({
       workspaceRootResolver: () => workspaceRoot,
       sandbox: new BubblewrapExecSandbox({ platform: "win32" }),
