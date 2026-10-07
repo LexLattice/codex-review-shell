@@ -58,8 +58,10 @@ assert.equal(
   project.workspace.windowsPath,
 );
 assert.match(workspaceLabel(project, process.cwd()), /^Windows /);
+// One executor per environment (turn 11b); a dedicated worker keeps its own.
+assert.equal(workspaceSessionKey(project, process.cwd()), "windows");
 assert.match(
-  workspaceSessionKey(project, process.cwd()),
+  workspaceSessionKey({ ...project, executorPlacement: "dedicated" }, process.cwd()),
   /^windows:/,
 );
 

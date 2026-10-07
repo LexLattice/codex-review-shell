@@ -108,6 +108,8 @@ try {
     name: "worker policy repository fixture",
     repoPath: tempRoot,
     workspace: { kind: "local", localPath: tempRoot },
+    // Workers keep a dedicated executor (their binding is per executor).
+    executorPlacement: "dedicated",
   };
   const bindingBase = {
     schema: "direct_workspace_worker_binding@1",
@@ -166,6 +168,7 @@ try {
     name: "backend binding race fixture",
     repoPath: backendRaceRoot,
     workspace: { kind: "local", localPath: backendRaceRoot },
+    executorPlacement: "dedicated",
   };
   const backendRaceBase = {
     schema: "direct_workspace_worker_binding@1",

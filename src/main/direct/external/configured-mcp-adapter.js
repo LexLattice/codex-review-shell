@@ -10,6 +10,7 @@ const {
 const { EXECUTOR_METHODS } = require("../../../shared/executor-protocol");
 const { LocalChildProcessBackend } = require("../tools/exec-process-backends");
 const { workspaceExecutesLocally } = require("../tools/exec-sandbox");
+const { spawnInLinuxPidNamespace } = require("../../../shared/linux-pid-namespace");
 
 const MAX_DISCOVERY_RESULTS = 100;
 const MAX_DISCOVERY_BYTES = 512 * 1024;
@@ -491,11 +492,26 @@ function mcpPlacementFor(server, project = {}, options = {}) {
 
 let hostProcessBackend = null;
 
-// Host-local servers on Windows run under the job runner like every other
-// Windows command, so their whole process tree is reaped with them.
+// Host-local servers run contained, so their whole process tree is reaped
+// with them: under the job runner on Windows, in a PID namespace on Linux.
 function spawnOnHost(command, args, options = {}) {
+  if (process.platform === "linux") {
+    try {
+      return spawnInLinuxPidNamespace(command, args, {
+        ...options,
+        env: options.env || process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        dieWithParent: true,
+      });
+    } catch (error) {
+      // No trusted launcher on this host: run it as before, uncontained.
+      if (!String(error?.code || "").startsWith("workspace_linux_pid_namespace_launcher")) throw error;
+    }
+  }
   if (process.platform !== "win32") {
-    return spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    child.workspaceProcessContainment = { guaranteed: false, kind: "none" };
+    return child;
   }
   hostProcessBackend ||= new LocalChildProcessBackend({ workspaceLocalityResolver: () => true });
   const plan = hostProcessBackend.planLaunch({ sandboxMode: "danger-full-access", command, args });

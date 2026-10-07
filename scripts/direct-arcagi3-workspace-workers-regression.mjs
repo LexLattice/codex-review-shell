@@ -130,6 +130,7 @@ function childProject(parentProject, nativeRoot, childAgentId) {
       localPath: nativeRoot,
       label: childAgentId,
     },
+    executorPlacement: "dedicated",
   };
 }
 

@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-07, after turn 11a.
+Last updated: 2026-10-07, after turn 11b.
 
 ## How to use this document
 
@@ -100,8 +100,10 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 11b: one executor per environment.** (Turns 9, 10, and 11a still
-need the owner's manual Electron checks.)
+**None planned.** All turns are done. The owner's manual Electron checks
+for turns 9, 10, 11a, and 11b are still pending, and **Findings** lists
+follow-up candidates (long-lived MCP sessions, Windows per-project
+isolation, the owner's WSL terminal and `sudo`).
 
 ## Gates for every turn
 
@@ -1063,11 +1065,84 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ### Turn 11b: one executor per environment
 
-- Status: planned
+- Status: done with deviations (owner Electron check pending)
 - Scope: one executor per environment serving every project root in it,
   instead of one per project folder. Also contain host-local MCP servers on
   Linux and consider long-lived MCP sessions (turn 8's plan change).
-- Outcome: _(fill in)_
+- Outcome:
+  - **Owner decisions** (asked before building): all projects share their
+    environment's executor (one per WSL distro, one for Windows, one for a
+    local host); workspace workers keep a dedicated executor. Contain Linux
+    host-local MCP servers now; record long-lived MCP sessions as a finding.
+  - **Executor** (`wsl-agent.js`):
+    - `--environment` launches it without a project: from the home folder,
+      with only the environment's kind. A dedicated executor still launches
+      with `--root`.
+    - Each request may carry `projectContext` (`root`, `workspaceKind`,
+      `projectId`). The executor checks it: an absolute path in this
+      environment's style (drive or UNC on Windows), the executor's own
+      kind, and an existing folder. A dedicated executor only accepts its own
+      folder. The request then runs in it through `AsyncLocalStorage`.
+    - All 82 uses of the launch-time `root`, `workspaceKind`, and `projectId`
+      now read the request's project. TypeScript's checker found them, so
+      none are missed. A project-scoped request without a project is
+      refused (`executor_project_context_required`); nothing falls back to
+      another folder. Environment-wide methods (`fs/list`, process controls,
+      `mcp/cancel`, `environment/describe`, Codex thread discovery) need no
+      project.
+    - `hello` with a project checks and echoes that folder; without one it
+      names no folder. The staging `.gitignore` setup is per folder.
+      Containment probes run in the environment's home. Worker bindings are
+      refused on an environment executor.
+  - **Host** (`workspace-backend.js`):
+    - Sessions are keyed per environment (`wsl:<distro>`, `windows`,
+      `local`). Projects marked `executorPlacement: "dedicated"` (workers,
+      via `projectForWorkspaceWorker`) keep the per-folder key.
+    - `ensureForProject` attaches the project to the shared executor (a
+      project `hello` and, unless skipped, hygiene per folder, redone after
+      an executor restart). It returns a `ProjectExecutorView` whose requests
+      carry the project; events, transport, and process are the executor's.
+      `requestForProject`, the file port, and repository observation go
+      through it, and `process/start` adds the context explicitly.
+    - Status and snapshots are per project. A shared executor's status
+      events go to every attached project.
+    - New `releaseProject` lets go of one folder and stops the executor only
+      when nothing else uses it. The environment registry's probes use it,
+      so describing an environment no longer kills the executor its projects
+      share. `disposeForProject` still stops the executor (on a shared one,
+      every project's processes there).
+  - **MCP.** The trusted `unshare` launcher moved to
+    `src/shared/linux-pid-namespace.js`. The executor and host-local MCP
+    servers on a Linux host both use it, so everything a server starts ends
+    with it.
+  - **Checks:**
+    - New `direct-environment-executor-regression` (8 checks) passes in WSL
+      and under Windows Node. Two projects in each environment share one
+      executor process, and each request (legacy `listTree`, `fs/read`,
+      commands) runs in its own folder. The WSL Workspace sandbox of one
+      project can't write the other. The executor refuses missing, relative,
+      foreign-environment, and missing-folder projects. Worker bindings are
+      refused on a shared executor while a dedicated one is a separate
+      process. Releasing a project keeps the executor for the others, and
+      stopping the executor ends every project's processes there.
+    - `direct-mcp-per-environment-regression` now also checks that a Linux
+      host-local server's children die with it.
+    - Existing executor, terminal, delegation, and exec suites pass on both
+      hosts. Worker suites pass after their fixtures gained
+      `executorPlacement: "dedicated"`, matching real worker projects. The
+      native-Windows key pin and the drain-admission check now reflect
+      shared executors.
+    - `check:syntax`, `validate`, and the Workbench Electron smoke pass.
+      The sweep caught one more test assumption:
+      `direct-provider-external-production-wiring-regression` checked
+      reaping by the server's own PID, which is now a namespace PID on Linux.
+      It checks by command line there instead (Windows unchanged). With that,
+      the full sweep is 270 of 289, failures identical to **Known failing
+      checks**.
+  - **Deviations:**
+    - Long-lived MCP sessions aren't built (owner's call; see **Findings**).
+    - The Windows Low-label cross-project write risk is recorded, not fixed.
+    - The owner's Electron check is pending.
 
 ## Baseline and prerequisites
 
@@ -1144,15 +1219,27 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   continuation declares no tools.
 - A blocking `request_permissions` prompt is deferred until the continuation
   loop can keep tools available after human decisions.
-- Since turn 8, configured MCP servers run in their own environment. Two
-  gaps remain:
-  - **Linux host-local servers aren't tree-contained.** A server that runs on
-    a Linux host itself (`runsIn: "host"`, or a local project) is still a
-    plain `spawn`, so anything it starts outlives it. Servers in a WSL
-    executor and every Windows server are contained.
-  - **One process per request.** Servers are started for each request, so
-    stateful servers and server-initiated sessions aren't supported (as
-    before).
+- Since turn 8, configured MCP servers run in their own environment, and
+  since turn 11b every server is tree-contained, including ones a Linux host
+  runs itself. One gap remains: **one process per request.** Servers are
+  started for each request, so stateful servers and server-initiated
+  sessions aren't supported. Long-lived sessions would need an
+  environment-owned registry per (environment, server config), initialize
+  once, request routing and cancellation, eviction on config change, idle
+  expiry, and executor loss, with the host's scope and freshness checks still
+  applied to every operation. The owner deferred this in turn 11b.
+- On Windows, the Low integrity label a Workspace command puts on its
+  project folder is persistent and isn't per project. A Workspace command in
+  one project can write another project folder that was labeled earlier,
+  unless that folder's own permissions stop it. Turn 11b's shared executor
+  neither causes nor fixes this; per-project isolation needs something like
+  AppContainer or per-project capability SIDs.
+- The WSL Workspace sandbox keeps `/tmp` writable (by design, as in turn 3),
+  so project folders under `/tmp` can be written by Workspace commands from
+  other projects. Projects normally live elsewhere.
+- Linux host-local MCP servers fall back to an uncontained spawn when the
+  trusted `unshare` launcher is missing (marked `guaranteed: false`), so
+  existing setups keep working.
 - Since turn 7, process sessions (`exec_command`) on Windows run under the
   job runner. The workspace backend's request-scoped command paths still
   refuse on Windows (`workspace_windows_job_object_containment_unavailable`
@@ -1245,6 +1332,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | One host, one native executor per environment | Single UI, DB, auth, and grants; each agent stays native. Matches Codex's `exec-server` direction. |
 | 2026-10-06 | Extend our own Node executor; model its protocol on Codex `exec-server` | Already runs in both environments over stdio and carries existing custody work; `exec-server` is experimental and websocket-based. Matching shapes keeps a swap possible. |
 | 2026-10-06 | Keep per-project executors until turn 11 | Equivalent for agent nativeness; avoids an early refactor with no user-visible value. |
+| 2026-10-07 | One executor per environment, each request naming its project; workspace workers keep a dedicated executor (supersedes the row above) | Owner's call. Requests carry `projectContext`, which the executor validates (absolute, this environment, an existing folder) and runs the request in through `AsyncLocalStorage`, so every root-relative rule (paths, cwd, sandbox binds, containment checks) applies to that project and nothing falls back to another one. A worker's binding is immutable per executor, so it keeps its own. |
 | 2026-10-06 | `environment/describe` never spawns a process | The Windows executor may not create processes before Job Object containment exists, and describe must work everywhere. Versions that need a process (bash) stay `unprobed`. |
 | 2026-10-06 | Executor regressions run on both hosts from one file | Windows Node can run the WSL repo's scripts over the UNC path, so each executor turn verifies both launch directions without syncing the Windows mirror. |
 | 2026-10-06 | Remote process sessions start asynchronously behind a synchronous `launch` | The router's `start()` and its callers are synchronous; a handle that starts the remote process on the next tick keeps every caller unchanged, and refusals still reach the model as failed sessions. |

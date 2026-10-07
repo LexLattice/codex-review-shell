@@ -252,7 +252,12 @@ class DirectEnvironmentRegistry {
       this.descriptions.set(environmentId, record);
       return record;
     } finally {
-      if (options.keepExecutor !== true) this.workspaceBackends.disposeForProject(probe);
+      // The environment's executor is shared with its projects; only stop it
+      // when nothing else uses it.
+      if (options.keepExecutor !== true) {
+        if (typeof this.workspaceBackends.releaseProject === "function") this.workspaceBackends.releaseProject(probe);
+        else this.workspaceBackends.disposeForProject(probe);
+      }
     }
   }
 

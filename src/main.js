@@ -4305,6 +4305,8 @@ function projectForWorkspaceWorker(parentProject = {}, worktreePath = "", worker
     name: `${normalizeString(parentProject.name, "Direct project")} · ${workerKey}`,
     repoPath: worktreePath,
     workspace,
+    // Its binding is immutable per executor, so a worker gets its own.
+    executorPlacement: "dedicated",
   };
 }
 

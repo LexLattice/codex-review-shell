@@ -45,6 +45,7 @@ const {
 const { BASE_COMMAND_ENVIRONMENT_KEYS, LocalChildProcessBackend } = require("../main/direct/tools/exec-process-backends");
 const { WINDOWS_JOB_LAUNCHER } = require("../main/direct/tools/windows-job-runner");
 const { PtyChannel } = require("../main/direct/tools/pty-frames");
+const { spawnInLinuxPidNamespace } = require("../shared/linux-pid-namespace");
 const { mcpServerEnvironment, requestMcpStdio } = require("../main/direct/external/mcp-stdio-transport");
 const { LocalFilePort } = require("../main/direct/tools/full-access-local-environment");
 
@@ -99,7 +100,6 @@ const DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES = 1024 * 1024;
 const DIRECT_WORKSPACE_WORKER_SEARCH_TOTAL_BYTES = 16 * 1024 * 1024;
 const DIRECT_WORKSPACE_WORKER_SEARCH_RESULT_LIMIT = 120;
 const DIRECT_WORKSPACE_WORKER_READ_LIMIT = 48 * 1024;
-const TRUSTED_UNSHARE_PATH = "/usr/bin/unshare";
 const SAFE_COMMAND_ENV_OVERRIDES = new Set([
   "CI",
   "NO_COLOR",
@@ -137,11 +137,11 @@ const SENSITIVE_READ_FILE_PATTERNS = [
   /(?:^|\/)\.ssh(?:\/|$)/i,
   /(?:^|\/)\.git\/config$/i,
 ];
-let reviewShellIgnorePromise = null;
+// One per project folder (an environment executor serves several).
+const reviewShellIgnorePromises = new Map();
 let gitWorktreeMutationQueue = Promise.resolve();
 let authoritativeWorkspaceWorkerBinding = null;
 let workspaceWorkerBindingInitialization = null;
-let trustedUnshareIdentity = null;
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -180,9 +180,97 @@ function parseArgv(argv) {
 }
 
 const argv = parseArgv(process.argv);
-const root = path.resolve(argv.root || process.cwd());
-const workspaceKind = argv["workspace-kind"] || "local";
-const projectId = argv["project-id"] || "unknown-project";
+// An environment executor (--environment) serves every project folder in its
+// environment, and each request names its project (params.projectContext). A
+// dedicated executor (a workspace worker's) is bound to one folder at launch.
+const environmentExecutor = argv.environment === "true";
+const executorWorkspaceKind = argv["workspace-kind"] || "local";
+const launchProject = environmentExecutor ? null : Object.freeze({
+  root: path.resolve(argv.root || process.cwd()),
+  workspaceKind: executorWorkspaceKind,
+  projectId: argv["project-id"] || "unknown-project",
+});
+const projectContextStorage = new AsyncLocalStorage();
+
+function currentProjectContext() {
+  return projectContextStorage.getStore() || launchProject;
+}
+
+function currentRoot() {
+  const context = currentProjectContext();
+  if (context) return context.root;
+  const error = new Error("This request needs its project: the executor serves several project folders.");
+  error.code = "executor_project_context_required";
+  throw error;
+}
+
+function currentRootOrEmpty() {
+  return currentProjectContext()?.root || "";
+}
+
+function currentWorkspaceKind() {
+  return currentProjectContext()?.workspaceKind || executorWorkspaceKind;
+}
+
+function currentProjectId() {
+  return currentProjectContext()?.projectId || "";
+}
+
+// Environment-wide work (capability probes) runs here, not in a project.
+function environmentCwd() {
+  return launchProject?.root || os.homedir();
+}
+
+function projectContextError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+// The project a request names: an absolute folder of this environment that
+// exists. Everything root-relative in the request (cwd, paths, sandbox
+// binds, containment checks) is then relative to it.
+async function resolveRequestProjectContext(raw) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw projectContextError("executor_project_context_invalid", "The request's project is malformed.");
+  }
+  const requested = typeof raw.root === "string" ? raw.root.trim() : "";
+  const absolute = process.platform === "win32"
+    ? /^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/.test(requested)
+    : path.posix.isAbsolute(requested);
+  if (!absolute) {
+    throw projectContextError("executor_project_context_invalid", "The request's project folder must be an absolute path in this environment.");
+  }
+  const kind = typeof raw.workspaceKind === "string" ? raw.workspaceKind : "";
+  if (kind !== executorWorkspaceKind) {
+    throw projectContextError("executor_project_context_environment_mismatch", "The request's project belongs to another environment.");
+  }
+  const resolved = path.resolve(requested);
+  let stat = null;
+  try {
+    stat = await fs.stat(resolved);
+  } catch {}
+  if (!stat?.isDirectory()) {
+    throw projectContextError("executor_project_root_unavailable", "The project folder doesn't exist in this environment.");
+  }
+  if (launchProject && !sameNativePath(resolved, launchProject.root)) {
+    throw projectContextError("executor_project_context_mismatch", "This executor is bound to another project folder.");
+  }
+  return Object.freeze({
+    root: resolved,
+    workspaceKind: kind,
+    projectId: typeof raw.projectId === "string" ? raw.projectId : "",
+  });
+}
+
+async function handleRequestInProject(method, params = {}) {
+  const context = await resolveRequestProjectContext(params.projectContext);
+  return context
+    ? projectContextStorage.run(context, () => handleRequest(method, params))
+    : handleRequest(method, params);
+}
+
 const sessionId = `agent_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 const STDIN_CLOSE_EXIT_GRACE_MS = 250;
 const STDIN_CLOSE_FORCE_EXIT_MS = 2000;
@@ -605,13 +693,13 @@ function displayRelPath(value) {
 
 function resolveWithinRoot(relPath = "") {
   const rel = normalizeRelPath(relPath);
-  const fullPath = path.resolve(root, rel || ".");
-  const relative = path.relative(root, fullPath);
+  const fullPath = path.resolve(currentRoot(), rel || ".");
+  const relative = path.relative(currentRoot(), fullPath);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error("Requested path is outside the workspace root.");
   }
   return {
-    root,
+    root: currentRoot(),
     rel,
     fullPath,
     displayRel: displayRelPath(relative === "." ? "" : relative),
@@ -625,7 +713,7 @@ function pathIsUnderRoot(realRoot, realTarget) {
 
 async function resolveFileWithinRoot(relPath = "") {
   const resolved = resolveWithinRoot(relPath);
-  const realRoot = await fs.realpath(root);
+  const realRoot = await fs.realpath(currentRoot());
   const realTarget = await fs.realpath(resolved.fullPath);
   if (!pathIsUnderRoot(realRoot, realTarget)) {
     throw new Error("Requested path resolves outside the workspace root.");
@@ -1063,10 +1151,10 @@ function locateHunkStart(beforeLines, hunk, preferredIndex, cursor) {
 async function resolvePatchTarget(relPath, options = {}) {
   const normalizedRel = assertPatchPathAllowed(relPath, options);
   const resolved = resolveWithinRoot(normalizedRel);
-  const realRoot = await fs.realpath(root);
+  const realRoot = await fs.realpath(currentRoot());
   const parentDir = path.dirname(resolved.fullPath);
   let nearestParent = parentDir;
-  while (!fsSync.existsSync(nearestParent) && nearestParent !== root && nearestParent !== path.dirname(nearestParent)) {
+  while (!fsSync.existsSync(nearestParent) && nearestParent !== currentRoot() && nearestParent !== path.dirname(nearestParent)) {
     nearestParent = path.dirname(nearestParent);
   }
   const realParent = await fs.realpath(nearestParent);
@@ -1170,7 +1258,7 @@ function assertNoEncodedTraversal(relPath = "") {
 }
 
 async function ensureAttachmentIgnoreInner() {
-  const base = path.join(root, ".codex", "review-shell");
+  const base = path.join(currentRoot(), ".codex", "review-shell");
   const ignorePath = path.join(base, ".gitignore");
   await fs.mkdir(base, { recursive: true });
   try {
@@ -1188,13 +1276,14 @@ async function ensureAttachmentIgnoreInner() {
 }
 
 async function ensureAttachmentIgnore() {
-  if (!reviewShellIgnorePromise) {
-    reviewShellIgnorePromise = ensureAttachmentIgnoreInner().catch((error) => {
-      reviewShellIgnorePromise = null;
+  const key = currentRoot();
+  if (!reviewShellIgnorePromises.has(key)) {
+    reviewShellIgnorePromises.set(key, ensureAttachmentIgnoreInner().catch((error) => {
+      reviewShellIgnorePromises.delete(key);
       throw error;
-    });
+    }));
   }
-  return reviewShellIgnorePromise;
+  return reviewShellIgnorePromises.get(key);
 }
 
 async function stageAttachment(params = {}) {
@@ -1327,12 +1416,12 @@ async function listTree(params = {}) {
   });
 
   return {
-    root,
+    root: currentRoot(),
     relPath: displayRel,
     entries,
     skipped,
     limit: DIRECTORY_ENTRY_LIMIT,
-    source: workspaceKind,
+    source: currentWorkspaceKind(),
   };
 }
 
@@ -1502,7 +1591,7 @@ async function repositorySemanticSnapshot() {
     "git",
     ["rev-parse", "--show-toplevel", "HEAD", "--abbrev-ref", "HEAD"],
     {
-      cwd: root,
+      cwd: currentRoot(),
       timeoutMs: 8_000,
       env: minimalCommandEnv(),
     },
@@ -1529,22 +1618,22 @@ async function repositorySemanticSnapshot() {
     branch = identityLines[2] || "";
     const [tracked, untracked, status, diff] = await Promise.all([
       captureProcess("git", ["ls-files", "-z"], {
-        cwd: root,
+        cwd: currentRoot(),
         timeoutMs: 12_000,
         env: minimalCommandEnv(),
       }),
       captureProcess("git", ["ls-files", "-z", "--others", "--exclude-standard"], {
-        cwd: root,
+        cwd: currentRoot(),
         timeoutMs: 12_000,
         env: minimalCommandEnv(),
       }),
       captureProcess("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
-        cwd: root,
+        cwd: currentRoot(),
         timeoutMs: 12_000,
         env: minimalCommandEnv(),
       }),
       captureProcess("git", ["diff", "--binary", "--no-ext-diff", "HEAD", "--"], {
-        cwd: root,
+        cwd: currentRoot(),
         timeoutMs: 20_000,
         env: minimalCommandEnv(),
       }),
@@ -1589,8 +1678,8 @@ async function repositorySemanticSnapshot() {
   const evidence = await repositorySemanticEvidence(manifestPaths);
   return {
     schema: "workspace_repository_semantic_observation@1",
-    projectId,
-    workspaceKind,
+    projectId: currentProjectId(),
+    workspaceKind: currentWorkspaceKind(),
     gitAvailable,
     headOid,
     branch,
@@ -1644,7 +1733,7 @@ function directEpistemicProfileRequest(params = {}) {
 
 async function directEpistemicFileDigest(relativePath, maxBytes) {
   const resolved = await resolveFileWithinRoot(relativePath);
-  if (!sameNativePath(resolved.realRoot, root) ||
+  if (!sameNativePath(resolved.realRoot, currentRoot()) ||
       !sameNativePath(resolved.fullPath, resolved.requestedFullPath)) {
     throw new Error("direct_epistemic_physical_path_rejected");
   }
@@ -1727,18 +1816,18 @@ async function directEpistemicUntrackedState(paths) {
 
 async function directEpistemicGitCapture() {
   const identity = await captureDigestProcess("git", ["rev-parse", "--show-toplevel", "HEAD", "--abbrev-ref", "HEAD"], {
-    cwd: root,
+    cwd: currentRoot(),
     timeoutMs: 10_000,
   });
   if (identity.exitCode !== 0 || identity.stdoutTruncated) throw new Error("direct_epistemic_git_identity_failed");
   const lines = identity.stdout.toString("utf8").split(/\r?\n/).filter(Boolean);
-  const realRoot = await fs.realpath(root);
-  const realGitRoot = await fs.realpath(lines[0] || root);
+  const realRoot = await fs.realpath(currentRoot());
+  const realGitRoot = await fs.realpath(lines[0] || currentRoot());
   if (!sameNativePath(realRoot, realGitRoot)) throw new Error("direct_epistemic_repository_root_mismatch");
   const [status, diff, untracked] = await Promise.all([
-    captureDigestProcess("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: root, timeoutMs: 20_000 }),
-    captureDigestProcess("git", ["diff", "--no-ext-diff", "--binary", "HEAD", "--"], { cwd: root, timeoutMs: 60_000, captureLimit: 0 }),
-    captureDigestProcess("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd: root, timeoutMs: 20_000 }),
+    captureDigestProcess("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: currentRoot(), timeoutMs: 20_000 }),
+    captureDigestProcess("git", ["diff", "--no-ext-diff", "--binary", "HEAD", "--"], { cwd: currentRoot(), timeoutMs: 60_000, captureLimit: 0 }),
+    captureDigestProcess("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd: currentRoot(), timeoutMs: 20_000 }),
   ]);
   if ([status, diff, untracked].some((entry) => entry.exitCode !== 0)) throw new Error("direct_epistemic_git_observation_failed");
   const untrackedPaths = untracked.stdout.toString("utf8").split("\0").filter(Boolean).sort();
@@ -2101,7 +2190,7 @@ async function repositoryRealizationContext(
         "HEAD",
       ],
       {
-        cwd: root,
+        cwd: currentRoot(),
         timeoutMs: 8_000,
         env: minimalCommandEnv(),
       },
@@ -2127,7 +2216,7 @@ async function repositoryRealizationContext(
               "--untracked-files=all",
             ],
             {
-              cwd: root,
+              cwd: currentRoot(),
               timeoutMs: 12_000,
               env: minimalCommandEnv(),
             },
@@ -2142,7 +2231,7 @@ async function repositoryRealizationContext(
               "--",
             ],
             {
-              cwd: root,
+              cwd: currentRoot(),
               timeoutMs: 20_000,
               env: minimalCommandEnv(),
             },
@@ -2155,8 +2244,8 @@ async function repositoryRealizationContext(
   return {
     schema:
       "workspace_aro_realization_context_observation@1",
-    projectId,
-    workspaceKind,
+    projectId: currentProjectId(),
+    workspaceKind: currentWorkspaceKind(),
     repositoryIdentity: {
       headOid:
         identityLines[0] || "",
@@ -2298,7 +2387,7 @@ async function readFilePreview(params = {}) {
     binary,
     limit,
     text: binary ? "" : buffer.toString("utf8"),
-    source: workspaceKind,
+    source: currentWorkspaceKind(),
   };
 }
 
@@ -2318,7 +2407,7 @@ async function readFileTransfer(params = {}) {
     size: stat.size,
     mimeType: mimeTypeForFileName(fileName),
     contentBase64: content.toString("base64"),
-    source: workspaceKind,
+    source: currentWorkspaceKind(),
   };
 }
 
@@ -2369,7 +2458,7 @@ async function listMatchingFiles(params = {}) {
   );
   const regexes = patterns.map(globToRegex).filter(Boolean);
   if (!regexes.length) {
-    return { root, patterns, entries: [], skipped: 0, scanned: 0, limit: MATCH_SCAN_LIMIT, source: workspaceKind };
+    return { root: currentRoot(), patterns, entries: [], skipped: 0, scanned: 0, limit: MATCH_SCAN_LIMIT, source: currentWorkspaceKind() };
   }
 
   const entries = [];
@@ -2407,7 +2496,7 @@ async function listMatchingFiles(params = {}) {
         await walk(childRel);
       } else if (type === "file" && !ignored.has(childRel) && matchesAnyPattern(childRel, regexes)) {
         try {
-          const stat = await fs.lstat(path.join(root, childRel.split("/").join(path.sep)));
+          const stat = await fs.lstat(path.join(currentRoot(), childRel.split("/").join(path.sep)));
           entries.push({
             name: dirent.name,
             relPath: childRel,
@@ -2426,14 +2515,14 @@ async function listMatchingFiles(params = {}) {
   await walk("");
   entries.sort((a, b) => b.mtimeMs - a.mtimeMs || a.relPath.localeCompare(b.relPath));
   return {
-    root,
+    root: currentRoot(),
     patterns,
     entries,
     skipped,
     scanned,
     limit: MATCH_SCAN_LIMIT,
     walkLimit: MATCH_WALK_LIMIT,
-    source: workspaceKind,
+    source: currentWorkspaceKind(),
   };
 }
 
@@ -2446,7 +2535,7 @@ async function resolvePathPreview(params = {}) {
     isFile: stat.isFile(),
     isDirectory: stat.isDirectory(),
     size: stat.size,
-    source: workspaceKind,
+    source: currentWorkspaceKind(),
   };
 }
 
@@ -2474,7 +2563,7 @@ async function captureDigestProcess(command, args, options = {}) {
     let spawned;
     try {
       spawned = spawnWorkspaceProcess(command, args, {
-        cwd: options.cwd || root,
+        cwd: options.cwd || currentRoot(),
         env: options.env || minimalCommandEnv(),
       });
     } catch (error) {
@@ -2696,61 +2785,6 @@ function minimalCommandEnv(extraEnv = {}) {
   return base;
 }
 
-function openTrustedUnshareLauncher() {
-  const noFollow = Number(fsSync.constants.O_NOFOLLOW || 0);
-  let fd;
-  try {
-    fd = fsSync.openSync(TRUSTED_UNSHARE_PATH, fsSync.constants.O_RDONLY | noFollow);
-    const before = fsSync.fstatSync(fd);
-    if (
-      !before.isFile() ||
-      before.uid !== 0 ||
-      (before.mode & 0o022) !== 0 ||
-      (before.mode & 0o111) === 0
-    ) {
-      const error = new Error("The Linux process-containment launcher failed its ownership or mode invariant.");
-      error.code = "workspace_linux_pid_namespace_launcher_untrusted";
-      throw error;
-    }
-    const digest = sha256Digest(fsSync.readFileSync(fd));
-    const after = fsSync.fstatSync(fd);
-    if (
-      before.dev !== after.dev ||
-      before.ino !== after.ino ||
-      before.size !== after.size ||
-      before.mtimeMs !== after.mtimeMs ||
-      before.ctimeMs !== after.ctimeMs
-    ) {
-      const error = new Error("The Linux process-containment launcher changed during verification.");
-      error.code = "workspace_linux_pid_namespace_launcher_changed";
-      throw error;
-    }
-    const identity = {
-      dev: String(after.dev),
-      ino: String(after.ino),
-      size: after.size,
-      mode: after.mode & 0o777,
-      uid: after.uid,
-      gid: after.gid,
-      digest,
-    };
-    const identityJson = canonicalJson(identity);
-    if (trustedUnshareIdentity && canonicalJson(trustedUnshareIdentity) !== identityJson) {
-      const error = new Error("The pinned Linux process-containment launcher identity drifted.");
-      error.code = "workspace_linux_pid_namespace_launcher_identity_drift";
-      throw error;
-    }
-    if (!trustedUnshareIdentity) trustedUnshareIdentity = identity;
-    return { fd, identity };
-  } catch (error) {
-    if (fd !== undefined) {
-      try { fsSync.closeSync(fd); } catch {}
-    }
-    if (!error.code) error.code = "workspace_linux_pid_namespace_launcher_unavailable";
-    throw error;
-  }
-}
-
 function containedWorkspaceProcessSpawn(command, args, options = {}) {
   const platform = options.platform || process.platform;
   if (platform !== "linux") {
@@ -2762,68 +2796,14 @@ function containedWorkspaceProcessSpawn(command, args, options = {}) {
       : "workspace_process_containment_unavailable";
     throw error;
   }
-  const { fd, identity } = openTrustedUnshareLauncher();
-  const requestedStdio = Array.isArray(options.stdio)
-    ? options.stdio.slice(0, 3)
-    : ["ignore", "pipe", "pipe"];
-  while (requestedStdio.length < 3) requestedStdio.push("pipe");
-  const unshareArgs = [
-    "--user",
-    "--map-current-user",
-    "--pid",
-    "--fork",
-    "--kill-child=SIGKILL",
-    "--mount-proc",
-    "--",
-    command,
-    ...args,
-  ];
-  // unshare does not die with its parent, so a SIGKILLed executor would
-  // orphan the namespace. setpriv sets PDEATHSIG and execs the launcher in
-  // place; the signal survives exec, and --kill-child then takes the tree.
-  const dieWithParent = options.dieWithParent === true && trustedSetprivAvailable();
   // exactEnv: the caller already built the environment (configured MCP
   // servers get their own allowlist, not the command one).
   const exactEnv = options.exactEnv === true && options.env && typeof options.env === "object";
-  const { dieWithParent: _dieWithParent, exactEnv: _exactEnv, ...spawnOptions } = options;
-  let child;
-  try {
-    child = spawn(
-      dieWithParent ? TRUSTED_SETPRIV_PATH : "/proc/self/fd/3",
-      dieWithParent ? ["--pdeathsig", "SIGKILL", "--", "/proc/self/fd/3", ...unshareArgs] : unshareArgs,
-      {
-      ...spawnOptions,
-      env: exactEnv ? { ...options.env } : minimalCommandEnv(options.env),
-      stdio: [...requestedStdio, fd],
-      shell: false,
-      windowsHide: true,
-      detached: true,
-      },
-    );
-    child.workspaceProcessContainment = {
-      guaranteed: true,
-      kind: "linux_pid_namespace",
-      launcherDigest: identity.digest,
-      diesWithParent: dieWithParent,
-    };
-    return child;
-  } finally {
-    fsSync.closeSync(fd);
-  }
-}
-
-const TRUSTED_SETPRIV_PATH = "/usr/bin/setpriv";
-let trustedSetprivChecked = null;
-
-function trustedSetprivAvailable() {
-  if (trustedSetprivChecked !== null) return trustedSetprivChecked;
-  try {
-    const stat = fsSync.statSync(TRUSTED_SETPRIV_PATH);
-    trustedSetprivChecked = stat.isFile() && stat.uid === 0 && (stat.mode & 0o022) === 0 && (stat.mode & 0o111) !== 0;
-  } catch {
-    trustedSetprivChecked = false;
-  }
-  return trustedSetprivChecked;
+  const { exactEnv: _exactEnv, platform: _platform, ...spawnOptions } = options;
+  return spawnInLinuxPidNamespace(command, args, {
+    ...spawnOptions,
+    env: exactEnv ? { ...options.env } : minimalCommandEnv(options.env),
+  });
 }
 
 function spawnWorkspaceProcess(command, args, options = {}) {
@@ -2872,7 +2852,7 @@ function parseGitStatusPorcelain(text) {
 
 async function workspaceEffectSnapshot() {
   const git = await captureProcess("git", ["status", "--porcelain"], {
-    cwd: root,
+    cwd: currentRoot(),
     timeoutMs: 5000,
     env: minimalCommandEnv(),
   }).catch((error) => ({ exitCode: 1, stderr: error.message, stdout: "" }));
@@ -3115,7 +3095,7 @@ function captureProcess(command, args, options = {}) {
     let spawned;
     try {
       spawned = spawnWorkspaceProcess(command, args, {
-        cwd: options.cwd || root,
+        cwd: options.cwd || currentRoot(),
         env: minimalCommandEnv(options.env),
       });
     } catch (error) {
@@ -3230,7 +3210,7 @@ function safeWorkspaceWorkerBranch(value) {
 
 async function exactGitWorkspace() {
   const result = await captureProcess("git", ["rev-parse", "--show-toplevel", "--git-dir"], {
-    cwd: root,
+    cwd: currentRoot(),
     timeoutMs: 10_000,
   });
   if (result.exitCode !== 0) {
@@ -3240,7 +3220,7 @@ async function exactGitWorkspace() {
   }
   const lines = String(result.stdout || "").split(/\r?\n/).filter(Boolean);
   const topLevel = path.resolve(lines[0] || "");
-  const realRoot = await fs.realpath(root);
+  const realRoot = await fs.realpath(currentRoot());
   const realTopLevel = await fs.realpath(topLevel);
   const rootsMatch = process.platform === "win32"
     ? realRoot.toLowerCase() === realTopLevel.toLowerCase()
@@ -3335,9 +3315,9 @@ async function provisionGitWorktree(params = {}) {
   const sourceRepositoryDigest = sha256Digest(git.topLevel);
   const bindingBase = {
     schema: "direct_workspace_worker_binding@1",
-    projectId,
+    projectId: currentProjectId(),
     workerKey,
-    workspaceKind,
+    workspaceKind: currentWorkspaceKind(),
     branch,
     baseCommit,
     rootEvidenceDigest,
@@ -3446,19 +3426,19 @@ async function workspaceWorkerGitIdentity() {
   return {
     branch,
     headCommit,
-    rootEvidenceDigest: sha256Digest(await fs.realpath(root)),
+    rootEvidenceDigest: sha256Digest(await fs.realpath(currentRoot())),
   };
 }
 
 async function verifyWorkspaceWorkerBindingRealization(binding, options = {}) {
   const identity = await workspaceWorkerGitIdentity();
   const expectedSessionProjectId = `${binding.projectId}__${binding.workerKey}`.slice(0, 180);
-  if (projectId !== expectedSessionProjectId) {
+  if (currentProjectId() !== expectedSessionProjectId) {
     const error = new Error("Workspace worker binding project does not match the resident session.");
     error.code = "workspace_worker_binding_project_mismatch";
     throw error;
   }
-  if (binding.workspaceKind !== workspaceKind) {
+  if (binding.workspaceKind !== currentWorkspaceKind()) {
     const error = new Error("Workspace worker binding kind does not match the resident session.");
     error.code = "workspace_worker_binding_kind_mismatch";
     throw error;
@@ -3479,7 +3459,7 @@ async function verifyWorkspaceWorkerBindingRealization(binding, options = {}) {
     throw error;
   }
   const ancestor = await captureProcess("git", ["merge-base", "--is-ancestor", binding.baseCommit, identity.headCommit], {
-    cwd: root,
+    cwd: currentRoot(),
     timeoutMs: 10_000,
   });
   if (ancestor.exitCode !== 0) {
@@ -3491,6 +3471,11 @@ async function verifyWorkspaceWorkerBindingRealization(binding, options = {}) {
 }
 
 async function initializeWorkspaceWorkerBinding(params = {}) {
+  if (environmentExecutor) {
+    const error = new Error("A workspace worker's binding needs its own dedicated executor.");
+    error.code = "workspace_worker_binding_requires_dedicated_executor";
+    throw error;
+  }
   const binding = workspaceWorkerBindingBase(params.binding);
   if (!binding.projectId || !/^[a-f0-9]{40,64}$/i.test(binding.baseCommit)) {
     const error = new Error("Workspace worker binding evidence is incomplete.");
@@ -3615,7 +3600,7 @@ async function workspaceWorkerCanonicalFileEntry(relativePath, trackedPaths) {
     const resolved = await resolveFileWithinRoot(safePath);
     const requestedPath = path.resolve(resolved.requestedFullPath);
     const physicalPath = path.resolve(resolved.fullPath);
-    if (!sameNativePath(resolved.realRoot, root) || !sameNativePath(requestedPath, physicalPath)) return null;
+    if (!sameNativePath(resolved.realRoot, currentRoot()) || !sameNativePath(requestedPath, physicalPath)) return null;
     const requestedStat = await fs.lstat(resolved.requestedFullPath);
     if (requestedStat.isSymbolicLink() || !requestedStat.isFile()) return null;
     return {
@@ -3632,12 +3617,12 @@ async function workspaceWorkerCanonicalManifest() {
   await exactGitWorkspace();
   const [trackedResult, manifestResult] = await Promise.all([
     captureDigestProcess("git", ["ls-files", "--cached", "-z"], {
-      cwd: root,
+      cwd: currentRoot(),
       timeoutMs: 20_000,
       captureLimit: DIRECT_WORKSPACE_WORKER_MANIFEST_BYTES,
     }),
     captureDigestProcess("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
-      cwd: root,
+      cwd: currentRoot(),
       timeoutMs: 20_000,
       captureLimit: DIRECT_WORKSPACE_WORKER_MANIFEST_BYTES,
     }),
@@ -3772,7 +3757,7 @@ function workspaceWorkerTestProfile(base, repositoryPolicy, containment) {
   const profileBase = {
     schema: "direct_workspace_worker_test_profile@1",
     ...base,
-    workspaceKind,
+    workspaceKind: currentWorkspaceKind(),
     repositoryPolicyDigest: repositoryPolicy.profileDigest,
   };
   return {
@@ -3791,7 +3776,7 @@ function probeLinuxWorkspaceProcessContainment() {
     let child;
     try {
       child = trackChildProcess(containedWorkspaceProcessSpawn("true", [], {
-        cwd: root,
+        cwd: environmentCwd(),
         env: minimalCommandEnv(),
       }), { systemOwned: true });
     } catch (error) {
@@ -3873,7 +3858,7 @@ async function directTestProfile() {
       available: false,
       unavailableReason: containment.blockerCode,
       targetsAllowed: false,
-      workspaceKind,
+      workspaceKind: currentWorkspaceKind(),
       actions: [],
       actionsAllowed: [],
       defaultAction: "",
@@ -3894,7 +3879,7 @@ async function directTestProfile() {
       targetsAllowed: pinned.actions.some((action) => action.targetsAllowed),
     }, repositoryPolicy, containment);
   }
-  const packageJsonPath = path.join(root, "package.json");
+  const packageJsonPath = path.join(currentRoot(), "package.json");
   if (await pathExists(packageJsonPath)) {
     try {
       const packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
@@ -3913,7 +3898,7 @@ async function directTestProfile() {
     } catch {}
   }
   const pythonMarkers = ["pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini"];
-  if ((await Promise.all(pythonMarkers.map((name) => pathExists(path.join(root, name))))).some(Boolean)) {
+  if ((await Promise.all(pythonMarkers.map((name) => pathExists(path.join(currentRoot(), name))))).some(Boolean)) {
     return workspaceWorkerTestProfile({
       profileId: "python_pytest",
       command: process.platform === "win32" ? "python" : "python3",
@@ -3925,7 +3910,7 @@ async function directTestProfile() {
       targetsAllowed: true,
     }, repositoryPolicy, containment);
   }
-  const makefilePath = path.join(root, "Makefile");
+  const makefilePath = path.join(currentRoot(), "Makefile");
   if (await pathExists(makefilePath)) {
     const body = await fs.readFile(makefilePath, "utf8").catch(() => "");
     if (/^test\s*:/m.test(body)) {
@@ -3947,7 +3932,7 @@ async function directTestProfile() {
     profileDigest: "",
     available: false,
     targetsAllowed: false,
-    workspaceKind,
+    workspaceKind: currentWorkspaceKind(),
     actions: [],
     actionsAllowed: [],
     defaultAction: "",
@@ -4267,7 +4252,7 @@ function toGitExcludePatternPath(value) {
 
 async function ensureCodexSandboxArtifactIgnored() {
   const git = await captureProcess("git", ["rev-parse", "--show-toplevel", "--git-path", "info/exclude"], {
-    cwd: root,
+    cwd: currentRoot(),
     timeoutMs: 5000,
   }).catch((error) => ({ exitCode: 1, stderr: error.message }));
   if (git.exitCode !== 0) {
@@ -4280,10 +4265,10 @@ async function ensureCodexSandboxArtifactIgnored() {
   }
 
   const lines = String(git.stdout || "").split(/\r?\n/).filter(Boolean);
-  const topLevel = path.resolve(lines[0] || root);
+  const topLevel = path.resolve(lines[0] || currentRoot());
   const rawExcludePath = lines[1] || ".git/info/exclude";
-  const excludePath = path.isAbsolute(rawExcludePath) ? rawExcludePath : path.resolve(root, rawExcludePath);
-  const relRoot = path.relative(topLevel, root);
+  const excludePath = path.isAbsolute(rawExcludePath) ? rawExcludePath : path.resolve(currentRoot(), rawExcludePath);
+  const relRoot = path.relative(topLevel, currentRoot());
   const relPattern = toGitExcludePatternPath(relRoot);
   const pattern = relPattern ? `/${relPattern}/${CODEX_SANDBOX_ARTIFACT_NAME}` : `/${CODEX_SANDBOX_ARTIFACT_NAME}`;
 
@@ -4616,8 +4601,8 @@ async function listCodexThreads(params = {}) {
     : allEntries.filter((entry) => String(entry.threadId || "").trim());
   const entries = sortCodexThreadEntries(deduped).slice(0, limit);
   return {
-    root,
-    source: workspaceKind,
+    root: currentRootOrEmpty(),
+    source: currentWorkspaceKind(),
     codexHome: codexHomes[0] || "",
     sourceHomes: codexHomes,
     entries,
@@ -5562,8 +5547,8 @@ async function readCodexThreadTranscript(params = {}) {
   }));
 
   return {
-    root,
-    source: workspaceKind,
+    root: currentRootOrEmpty(),
+    source: currentWorkspaceKind(),
     threadId,
     sourceHome: session.sourceHome,
     title: session.title,
@@ -6021,7 +6006,7 @@ function executorProcessError(code, message) {
 function executorPlanner() {
   if (!executorProcessPlanner) {
     executorProcessPlanner = new LocalChildProcessBackend({
-      workspaceRootResolver: () => root,
+      workspaceRootResolver: () => currentRoot(),
       workspaceLocalityResolver: () => true,
     });
   }
@@ -6290,7 +6275,7 @@ async function executorMcpRequest(params = {}) {
     transportKind: "stdio",
     command: typeof source.command === "string" ? source.command : "",
     args: Array.isArray(source.args) ? source.args.map(String) : [],
-    cwd: typeof source.cwd === "string" && source.cwd.trim() ? source.cwd : root,
+    cwd: typeof source.cwd === "string" && source.cwd.trim() ? source.cwd : currentRoot(),
     processEnv,
   };
   const controller = new AbortController();
@@ -6395,7 +6380,7 @@ async function executorFsList(params = {}) {
 let executorFilePort = null;
 
 function executorFiles() {
-  if (!executorFilePort) executorFilePort = new LocalFilePort({ workspaceRootResolver: () => root });
+  if (!executorFilePort) executorFilePort = new LocalFilePort({ workspaceRootResolver: () => currentRoot() });
   return executorFilePort;
 }
 
@@ -6447,16 +6432,22 @@ async function executorFsApplyPlannedPatch(params = {}) {
 
 async function handleRequest(method, params = {}) {
   if (method === "hello") {
-    const stat = await fs.stat(root);
-    if (!stat.isDirectory()) throw new Error("Workspace root is not a directory.");
+    // With a project (named in the request, or bound at launch) hello checks
+    // its folder and echoes it; an environment executor's own hello has none.
+    const project = currentProjectContext();
+    if (project) {
+      const stat = await fs.stat(project.root);
+      if (!stat.isDirectory()) throw new Error("Workspace root is not a directory.");
+    }
     const containment = await workspaceProcessContainmentStatus();
     const processBacked = containment.available === true;
     return {
       protocolVersion: PROTOCOL_VERSION,
       sessionId,
-      projectId,
-      workspaceKind,
-      root,
+      projectId: project?.projectId || "",
+      workspaceKind: currentWorkspaceKind(),
+      root: project?.root || "",
+      environmentExecutor,
       platform: process.platform,
       pid: process.pid,
       node: process.version,
@@ -6522,8 +6513,8 @@ async function handleRequest(method, params = {}) {
     return describeExecutionEnvironment({
       containment: windowsRunner || await workspaceProcessContainmentStatus(),
       sandbox: windowsRunner ? { available: windowsRunner.available, kind: windowsRunner.kind } : undefined,
-      root,
-      workspaceKind,
+      root: currentRootOrEmpty(),
+      workspaceKind: currentWorkspaceKind(),
     });
   }
   if (method === "listTree") return listTree(params);
@@ -6704,9 +6695,9 @@ async function handleLine(line) {
     result = requestScope
       ? await cancellableRequestContext.run(
           requestScope,
-          () => handleRequest(request.method, request.params || {}),
+          () => handleRequestInProject(request.method, request.params || {}),
         )
-      : await handleRequest(request.method, request.params || {});
+      : await handleRequestInProject(request.method, request.params || {});
   } catch (error) {
     requestError = mutationCommitFailureError(requestScope, error);
   } finally {
@@ -6742,13 +6733,15 @@ async function handleLine(line) {
 }
 
 async function main() {
-  try {
-    const stat = await fs.stat(root);
-    if (!stat.isDirectory()) throw new Error(`${root} is not a directory.`);
-  } catch (error) {
-    sendEvent("startup-error", { root, workspaceKind, projectId, error: error.message });
-    process.exitCode = 2;
-    return;
+  if (launchProject) {
+    try {
+      const stat = await fs.stat(launchProject.root);
+      if (!stat.isDirectory()) throw new Error(`${launchProject.root} is not a directory.`);
+    } catch (error) {
+      sendEvent("startup-error", { ...launchProject, error: error.message });
+      process.exitCode = 2;
+      return;
+    }
   }
 
   // The host stops executors with SIGTERM (and wsl.exe teardown can deliver
@@ -6760,9 +6753,10 @@ async function main() {
 
   sendEvent("ready", {
     protocolVersion: PROTOCOL_VERSION,
-    root,
-    workspaceKind,
-    projectId,
+    root: launchProject?.root || "",
+    workspaceKind: executorWorkspaceKind,
+    projectId: launchProject?.projectId || "",
+    environmentExecutor,
     pid: process.pid,
     platform: process.platform,
   });

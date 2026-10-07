@@ -267,9 +267,9 @@ try {
   report.checks.push("host_keeps_envelope_for_remote_servers");
 
   // 6. Containment: whatever a server starts dies with it (job runner on
-  // Windows, PID namespace in a WSL executor). Host-local servers on a Linux
-  // host are not tree-contained, so that case is not probed (it would leak).
-  const contained = [[otherSide, otherProject, inProject], ...(onWindows ? [[hostSide, localProject, local]] : [])];
+  // Windows, PID namespace on Linux), in the other environment's executor and
+  // for servers the host runs itself.
+  const contained = [[otherSide, otherProject, inProject], [hostSide, localProject, local]];
   for (const [side, project, server] of contained) {
     const result = await read(project, server, "mcp://env/grandchild");
     assert.equal(result.payload, "started");

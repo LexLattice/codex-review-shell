@@ -87,6 +87,8 @@ class ExecutorProcessHandle extends EventEmitter {
       if (this.state !== "starting") return;
       const result = await this.transport.request(EXECUTOR_METHODS.processStart, {
         processSessionId: this.sessionId,
+        // The environment executor resolves cwd and the sandbox against it.
+        projectContext: session.projectContext,
         sandboxMode: this.plan.sandboxMode,
         cwd: this.plan.cwd,
         shellCommand: this.plan.shellCommand,
