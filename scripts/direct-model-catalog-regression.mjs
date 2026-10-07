@@ -432,6 +432,28 @@ try {
     assert.match(html, /<select id="directProjectBindingDefaultModel" name="defaultModel">/);
   });
 
+  await check("both pages that run codex-surface.js load the scripts it needs, and a click redraws before saving", () => {
+    const renderer = fs.readFileSync(path.join(repoRoot, "src/renderer/codex-surface.js"), "utf8");
+    const providers = {
+      CodexAppServerEvidence: "codex-app-server-evidence.js",
+      CodexTypedMarkdownProjection: "typed-markdown-projection.js",
+      DirectRuntimePreferenceWriteCoordinator: "runtime-preference-write-coordinator.js",
+      DirectWorkbenchThreadDirectoryModel: "direct-thread-directory-model.js",
+    };
+    for (const page of ["codex-surface.html", "t3-direct-surface.html"]) {
+      const html = fs.readFileSync(path.join(repoRoot, "src/renderer", page), "utf8");
+      const surfaceAt = html.indexOf('src="./codex-surface.js"');
+      for (const [global, script] of Object.entries(providers)) {
+        assert.ok(renderer.includes(`window.${global}`), `codex-surface.js uses ${global}`);
+        const at = html.indexOf(`src="./${script}"`);
+        assert.ok(at >= 0 && at < surfaceAt, `${page} loads ${script} before codex-surface.js`);
+      }
+    }
+    const setter = renderer.slice(renderer.indexOf("function setRuntimeOverride("), renderer.indexOf("async function flushRuntimePreferenceWrites("));
+    assert.ok(setter.indexOf("renderRuntimeConstitution();") < setter.indexOf("ensureRuntimePreferenceWriteCoordinator().enqueue"), "the UI redraws before the save is attempted");
+    assert.match(setter, /try \{\s*ensureRuntimePreferenceWriteCoordinator\(\)\.enqueue\(scope, requested\);\s*\} catch/);
+  });
+
   await check("a refused model fails the turn with the provider's reason and refreshes the list", async () => {
     const refreshes = [];
     const { events } = await runOneTurn({

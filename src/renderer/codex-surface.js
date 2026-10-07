@@ -4171,14 +4171,23 @@ function setRuntimeOverride(name, value) {
     : runtimePreferenceFields("thread-model").includes(name)
       ? "thread-model"
       : "";
+  // Show the choice first: saving it must never be able to stop the UI from
+  // reflecting the click.
+  renderRuntimeConstitution();
   if (scope) {
     const requested = {
       ...state.runtimeOverrides,
       __runtimePreferenceRequest: runtimePreferencesRequest(),
     };
-    ensureRuntimePreferenceWriteCoordinator().enqueue(scope, requested);
+    try {
+      ensureRuntimePreferenceWriteCoordinator().enqueue(scope, requested);
+    } catch (error) {
+      state.runtimePreferencesStatus = "failed";
+      state.runtimePreferencesError = String(error?.message || error);
+      console.error("Unable to save the runtime choice", error);
+      renderRuntimeConstitution();
+    }
   }
-  renderRuntimeConstitution();
 }
 
 async function flushRuntimePreferenceWrites() {

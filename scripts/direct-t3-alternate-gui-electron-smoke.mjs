@@ -269,6 +269,26 @@ try {
   );
   await page.screenshot({ path: threadDirectoryScreenshotPath, fullPage: true });
 
+  // A picker click shows at once, with the menu still open, and is saved to
+  // the thread. (The Workbench page once lacked the preference-write
+  // coordinator, so clicks threw before the UI could redraw.)
+  await page.locator("#composerModelButton").click();
+  await page.waitForSelector("#composerModelMenu:not([hidden])");
+  const effortChoice = await page.evaluate(() => {
+    const items = [...document.querySelectorAll("#composerModelMenu .composer-menu-section:first-child .composer-menu-item")];
+    return items.find((item) => item.dataset.value && !item.classList.contains("selected"))?.dataset.value || "";
+  });
+  assert.ok(effortChoice, "the picker offers an effort to choose");
+  await page.locator(`#composerModelMenu .composer-menu-section:first-child .composer-menu-item[data-value="${effortChoice}"]`).click();
+  assert.match(await page.locator("#composerModelButton").innerText(), new RegExp(`\\b${effortChoice}\\b`), "the button shows the choice immediately");
+  assert.equal(await page.locator("#composerModelMenu").isVisible(), true, "the menu stays open");
+  await page.waitForFunction(async ({ threadId, effort }) => {
+    const read = await window.codexSurfaceBridge.getRuntimePreferences({ projectId: "project_t3_gui_fixture", threadId, sourceHome: "", sessionFilePath: "" });
+    return read?.threadDefaults?.reasoningEffort === effort;
+  }, { threadId: firstProjectThreadId, effort: effortChoice }, { timeout: 10_000 });
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("#composerModelMenu", { state: "hidden" });
+
   const worldManagerAuthorityExposed = await page.evaluate(
     () => typeof window.codexSurfaceBridge.getWorldManagerSnapshot === "function",
   );

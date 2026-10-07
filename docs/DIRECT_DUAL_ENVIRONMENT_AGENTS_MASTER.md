@@ -852,6 +852,27 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
       `check:syntax`, `validate`, and the Workbench Electron smoke pass; the
       full sweep is 267 of 286, failures identical to **Known failing
       checks**. No live turn with Fast or Daybreak was run.
+  - **Follow-up: picker clicks didn't show until the menu was reopened.**
+    Only the effort slider, which paints itself while dragging, responded.
+    The cause was older than the redesign: the Workbench page
+    (`t3-direct-surface.html`) never loaded
+    `runtime-preference-write-coordinator.js`, which `codex-surface.html`
+    does. Every choice set the in-memory value and then threw "Runtime
+    preference write coordinator is unavailable." while saving, before the
+    redraw. In the Workbench, model, effort, Fast, and Daybreak were
+    therefore never saved to the thread. Turns still used them because the
+    composer sends them with each turn, but reopening a thread lost them.
+    This was also behind the earlier "the button doesn't change" report.
+    - The page now loads the coordinator. `setRuntimeOverride` redraws
+      before saving, and a failed save is reported without blocking the
+      redraw.
+    - The Workbench Electron smoke now clicks an effort in the real picker.
+      It checks that the button changes at once with the menu still open,
+      and that the choice reaches the thread's saved settings. Without the
+      fix it fails on exactly this. The catalog regression (17 checks)
+      checks that both pages load every script `codex-surface.js` needs.
+      It passes on both hosts. `check:syntax` and `validate` pass, and the
+      sweep is 267 of 286, failures identical to **Known failing checks**.
 
 ### Turn 10: cross-environment delegation
 
