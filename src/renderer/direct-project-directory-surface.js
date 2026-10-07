@@ -615,7 +615,7 @@
     editorWslPath.value = workspace.linuxPath || "";
     editorWindowsPath.value = workspace.windowsPath || "";
     editorLocalPath.value = workspace.localPath || "";
-    editorRuntimePath.value = fields.runtimePath || "app-server";
+    editorRuntimePath.value = fields.runtimePath || "direct-implementation";
     fillDefaultModelOptions(fields.defaultModel || "");
     if (editorDelegationAccess) editorDelegationAccess.value = fields.delegationAccess || "";
     if (editorDelegationSubfolders) editorDelegationSubfolders.checked = fields.delegationSubfolders === true;

@@ -481,6 +481,7 @@ try {
   assert.equal(await page.locator("#directProjectBindingEditorTitle").innerText(), "New project");
   assert.match(await page.locator("#directProjectBindingStatus").innerText(), /Choose the environment and folder/);
   assert.equal(await page.locator("#directProjectBindingCommit").innerText(), "Create project");
+  assert.equal(await page.locator("#directProjectBindingRuntimePath").inputValue(), "direct-implementation", "new projects run with Direct");
   await page.locator("#directProjectBindingName").fill("Local Direct GUI Fixture");
   // When the host lists its environments, the picker replaces the typed kind
   // and distro fields; pick this machine's environment and browse to the
