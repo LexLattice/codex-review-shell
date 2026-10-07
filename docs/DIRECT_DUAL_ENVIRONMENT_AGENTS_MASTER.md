@@ -410,7 +410,7 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ### Turn 6: Windows containment and sandbox spike (time-boxed)
 
-- Status: planned
+- Status: done
 - Scope: check whether the installed Codex package's Windows sandbox runner
   (`codex-windows-sandbox`, Apache-2.0) covers Job Object kill-on-close, tree
   kill, and a workspace-write restricted token. If not, choose a minimal
