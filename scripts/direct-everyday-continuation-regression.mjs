@@ -48,13 +48,16 @@ const authStore = {
   readCredentials: () => ({ accessToken: "fixture" }),
 };
 
-async function runRoute(root, threaded) {
+// workThread: the thread starts bound to a work thread, as every Workbench
+// thread does, so each turn goes through controlled routing. Its routing
+// binding digest must not be mistaken for the grant's environment digest.
+async function runRoute(root, threaded, options = {}) {
   const workspace = path.join(root, "workspace");
   await fs.mkdir(workspace, { recursive: true });
   await fs.writeFile(path.join(workspace, "calc.js"), initialSource);
   await fs.writeFile(path.join(workspace, "test.js"), testSource);
   const project = {
-    id: threaded ? "with_thread_store" : "without_thread_store", name: "Continuation regression",
+    id: options.workThread ? "with_work_thread" : threaded ? "with_thread_store" : "without_thread_store", name: "Continuation regression",
     workspace: { kind: "local", localPath: workspace },
     surfaceBinding: { codex: { runtimeMode: "direct", directTransport: "live-text", directTier: "implementation-lane" } },
   };
@@ -87,6 +90,7 @@ async function runRoute(root, threaded) {
     const context = { project, ownerControlled: true, surfaceSession: surface };
     const started = await controller.handleRequest("thread/start", {
       title: "Read repair test", model: "gpt-5.6-sol", reasoningEffort: "max", serviceTier: "flex", accessProfile: "full_access",
+      ...(options.workThread ? { workThreadId: "work_thread_continuation_regression" } : {}),
     }, context);
     const taskId = started.thread.id;
     const prompt = "Read calc.js, repair addition, and run test.js. Preserve the test file.";
@@ -193,6 +197,7 @@ const root = await fs.mkdtemp(path.join(os.tmpdir(), "direct-continuity-regressi
 try {
   const routes = [];
   for (const threaded of [false, true]) routes.push(await runRoute(path.join(root, String(threaded)), threaded));
+  routes.push({ ...(await runRoute(path.join(root, "work-thread"), true, { workThread: true })), workThread: true });
   await pollBoundary(root);
   console.log(JSON.stringify({ ok: true, routes, readRepairTest: true, terminalPollAuthorization: true }));
 } finally {

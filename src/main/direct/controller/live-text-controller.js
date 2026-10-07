@@ -1674,7 +1674,13 @@ function composeImplementationToolBundleForRequest(input = {}) {
     externalCapabilityProfile: input.externalCapabilityProfile,
     providerHostedToolsStatus: input.providerHostedToolsStatus,
     providerHostedActivationSnapshot: input.providerHostedToolsStatus?.activationSnapshot,
-    executionEnvironmentDigest: input.executionEnvironmentDigest || input.workThreadBindingDigest || controlledRoutingResult?.workThreadBinding?.bindingDigest || contextResult?.workThreadBinding?.bindingDigest,
+    // A task grant is scoped to the thread's execution environment, the
+    // digest recorded with the grant. A work-thread binding digest describes
+    // the routing context (and changes per turn), so it never stands in for
+    // that scope when a grant is checked.
+    executionEnvironmentDigest: input.harnessGrant
+      ? normalizeString(input.executionEnvironmentDigest, "")
+      : input.executionEnvironmentDigest || input.workThreadBindingDigest || controlledRoutingResult?.workThreadBinding?.bindingDigest || contextResult?.workThreadBinding?.bindingDigest,
     harnessGrant: input.harnessGrant,
     sourceMessageRef: directToolEvidenceRef("source_message", input.sourceMessageId || `${turnId}_user`, "Direct user message"),
     normalizedLaneRequestRef: directToolEvidenceRef("normalized_lane_request", input.normalizedLaneRequestId || `normalized_lane_request_${turnId}`, "Implementation lane request"),
@@ -2104,6 +2110,18 @@ class DirectLiveTextController {
     this.statefulExecDisposePromise = null;
   }
 
+  // The execution environment a thread's grant must be scoped to: the digest
+  // recorded when its access was chosen.
+  grantEnvironmentDigest(sessionOrId, project = {}) {
+    const session = typeof sessionOrId === "string"
+      ? this.sessionStore.readSession(sessionOrId) || {}
+      : isPlainObject(sessionOrId) ? sessionOrId : {};
+    return normalizeString(
+      session.executionEnvironmentDigest || session.workThreadBindingDigest || project.executionEnvironmentDigest,
+      "",
+    );
+  }
+
   resolveHarnessGrant(project = {}, session = {}) {
     const projectId = normalizeString(project.id || project.projectId || session.projectId, "");
     const threadId = normalizeString(session.sessionId || session.threadId, "");
@@ -2111,10 +2129,7 @@ class DirectLiveTextController {
       taskId: threadId,
       threadId,
       projectId,
-      executionEnvironmentDigest: normalizeString(
-        session.executionEnvironmentDigest || session.workThreadBindingDigest || project.executionEnvironmentDigest,
-        "",
-      ),
+      executionEnvironmentDigest: this.grantEnvironmentDigest(session, project),
       grantId: normalizeString(session.harnessGrantId, ""),
     };
     let grant = null;
@@ -6956,6 +6971,7 @@ class DirectLiveTextController {
           externalCapabilityProfile: directStatus.externalCapabilityProfile,
           providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
           harnessGrant,
+          executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
           roleLedgerToolBundle: ledgerContinuation ? ledgerBinding?.bundle : null,
         }), project, sessionId, harnessGrant)
       : { tools: [], toolNames: [] };
@@ -8839,6 +8855,7 @@ class DirectLiveTextController {
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
       harnessGrant,
+      executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
@@ -9081,6 +9098,7 @@ class DirectLiveTextController {
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
       harnessGrant,
+      executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
@@ -9339,6 +9357,7 @@ class DirectLiveTextController {
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
       harnessGrant,
+      executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
@@ -9924,7 +9943,8 @@ class DirectLiveTextController {
         activeSubAgentPolicySemanticResult = null;
         this.emitNotification(context.surfaceSession, "warning", {
           threadId: session.sessionId,
-          message: "Sub-agent policy check was unavailable for this message, so the existing sub-agent policy stays in effect.",
+          code: activeSubAgentPolicySemanticFailureCode,
+          message: `Sub-agent policy check was unavailable for this message (${activeSubAgentPolicySemanticFailureCode}), so the existing sub-agent policy stays in effect.`,
         });
       }
       this.assertOpen();
@@ -10035,6 +10055,7 @@ class DirectLiveTextController {
           externalCapabilityProfile: status.externalCapabilityProfile,
           providerHostedToolsStatus: status.providerHostedToolsStatus,
           harnessGrant,
+          executionEnvironmentDigest: this.grantEnvironmentDigest(session, project),
         })
       : null;
     let requestBody = implementationTier
@@ -10176,6 +10197,7 @@ class DirectLiveTextController {
               providerHostedToolsStatus: status.providerHostedToolsStatus,
               roleLedgerToolBundle: epistemicLedgerTurnBinding?.bundle,
               harnessGrant,
+              executionEnvironmentDigest: this.grantEnvironmentDigest(session, project),
             })
           : null;
         selfConstitutionSnapshot = implementationTier

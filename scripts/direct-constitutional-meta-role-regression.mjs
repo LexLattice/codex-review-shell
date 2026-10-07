@@ -133,6 +133,37 @@ assert.equal(
   "constitutional_meta_role_provider_fallback",
 );
 
+// With the account's live list, a model only the bundled profile knows
+// (an old profile still lists spark) isn't offered, so it isn't picked:
+// picking it made every semantic preflight fail.
+const liveListSelection = resolveConstitutionalMetaRoleRuntimeSelection({
+  invocation,
+  realizationPolicy: semanticRouterPolicy,
+  catalog: {
+    providerDefaultModel: "gpt-6.1-sol",
+    bundledDefaultModel: "gpt-5.5",
+    models: [
+      { id: "gpt-6.1-sol", source: "server_model_list", defaultReasoningEffort: "medium", supportedReasoningEfforts: ["low", "medium", "high"] },
+      { id: "gpt-5.5", source: "server_model_list", defaultReasoningEffort: "medium" },
+      { id: "gpt-5.3-codex-spark", source: "bundled_profile", defaultReasoningEffort: "high" },
+    ],
+  },
+});
+assert.equal(liveListSelection.model, "gpt-6.1-sol");
+assert.equal(liveListSelection.modelSource, "constitutional_meta_role_provider_fallback");
+const liveSparkSelection = resolveConstitutionalMetaRoleRuntimeSelection({
+  invocation,
+  realizationPolicy: semanticRouterPolicy,
+  catalog: {
+    providerDefaultModel: "gpt-6.1-sol",
+    models: [
+      { id: "gpt-6.1-sol", source: "server_model_list" },
+      { id: "gpt-5.3-codex-spark", source: "server_model_list", defaultReasoningEffort: "high" },
+    ],
+  },
+});
+assert.equal(liveSparkSelection.model, "gpt-5.3-codex-spark", "a listed spark is still preferred");
+
 const autoReviewPolicy = buildConstitutionalMetaRoleRealizationPolicy({
   realizationPolicyId: "auto_review.realization@1",
   metaRoleId: "auto_review",
@@ -312,6 +343,7 @@ console.log(JSON.stringify({
     narrowAuthorityRequiresExactGrant: true,
     sparkHighPreferredIndependently: true,
     providerFallbackIsExplicit: true,
+    unlistedBundledModelNotPicked: true,
     ordinaryRolePickerExcluded: true,
     invocationLineagePersisted: true,
     semanticIngressUsesCompiledMetaRole: true,
