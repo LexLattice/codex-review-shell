@@ -91,7 +91,7 @@ const scriptOrder = ["direct-environment-ux-model.js", "codex-surface.js", "dire
 assert(scriptOrder.every((position) => position > 0) && scriptOrder[0] < scriptOrder[1] && scriptOrder[1] < scriptOrder[2], "the model loads before its users");
 assert.match(html, /<option value="direct-text" hidden>/, "Direct · text stays only for existing projects");
 const runtimeSelect = html.slice(html.indexOf('id="directProjectBindingRuntimePath"'), html.indexOf("</select>", html.indexOf('id="directProjectBindingRuntimePath"')));
-assert.deepEqual([...runtimeSelect.matchAll(/<option value="([^"]+)"(?! hidden)>/g)].map((match) => match[1]), ["app-server", "direct-implementation"]);
+assert.deepEqual([...runtimeSelect.matchAll(/<option value="([^"]+)"(?! hidden)>/g)].map((match) => match[1]), ["direct-implementation", "app-server"], "Direct (native tools) is offered first");
 const preload = await read("src/preload-codex-surface.js");
 const workbenchBlock = preload.slice(preload.indexOf("if (directWorkbenchPreload)"));
 assert.match(workbenchBlock, /listDirectWorkbenchEnvironments: \(\) =>\s*ipcRenderer\.invoke\("direct-workbench:environments"\)/);

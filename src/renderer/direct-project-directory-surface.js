@@ -20,7 +20,6 @@
   const editorTitle = document.getElementById("directProjectBindingEditorTitle");
   const editorMeta = document.getElementById("directProjectBindingEditorMeta");
   const editorStatus = document.getElementById("directProjectBindingStatus");
-  const editorIdentityWitness = document.getElementById("directProjectBindingIdentityWitness");
   const editorName = document.getElementById("directProjectBindingName");
   const editorWorkspaceKind = document.getElementById("directProjectBindingWorkspaceKind");
   const editorWorkspaceLabel = document.getElementById("directProjectBindingWorkspaceLabel");
@@ -54,6 +53,7 @@
   const editorEnvironmentField = document.getElementById("directProjectBindingEnvironmentField");
   const editorEnvironment = document.getElementById("directProjectBindingEnvironment");
   const editorEnvironmentNote = document.getElementById("directProjectBindingEnvironmentNote");
+  const editorEnvironmentChange = document.getElementById("directProjectBindingEnvironmentChange");
   const editorWorkspaceKindField = document.getElementById("directProjectBindingWorkspaceKindField");
   const editorWslDistroField = document.getElementById("directProjectBindingWslDistroField");
   const browseButtons = Array.from(document.querySelectorAll("[data-direct-folder-browse]"));
@@ -95,6 +95,9 @@
     browserRequestId: 0,
     requestedEditorMode: "create",
     editorSession: 0,
+    originalWorkspace: null,
+    environmentAdopted: false,
+    autoName: "",
   };
 
   function createElement(tagName, className = "", text = "") {
@@ -130,31 +133,31 @@
     const labels = {
       active_turn_in_current_project: "Finish the active turn before switching projects.",
       active_turn_in_target_project: "The target project still has active work.",
-      project_activation_in_progress: "Another project activation is in progress.",
-      project_substrate_unknown: "The target project has no recognized substrate binding.",
-      project_runtime_unconfigured: "The target project has no configured runtime.",
-      project_activation_source_stale: "The active project changed; refresh the directory.",
-      project_catalog_revision_stale: "Project evidence changed; refresh before switching.",
-      project_activation_target_unknown: "The target project is no longer configured.",
-      client_activation_id_reused: "This activation request identity was already used.",
-      client_mutation_id_required: "The save request has no stable identity; retry it.",
-      client_mutation_id_reused: "This save request identity was already used for another binding.",
-      project_binding_source_stale: "The active project changed; reopen the binding draft.",
-      project_binding_target_unknown: "The project binding no longer exists.",
-      project_binding_revision_stale: "This binding changed after the draft opened; reopen it before saving.",
-      project_binding_mutation_in_progress: "Another project binding is currently being saved.",
+      project_activation_in_progress: "Another project is opening.",
+      project_substrate_unknown: "This project has no environment set. Edit it to choose one.",
+      project_runtime_unconfigured: "This project has no agent runtime set. Edit it to choose one.",
+      project_activation_source_stale: "The current project changed; refresh the list.",
+      project_catalog_revision_stale: "Projects changed; refresh the list and try again.",
+      project_activation_target_unknown: "That project no longer exists.",
+      client_activation_id_reused: "That request was already sent; try again.",
+      client_mutation_id_required: "Saving failed; try again.",
+      client_mutation_id_reused: "That save was already sent; try again.",
+      project_binding_source_stale: "The current project changed; close and reopen this form.",
+      project_binding_target_unknown: "That project no longer exists.",
+      project_binding_revision_stale: "This project changed while the form was open; close and reopen it.",
+      project_binding_mutation_in_progress: "Another project is being saved.",
       project_binding_name_required: "Give the project a name.",
-      project_binding_workspace_kind_invalid: "Choose a supported workspace environment.",
-      project_binding_wsl_path_invalid: "Use an absolute Linux path beginning with /.",
-      project_binding_windows_path_invalid: "Use an absolute Windows drive or UNC path.",
-      project_binding_local_path_invalid: "Use an absolute local path.",
-      project_binding_runtime_path_invalid: "Choose a supported Direct runtime path.",
-      project_binding_archived: "Archived bindings must be restored before activation or editing.",
-      project_lifecycle_active_project_forbidden: "Switch away from this project before changing its lifecycle.",
-      project_lifecycle_archive_state_invalid: "Only an active binding can be archived.",
-      project_lifecycle_restore_state_invalid: "Only an archived binding can be restored.",
-      project_lifecycle_delete_state_invalid: "A binding must be archived before deletion.",
-      project_lifecycle_delete_confirmation_invalid: "Type the exact deletion phrase before removing the binding.",
+      project_binding_workspace_kind_invalid: "Choose an environment.",
+      project_binding_wsl_path_invalid: "Choose a folder: a Linux path starting with /.",
+      project_binding_windows_path_invalid: "Choose a folder: a Windows path like C:\\Work\\project.",
+      project_binding_local_path_invalid: "Choose a folder: a full path on this machine.",
+      project_binding_runtime_path_invalid: "Choose what the agent runs with.",
+      project_binding_archived: "Restore this project before opening or editing it.",
+      project_lifecycle_active_project_forbidden: "Open another project before archiving or deleting this one.",
+      project_lifecycle_archive_state_invalid: "Only a project that isn't archived can be archived.",
+      project_lifecycle_restore_state_invalid: "Only an archived project can be restored.",
+      project_lifecycle_delete_state_invalid: "Archive a project before deleting it.",
+      project_lifecycle_delete_confirmation_invalid: "Type the exact phrase to confirm deletion.",
       project_lifecycle_action_invalid: "Choose a supported lifecycle action.",
       client_lifecycle_id_required: "The lifecycle request has no stable identity; retry it.",
       client_lifecycle_id_reused: "This lifecycle request identity was already used for another transition.",
@@ -170,10 +173,10 @@
   function renderStatus() {
     const transition = view.directory?.transition || {};
     let state = "ready";
-    let text = "Choose a configured project. Main revalidates its substrate and runtime before switching.";
+    let text = "";
     if (view.loading && !view.directory) {
       state = "loading";
-      text = "Loading configured project evidence…";
+      text = "Loading projects…";
     } else if (view.error) {
       state = "failed";
       text = blockerLabel(view.error);
@@ -181,16 +184,23 @@
       state = "activating";
       const target = (view.directory?.projects || []).find((row) =>
         row.projectId === (view.localTargetProjectId || transition.targetProjectId));
-      text = `Activating ${target?.displayName || "project"}… runtime teardown and rebinding are main-owned.`;
+      text = `Opening ${target?.displayName || "project"}…`;
     } else if (transition.state === "failed") {
       state = "failed";
       text = blockerLabel(transition.reason || "project_activation_failed");
-    } else if (transition.state === "completed") {
-      state = "ready";
-      text = "Project activation completed. The displayed project is the authoritative active selection.";
     }
     directoryStatus.dataset.state = state;
     directoryStatus.textContent = text;
+    directoryStatus.hidden = !text;
+  }
+
+  // What a project's threads run with, in the editor's words.
+  function runtimeLabel(runtime = {}) {
+    const runtimePath = runtime.runtimePath || "";
+    if (runtimePath === "direct-implementation") return "Direct";
+    if (runtimePath === "app-server") return "Codex app server";
+    if (runtimePath === "direct-text") return "Direct · text only";
+    return runtime.displayLabel || "Runtime not set";
   }
 
   function projectRow(row) {
@@ -201,10 +211,10 @@
 
     const copy = createElement("div", "direct-project-row-copy");
     const title = createElement("div", "direct-project-row-title");
-    title.append(
-      createElement("strong", "", row.displayName || "Unnamed project"),
-      createElement("span", "direct-project-state-chip", row.state || "unknown"),
-    );
+    title.append(createElement("strong", "", row.displayName || "Unnamed project"));
+    // Only states worth noticing get a chip; "available" is the norm.
+    const stateText = row.selected ? "Current" : row.lifecycle?.state === "archived" ? "Archived" : row.state === "activating" ? "Opening" : "";
+    if (stateText) title.append(createElement("span", "direct-project-state-chip", stateText));
     const badges = createElement("div", "direct-project-row-badges");
     if (environmentModel) {
       const badge = environmentModel.environmentBadge(row.substrate);
@@ -213,16 +223,10 @@
       chip.title = badge.title;
       badges.append(chip);
     }
-    const evidence = createElement(
-      "span",
-      "direct-project-row-evidence",
-      [
-        row.substrate?.displayLabel || "workspace unknown",
-        row.runtime?.displayLabel || "runtime unknown",
-        row.restore?.displayLabel || "thread restore unknown",
-      ].join(" · "),
-    );
-    copy.append(title, ...(badges.children.length ? [badges] : []), evidence);
+    const runtimeChip = createElement("span", "direct-project-runtime-badge", runtimeLabel(row.runtime));
+    runtimeChip.title = "What this project's threads run with";
+    badges.append(runtimeChip);
+    copy.append(title, badges);
     if (Array.isArray(row.blockerCodes) && row.blockerCodes.length) {
       copy.append(createElement("span", "direct-project-row-blocker", blockerLabel(row.blockerCodes[0])));
     }
@@ -234,8 +238,9 @@
       view.lifecycleWorking || transitionState() === "activating";
     editAction.dataset.projectBindingTarget = row.projectId || "";
     editAction.addEventListener("click", () => openBindingEditor(row.projectId));
-    const lifecycleAction = createElement("button", "", "Manage");
+    const lifecycleAction = createElement("button", "", row.lifecycle?.state === "archived" ? "Restore…" : "Archive…");
     lifecycleAction.type = "button";
+    lifecycleAction.title = row.lifecycle?.state === "archived" ? "Restore or delete this project" : "Archive this project (its folder is not touched)";
     lifecycleAction.disabled = view.working || view.editorWorking || view.lifecycleWorking ||
       transitionState() === "activating";
     lifecycleAction.dataset.projectLifecycleTarget = row.projectId || "";
@@ -243,9 +248,11 @@
     const action = createElement(
       "button",
       "",
-      row.selected ? "Active" : row.state === "activating" ? "Switching" : row.selectable ? "Switch" : "Blocked",
+      row.selected ? "Open" : row.state === "activating" ? "Opening…" : row.selectable ? "Open" : "Blocked",
     );
     action.type = "button";
+    action.className = row.selected ? "" : "primary";
+    action.title = row.selected ? "This is the current project" : "Switch to this project";
     action.disabled = row.selected || !row.selectable || view.working || transitionState() === "activating";
     action.dataset.projectActivationTarget = row.projectId || "";
     action.addEventListener("click", () => activateProject(row));
@@ -298,6 +305,25 @@
         })
       : [];
     renderEnvironmentPicker();
+    adoptHostEnvironmentForNewProject();
+  }
+
+  // A new project's draft may start in an environment this machine doesn't
+  // have (the app's own default); start it on this machine instead, with an
+  // empty folder to choose.
+  function adoptHostEnvironmentForNewProject() {
+    if (view.environmentAdopted || view.bindingDraft?.mode === "edit" || !view.environmentOptions.length) return;
+    view.environmentAdopted = true;
+    const current = view.environmentOptions.find((entry) => entry.value === editorEnvironment?.value);
+    if (current && !current.disabled && current.reason !== "not_discovered") return;
+    const host = view.environmentOptions.find((entry) => !entry.disabled && entry.label.includes("(this machine)")) ||
+      view.environmentOptions.find((entry) => !entry.disabled && entry.reason !== "not_discovered");
+    if (!host) return;
+    editorEnvironment.value = host.value;
+    selectEnvironment();
+    const input = pathInputForKind(host.kind);
+    if (input) input.value = "";
+    refreshEnvironmentOptions();
   }
 
   async function loadEnvironments() {
@@ -319,6 +345,7 @@
     editorWorkspaceKind.value = option.kind;
     editorWslDistro.value = option.distro;
     syncWorkspaceFields();
+    syncEnvironmentChangeNote();
     closeFolderBrowser();
   }
 
@@ -412,11 +439,7 @@
   function useBrowsedFolder() {
     const chosen = view.browser?.view?.path;
     if (!chosen) return;
-    const input = pathInputForKind(view.browser.kind);
-    if (input) input.value = chosen;
-    if (!editorName.value.trim() || editorName.value.trim() === "New project") {
-      editorName.value = chosen.split(/[\\/]/).filter(Boolean).pop() || editorName.value;
-    }
+    setFolder(pathInputForKind(view.browser.kind), chosen);
     closeFolderBrowser();
   }
 
@@ -446,31 +469,28 @@
     const draft = view.lifecycleDraft;
     const target = draft?.target || {};
     const requiredConfirmation = draft?.actions?.delete?.requiredConfirmation || "DELETE project";
-    lifecycleTitle.textContent = target.displayName ? `${target.displayName} lifecycle` : "Project lifecycle";
-    lifecycleMeta.textContent = draft
-      ? `catalog ${String(draft.expectedCatalogRevision || "unknown").slice(0, 10)}`
-      : "Draft not loaded";
-    lifecycleState.textContent = target.lifecycleState || "unknown";
-    lifecycleTarget.textContent = target.displayName || "No target selected";
-    lifecycleEvidence.textContent = draft
-      ? `${target.substrateLabel || "workspace unavailable"} · ${target.runtimeLabel || "runtime unavailable"} · ${target.restoreLabel || "thread restore unavailable"}`
-      : "Workspace and runtime evidence unavailable.";
+    lifecycleTitle.textContent = target.displayName ? `Archive or delete ${target.displayName}` : "Archive or delete";
+    if (lifecycleMeta) lifecycleMeta.hidden = true;
+    lifecycleState.textContent = target.lifecycleState === "archived" ? "Archived" : target.lifecycleState ? "In use" : "";
+    lifecycleTarget.textContent = target.displayName || "";
+    lifecycleEvidence.textContent = "";
     lifecycleConfirmationLabel.textContent = requiredConfirmation;
 
     let state = "ready";
-    let text = "Choose a lifecycle disposition. Main revalidates current work and revision evidence before persistence.";
+    let text = "";
     if (view.lifecycleLoading) {
       state = "loading";
-      text = "Loading revision-bound lifecycle evidence…";
+      text = "Loading…";
     } else if (view.lifecycleError) {
       state = "failed";
       text = blockerLabel(view.lifecycleError);
     } else if (view.lifecycleWorking) {
       state = "saving";
-      text = "Main is revalidating and applying the lifecycle transition…";
+      text = "Working…";
     } else if (target.selected) {
-      text = "This is the active project. Switch away before archiving or deleting its binding.";
+      text = "This is the current project. Switch away before archiving or deleting it.";
     }
+    lifecycleStatus.hidden = !text;
     lifecycleStatus.dataset.state = state;
     lifecycleStatus.textContent = text;
 
@@ -547,42 +567,48 @@
     if (!editorPanel) return;
     const draft = view.bindingDraft;
     const mode = draft?.mode || view.requestedEditorMode || "create";
-    editorTitle.textContent = mode === "edit" ? "Edit project binding" : "New project binding";
-    editorMeta.textContent = draft
-      ? `${mode} · catalog ${String(draft.expectedCatalogRevision || "unknown").slice(0, 10)}`
-      : "Draft not loaded";
-    editorIdentityWitness.textContent = mode === "create" ? "Main assigns new ID" : "Identity remains invariant";
+    editorTitle.textContent = mode === "edit" ? "Edit project" : "New project";
+    if (editorMeta) editorMeta.hidden = true;
     let state = "ready";
-    let text = "Review the binding evidence, then ask main to persist it.";
+    let text = mode === "create"
+      ? "Choose the environment and folder. Threads in this project run there."
+      : "";
     if (view.editorLoading) {
       state = "loading";
-      text = "Loading a revision-bound project draft…";
+      text = "Loading…";
     } else if (view.editorError) {
       state = "failed";
       text = blockerLabel(view.editorError);
     } else if (view.editorWorking) {
       state = "saving";
-      text = "Main is revalidating and applying the project binding…";
+      text = mode === "create" ? "Creating the project…" : "Saving…";
     }
     editorStatus.dataset.state = state;
     editorStatus.textContent = text;
-    editorEvidence.textContent = draft?.evidence?.activeProjectEditRebindsRuntime
-      ? "This is the active project. Saving requires no active work and reloads its Direct runtime from the admitted binding."
-      : mode === "create"
-        ? "The draft is provisional. Main assigns project identity, revalidates the catalog revision, and leaves the current project active."
-        : "The draft is provisional. Main revalidates the project revision and updates this inactive binding without disturbing the active thread.";
+    editorStatus.hidden = !text;
+    const activeEdit = draft?.evidence?.activeProjectEditRebindsRuntime === true;
+    if (editorEvidence) {
+      editorEvidence.hidden = !activeEdit;
+      editorEvidence.textContent = activeEdit
+        ? "This is the current project: saving restarts its agent, so finish any running turn first."
+        : "";
+    }
     for (const control of editorForm?.querySelectorAll("input, select, button") || []) {
       control.disabled = view.editorLoading || view.editorWorking;
     }
     if (editorClose) editorClose.disabled = view.editorWorking;
-    if (editorCommit) editorCommit.textContent = view.editorWorking ? "Saving…" : mode === "edit" ? "Save binding" : "Create binding";
+    if (editorCommit) editorCommit.textContent = view.editorWorking ? (mode === "create" ? "Creating…" : "Saving…") : mode === "edit" ? "Save" : "Create project";
     renderFolderBrowser();
   }
 
   function fillBindingEditor(draft) {
     const fields = draft?.fields || {};
     const workspace = fields.workspace || {};
-    editorName.value = fields.displayName || "";
+    const creating = draft?.mode !== "edit";
+    // A new project is named after its folder unless the owner types a name.
+    editorName.value = creating && fields.displayName === "New project" ? "" : fields.displayName || "";
+    view.originalWorkspace = { kind: workspace.kind || "local", distro: workspace.distro || "", label: workspace.label || "" };
+    view.environmentAdopted = false;
     editorWorkspaceKind.value = workspace.kind || "local";
     editorWorkspaceLabel.value = workspace.label || "";
     editorWslDistro.value = workspace.distro || "";
@@ -600,6 +626,54 @@
     syncDelegationFields();
     syncWorkspaceFields();
     if (environmentModel) refreshEnvironmentOptions();
+    syncEnvironmentChangeNote();
+  }
+
+  function environmentText(kind, distro) {
+    if (kind === "wsl") return distro ? `WSL · ${distro}` : "WSL";
+    return kind === "windows" ? "Windows" : "this machine";
+  }
+
+  // Editing a project into another environment leaves its existing threads
+  // behind; say so instead of letting it happen silently.
+  function syncEnvironmentChangeNote() {
+    if (!editorEnvironmentChange) return;
+    const original = view.originalWorkspace;
+    const editing = view.bindingDraft?.mode === "edit" && original;
+    const kind = editorWorkspaceKind.value;
+    const distro = editorWslDistro.value.trim();
+    const changed = editing && (kind !== original.kind || (kind === "wsl" && distro && original.distro && distro.toLowerCase() !== original.distro.toLowerCase()));
+    editorEnvironmentChange.hidden = !changed;
+    editorEnvironmentChange.textContent = changed
+      ? `This project's existing threads were started in ${environmentText(original.kind, original.distro)}. To work in ${environmentText(kind, distro)}, a new project is usually better.`
+      : "";
+  }
+
+  // A project's label follows its environment; a custom label survives
+  // only while the environment stays the same.
+  function workspaceLabelForSubmit(kind, distro) {
+    const original = view.originalWorkspace;
+    if (view.bindingDraft?.mode !== "edit" || !original) return "";
+    const same = kind === original.kind && (kind !== "wsl" || (distro || "").toLowerCase() === (original.distro || "").toLowerCase());
+    return same ? original.label : "";
+  }
+
+  function nameFromPath(value) {
+    return String(value || "").split(/[\\/]/).filter(Boolean).pop() || "";
+  }
+
+  function nameFollowsFolder() {
+    const name = editorName.value.trim();
+    return view.bindingDraft?.mode !== "edit" && (!name || name === view.autoName);
+  }
+
+  function setFolder(input, value) {
+    if (!input) return;
+    input.value = value;
+    if (nameFollowsFolder()) {
+      view.autoName = nameFromPath(value);
+      editorName.value = view.autoName;
+    }
   }
 
   // Subfolders only make sense while the project accepts delegated work.
@@ -671,26 +745,15 @@
 
   function bindingWorkspaceFromForm() {
     const kind = editorWorkspaceKind.value;
+    const distro = editorWslDistro.value.trim();
+    const label = workspaceLabelForSubmit(kind, distro);
     if (kind === "wsl") {
-      return {
-        kind,
-        label: editorWorkspaceLabel.value.trim(),
-        distro: editorWslDistro.value.trim(),
-        linuxPath: editorWslPath.value.trim(),
-      };
+      return { kind, label, distro, linuxPath: editorWslPath.value.trim() };
     }
     if (kind === "windows") {
-      return {
-        kind,
-        label: editorWorkspaceLabel.value.trim(),
-        windowsPath: editorWindowsPath.value.trim(),
-      };
+      return { kind, label, windowsPath: editorWindowsPath.value.trim() };
     }
-    return {
-      kind: "local",
-      label: editorWorkspaceLabel.value.trim(),
-      localPath: editorLocalPath.value.trim(),
-    };
+    return { kind: "local", label, localPath: editorLocalPath.value.trim() };
   }
 
   async function submitBindingEditor(event) {
@@ -733,14 +796,17 @@
     const visibleRows = view.showArchived
       ? rows
       : rows.filter((row) => row.lifecycle?.state !== "archived");
+    const activeCount = view.directory?.activeProjectCount || 0;
+    const archivedCount = view.directory?.archivedProjectCount || 0;
     directoryCount.textContent = view.directory
-      ? `${view.directory.activeProjectCount || 0} active · ${view.directory.archivedProjectCount || 0} archived`
+      ? `${activeCount} ${activeCount === 1 ? "project" : "projects"}`
       : view.loading ? "Loading…" : "Unavailable";
     directoryRefresh.disabled = view.loading || view.working;
     if (bindingNew) bindingNew.disabled = view.loading || view.working || view.editorWorking;
     if (archivedToggle) {
-      archivedToggle.textContent = `Archived ${view.directory?.archivedProjectCount || 0}`;
-      archivedToggle.disabled = view.loading || view.working || !view.directory?.archivedProjectCount;
+      archivedToggle.hidden = !archivedCount && !view.showArchived;
+      archivedToggle.textContent = view.showArchived ? "Hide archived" : `Show archived (${archivedCount})`;
+      archivedToggle.disabled = view.loading || view.working || (!archivedCount && !view.showArchived);
       archivedToggle.setAttribute("aria-pressed", view.showArchived ? "true" : "false");
     }
     directoryList.replaceChildren();
@@ -751,8 +817,8 @@
         view.loading
           ? "Loading projects…"
           : rows.length
-            ? "Archived bindings are hidden. Use the Archived control to inspect them."
-            : "No renderer-safe project rows are available.",
+            ? "Only archived projects. Show them below."
+            : "No projects yet. Create one with New project.",
       ));
     } else {
       for (const row of visibleRows) directoryList.append(projectRow(row));
@@ -822,7 +888,14 @@
     render();
   });
   bindingNew?.addEventListener("click", () => openBindingEditor());
-  editorWorkspaceKind?.addEventListener("change", syncWorkspaceFields);
+  editorWorkspaceKind?.addEventListener("change", () => {
+    syncWorkspaceFields();
+    syncEnvironmentChangeNote();
+  });
+  editorWslDistro?.addEventListener("input", syncEnvironmentChangeNote);
+  for (const input of [editorWslPath, editorWindowsPath, editorLocalPath]) {
+    input?.addEventListener("change", () => setFolder(input, input.value.trim()));
+  }
   editorEnvironment?.addEventListener("change", selectEnvironment);
   for (const button of browseButtons) {
     button.addEventListener("click", () => openFolderBrowser(button.dataset.directFolderBrowse || "local"));

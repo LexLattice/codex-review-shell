@@ -450,14 +450,16 @@ try {
   await page.locator("#directProjectDirectory:not([hidden])").waitFor({ state: "visible" });
   await page.waitForFunction(() => document.querySelectorAll(".direct-project-row").length === 2);
   assert.equal(await page.locator('.direct-project-row[data-project-id="project_t3_gui_fixture"]').getAttribute("data-state"), "active");
-  assert.match(
-    await page.locator('.direct-project-row[data-project-id="project_t3_gui_fixture"]').innerText(),
-    /WSL native workspace/,
-  );
+  // Rows show the environment and what threads run with, in plain words.
+  const wslRowText = await page.locator('.direct-project-row[data-project-id="project_t3_gui_fixture"]').innerText();
+  assert.match(wslRowText, /WSL · Ubuntu/);
+  assert.match(wslRowText, /current/i);
+  assert.doesNotMatch(wslRowText, /binding|substrate/i);
   assert.match(
     await page.locator('.direct-project-row[data-project-id="project_t3_windows_fixture"]').innerText(),
-    /Windows native workspace/,
+    /Windows[\s\S]*(Direct|Codex app server)/,
   );
+  assert.equal(await page.locator("#directProjectArchivedToggle").isHidden(), true, "no archived projects, no archived control");
   const safeDirectory = await page.evaluate(() => window.codexSurfaceBridge.readDirectWorkbenchProjectDirectory());
   assert.equal(safeDirectory.schema, "direct_workbench_project_directory@1");
   assert.equal(safeDirectory.authorityBoundary.rendererMayMutateConfig, false);
@@ -476,8 +478,9 @@ try {
   assert.equal(await page.locator("#runtimeDrawer").isHidden(), true);
   assert.equal(await page.locator("#threadAnalyticsPanel").isHidden(), true);
   assert.equal(await page.locator("#directThreadIntakePanel").isHidden(), true);
-  assert.match(await page.locator("#directProjectBindingEditorTitle").innerText(), /New project binding/);
-  assert.match(await page.locator("#directProjectBindingEvidence").innerText(), /Main assigns project identity/);
+  assert.equal(await page.locator("#directProjectBindingEditorTitle").innerText(), "New project");
+  assert.match(await page.locator("#directProjectBindingStatus").innerText(), /Choose the environment and folder/);
+  assert.equal(await page.locator("#directProjectBindingCommit").innerText(), "Create project");
   await page.locator("#directProjectBindingName").fill("Local Direct GUI Fixture");
   // When the host lists its environments, the picker replaces the typed kind
   // and distro fields; pick this machine's environment and browse to the
@@ -506,7 +509,6 @@ try {
     await page.locator("#directProjectBindingWorkspaceKind").selectOption("local");
     await page.locator("#directProjectBindingLocalPath").fill(localProjectRoot);
   }
-  await page.locator("#directProjectBindingWorkspaceLabel").fill("Local fixture workspace");
   await page.locator("#directProjectBindingRuntimePath").selectOption("app-server");
   await page.screenshot({ path: projectBindingEditorScreenshotPath, fullPage: true });
   await page.locator("#directProjectBindingCommit").click();
@@ -518,10 +520,16 @@ try {
   assert.ok(createdProject?.id?.startsWith("project_"));
   assert.notEqual(createdProject.id, "");
   assert.equal(configAfterCreate.selectedProjectId, "project_t3_gui_fixture");
+  // The label follows the environment (it once stayed "WSL workspace" or
+  // "Local checkout" whatever environment was picked).
+  assert.equal(
+    createdProject.workspace.label,
+    { wsl: "WSL workspace", windows: "Windows workspace", local: "Local workspace" }[createdProject.workspace.kind],
+  );
 
   await page.locator(`[data-project-lifecycle-target="${createdProject.id}"]`).click();
   await page.locator("#directProjectLifecyclePanel:not([hidden])").waitFor({ state: "visible" });
-  assert.match(await page.locator("#directProjectLifecycleTitle").innerText(), /Local Direct GUI Fixture lifecycle/);
+  assert.match(await page.locator("#directProjectLifecycleTitle").innerText(), /Archive or delete Local Direct GUI Fixture/);
   assert.equal(await page.locator("#directProjectLifecycleArchive").isEnabled(), true);
   assert.equal(await page.locator("#directProjectLifecycleRestore").isDisabled(), true);
   assert.equal(await page.locator("#directProjectLifecycleDelete").isDisabled(), true);
@@ -555,7 +563,7 @@ try {
     (projectId) => !document.querySelector(`.direct-project-row[data-project-id="${projectId}"]`),
     createdProject.id,
   );
-  assert.match(await page.locator("#directProjectArchivedToggle").innerText(), /Archived 1/);
+  assert.match(await page.locator("#directProjectArchivedToggle").innerText(), /Show archived \(1\)/);
 
   await page.locator("#directProjectArchivedToggle").click();
   await page.waitForFunction(
@@ -604,18 +612,28 @@ try {
 
   await page.locator('[data-project-binding-target="project_t3_windows_fixture"]').click();
   await page.locator("#directProjectBindingEditor:not([hidden])").waitFor({ state: "visible" });
-  assert.match(await page.locator("#directProjectBindingEditorTitle").innerText(), /Edit project binding/);
+  assert.equal(await page.locator("#directProjectBindingEditorTitle").innerText(), "Edit project");
   assert.equal(await page.locator("#directProjectBindingWorkspaceKind").inputValue(), "windows");
   assert.equal(await page.locator("#directProjectBindingWindowsPath").inputValue(), "C:\\Fixtures\\direct-gui");
+  // Moving a project to the other environment warns about its threads.
+  if (await page.locator("#directProjectBindingEnvironmentField").isVisible()) {
+    const otherEnvironment = await page.locator("#directProjectBindingEnvironment option").evaluateAll(
+      (options) => options.find((option) => option.value.startsWith("wsl:") && !option.disabled)?.value || "",
+    );
+    if (otherEnvironment) {
+      await page.locator("#directProjectBindingEnvironment").selectOption(otherEnvironment);
+      assert.match(await page.locator("#directProjectBindingEnvironmentChange").innerText(), /existing threads were started in Windows/);
+      await page.locator("#directProjectBindingEnvironment").selectOption("windows");
+      assert.equal(await page.locator("#directProjectBindingEnvironmentChange").isHidden(), true);
+    }
+  }
   await page.locator("#directProjectBindingName").fill("Windows Direct GUI Fixture Edited");
-  await page.locator("#directProjectBindingWorkspaceLabel").fill("Windows edited workspace");
   await page.locator("#directProjectBindingCommit").click();
   await page.locator("#directProjectBindingEditor").waitFor({ state: "hidden" });
   await page.waitForFunction(() => document.querySelector('[data-project-id="project_t3_windows_fixture"]')?.textContent?.includes("Edited"));
-  assert.match(
-    await page.locator('.direct-project-row[data-project-id="project_t3_windows_fixture"]').innerText(),
-    /Windows edited workspace/,
-  );
+  // Same environment: the project's own label is kept.
+  const editedConfig = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
+  assert.equal(editedConfig.projects.find((entry) => entry.id === "project_t3_windows_fixture")?.workspace?.label, "Windows native workspace");
 
   const sourcePageUrl = page.url();
   await page.locator('[data-project-activation-target="project_t3_windows_fixture"]').click();
@@ -638,12 +656,15 @@ try {
   await page.locator("#directProjectDirectory:not([hidden])").waitFor({ state: "visible" });
   await page.waitForFunction(() => document.querySelectorAll(".direct-project-row").length === 2);
   assert.equal(await page.locator('.direct-project-row[data-project-id="project_t3_windows_fixture"]').getAttribute("data-state"), "active");
-  assert.match(await page.locator("#directProjectDirectoryStatus").innerText(), /authoritative active selection/);
+  // After a switch the list just shows the new current project; no status
+  // banner is needed.
+  assert.equal(await page.locator("#directProjectDirectoryStatus").isHidden(), true);
+  assert.match(await page.locator('.direct-project-row[data-project-id="project_t3_windows_fixture"]').innerText(), /current/i);
   await page.screenshot({ path: projectDirectoryScreenshotPath, fullPage: true });
 
   await page.locator('[data-project-binding-target="project_t3_windows_fixture"]').click();
   await page.locator("#directProjectBindingEditor:not([hidden])").waitFor({ state: "visible" });
-  assert.match(await page.locator("#directProjectBindingEvidence").innerText(), /active project/);
+  assert.match(await page.locator("#directProjectBindingEvidence").innerText(), /current project/);
   await page.locator("#directProjectBindingName").fill("Windows Direct GUI Fixture Active");
   const preEditPageUrl = page.url();
   await page.locator("#directProjectBindingCommit").click();

@@ -633,6 +633,7 @@ const els = {
 function workspaceText() {
   if (!project) return "No project bound";
   if (project.workspace?.kind === "wsl") return `WSL ${project.workspace.distro || "default"}:${project.workspace.linuxPath}`;
+  if (project.workspace?.kind === "windows") return `Windows ${project.workspace.windowsPath || project.repoPath}`;
   return `Local ${project.workspace?.localPath || project.repoPath}`;
 }
 
@@ -717,7 +718,9 @@ function renderMorphicCockpit() {
     els.morphicThreadTitle.title = title;
   }
   if (els.morphicThreadMeta) {
-    els.morphicThreadMeta.textContent = meta;
+    // The Workbench shows where the thread runs; its internal id stays in
+    // the tooltip.
+    els.morphicThreadMeta.textContent = isDirectWorkbenchExperience() ? workspaceText() : meta;
     els.morphicThreadMeta.title = meta;
   }
   if (els.morphicRuntimePathChip) {
@@ -3301,8 +3304,44 @@ function updateComposerGeometry() {
   els.composerForm.style.setProperty("--composer-control-pad-x", `${controlPadX}px`);
   els.composerForm.style.setProperty("--composer-control-height", `${controlHeight}px`);
   els.composerForm.style.setProperty("--composer-action-width", `${actionWidth}px`);
+  // Fixed chip widths: they depend on the composer's width only, never on
+  // what the chips say, so switching models doesn't resize the bar.
+  els.composerForm.style.setProperty("--composer-model-pill-width", `${Math.round(clampNumber(safeWidth * 0.24, 136, 188))}px`);
+  els.composerForm.style.setProperty("--composer-access-pill-width", `${Math.round(clampNumber(safeWidth * 0.14, 96, 116))}px`);
+  els.composerForm.style.setProperty("--composer-environment-chip-width", `${Math.round(clampNumber(safeWidth * 0.14, 88, 116))}px`);
+  els.composerForm.style.setProperty("--composer-context-chip-width", `${Math.round(clampNumber(safeWidth * 0.16, 122, 140))}px`);
   els.composerForm.dataset.composerSize = safeWidth < 390 ? "narrow" : safeWidth < 760 ? "medium" : "wide";
   document.documentElement.style.setProperty("--composer-shell-height", `${Math.round(shellRect.height || 150)}px`);
+  fitComposerBand();
+}
+
+const COMPOSER_QUOTA_MIN_WIDTH = 96;
+
+// When the band can't hold every chip at its fixed width, hide the least
+// important ones in a fixed order instead of squeezing or clipping them.
+function fitComposerBand() {
+  const band = els.composerForm?.querySelector(".composer-runtime-band");
+  if (!band) return;
+  const squeezable = [els.composerQuotaChip, els.composerContextChip, els.pasteImageButton, els.composerEnvironmentChip].filter(Boolean);
+  for (const element of squeezable) delete element.dataset.squeezed;
+  const items = [...band.querySelectorAll(".composer-quick-controls > *, .composer-runtime-witnesses > *")];
+  const gap = parseFloat(getComputedStyle(band).columnGap) || 6;
+  const needed = () => {
+    let total = gap;
+    let count = 0;
+    for (const item of items) {
+      if (item.hidden || item.dataset.squeezed === "true" || getComputedStyle(item).display === "none") continue;
+      total += item === els.composerQuotaChip ? COMPOSER_QUOTA_MIN_WIDTH : item.getBoundingClientRect().width;
+      count += 1;
+    }
+    return total + Math.max(0, count - 1) * gap;
+  };
+  const available = band.clientWidth;
+  if (!available) return;
+  for (const element of squeezable) {
+    if (needed() <= available) break;
+    if (!element.hidden) element.dataset.squeezed = "true";
+  }
 }
 
 function installComposerGeometryObserver() {
@@ -3417,11 +3456,13 @@ function directComposerButtonText() {
   const id = activeModelId();
   const name = directModelName(model, id || directModelLabel());
   const effort = directCurrentEffort();
+  // Compact: the button has a fixed width; details are in its tooltip.
   return [
+    directModelUnavailable(id) ? "⚠" : "",
     directFastActive() ? "⚡" : "",
-    `${name}${directModelUnavailable(id) ? " · unavailable" : ""}`,
+    name,
     effort ? directEffortLabel(effort) : "",
-    directDaybreakActive() ? "· Daybreak" : "",
+    directDaybreakActive() ? "☀" : "",
   ].filter(Boolean).join(" ");
 }
 
@@ -3683,9 +3724,10 @@ function renderComposerEnvironmentChip() {
   chip.hidden = !show;
   if (!show) return;
   const badge = model.environmentBadge(workspace);
-  chip.textContent = model.composerEnvironmentLabel(workspace);
+  // Short in the chip; the shell is in the tooltip.
+  chip.textContent = badge.text;
   chip.dataset.environmentKind = badge.kind;
-  chip.title = `${badge.title} Every thread in this project runs here.`;
+  chip.title = `${model.composerEnvironmentLabel(workspace)}. ${badge.title} Every thread in this project runs here.`;
 }
 
 function renderComposerRuntimeBand() {
@@ -3725,7 +3767,7 @@ function renderComposerRuntimeBand() {
 
   els.composerModelButton.textContent = modelText;
   els.composerModelButton.title = isDirectLiveTextSurface()
-    ? `This thread's model and effort: ${modelText}. Fast ${directFastActive() ? "on" : "off"}, Daybreak ${directDaybreakActive() ? "on" : "off"}.`
+    ? `This thread's model: ${directModelName(selectedModel(), activeModelId() || directModelLabel())}${directModelUnavailable(activeModelId()) ? " (not offered to this account right now)" : ""}. Effort: ${directCurrentEffort() ? directEffortLabel(directCurrentEffort()) : "default"}. Fast ${directFastActive() ? "on" : "off"}, Daybreak ${directDaybreakActive() ? "on" : "off"}.`
     : `Next-turn model settings. Model: ${compactModelLabel()}. Reasoning: ${reasoningLabel()}. Speed: ${serviceTierLabel()}.`;
   els.composerModelButton.setAttribute("aria-label", `Model override: ${modelText}`);
 
@@ -3734,6 +3776,7 @@ function renderComposerRuntimeBand() {
   els.composerQuotaChip.title = `Provider quota: ${quotaText}. Shown only when exposed by runtime/account evidence.`;
   els.composerContextChip.textContent = contextText;
   els.composerContextChip.title = `Context pressure: ${contextProjection.label}.`;
+  fitComposerBand();
 
   const statusClass = state.turnStopping
     ? "stopping"

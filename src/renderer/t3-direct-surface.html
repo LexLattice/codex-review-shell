@@ -34,15 +34,14 @@
               <span id="directProjectDirectoryCount">Loading…</span>
             </div>
             <div class="direct-project-directory-header-actions">
-              <button id="directProjectArchivedToggle" type="button" aria-pressed="false">Archived 0</button>
-              <button id="directProjectBindingNew" type="button">New</button>
-              <button id="directProjectDirectoryRefresh" type="button">Refresh</button>
+              <button id="directProjectBindingNew" class="primary" type="button" title="Create a project in WSL or Windows">New project</button>
+              <button id="directProjectDirectoryRefresh" type="button" aria-label="Refresh projects" title="Refresh">↻</button>
               <button id="directProjectDirectoryClose" type="button" aria-label="Close project directory">×</button>
             </div>
           </header>
-          <p id="directProjectDirectoryStatus" class="direct-project-directory-status">Loading configured project evidence…</p>
+          <p id="directProjectDirectoryStatus" class="direct-project-directory-status">Loading projects…</p>
           <div id="directProjectDirectoryList" class="direct-project-directory-list" data-morphic-action-cluster="project-activation"></div>
-          <p class="direct-project-directory-boundary">Main validates substrate, runtime, active work, and catalog revision before switching.</p>
+          <button id="directProjectArchivedToggle" class="direct-project-archived-toggle" type="button" aria-pressed="false" hidden>Show archived (0)</button>
         </section>
         <div class="t3-sidebar-section-label">
           <span>Threads</span>
@@ -146,28 +145,17 @@
       <aside id="directProjectBindingEditor" class="direct-project-binding-editor" hidden aria-label="Project binding editor" data-morphic-region="project-binding-editor" data-morphic-state-surface="provisional-project-binding">
         <header class="direct-project-binding-editor-header">
           <div>
-            <p class="eyebrow">Configuration boundary</p>
-            <h2 id="directProjectBindingEditorTitle">Project binding</h2>
-            <p id="directProjectBindingEditorMeta" class="subline mono">Draft not loaded</p>
+            <h2 id="directProjectBindingEditorTitle">Project</h2>
+            <p id="directProjectBindingEditorMeta" class="subline" hidden></p>
           </div>
           <button id="directProjectBindingEditorClose" class="drawer-close" type="button" aria-label="Close project binding editor">×</button>
         </header>
         <form id="directProjectBindingForm" class="direct-project-binding-form" autocomplete="off">
-          <p id="directProjectBindingStatus" class="direct-project-binding-status" data-state="loading">Load a main-owned binding draft to begin.</p>
-          <section class="direct-project-binding-section" aria-labelledby="directProjectBindingIdentityHeading">
-            <div class="direct-project-binding-section-heading">
-              <h3 id="directProjectBindingIdentityHeading">Project identity</h3>
-              <span id="directProjectBindingIdentityWitness">Main assigns new IDs</span>
-            </div>
-            <label>
-              <span>Name</span>
-              <input id="directProjectBindingName" name="displayName" maxlength="160" required />
-            </label>
-          </section>
+          <p id="directProjectBindingStatus" class="direct-project-binding-status" data-state="loading">Loading…</p>
           <section class="direct-project-binding-section" aria-labelledby="directProjectBindingWorkspaceHeading">
             <div class="direct-project-binding-section-heading">
-              <h3 id="directProjectBindingWorkspaceHeading">Workspace substrate</h3>
-              <span>Project-level invariant</span>
+              <h3 id="directProjectBindingWorkspaceHeading">Where it runs</h3>
+              <span>Its threads, commands, and terminals run here</span>
             </div>
             <label id="directProjectBindingEnvironmentField" hidden>
               <span>Environment</span>
@@ -177,22 +165,20 @@
             <label id="directProjectBindingWorkspaceKindField">
               <span>Environment</span>
               <select id="directProjectBindingWorkspaceKind" name="workspaceKind">
-                <option value="wsl">WSL native</option>
-                <option value="windows">Windows native</option>
-                <option value="local">Local host</option>
+                <option value="wsl">WSL</option>
+                <option value="windows">Windows</option>
+                <option value="local">This machine</option>
               </select>
             </label>
-            <label>
-              <span>Display label</span>
-              <input id="directProjectBindingWorkspaceLabel" name="workspaceLabel" maxlength="160" placeholder="Workspace label" />
-            </label>
+            <p id="directProjectBindingEnvironmentChange" class="direct-project-binding-note warning" hidden></p>
+            <input id="directProjectBindingWorkspaceLabel" name="workspaceLabel" type="hidden" />
             <div id="directProjectBindingWslFields" class="direct-project-binding-kind-fields">
               <label id="directProjectBindingWslDistroField">
                 <span>WSL distribution</span>
                 <input id="directProjectBindingWslDistro" name="wslDistro" placeholder="Ubuntu" />
               </label>
               <label>
-                <span>Linux path</span>
+                <span>Folder</span>
                 <span class="direct-project-binding-path-row">
                   <input id="directProjectBindingWslPath" name="wslPath" placeholder="/home/user/work/project" />
                   <button type="button" class="direct-project-binding-browse" data-direct-folder-browse="wsl">Browse…</button>
@@ -201,7 +187,7 @@
             </div>
             <div id="directProjectBindingWindowsFields" class="direct-project-binding-kind-fields" hidden>
               <label>
-                <span>Windows path</span>
+                <span>Folder</span>
                 <span class="direct-project-binding-path-row">
                   <input id="directProjectBindingWindowsPath" name="windowsPath" placeholder="C:\Work\project" />
                   <button type="button" class="direct-project-binding-browse" data-direct-folder-browse="windows">Browse…</button>
@@ -210,7 +196,7 @@
             </div>
             <div id="directProjectBindingLocalFields" class="direct-project-binding-kind-fields" hidden>
               <label>
-                <span>Local path</span>
+                <span>Folder</span>
                 <span class="direct-project-binding-path-row">
                   <input id="directProjectBindingLocalPath" name="localPath" placeholder="/home/user/work/project" />
                   <button type="button" class="direct-project-binding-browse" data-direct-folder-browse="local">Browse…</button>
@@ -231,18 +217,22 @@
                 <button id="directProjectFolderBrowserUse" class="primary" type="button">Use this folder</button>
               </div>
             </section>
+            <label>
+              <span>Name</span>
+              <input id="directProjectBindingName" name="displayName" maxlength="160" required placeholder="Named after the folder" />
+            </label>
           </section>
           <section class="direct-project-binding-section" aria-labelledby="directProjectBindingRuntimeHeading">
             <div class="direct-project-binding-section-heading">
-              <h3 id="directProjectBindingRuntimeHeading">Agent runtime</h3>
-              <span>Inherited by project threads</span>
+              <h3 id="directProjectBindingRuntimeHeading">Agent</h3>
+              <span>For new threads in this project</span>
             </div>
-            <label>
-              <span>Default path</span>
+            <label title="Direct runs the agent itself, with native commands, files, and terminals in this project's environment. Codex app server hands threads to the Codex CLI's app server.">
+              <span>Runs with</span>
               <select id="directProjectBindingRuntimePath" name="runtimePath">
-                <option value="app-server">App Server</option>
-                <option value="direct-text" hidden>Direct · text (legacy)</option>
-                <option value="direct-implementation">Direct · implementation</option>
+                <option value="direct-implementation">Direct (native tools)</option>
+                <option value="app-server">Codex app server</option>
+                <option value="direct-text" hidden>Direct · text only (legacy)</option>
               </select>
             </label>
             <label title="Recommended follows the model your ChatGPT account lists first, so new threads move to newer models as they arrive. A pinned model that stops being offered falls back to Recommended. Each thread can still switch models from the composer.">
@@ -255,7 +245,7 @@
           <section class="direct-project-binding-section" aria-labelledby="directProjectBindingDelegationHeading">
             <div class="direct-project-binding-section-heading">
               <h3 id="directProjectBindingDelegationHeading">Delegated work</h3>
-              <span>Agents in other projects can hand tasks to an agent here</span>
+              <span>Agents in other projects can hand tasks here</span>
             </div>
             <label title="An agent in another project (for example in the other environment) can start an agent here to do part of its task. That agent's Access is the lower of the delegating thread's Access and this limit.">
               <span>Accept delegated work</span>
@@ -272,13 +262,10 @@
             </label>
             <p id="directProjectBindingDelegationOrigin" class="direct-project-binding-note" hidden></p>
           </section>
-          <section class="direct-project-binding-evidence" data-morphic-region="project-binding-evidence-lane">
-            <strong>Commit evidence</strong>
-            <p id="directProjectBindingEvidence">The draft is provisional. Main revalidates the catalog, target revision, active work, and runtime binding before persistence.</p>
-          </section>
+          <p id="directProjectBindingEvidence" class="direct-project-binding-note" data-morphic-region="project-binding-evidence-lane" hidden></p>
           <div class="direct-project-binding-actions" data-morphic-action-cluster="project-binding-commit">
             <button id="directProjectBindingCancel" type="button">Cancel</button>
-            <button id="directProjectBindingCommit" class="primary" type="submit">Save binding</button>
+            <button id="directProjectBindingCommit" class="primary" type="submit">Save</button>
           </div>
         </form>
       </aside>
@@ -286,46 +273,44 @@
       <aside id="directProjectLifecyclePanel" class="direct-project-lifecycle-panel" hidden aria-label="Project lifecycle" data-morphic-region="project-lifecycle" data-morphic-state-surface="project-lifecycle-evidence">
         <header class="direct-project-lifecycle-header">
           <div>
-            <p class="eyebrow">Lifecycle boundary</p>
-            <h2 id="directProjectLifecycleTitle">Project lifecycle</h2>
-            <p id="directProjectLifecycleMeta" class="subline mono">Draft not loaded</p>
+            <h2 id="directProjectLifecycleTitle">Archive or delete</h2>
+            <p id="directProjectLifecycleMeta" class="subline" hidden></p>
           </div>
           <button id="directProjectLifecycleClose" class="drawer-close" type="button" aria-label="Close project lifecycle">×</button>
         </header>
         <div class="direct-project-lifecycle-body">
-          <p id="directProjectLifecycleStatus" class="direct-project-lifecycle-status" data-state="loading">Load main-owned lifecycle evidence to begin.</p>
+          <p id="directProjectLifecycleStatus" class="direct-project-lifecycle-status" data-state="loading">Loading…</p>
           <section class="direct-project-lifecycle-target" aria-labelledby="directProjectLifecycleTargetHeading">
             <div class="direct-project-binding-section-heading">
-              <h3 id="directProjectLifecycleTargetHeading">Target binding</h3>
+              <h3 id="directProjectLifecycleTargetHeading">Project</h3>
               <span id="directProjectLifecycleState">unknown</span>
             </div>
             <strong id="directProjectLifecycleTarget">No target selected</strong>
-            <p id="directProjectLifecycleEvidence">Workspace and runtime evidence unavailable.</p>
+            <p id="directProjectLifecycleEvidence"></p>
           </section>
           <section class="direct-project-lifecycle-preservation" data-morphic-region="project-lifecycle-evidence-lane">
-            <strong>Preservation witness</strong>
-            <p>Archive, restore, and delete do not remove workspace files, Git state, or thread evidence. Delete removes only this shell's project binding identity.</p>
+            <p>None of these touch the project's folder, its Git state, or its thread history. Delete only removes the project from this app.</p>
           </section>
           <section class="direct-project-lifecycle-reversible" data-morphic-action-cluster="project-lifecycle-reversible">
             <div>
-              <strong>Reversible disposition</strong>
-              <p>Archive hides an inactive binding from normal work. Restore returns the same project identity.</p>
+              <strong>Archive</strong>
+              <p>Hides the project from the list. Restore brings it back as it was.</p>
             </div>
             <div class="direct-project-lifecycle-actions">
-              <button id="directProjectLifecycleArchive" type="button">Archive binding</button>
-              <button id="directProjectLifecycleRestore" type="button">Restore binding</button>
+              <button id="directProjectLifecycleArchive" type="button">Archive</button>
+              <button id="directProjectLifecycleRestore" type="button">Restore</button>
             </div>
           </section>
           <section class="direct-project-lifecycle-danger" data-morphic-action-cluster="project-lifecycle-destructive">
             <div>
-              <strong>Remove binding</strong>
-              <p>Only an archived binding is eligible. Type the exact phrase shown below.</p>
+              <strong>Delete</strong>
+              <p>Only an archived project can be deleted. Type the phrase shown below to confirm.</p>
             </div>
             <label>
               <span id="directProjectLifecycleConfirmationLabel">DELETE project</span>
               <input id="directProjectLifecycleConfirmation" autocomplete="off" spellcheck="false" />
             </label>
-            <button id="directProjectLifecycleDelete" type="button">Delete archived binding</button>
+            <button id="directProjectLifecycleDelete" type="button">Delete project</button>
           </section>
         </div>
       </aside>
