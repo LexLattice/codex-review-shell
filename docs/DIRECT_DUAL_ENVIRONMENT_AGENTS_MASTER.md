@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-07, after turn 10.
+Last updated: 2026-10-07, after turn 11a.
 
 ## How to use this document
 
@@ -100,8 +100,8 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 11: one executor per environment, PTY, Terminal panel.** (Turns 9
-and 10 still need the owner's manual Electron checks.)
+**Turn 11b: one executor per environment.** (Turns 9, 10, and 11a still
+need the owner's manual Electron checks.)
 
 ## Gates for every turn
 
@@ -975,11 +975,98 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
     - The parent chip doesn't open the child's project.
     - The owner's Electron check is pending.
 
-### Turn 11: one executor per environment, PTY, Terminal panel
+### Turn 11a: terminals and the Terminal panel
+
+- Status: done with deviations (owner Electron check pending)
+- Scope: real terminals in both environments, for agents (`exec_command`
+  with `tty`) and for the owner (a Terminal panel in the Workbench). Split
+  from turn 11; see **Plan changes**.
+- Outcome:
+  - **Owner decisions** (asked before building):
+    - Split turn 11: terminals and the panel first (11a), one executor per
+      environment next (11b).
+    - The panel shows both the owner's own shells and agents' terminal
+      sessions (read-only).
+    - The owner's shell has Full access semantics (no sandbox) in the
+      project's environment, with the owner's environment variables, but is
+      still contained (it ends with the app or executor).
+    - Rendering uses `@xterm/xterm` (new dependency, with `@xterm/addon-fit`).
+  - **Terminal helpers.** Both read one framed stdin protocol (type byte,
+    4-byte big-endian length, payload: `d` typed bytes, `r` resize rows/cols,
+    `k` signal) and write the terminal's output to stdout.
+    - Windows: the job runner gains `--conpty <rows> <cols>`
+      (`CreatePseudoConsole`, `STARTUPINFOEX`, relay threads). SIGINT types
+      Ctrl+C; other signals, or stdin closing, terminate the job.
+    - Linux/WSL: `src/backend/pty-helper.py` (`pty.fork`, `TIOCSWINSZ`,
+      signals to the process group; stdin closing sends SIGHUP). It runs
+      inside the sandbox, so Workspace and Read only terminals keep their
+      sandbox.
+    - `pty-frames.js` holds the encoder and `PtyChannel`. End of input is
+      the platform's EOF key (`Ctrl+D`; `Ctrl+Z Enter` on Windows), since
+      closing stdin means the host is gone.
+  - **Executor and backends.** `process/start` accepts `tty`, `rows`,
+    `cols`, `interactiveShell`, and `fullEnvironment`; new `process/resize`;
+    `environment/describe` reports `pty` (`conpty` or `python_pty`). Local
+    and executor process handles both support resize and terminal input.
+    `nativeInteractiveShell` picks `pwsh -NoLogo` (else Windows PowerShell)
+    or `$SHELL -l`.
+  - **Agents.** `exec_command` gains `tty` (24x80, stdout and stderr merged,
+    `write_stdin` typed into it, `TERM=xterm-256color`), recorded as
+    transport `pty`. The session manager keeps a 256 KiB terminal replay,
+    emits `terminal-data`, and supports `resize`.
+  - **Owner's terminals** (`src/main/direct/terminal/terminal-service.js`):
+    up to 8 per project, a 512 KiB replay each, routed like agents'
+    commands (in-process for the host's own environment, the executor
+    otherwise). An executor reports the shell's name once started. IPC
+    `direct-terminal:list/create/write/resize/close/replay` is scoped to the
+    active project, and terminals end in both shutdown paths.
+  - **Panel.** The rail's Terminal button is enabled and docks a panel over
+    the bottom of the transcript: tabs for the owner's shells (closable) and
+    agents' sessions (italic, read-only), a new-terminal button, replay on
+    open, fit-to-size with resize forwarded, and a shell started
+    automatically when the panel opens empty. xterm is served from an
+    allowlist of three files in `node_modules`.
+  - **Bug found and fixed.** A ConPTY child created without
+    `STARTF_USESTDHANDLES` inherits the runner's own redirected stdin and
+    stdout, so PowerShell read raw frames in parallel with the relay: frame
+    headers appeared as typed text, bytes went missing, typing ahead was
+    lost, and Enter (CR) only acted when more input arrived. The runner now
+    passes null std handles so the child uses the pseudoconsole. The earlier
+    observation that PowerShell needed LF for Enter was this bug.
+  - **Checks:**
+    - New `direct-terminal-pty-regression` (9 checks) passes in WSL and under
+      Windows Node, each driving the other environment through its executor.
+      It covers frames, both executors' `pty` description, the owner's shell
+      in WSL (size, resize, Ctrl+C, writes outside the folder, close, exit
+      code), the owner's PowerShell (size, resize, CR as Enter, `Read-Host`,
+      exit code), agents' `tty` sessions in both environments under
+      Workspace (input, resize, replay, panel listing, plain sessions refuse
+      resize), the xterm allowlist over HTTP, and wiring.
+    - The Workbench Electron smoke opens the panel, types a command into
+      xterm, and sees its result in a real shell (its WSL fixture project now
+      points at a temp folder). `direct-t3-alternate-gui-regression` pins the
+      enabled button and panel.
+    - Existing exec and executor regressions (router, stateful sessions, WSL
+      and Windows executors, files, delegation) pass on both hosts.
+      `check:syntax` and `validate` pass. The full sweep is 269 of 288,
+      failures identical to **Known failing checks**.
+  - **Deviations:**
+    - Through the WSL executor (a Windows app opening a WSL terminal), the
+      owner's shell runs in the executor's user and PID namespace, like
+      Full-access agent sessions, so `sudo` doesn't work there. In-process
+      on a Linux host it is an ordinary shell. See **Findings**.
+    - The panel shows only the active project's terminals (others keep
+      running and come back with their replay when the project is active
+      again), and the owner can't type into an agent's session.
+    - No live provider run of an agent using `tty`.
+    - The owner's Electron check is pending.
+
+### Turn 11b: one executor per environment
 
 - Status: planned
-- Scope: executors serve multiple project roots; PTY sessions (ConPTY on
-  Windows, a pty mechanism in WSL); a Terminal panel. May split into two turns.
+- Scope: one executor per environment serving every project root in it,
+  instead of one per project folder. Also contain host-local MCP servers on
+  Linux and consider long-lived MCP sessions (turn 8's plan change).
 - Outcome: _(fill in)_
 
 ## Baseline and prerequisites
@@ -1038,6 +1125,16 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   unverified.
 - Fork, derived-fork, and import-checkpoint requests pass neither effort nor
   speed tier (nor Daybreak).
+
+- The owner's WSL terminal opened from a Windows app runs inside the WSL
+  executor's user and PID namespace (as Full-access agent sessions do), so
+  `sudo` and setuid programs fail there; in-process on a Linux host it is an
+  ordinary shell. Running it outside the namespace trades containment (what
+  it starts in the background could outlive the app) for a normal shell.
+  Owner's call.
+- Only the owner's terminal gets the executor's full environment (the
+  owner's login environment there, `fullEnvironment`); agents' executor
+  sessions still get the minimal one.
 
 - Every Workbench implementation turn first runs a separate model call for the
   sub-agent policy preflight (latency and quota).
@@ -1165,6 +1262,8 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | One file implementation, two placements | The executor runs the host's `LocalFilePort` natively, so local and WSL file rules can't drift apart; the host only plans. |
 | 2026-10-07 | A delegated child is a full Direct thread in a target project, not a worktree worker or a retargeted grant | Everything that places a thread in an environment is keyed on its project, so a project-bound child is native there by construction; worktree workers have no shell, stay in the parent's environment, and can't run on Windows. The owner's per-project "Accept delegated work" limit is the authorization, and the child's Access is the lower of it and the parent's. |
 | 2026-10-07 | Fast and Daybreak are per-thread modifiers sent only when the model's catalog entry offers them; the default model lives in project settings | Matches Codex's request shape (`service_tier: "priority"`, `access_programs.cyber`) and its live per-model data. Choosing a default is a different act from switching a thread's model, so the picker only switches (owner's call). |
+| 2026-10-07 | Terminals use the job runner's ConPTY mode on Windows and a small Python pty helper on Linux, with one framed stdin protocol | No native Node module (node-pty would need a build per Electron and per Windows/Linux Node); the runner already contains Windows processes, and `python3` is on every supported distro. Framing carries resize and signals next to typed bytes over the existing stdio. |
+| 2026-10-07 | The owner's terminal is unsandboxed but contained, in the project's environment | The owner's choice: it is their own shell, so Full access semantics and their own environment variables, but it still ends with the app. |
 | 2026-10-07 | Model availability follows Codex: the account's `/models` list, signed in is ready, the server rejects | A per-model probe gated every new model behind a manual refresh and expired after 7 days; Codex trusts the list and handles rejection. The probe stays as an optional "Test model". `client_version` is the installed Codex CLI's, so the list matches what Codex itself would offer. |
 
 ## Plan changes
@@ -1179,3 +1278,4 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | 5 | Turn 7 reuses `nativeShellCommand` for its PowerShell sessions. | The planner already picks `pwsh` or Windows PowerShell 5.1 with `-NoLogo -NoProfile -NonInteractive`; turn 7 adds UTF-8 output and Job Object containment around it. |
 | 2026-10-06 | 8 | Hook and skill-script routing is dropped from turn 8; whoever enables hook execution must route it through the environment's process sessions. | Direct never executes hooks or skills; skill scripts run only through `exec_command`, which is already per-environment. |
 | 2026-10-06 | 8 | Turn 11 should also contain host-local MCP servers on Linux and consider long-lived MCP sessions per environment. | Both surfaced here; neither blocks per-environment placement. |
+| 2026-10-07 | 10 | Turn 11 split into 11a (terminals and the Terminal panel) and 11b (one executor per environment, plus turn 8's MCP items). | Owner's call. Executors are keyed per project folder throughout, so 11b is a refactor of its own; terminals are independent and visible to the owner. |

@@ -42,7 +42,10 @@ const threadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread
 const narrowThreadDirectoryScreenshotPath = screenshotPath.replace(/\.png$/i, "-thread-directory-narrow.png");
 const epistemicScreenshotPath = screenshotPath.replace(/\.png$/i, "-epistemic.png");
 const usageScreenshotPath = screenshotPath.replace(/\.png$/i, "-usage.png");
+const terminalScreenshotPath = screenshotPath.replace(/\.png$/i, "-terminal.png");
 const localProjectRoot = path.join(testRoot, "local-fixture");
+const wslFixtureRoot = path.join(testRoot, "direct-gui-fixture");
+fs.mkdirSync(wslFixtureRoot, { recursive: true });
 const usageHome = path.join(testRoot, "usage-home");
 const localProjectSentinel = path.join(localProjectRoot, "workspace-preserved.txt");
 fs.mkdirSync(userDataRoot, { recursive: true, mode: 0o700 });
@@ -67,11 +70,11 @@ fs.writeFileSync(path.join(userDataRoot, "workspace-config.json"), `${JSON.strin
   projects: [{
     id: "project_t3_gui_fixture",
     name: "WSL Direct GUI Fixture",
-    repoPath: "wsl:Ubuntu:/home/rose/work/direct-gui-fixture",
+    repoPath: `wsl:Ubuntu:${wslFixtureRoot}`,
     workspace: {
       kind: "wsl",
       distro: "Ubuntu",
-      linuxPath: "/home/rose/work/direct-gui-fixture",
+      linuxPath: wslFixtureRoot,
       label: "WSL native workspace",
     },
     surfaceBinding: {
@@ -185,8 +188,28 @@ try {
   await page.waitForSelector('body[data-direct-gui="direct-workbench"][data-experience-state="verified"]', { timeout: 30_000 });
   assert.equal(await page.title(), "Direct Workbench");
   assert.match(page.url(), /\/t3-direct-surface\.html/);
-  assert.equal(await page.locator(".t3-utility-rail button:disabled").count(), 4);
+  assert.equal(await page.locator(".t3-utility-rail button:disabled").count(), 3);
   assert.match(await page.locator(".t3-sidebar-footer").innerText(), /Direct thread control plane/);
+
+  // Terminal panel: opening it with no terminals starts a real shell in the project's environment.
+  await page.locator("#t3TerminalButton").click();
+  await page.waitForFunction(
+    () => document.querySelector("#directTerminalPanel:not([hidden]) .direct-terminal-tab.user.active") || !document.querySelector("#directTerminalStatus")?.hidden,
+    null,
+    { timeout: 20_000 },
+  );
+  assert.equal(await page.locator("#directTerminalStatus").isHidden(), true, await page.locator("#directTerminalStatus").innerText());
+  assert.equal(await page.locator("#t3TerminalButton").getAttribute("aria-pressed"), "true");
+  await page.locator("#directTerminalViews .direct-terminal-view:not([hidden]) .xterm").click();
+  await page.keyboard.type("echo smoke_$((40+2))_terminal\n");
+  await page.waitForFunction(
+    () => /smoke_42_terminal/.test(document.querySelector("#directTerminalViews .direct-terminal-view:not([hidden]) .xterm-rows")?.textContent || ""),
+    null,
+    { timeout: 20_000 },
+  );
+  await page.screenshot({ path: terminalScreenshotPath, fullPage: true });
+  await page.locator("#directTerminalClose").click();
+  assert.equal(await page.locator("#directTerminalPanel").isHidden(), true);
 
   const bootstrapPayload = JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8"));
   assert.equal(bootstrapPayload.initialThreadId, "thread_direct_workbench_bound");
@@ -438,7 +461,7 @@ try {
   const safeDirectory = await page.evaluate(() => window.codexSurfaceBridge.readDirectWorkbenchProjectDirectory());
   assert.equal(safeDirectory.schema, "direct_workbench_project_directory@1");
   assert.equal(safeDirectory.authorityBoundary.rendererMayMutateConfig, false);
-  assert.equal(JSON.stringify(safeDirectory).includes("/home/rose/work/direct-gui-fixture"), false);
+  assert.equal(JSON.stringify(safeDirectory).includes(wslFixtureRoot), false);
   assert.equal(JSON.stringify(safeDirectory).includes("C:\\Fixtures\\direct-gui"), false);
 
   await page.locator('[data-project-lifecycle-target="project_t3_gui_fixture"]').click();

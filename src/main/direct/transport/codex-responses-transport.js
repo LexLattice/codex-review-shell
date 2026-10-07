@@ -278,7 +278,7 @@ function directImplementationToolSchemas(toolNames = []) {
     exec_command: {
       type: "function",
       name: "exec_command",
-      description: "Start one bounded plain-pipe process session in the exact selected local environment. Use cmd for the ordinary shell command-string interface, or command plus args for structured execution.",
+      description: "Start one bounded process session in the exact selected local environment, on plain pipes or (tty: true) in a terminal. Use cmd for the ordinary shell command-string interface, or command plus args for structured execution.",
       parameters: {
         type: "object",
         properties: {
@@ -290,6 +290,7 @@ function directImplementationToolSchemas(toolNames = []) {
           stdinPolicy: { type: "string", enum: ["disabled", "line_input", "eof_only", "blocked_until_policy"] },
           idleTimeoutMs: { type: "number" },
           hardTimeoutMs: { type: "number" },
+          tty: { type: "boolean", description: "True runs the command in a terminal (24x80): output is the terminal's, with stdout and stderr merged, and write_stdin input is typed into it, for programs that need a terminal (REPLs, prompts, full-screen tools). False or omitted uses plain pipes." },
         },
         anyOf: [
           { required: ["cmd"] },

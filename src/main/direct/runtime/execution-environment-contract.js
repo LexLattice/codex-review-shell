@@ -35,29 +35,54 @@ function isPlainObject(value) {
  * executors are already started through a login shell, so commands inherit
  * the login PATH anyway.
  */
-function nativeShellCommand(shellCommand, options = {}) {
-  const platform = options.platform || process.platform;
+function windowsPowerShell(options = {}) {
+  const platform = "win32";
   const env = options.env || process.env;
   const fileExists = options.fileExists || fs.existsSync;
+  const programFiles = normalizeString(env.ProgramFiles || env.PROGRAMFILES, "C:\\Program Files");
+  const pwsh = [
+    findExecutableOnPath("pwsh", { platform, env, fileExists }),
+    path.win32.join(programFiles, "PowerShell", "7", "pwsh.exe"),
+  ].find((candidate) => candidate && fileExists(candidate));
+  if (pwsh) return { command: pwsh, flavor: "pwsh" };
+  const systemRoot = normalizeString(env.SystemRoot || env.SYSTEMROOT, "C:\\Windows");
+  return {
+    command: path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    flavor: "windows-powershell",
+  };
+}
+
+function nativeShellCommand(shellCommand, options = {}) {
+  const platform = options.platform || process.platform;
+  const fileExists = options.fileExists || fs.existsSync;
   if (platform === "win32") {
-    const programFiles = normalizeString(env.ProgramFiles || env.PROGRAMFILES, "C:\\Program Files");
-    const pwsh = [
-      findExecutableOnPath("pwsh", { platform, env, fileExists }),
-      path.win32.join(programFiles, "PowerShell", "7", "pwsh.exe"),
-    ].find((candidate) => candidate && fileExists(candidate));
+    const powershell = windowsPowerShell(options);
+    // In a terminal the command may prompt, so it isn't -NonInteractive.
+    const args = options.terminal === true ? POWERSHELL_ARGS.filter((arg) => arg !== "-NonInteractive") : POWERSHELL_ARGS;
     const script = shellCommand ? `${POWERSHELL_UTF8_PRELUDE}${shellCommand}` : shellCommand;
-    if (pwsh) return { command: pwsh, args: [...POWERSHELL_ARGS, script], shell: "powershell", flavor: "pwsh" };
-    const systemRoot = normalizeString(env.SystemRoot || env.SYSTEMROOT, "C:\\Windows");
-    return {
-      command: path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-      args: [...POWERSHELL_ARGS, script],
-      shell: "powershell",
-      flavor: "windows-powershell",
-    };
+    return { command: powershell.command, args: [...args, script], shell: "powershell", flavor: powershell.flavor };
   }
   const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fileExists(candidate));
   if (bash) return { command: bash, args: ["-c", shellCommand], shell: "bash", flavor: "bash" };
   return { command: "/bin/sh", args: ["-c", shellCommand], shell: "sh", flavor: "sh" };
+}
+
+/**
+ * The shell a person gets in a terminal there: PowerShell (pwsh when
+ * installed) with their profile on Windows; their login shell ($SHELL, else
+ * bash) as a login shell on Linux and WSL.
+ */
+function nativeInteractiveShell(options = {}) {
+  const platform = options.platform || process.platform;
+  const env = options.env || process.env;
+  const fileExists = options.fileExists || fs.existsSync;
+  if (platform === "win32") {
+    const powershell = windowsPowerShell(options);
+    return { command: powershell.command, args: ["-NoLogo"], shell: "powershell", flavor: powershell.flavor };
+  }
+  const preferred = normalizeString(env.SHELL, "");
+  const shell = [preferred, "/bin/bash", "/usr/bin/bash", "/bin/sh"].find((candidate) => candidate && path.posix.isAbsolute(candidate) && fileExists(candidate)) || "/bin/sh";
+  return { command: shell, args: ["-l"], shell: path.posix.basename(shell), flavor: path.posix.basename(shell) };
 }
 
 function environmentKindFor(workspaceKind, hostPlatform, env) {
@@ -258,6 +283,7 @@ function selfConstitutionEnvironmentProjection(facts) {
 module.exports = {
   EXECUTION_ENVIRONMENT_FACTS_SCHEMA,
   applyEnvironmentToToolSchemas,
+  nativeInteractiveShell,
   nativeShellCommand,
   renderExecutionEnvironmentInstructions,
   resolveExecutionEnvironmentFacts,

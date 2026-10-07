@@ -208,6 +208,7 @@ const {
   detectCodexClientVersion,
 } = require("./main/direct/provider/metadata-adapter");
 const { createDelegatedThreadRunner } = require("./main/direct/agents/delegated-thread-runner");
+const { DirectTerminalService } = require("./main/direct/terminal/terminal-service");
 const {
   buildDelegatedProject,
   normalizeProjectDelegation,
@@ -3844,7 +3845,10 @@ async function coordinateWorkspaceWorkerShutdown(reason = "Direct runtime closed
       blockerCode: "",
       pendingRequests: 0,
     },
-    disposeWorkspaceBackends: () => manager?.disposeAll?.(),
+    disposeWorkspaceBackends: () => {
+      directTerminalService?.dispose();
+      return manager?.disposeAll?.();
+    },
     closeLifecycleRegistry: () => registry?.close?.(),
   }).then((receipt) => {
     workspaceWorkerShutdownReceipt = receipt;
@@ -3881,6 +3885,7 @@ function degradedSynchronousWorkspaceWorkerShutdown(reason = "process_exit") {
   console.warn("[workspace-worker] degraded synchronous shutdown without a quiescence receipt", reason);
   directNativeAgentPool?.stopAccepting?.({ reasonCode: "direct_runtime_degraded_exit" });
   directNativeAgentPool?.requestCancellationForAll?.({ reasonCode: "direct_runtime_degraded_exit" });
+  directTerminalService?.dispose();
   workspaceBackends?.disposeAll?.();
   workspaceWorkerLifecycleRegistry?.close?.();
 }
@@ -4748,6 +4753,46 @@ function resolveDirectWorkspaceWorkerDelegationPolicy(input = {}) {
   return ensureDirectWorkspaceWorkerDelegationPolicyRegistry().resolve(input);
 }
 
+let directStatefulExecSessionManager = null;
+let directEnvironmentExecutorBackend = null;
+let directTerminalService = null;
+
+function sendDirectTerminalEvent(payload = {}) {
+  const contents = codexView?.webContents;
+  if (!contents || contents.isDestroyed()) return;
+  contents.send("direct-terminal:event", payload);
+}
+
+// The Terminal panel: the owner's own shells (DirectTerminalService) and,
+// read-only, agents' terminal sessions (exec_command with tty).
+function ensureDirectTerminalService() {
+  if (directTerminalService) return directTerminalService;
+  ensureDirectLiveTextController();
+  directTerminalService = new DirectTerminalService({
+    backendFor: (project, grant) => createEnvironmentExecBackendResolver({
+      localBackend: directStatefulExecSessionManager.localBackend,
+      executorBackend: directEnvironmentExecutorBackend,
+    })({ project }, grant),
+  });
+  directTerminalService.on("data", (event) => sendDirectTerminalEvent({
+    type: "data", kind: "user", terminalId: event.terminalId, projectId: event.projectId, dataBase64: event.data.toString("base64"),
+  }));
+  directTerminalService.on("shell", (event) => sendDirectTerminalEvent({
+    type: "shell", kind: "user", terminalId: event.terminalId, projectId: event.projectId, shell: event.shell,
+  }));
+  directTerminalService.on("exit", (event) => sendDirectTerminalEvent({
+    type: "exit", kind: "user", terminalId: event.terminalId, projectId: event.projectId, exitCode: event.exitCode,
+  }));
+  directStatefulExecSessionManager.on("terminal-data", (event) => sendDirectTerminalEvent({
+    type: "data", kind: "agent", terminalId: event.sessionId, projectId: event.projectId, dataBase64: event.data.toString("base64"),
+  }));
+  directStatefulExecSessionManager.on("completed", (result) => {
+    if (result?.transportMode !== "pty") return;
+    sendDirectTerminalEvent({ type: "exit", kind: "agent", terminalId: result.sessionId, projectId: result.projectId, exitCode: result.exitCode });
+  });
+  return directTerminalService;
+}
+
 function ensureDirectLiveTextController() {
   if (directLiveTextController) return directLiveTextController;
   const directHarnessGrantStore = new DirectThreadHarnessGrantStore({ rootDir: directSessionRootDir() });
@@ -4771,6 +4816,9 @@ function ensureDirectLiveTextController() {
       executorBackend: environmentExecutorBackend,
     })(input, grant),
   });
+  // The Terminal panel's own shells use the same routing.
+  directStatefulExecSessionManager = statefulExecSessionManager;
+  directEnvironmentExecutorBackend = environmentExecutorBackend;
   const fullAccessLocalEnvironmentExecutor = new DirectFullAccessLocalEnvironmentExecutor({
     grantStore: directHarnessGrantStore,
     workspaceRootResolver: (input) => workspaceRoot(input?.project || input, repoRoot),
@@ -13413,6 +13461,65 @@ ipcMain.handle("direct-runtime:test-model", async (event, payload) => {
     threadId: normalizeString(payload?.threadId, ""),
     testModel: true,
   });
+});
+
+// The Terminal panel. Everything is scoped to the surface's active project:
+// the owner's shells open in its environment, and agents' terminal sessions
+// are listed and replayed read-only.
+function directTerminalAuthority(event, channel) {
+  const authority = requireFullCodexSurfaceBridge(event.sender, channel);
+  requireDirectWorkbenchExperience(channel);
+  const projectId = normalizeString(authority.projectId, "");
+  if (!projectId) {
+    const error = new Error("The Terminal panel is bound to the active project.");
+    error.code = "direct_terminal_project_required";
+    throw error;
+  }
+  return projectId;
+}
+
+ipcMain.handle("direct-terminal:list", async (event) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:list");
+  const service = ensureDirectTerminalService();
+  return {
+    schema: "direct_terminal_list@1",
+    projectId,
+    terminals: service.list({ projectId }),
+    agentSessions: directStatefulExecSessionManager?.terminalSessions({ projectId }) || [],
+  };
+});
+
+ipcMain.handle("direct-terminal:create", async (event, payload) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:create");
+  const project = currentProject?.id === projectId ? currentProject : await getProjectById(projectId);
+  return ensureDirectTerminalService().create({ project, rows: payload?.rows, cols: payload?.cols });
+});
+
+ipcMain.handle("direct-terminal:write", async (event, payload) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:write");
+  return ensureDirectTerminalService().write({ projectId, terminalId: payload?.terminalId, data: payload?.data });
+});
+
+ipcMain.handle("direct-terminal:resize", async (event, payload) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:resize");
+  return ensureDirectTerminalService().resize({ projectId, terminalId: payload?.terminalId, rows: payload?.rows, cols: payload?.cols });
+});
+
+ipcMain.handle("direct-terminal:close", async (event, payload) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:close");
+  return ensureDirectTerminalService().close({ projectId, terminalId: payload?.terminalId });
+});
+
+ipcMain.handle("direct-terminal:replay", async (event, payload) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:replay");
+  const service = ensureDirectTerminalService();
+  const terminalId = normalizeString(payload?.terminalId, "");
+  if (payload?.kind === "agent") {
+    const session = (directStatefulExecSessionManager?.terminalSessions({ projectId }) || []).find((row) => row.sessionId === terminalId);
+    const bytes = session ? directStatefulExecSessionManager.terminalReplay({ sessionId: terminalId }) : null;
+    return { terminalId, dataBase64: bytes ? bytes.toString("base64") : "" };
+  }
+  return { terminalId, dataBase64: service.replay({ projectId, terminalId }).toString("base64") };
 });
 
 ipcMain.handle("direct-workbench:set-runtime-path", async (event, payload) => {

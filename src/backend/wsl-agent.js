@@ -44,6 +44,7 @@ const {
 } = require("../shared/executor-protocol");
 const { BASE_COMMAND_ENVIRONMENT_KEYS, LocalChildProcessBackend } = require("../main/direct/tools/exec-process-backends");
 const { WINDOWS_JOB_LAUNCHER } = require("../main/direct/tools/windows-job-runner");
+const { PtyChannel } = require("../main/direct/tools/pty-frames");
 const { mcpServerEnvironment, requestMcpStdio } = require("../main/direct/external/mcp-stdio-transport");
 const { LocalFilePort } = require("../main/direct/tools/full-access-local-environment");
 
@@ -6095,7 +6096,10 @@ function startExecutorProcessSession(params = {}) {
   );
   const shellCommand = typeof params.shellCommand === "string" ? params.shellCommand : "";
   const command = String(params.command || "");
-  if (!shellCommand && !command) {
+  // A person's terminal: their interactive shell with their own environment,
+  // still contained so it ends with this executor.
+  const interactiveShell = params.interactiveShell === true;
+  if (!shellCommand && !command && !interactiveShell) {
     throw executorProcessError("direct_stateful_exec_command_invalid", "process/start requires a command.");
   }
   // planLaunch turns a command string into the native shell invocation
@@ -6106,8 +6110,13 @@ function startExecutorProcessSession(params = {}) {
     shellCommand,
     command,
     args: Array.isArray(params.args) ? params.args.map(String) : [],
+    tty: params.tty ? { rows: params.rows, cols: params.cols } : null,
+    interactiveShell,
   });
-  const env = minimalCommandEnv(params.env);
+  const exactEnv = params.fullEnvironment === true;
+  const env = exactEnv
+    ? { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" }
+    : minimalCommandEnv(params.env);
   // Windows: the job runner contains every profile, so the planner's own
   // launch (which also cleans up the scratch TEMP) starts it directly.
   const child = plan.launcher === WINDOWS_JOB_LAUNCHER
@@ -6123,13 +6132,16 @@ function startExecutorProcessSession(params = {}) {
       })
     : containedWorkspaceProcessSpawn(plan.command, plan.args, {
         cwd: workspace.cwd,
-        env: params.env,
+        env: exactEnv ? env : params.env,
+        exactEnv,
         stdio: ["pipe", "pipe", "pipe"],
         dieWithParent: true,
       });
   const session = {
     id,
     child,
+    // Terminal sessions: input, resize, and signals go through the helper.
+    pty: plan.tty ? new PtyChannel(child.stdin, { platform: process.platform }) : null,
     exited: false,
     forwardedBytes: 0,
     droppedBytes: 0,
@@ -6163,7 +6175,17 @@ function startExecutorProcessSession(params = {}) {
     launcher: [WINDOWS_JOB_LAUNCHER, "bubblewrap"].includes(plan.launcher) ? plan.launcher : "linux_pid_namespace",
     networkAccess: plan.networkAccess !== false,
     shell: plan.shellName || "",
+    tty: plan.tty || null,
   };
+}
+
+function resizeExecutorProcessSession(params = {}) {
+  const session = executorProcessSessionFor(params);
+  if (!session.pty) {
+    throw executorProcessError("direct_pty_not_a_terminal", "process/resize applies to terminal sessions only.");
+  }
+  session.pty.resize(params.rows, params.cols);
+  return { resized: true };
 }
 
 function executorProcessSessionFor(params = {}) {
@@ -6176,6 +6198,20 @@ function executorProcessSessionFor(params = {}) {
 
 function writeExecutorProcessSession(params = {}) {
   const session = executorProcessSessionFor(params);
+  if (session.pty) {
+    if (!session.pty.writable()) {
+      throw executorProcessError("direct_stateful_exec_session_not_live", "The process session no longer accepts input.");
+    }
+    const typed = typeof params.dataBase64 === "string"
+      ? Buffer.from(params.dataBase64, "base64")
+      : Buffer.from(typeof params.data === "string" ? params.data : "", "utf8");
+    return new Promise((resolve, reject) => {
+      const finish = (error) => (error ? reject(Object.assign(error, { code: error.code || "EPIPE" })) : resolve({ accepted: true, eof: params.eof === true }));
+      if (typed.length) session.pty.write(typed, (error) => (error || params.eof !== true ? finish(error) : session.pty.eof(finish)));
+      else if (params.eof === true) session.pty.eof(finish);
+      else resolve({ accepted: false, eof: false });
+    });
+  }
   const stdin = session.child.stdin;
   if (!stdin || stdin.destroyed || stdin.writableEnded) {
     throw executorProcessError("direct_stateful_exec_session_not_live", "The process session no longer accepts input.");
@@ -6198,6 +6234,18 @@ function writeExecutorProcessSession(params = {}) {
 function signalExecutorProcessSessionRequest(params = {}) {
   const session = executorProcessSessionFor(params);
   const signal = ["SIGTERM", "SIGKILL", "SIGINT"].includes(params.signal) ? params.signal : "SIGTERM";
+  if (session.pty) {
+    // The command has its own session on the terminal; the helper signals it.
+    session.pty.signal(signal);
+    if (signal !== "SIGINT") {
+      session.pty.close();
+      const timer = setTimeout(() => {
+        if (!session.exited) { try { signalExecutorProcessSession(session, "SIGKILL"); } catch {} }
+      }, signal === "SIGKILL" ? 200 : 1000);
+      timer.unref?.();
+    }
+    return { delivered: true, signal };
+  }
   return { delivered: signalExecutorProcessSession(session, signal), signal };
 }
 
@@ -6463,6 +6511,7 @@ async function handleRequest(method, params = {}) {
   if (method === EXECUTOR_METHODS.processStart) return startExecutorProcessSession(params);
   if (method === EXECUTOR_METHODS.processWrite) return writeExecutorProcessSession(params);
   if (method === EXECUTOR_METHODS.processSignal) return signalExecutorProcessSessionRequest(params);
+  if (method === EXECUTOR_METHODS.processResize) return resizeExecutorProcessSession(params);
   if (method === EXECUTOR_METHODS.fsList) return executorFsList(params);
   if (method === EXECUTOR_METHODS.mcpRequest) return executorMcpRequest(params);
   if (method === EXECUTOR_METHODS.mcpCancel) return cancelExecutorMcpRequest(params);

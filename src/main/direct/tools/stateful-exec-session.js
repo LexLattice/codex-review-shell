@@ -9,6 +9,7 @@ const {
   LocalChildProcessBackend,
   statefulExecError,
 } = require("./exec-process-backends");
+const { normalizePtySize } = require("./pty-frames");
 const {
   authorizeDirectThreadHarnessCapability,
   validateDirectThreadHarnessGrant,
@@ -72,7 +73,10 @@ const SESSION_STATES = new Set([
   "unknown",
 ]);
 const TERMINAL_SESSION_STATES = new Set(["completed", "failed", "cancelled", "timeout"]);
-const TRANSPORT_MODES = new Set(["plain_pipe", "pty_deferred"]);
+const TRANSPORT_MODES = new Set(["plain_pipe", "pty", "pty_deferred"]);
+// Raw terminal output kept per terminal session for people watching it in
+// the Terminal panel (separate from the model's bounded output budget).
+const TERMINAL_REPLAY_BYTES = 256 * 1024;
 const OUTPUT_STREAMS = new Set(["stdout", "stderr", "combined", "system"]);
 const STDIN_POLICIES = new Set(["disabled", "line_input", "eof_only", "blocked_until_policy"]);
 const CLEANUP_STATES = new Set(["not_required", "pending", "completed", "failed", "unknown"]);
@@ -206,7 +210,7 @@ function buildStatefulExecSessionPlan(input = {}) {
     commandClass: boundedString(source.commandClass || "unknown", 80),
     cwdEvidenceKey: boundedString(source.cwdEvidenceKey || source.workspaceEvidenceKey, 180),
     transportMode,
-    ptyModeEnabled: false,
+    ptyModeEnabled: transportMode === "pty",
     plainPipeModeEnabled: transportMode === "plain_pipe",
     sessionState,
     terminal: TERMINAL_SESSION_STATES.has(sessionState),
@@ -739,9 +743,12 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     const backend = this.backendFor(input, grant);
     const workspace = backend.resolveWorkspace(input, grant);
     const sandboxMode = normalizeString(grant?.sandboxMode, "danger-full-access");
+    // Like Codex's exec_command `tty`: the command gets a terminal (24x80
+    // unless sized), and its output is the terminal's.
+    const tty = input.tty === true ? normalizePtySize({ rows: input.rows, cols: input.cols }) : null;
     // Planning may refuse (for example, no sandbox available); that must
     // surface as an error before any session exists.
-    const spawnPlan = backend.planLaunch({ sandboxMode, workspace, shellCommand, command, args });
+    const spawnPlan = backend.planLaunch({ sandboxMode, workspace, shellCommand, command, args, tty });
     const stdinPolicy = normalizeEnum(input.stdinPolicy || input.stdinMode, STDIN_POLICIES, "line_input");
     const explicitSessionHandle = normalizeString(input.execSessionId || input.processSessionId || input.sessionHandleId, "");
     const sessionId = explicitSessionHandle
@@ -767,13 +774,16 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       commandPreview: boundedString(commandPreviewFrom({ command, args }), 180),
       cwdRelPath: workspace.cwdRelPath,
       cwd: workspace.cwd,
-      env: safeExecEnvironment(input.env),
+      env: tty ? { ...safeExecEnvironment(input.env), TERM: "xterm-256color" } : safeExecEnvironment(input.env),
       stdinPolicy,
       backendId: backend.id,
       sandboxMode,
       sandboxLauncher: spawnPlan.launcher,
       networkAccess: spawnPlan.networkAccess !== false,
-      transportMode: "plain_pipe",
+      transportMode: tty ? "pty" : "plain_pipe",
+      tty,
+      terminalReplay: [],
+      terminalReplayBytes: 0,
       sessionState: "starting",
       startedAt: now,
       completedAt: "",
@@ -820,7 +830,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
         env: record.env,
         // Remote backends build the base environment natively in their own
         // environment and only receive the caller's requested additions.
-        requestedEnv: input.env,
+        requestedEnv: tty ? { ...(isPlainObject(input.env) ? input.env : {}), TERM: "xterm-256color" } : input.env,
         project: input.project,
         sessionId,
       });
@@ -843,6 +853,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
 
   attachProcess(record) {
     const onData = (stream, chunk) => {
+      if (record.tty && stream === "stdout") this.recordTerminalBytes(record, chunk);
       const decoder = stream === "stdout" ? record.stdoutDecoder : record.stderrDecoder;
       this.recordOutput(record, stream, decoder.write(chunk));
     };
@@ -892,6 +903,62 @@ class DirectStatefulExecSessionManager extends EventEmitter {
             : "failed";
       this.settle(record, { sessionState: terminalState, exitCode, signal });
     });
+  }
+
+  // Keeps the newest terminal output for viewers and announces it; the
+  // model's view stays the bounded preview in recordOutput.
+  recordTerminalBytes(record, chunk) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk || ""), "utf8");
+    if (!bytes.length) return;
+    record.terminalReplay.push(bytes);
+    record.terminalReplayBytes += bytes.length;
+    while (record.terminalReplayBytes > TERMINAL_REPLAY_BYTES && record.terminalReplay.length > 1) {
+      record.terminalReplayBytes -= record.terminalReplay.shift().length;
+    }
+    this.emit("terminal-data", {
+      sessionId: record.sessionId,
+      taskId: record.taskId,
+      projectId: record.projectId,
+      data: bytes,
+    });
+  }
+
+  resize(input = {}) {
+    const record = this.exactRecord(input);
+    this.resolveGrant({ ...input, harnessGrant: record.grant, executionEnvironmentDigest: record.executionEnvironmentDigest }, "write_stdin");
+    if (!record.tty || typeof record.process?.resize !== "function") {
+      throw statefulExecError("direct_pty_not_a_terminal", "Only terminal sessions (exec_command with tty) can be resized.");
+    }
+    record.tty = normalizePtySize({ rows: input.rows, cols: input.cols });
+    if (!record.settled) record.process.resize(record.tty.rows, record.tty.cols);
+    return this.publicResult(record, { resized: true });
+  }
+
+  // Terminal sessions for the Terminal panel: the owner's view of what
+  // agents run in a terminal, read-only and outside any grant.
+  terminalSessions(input = {}) {
+    const projectId = normalizeString(input.projectId, "");
+    return [...this.sessions.values()]
+      .filter((record) => record.tty && (!projectId || record.projectId === projectId))
+      .map((record) => ({
+        sessionId: record.sessionId,
+        taskId: record.taskId,
+        threadId: record.threadId,
+        projectId: record.projectId,
+        commandPreview: record.commandPreview,
+        sessionState: record.sessionState,
+        startedAt: record.startedAt,
+        completedAt: record.completedAt,
+        exitCode: record.exitCode,
+        rows: record.tty.rows,
+        cols: record.tty.cols,
+      }));
+  }
+
+  terminalReplay(input = {}) {
+    const record = this.sessions.get(normalizeString(input.sessionId, ""));
+    if (!record?.tty) return null;
+    return Buffer.concat(record.terminalReplay || []);
   }
 
   flushOutput(record) {

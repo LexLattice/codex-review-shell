@@ -22,6 +22,7 @@ const {
   statefulExecError,
 } = require("./exec-process-backends");
 const { workspaceExecutesLocally } = require("./exec-sandbox");
+const { normalizePtySize } = require("./pty-frames");
 
 const ENVIRONMENT_EXECUTOR_BACKEND_ID = "environment-executor";
 const EXECUTOR_ENVIRONMENT_KINDS = new Set(["wsl", "windows"]);
@@ -55,6 +56,8 @@ class ExecutorProcessHandle extends EventEmitter {
     this.transport = null;
     this.launcher = "pending";
     this.networkAccess = options.plan?.networkAccess !== false;
+    this.tty = options.plan?.tty ? { ...options.plan.tty } : null;
+    this.resizePending = false;
     this.onExecutorEvent = (event) => this.handleExecutorEvent(event);
     this.onTransportClosed = (payload) => this.handleTransportClosed(payload);
     // Listeners are attached by the router right after launch returns; start
@@ -71,6 +74,8 @@ class ExecutorProcessHandle extends EventEmitter {
   onClose(fn) { this.on("close", fn); }
   onActivity(fn) { this.on("activity", fn); }
   onLost(fn) { this.on("lost", fn); }
+  // The executor names the shell it started (the plan here can't know it).
+  onStarted(fn) { this.on("started", fn); }
 
   async begin() {
     try {
@@ -88,13 +93,18 @@ class ExecutorProcessHandle extends EventEmitter {
         command: this.plan.command,
         args: this.plan.args,
         env: this.requestedEnv && typeof this.requestedEnv === "object" ? this.requestedEnv : {},
+        ...(this.plan.tty ? { tty: true, rows: this.tty.rows, cols: this.tty.cols } : {}),
+        ...(this.plan.interactiveShell ? { interactiveShell: true } : {}),
+        ...(this.plan.fullEnvironment ? { fullEnvironment: true } : {}),
       }, PROCESS_START_TIMEOUT_MS);
       if (this.state !== "starting") return;
       this.state = "running";
       this.launcher = normalizeString(result?.launcher, "unknown");
       this.networkAccess = result?.networkAccess !== false;
+      this.emit("started", { shell: normalizeString(result?.shell, "") });
       for (const signal of this.pendingSignals.splice(0)) this.sendSignal(signal);
       for (const pending of this.pendingStdin.splice(0)) this.sendStdin(pending);
+      if (this.resizePending) this.resize(this.tty.rows, this.tty.cols);
     } catch (error) {
       if (this.state !== "starting") return;
       this.state = "closed";
@@ -192,6 +202,22 @@ class ExecutorProcessHandle extends EventEmitter {
     return true;
   }
 
+  // Terminal sessions only; a resize before the start is applied after it.
+  resize(rows, cols) {
+    if (!this.tty || this.state === "closed") return;
+    this.tty = normalizePtySize({ rows, cols });
+    if (this.state === "starting" || !this.transport) {
+      this.resizePending = true;
+      return;
+    }
+    this.resizePending = false;
+    this.transport.request(EXECUTOR_METHODS.processResize, {
+      processSessionId: this.sessionId,
+      rows: this.tty.rows,
+      cols: this.tty.cols,
+    }, PROCESS_CONTROL_TIMEOUT_MS).catch(() => {});
+  }
+
   sendSignal(signal) {
     if (!this.transport) return;
     this.transport.request(EXECUTOR_METHODS.processSignal, {
@@ -234,6 +260,9 @@ class EnvironmentExecutorProcessBackend {
       launcher: sandboxMode === "danger-full-access" ? "executor" : "executor_sandbox",
       networkAccess: sandboxMode === "danger-full-access",
       shell: false,
+      tty: normalizePtySize(spec.tty),
+      interactiveShell: spec.interactiveShell === true,
+      fullEnvironment: spec.fullEnvironment === true,
     };
   }
 

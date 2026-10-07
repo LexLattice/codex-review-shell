@@ -22,13 +22,20 @@
 //   stdinWritable() -> boolean
 //   writeStdin(text, callback) / endStdin(callback)
 //   kill(signal) -> boolean              terminates the whole process tree
+//   resize(rows, cols)                   terminal sessions only (plan.tty)
+//
+// A terminal session (spec.tty = { rows, cols }) runs the command under a
+// terminal helper (pty-frames.js): its stdout is the terminal's output
+// (stdout and stderr merged, as in a real terminal) and its input is typed.
 
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { BubblewrapExecSandbox, workspaceExecutesLocally } = require("./exec-sandbox");
 const { WindowsJobSandbox } = require("./windows-job-runner");
-const { nativeShellCommand } = require("../runtime/execution-environment-contract");
+const { nativeInteractiveShell, nativeShellCommand } = require("../runtime/execution-environment-contract");
+const { PTY_HELPER_PATH, PtyChannel, normalizePtySize } = require("./pty-frames");
+const { findExecutableOnPath } = require("../../../shared/executor-protocol");
 
 const LOCAL_CHILD_BACKEND_ID = "local-child";
 
@@ -128,6 +135,40 @@ class LocalChildProcessHandle {
   }
 }
 
+// A command running in a terminal helper. Signals go to the command's own
+// process group through the helper, since the helper puts the command in a
+// session of its own that killing the helper's group wouldn't reach.
+class LocalPtyProcessHandle extends LocalChildProcessHandle {
+  constructor(child, plan = {}) {
+    super(child, plan);
+    this.tty = { ...plan.tty };
+    this.channel = new PtyChannel(child?.stdin, { platform: plan.platform || process.platform });
+  }
+
+  stdinWritable() { return this.channel.writable(); }
+
+  writeStdin(text, callback) { this.channel.write(text, callback); }
+
+  endStdin(callback) { this.channel.eof(callback); }
+
+  resize(rows, cols) {
+    this.tty = normalizePtySize({ rows, cols });
+    this.channel.resize(this.tty.rows, this.tty.cols);
+  }
+
+  kill(signal) {
+    if (signal === "SIGINT") return this.channel.signal("SIGINT");
+    this.channel.signal(signal === "SIGKILL" ? "SIGKILL" : "SIGTERM");
+    // Then hang up, and stop the helper itself if it lingers.
+    this.channel.close();
+    const timer = setTimeout(() => {
+      if (this.child && this.child.exitCode === null && this.child.signalCode === null) processTreeKill(this.child, "SIGKILL");
+    }, signal === "SIGKILL" ? 200 : 1000);
+    timer.unref?.();
+    return true;
+  }
+}
+
 class LocalChildProcessBackend {
   constructor(options = {}) {
     this.id = LOCAL_CHILD_BACKEND_ID;
@@ -203,15 +244,29 @@ class LocalChildProcessBackend {
 
   planLaunch(spec = {}) {
     const sandboxMode = normalizeString(spec.sandboxMode, "danger-full-access");
+    const tty = normalizePtySize(spec.tty);
     // Command strings run in the environment's native shell (bash -c on
     // Linux, PowerShell on Windows), matching what the model is told and what
-    // the WSL executor does.
-    const native = spec.shellCommand
-      ? nativeShellCommand(spec.shellCommand, { platform: this.platform, env: this.env })
-      : null;
-    const command = native ? native.command : spec.command;
-    const args = native ? native.args : spec.args;
+    // the WSL executor does. A person's terminal gets their interactive shell.
+    const native = spec.interactiveShell
+      ? nativeInteractiveShell({ platform: this.platform, env: this.env })
+      : spec.shellCommand
+        ? nativeShellCommand(spec.shellCommand, { platform: this.platform, env: this.env, terminal: Boolean(tty) })
+        : null;
+    let command = native ? native.command : spec.command;
+    let args = native ? native.args : spec.args;
     const shellName = native ? native.shell : "";
+    // Linux: the terminal helper runs inside the sandbox and gives the
+    // command its terminal there. (Windows: the job runner hosts the
+    // pseudoconsole.)
+    if (tty && this.platform !== "win32") {
+      const python = findExecutableOnPath("python3", { platform: this.platform, env: this.env });
+      if (!python) {
+        throw statefulExecError("direct_pty_unavailable", "Terminal sessions in this environment need python3, which isn't installed.");
+      }
+      args = [PTY_HELPER_PATH, String(tty.rows), String(tty.cols), "--", command, ...(Array.isArray(args) ? args : [])];
+      command = python;
+    }
     // On Windows the sandbox also wraps Full access: the job that stops the
     // whole process tree applies to every profile.
     if (sandboxMode === "danger-full-access" && this.sandbox.containsFullAccess !== true) {
@@ -222,6 +277,8 @@ class LocalChildProcessBackend {
         shellName,
         launcher: "none",
         networkAccess: true,
+        tty,
+        platform: this.platform,
       };
     }
     return {
@@ -232,9 +289,12 @@ class LocalChildProcessBackend {
         shellCommand: "",
         command,
         args,
+        tty: this.platform === "win32" ? tty : null,
       }),
       shell: false,
       shellName,
+      tty,
+      platform: this.platform,
     };
   }
 
@@ -253,7 +313,7 @@ class LocalChildProcessBackend {
         fs.rm(plan.scratchDir, { recursive: true, force: true, maxRetries: 3 }, () => {});
       });
     }
-    return new LocalChildProcessHandle(child, plan);
+    return plan.tty ? new LocalPtyProcessHandle(child, plan) : new LocalChildProcessHandle(child, plan);
   }
 }
 
@@ -262,6 +322,7 @@ module.exports = {
   LOCAL_CHILD_BACKEND_ID,
   LocalChildProcessBackend,
   LocalChildProcessHandle,
+  LocalPtyProcessHandle,
   normalizeExecRelativePath,
   processTreeKill,
   statefulExecError,

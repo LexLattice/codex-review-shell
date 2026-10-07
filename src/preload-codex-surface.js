@@ -382,6 +382,19 @@ if (directWorkbenchPreload) {
       ipcRenderer.on("direct-workbench:project-directory-event", listener);
       return () => ipcRenderer.removeListener("direct-workbench:project-directory-event", listener);
     },
+    // Terminal panel: the owner's shells in the active project, and agents'
+    // terminal sessions (read-only).
+    listDirectTerminals: () => ipcRenderer.invoke("direct-terminal:list"),
+    createDirectTerminal: (rows, cols) => ipcRenderer.invoke("direct-terminal:create", { rows, cols }),
+    writeDirectTerminal: (terminalId, data) => ipcRenderer.invoke("direct-terminal:write", { terminalId, data }),
+    resizeDirectTerminal: (terminalId, rows, cols) => ipcRenderer.invoke("direct-terminal:resize", { terminalId, rows, cols }),
+    closeDirectTerminal: (terminalId) => ipcRenderer.invoke("direct-terminal:close", { terminalId }),
+    replayDirectTerminal: (terminalId, kind = "user") => ipcRenderer.invoke("direct-terminal:replay", { terminalId, kind }),
+    onDirectTerminalEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("direct-terminal:event", listener);
+      return () => ipcRenderer.removeListener("direct-terminal:event", listener);
+    },
   });
   for (const key of Object.keys(codexSurfaceApi)) {
     if (key.includes("WorldManager")) delete codexSurfaceApi[key];

@@ -10,7 +10,17 @@ const CONTENT_TYPES = {
   ".js": "text/javascript; charset=utf-8",
 };
 
+// Third-party browser files the surfaces use, served from their npm
+// packages: an exact allowlist, never a directory mapping.
+const NODE_MODULES_ROOT = path.resolve(__dirname, "..", "..", "node_modules");
+const VENDOR_FILES = Object.freeze({
+  "/vendor/xterm/xterm.js": path.join(NODE_MODULES_ROOT, "@xterm", "xterm", "lib", "xterm.js"),
+  "/vendor/xterm/xterm.css": path.join(NODE_MODULES_ROOT, "@xterm", "xterm", "css", "xterm.css"),
+  "/vendor/xterm/addon-fit.js": path.join(NODE_MODULES_ROOT, "@xterm", "addon-fit", "lib", "addon-fit.js"),
+});
+
 function safePath(rootDir, pathname) {
+  if (Object.prototype.hasOwnProperty.call(VENDOR_FILES, pathname)) return VENDOR_FILES[pathname];
   const relativePath = pathname === "/" ? "codex-surface.html" : pathname.replace(/^\/+/, "");
   const resolved = path.resolve(rootDir, relativePath);
   const normalizedRoot = `${path.resolve(rootDir)}${path.sep}`;
@@ -81,4 +91,5 @@ class LocalSurfaceServer {
 
 module.exports = {
   LocalSurfaceServer,
+  VENDOR_FILES,
 };

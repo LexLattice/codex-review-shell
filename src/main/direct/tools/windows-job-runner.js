@@ -17,6 +17,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { discoverCredentialStoreFiles } = require("./exec-sandbox");
+const { normalizePtySize } = require("./pty-frames");
 
 const WINDOWS_JOB_LAUNCHER = "windows_job_object";
 const WINDOWS_JOB_RUNNER_SOURCE = path.join(__dirname, "windows-job-runner.cs");
@@ -234,11 +235,16 @@ class WindowsJobSandbox {
       env.TEMP = scratchDir;
       env.TMP = scratchDir;
     }
+    // A terminal: the runner hosts the command in a pseudoconsole and its
+    // stdin becomes the frame channel (pty-frames.js).
+    const tty = normalizePtySize(spec.tty);
+    if (tty) args.push("--conpty", String(tty.rows), String(tty.cols));
     const commandLine = windowsCommandLine(command, Array.isArray(spec.args) ? spec.args.map(String) : []);
     args.push("--cmdline-b64", Buffer.from(commandLine, "utf8").toString("base64"));
     return {
       command: executable,
       args,
+      tty,
       launcher: WINDOWS_JOB_LAUNCHER,
       sandboxMode,
       integrity,

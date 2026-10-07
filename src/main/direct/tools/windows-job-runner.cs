@@ -22,6 +22,16 @@
 //   --scratch <dir>            Create <dir> as the command's private TEMP:
 //                              Low label, DACL for this user and logon session.
 //
+//   --conpty <rows> <cols>     Run the command in a pseudoconsole (ConPTY) of
+//                              that size. stdout then carries the terminal's
+//                              output, and stdin carries frames: one type byte,
+//                              a 4-byte big-endian length, the payload.
+//                                'd' bytes typed into the terminal
+//                                'r' resize: rows, cols (2-byte big-endian each)
+//                                'k' signal name: SIGINT types Ctrl+C, any
+//                                    other signal ends the job
+//                              stdin closing (the host is gone) ends the job.
+//
 // Exit code: the command's, or 125 when the runner itself fails (message on
 // stderr, prefixed "direct-job-runner:").
 //
@@ -34,10 +44,15 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
+using System.Threading;
+using Microsoft.Win32.SafeHandles;
 
 static class DirectJobRunner
 {
     const uint CREATE_SUSPENDED = 0x00000004;
+    const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+    const int PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016;
+    const int MAX_FRAME_BYTES = 1 << 20;
     const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
     const int STARTF_USESTDHANDLES = 0x00000100;
     const uint HANDLE_FLAG_INHERIT = 0x00000001;
@@ -70,6 +85,19 @@ static class DirectJobRunner
         public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
         public short wShowWindow, cbReserved2;
         public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct STARTUPINFOEX
+    {
+        public STARTUPINFO StartupInfo;
+        public IntPtr lpAttributeList;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct COORD
+    {
+        public short X, Y;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -135,6 +163,24 @@ static class DirectJobRunner
     static extern bool CreateProcess(string app, StringBuilder cmdline, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern bool CreateProcessAsUser(IntPtr token, string app, StringBuilder cmdline, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessW")]
+    static extern bool CreateProcessEx(string app, StringBuilder cmdline, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    static extern bool CreateProcessAsUserEx(IntPtr token, string app, StringBuilder cmdline, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CreatePipe(out IntPtr read, out IntPtr write, IntPtr attributes, int size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern int CreatePseudoConsole(COORD size, IntPtr input, IntPtr output, uint flags, out IntPtr console);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern int ResizePseudoConsole(IntPtr console, COORD size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern void ClosePseudoConsole(IntPtr console);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute, IntPtr value, IntPtr size, IntPtr previous, IntPtr returnSize);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -323,17 +369,169 @@ static class DirectJobRunner
         return low;
     }
 
+    static COORD Size(int rows, int cols)
+    {
+        COORD size = new COORD();
+        size.X = (short)Math.Max(1, Math.Min(cols, 1000));
+        size.Y = (short)Math.Max(1, Math.Min(rows, 1000));
+        return size;
+    }
+
+    static bool ReadExactly(Stream stream, byte[] buffer, int count)
+    {
+        int offset = 0;
+        while (offset < count)
+        {
+            int read = stream.Read(buffer, offset, count - offset);
+            if (read <= 0) return false;
+            offset += read;
+        }
+        return true;
+    }
+
+    // stdin frames for a pseudoconsole: typed bytes, resize, signal. When
+    // stdin ends, the host is gone, so the command ends too.
+    static void RelayFrames(Stream frames, Stream terminalInput, IntPtr console, IntPtr job)
+    {
+        byte[] header = new byte[5];
+        try
+        {
+            while (ReadExactly(frames, header, 5))
+            {
+                int length = (header[1] << 24) | (header[2] << 16) | (header[3] << 8) | header[4];
+                if (length < 0 || length > MAX_FRAME_BYTES) break;
+                byte[] payload = new byte[length];
+                if (!ReadExactly(frames, payload, length)) break;
+                char kind = (char)header[0];
+                if (kind == 'd')
+                {
+                    terminalInput.Write(payload, 0, length);
+                    terminalInput.Flush();
+                }
+                else if (kind == 'r' && length == 4)
+                {
+                    ResizePseudoConsole(console, Size((payload[0] << 8) | payload[1], (payload[2] << 8) | payload[3]));
+                }
+                else if (kind == 'k')
+                {
+                    if (Encoding.ASCII.GetString(payload) == "SIGINT")
+                    {
+                        terminalInput.WriteByte(3);
+                        terminalInput.Flush();
+                    }
+                    else
+                    {
+                        TerminateJobObject(job, 130);
+                        return;
+                    }
+                }
+            }
+        }
+        catch (IOException)
+        {
+        }
+        TerminateJobObject(job, 130);
+    }
+
+    static int RunInPseudoConsole(IntPtr job, string cmdline, IntPtr token, int rows, int cols)
+    {
+        IntPtr inputRead, inputWrite, outputRead, outputWrite;
+        if (!CreatePipe(out inputRead, out inputWrite, IntPtr.Zero, 0)) Fail("CreatePipe(input)");
+        if (!CreatePipe(out outputRead, out outputWrite, IntPtr.Zero, 0)) Fail("CreatePipe(output)");
+        IntPtr console;
+        int result = CreatePseudoConsole(Size(rows, cols), inputRead, outputWrite, 0, out console);
+        if (result != 0) Fail("CreatePseudoConsole", result);
+        // The pseudoconsole keeps its own copies of these ends.
+        CloseHandle(inputRead);
+        CloseHandle(outputWrite);
+
+        IntPtr listSize = IntPtr.Zero;
+        InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref listSize);
+        IntPtr attributes = Marshal.AllocHGlobal(listSize);
+        if (!InitializeProcThreadAttributeList(attributes, 1, 0, ref listSize)) Fail("InitializeProcThreadAttributeList");
+        if (!UpdateProcThreadAttribute(attributes, 0, (IntPtr)PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, console, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) Fail("UpdateProcThreadAttribute");
+        STARTUPINFOEX si = new STARTUPINFOEX();
+        si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+        // Without this, Windows hands the child this runner's own redirected
+        // stdin/stdout (the frame pipe) instead of the pseudoconsole, and the
+        // shell reads raw frames in parallel with the relay. Null handles
+        // make it use the pseudoconsole.
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.StartupInfo.hStdInput = IntPtr.Zero;
+        si.StartupInfo.hStdOutput = IntPtr.Zero;
+        si.StartupInfo.hStdError = IntPtr.Zero;
+        si.lpAttributeList = attributes;
+
+        PROCESS_INFORMATION pi;
+        StringBuilder line = new StringBuilder(cmdline);
+        // Suspended until it is in the job; no handles inherited, the
+        // pseudoconsole is its terminal.
+        uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
+        bool created = token != IntPtr.Zero
+            ? CreateProcessAsUserEx(token, null, line, IntPtr.Zero, IntPtr.Zero, false, flags, IntPtr.Zero, null, ref si, out pi)
+            : CreateProcessEx(null, line, IntPtr.Zero, IntPtr.Zero, false, flags, IntPtr.Zero, null, ref si, out pi);
+        if (!created) Fail(token != IntPtr.Zero ? "CreateProcessAsUser" : "CreateProcess");
+        if (!AssignProcessToJobObject(job, pi.hProcess))
+        {
+            int code = Marshal.GetLastWin32Error();
+            TerminateProcess(pi.hProcess, 125);
+            Fail("AssignProcessToJobObject", code);
+        }
+
+        Stream stdout = Console.OpenStandardOutput();
+        FileStream terminalOutput = new FileStream(new SafeFileHandle(outputRead, true), FileAccess.Read, 1, false);
+        FileStream terminalInput = new FileStream(new SafeFileHandle(inputWrite, true), FileAccess.Write, 1, false);
+        Thread output = new Thread(delegate()
+        {
+            byte[] buffer = new byte[8192];
+            try
+            {
+                int read;
+                while ((read = terminalOutput.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    stdout.Write(buffer, 0, read);
+                    stdout.Flush();
+                }
+            }
+            catch (IOException)
+            {
+            }
+        });
+        output.IsBackground = true;
+        output.Start();
+        Thread input = new Thread(delegate() { RelayFrames(Console.OpenStandardInput(), terminalInput, console, job); });
+        input.IsBackground = true;
+        input.Start();
+
+        ResumeThread(pi.hThread);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        uint exitCode;
+        GetExitCodeProcess(pi.hProcess, out exitCode);
+        TerminateJobObject(job, exitCode);
+        // Closing the pseudoconsole flushes its last output and ends the stream.
+        ClosePseudoConsole(console);
+        output.Join(2000);
+        stdout.Flush();
+        return (int)exitCode;
+    }
+
     static int Main(string[] args)
     {
         string integrity = "medium";
         string cmdline = null;
         string labelLow = null;
         string scratch = null;
+        int ptyRows = 0, ptyCols = 0;
         System.Collections.Generic.List<string> hidden = new System.Collections.Generic.List<string>();
         for (int i = 0; i < args.Length; i++)
         {
             bool hasValue = i + 1 < args.Length;
             if (args[i] == "--integrity" && hasValue) integrity = args[++i];
+            else if (args[i] == "--conpty" && i + 2 < args.Length)
+            {
+                ptyRows = int.Parse(args[++i]);
+                ptyCols = int.Parse(args[++i]);
+            }
             else if (args[i] == "--cmdline-b64" && hasValue) cmdline = Encoding.UTF8.GetString(Convert.FromBase64String(args[++i]));
             else if (args[i] == "--label-low" && hasValue) labelLow = args[++i];
             else if (args[i] == "--hide" && hasValue) hidden.Add(args[++i]);
@@ -366,6 +564,12 @@ static class DirectJobRunner
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref limits, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)))) Fail("SetInformationJobObject");
+
+        if (ptyRows > 0 && ptyCols > 0)
+        {
+            IntPtr ptyToken = integrity != "medium" ? LowIntegrityToken(self, integrity == "low-read-only") : IntPtr.Zero;
+            return RunInPseudoConsole(job, cmdline, ptyToken, ptyRows, ptyCols);
+        }
 
         STARTUPINFO si = new STARTUPINFO();
         si.cb = Marshal.SizeOf(typeof(STARTUPINFO));

@@ -10,6 +10,7 @@
     <title>Direct Workbench</title>
     <link rel="stylesheet" href="./codex-surface.css" />
     <link rel="stylesheet" href="./t3-direct-surface.css" />
+    <link rel="stylesheet" href="/vendor/xterm/xterm.css" />
   </head>
   <body data-direct-gui="direct-workbench" data-app-experience="direct-workbench" data-control-plane="direct-thread">
     <main id="codexShell" class="codex-shell t3-direct-shell" data-t3-sidebar="expanded" data-morphic-region="bounded-direct-workbench">
@@ -361,13 +362,23 @@
         <button type="button" data-t3-action="intake" aria-label="Open Direct thread intake" title="Thread intake">I</button>
         <button type="button" disabled aria-label="Files are not connected in this experiment" title="Files are not connected in this experiment">F</button>
         <button type="button" disabled aria-label="Diff is not connected in this experiment" title="Diff is not connected in this experiment">Δ</button>
-        <button type="button" disabled aria-label="Terminal is not connected in this experiment" title="Terminal is not connected in this experiment">›_</button>
+        <button id="t3TerminalButton" type="button" aria-label="Open terminal panel" aria-pressed="false" title="Terminal">›_</button>
         <button type="button" disabled aria-label="Browser preview is not connected in this experiment" title="Browser preview is not connected in this experiment">◎</button>
         <span class="t3-utility-spacer" aria-hidden="true"></span>
         <button type="button" data-runtime-tab="advanced" aria-label="Open advanced Direct settings" title="Settings">⚙</button>
       </nav>
 
       <section class="transcript" id="transcript" aria-label="Codex transcript"></section>
+
+      <section id="directTerminalPanel" class="direct-terminal-panel" hidden aria-label="Terminal" data-morphic-region="terminal-panel">
+        <header class="direct-terminal-header">
+          <div id="directTerminalTabs" class="direct-terminal-tabs" role="tablist" aria-label="Terminals"></div>
+          <button id="directTerminalNew" class="direct-terminal-new" type="button" title="New terminal in this project's environment" aria-label="New terminal">+</button>
+          <button id="directTerminalClose" class="drawer-close" type="button" aria-label="Close terminal panel">×</button>
+        </header>
+        <div id="directTerminalViews" class="direct-terminal-views"></div>
+        <p id="directTerminalStatus" class="direct-terminal-status" aria-live="polite" hidden></p>
+      </section>
 
       <form id="composerForm" class="composer-shell">
         <textarea id="composerInput" rows="4" placeholder="Ask Direct Codex to inspect, change, or explain this project…"></textarea>
@@ -421,6 +432,9 @@
     <script src="./codex-surface.js"></script>
     <script src="./t3-direct-surface.js"></script>
     <script src="./direct-project-directory-surface.js"></script>
+    <script src="/vendor/xterm/xterm.js"></script>
+    <script src="/vendor/xterm/addon-fit.js"></script>
+    <script src="./direct-terminal-panel.js"></script>
     <script src="./direct-thread-intake-surface.js"></script>
     <script src="./direct-usage-surface.js"></script>
   </body>

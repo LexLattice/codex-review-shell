@@ -21,6 +21,7 @@ const EXECUTOR_METHODS = Object.freeze({
   processWrite: "process/write",
   processRead: "process/read",
   processSignal: "process/signal",
+  processResize: "process/resize",
   processWait: "process/wait",
   fsRead: "fs/read",
   fsApplyPlannedPatch: "fs/applyPlannedPatch",
@@ -38,6 +39,7 @@ const IMPLEMENTED_EXECUTOR_METHODS = Object.freeze([
   EXECUTOR_METHODS.processStart,
   EXECUTOR_METHODS.processWrite,
   EXECUTOR_METHODS.processSignal,
+  EXECUTOR_METHODS.processResize,
   EXECUTOR_METHODS.fsRead,
   EXECUTOR_METHODS.fsStat,
   EXECUTOR_METHODS.fsApplyPlannedPatch,
@@ -199,7 +201,13 @@ function describeExecutionEnvironment(options = {}) {
         blockerCode: normalizeString(containment.blockerCode, ""),
       },
       sandbox,
-      pty: { available: false, kind: "none" },
+      // Terminals: ConPTY through the job runner on Windows, the Python
+      // helper (pty-helper.py) on Linux.
+      pty: platform === "win32"
+        ? { available: true, kind: "conpty" }
+        : findExecutableOnPath("python3", platformOptions)
+          ? { available: true, kind: "python_pty" }
+          : { available: false, kind: "none" },
     },
     methods: [...IMPLEMENTED_EXECUTOR_METHODS],
     rawPathIncluded: true,

@@ -5865,6 +5865,7 @@ class DirectLiveTextController {
             stdinPolicy: args.stdinPolicy,
             idleTimeoutMs: args.idleTimeoutMs,
             hardTimeoutMs: args.hardTimeoutMs,
+            tty: args.tty === true,
           })
         : this.statefulExecSessionManager.writeStdin({
             ...binding,
