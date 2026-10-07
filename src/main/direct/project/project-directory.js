@@ -233,6 +233,10 @@ function buildDirectWorkbenchProjectBindingDraft(config = {}, options = {}) {
       runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || defaults.codexBinding || {}),
       // "" is Recommended: new threads follow the account's model list.
       defaultModel: project ? normalizeString(project.surfaceBinding?.codex?.model, "") : "",
+      // Whether other projects' agents may delegate work here ("" = no).
+      delegationAccess: project ? normalizeString(project.delegation?.acceptAccess, "") : "",
+      delegationSubfolders: project?.delegation?.includeSubfolders === true,
+      createdByDelegation: Boolean(project?.delegation?.createdBy),
     },
     evidence: {
       projectIdentityAssignedByMain: mode === "create",
@@ -324,8 +328,16 @@ function validateDirectWorkbenchProjectBindingMutation(directory = {}, config = 
   if (defaultModel.length > 120 || !/^[A-Za-z0-9._:-]*$/.test(defaultModel)) {
     throw projectDirectoryError("project_binding_default_model_invalid");
   }
+  const hasDelegation = typeof request.fields?.delegationAccess === "string";
+  const delegationAccess = hasDelegation ? request.fields.delegationAccess.trim() : "";
+  if (!["", "read_only", "workspace", "full_access"].includes(delegationAccess)) {
+    throw projectDirectoryError("project_binding_delegation_access_invalid");
+  }
   return {
     ...(hasDefaultModel ? { defaultModel } : {}),
+    ...(hasDelegation
+      ? { delegationAccess, delegationSubfolders: Boolean(delegationAccess) && request.fields.delegationSubfolders === true }
+      : {}),
     mode,
     clientMutationId,
     sourceProjectId,

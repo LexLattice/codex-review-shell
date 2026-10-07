@@ -4,7 +4,7 @@ Status: active. This is the working document for the dual-environment
 track. Read it at the start of every turn, and update it at the end of every
 turn before committing.
 
-Last updated: 2026-10-06, after turn 9.
+Last updated: 2026-10-07, after turn 10.
 
 ## How to use this document
 
@@ -100,8 +100,8 @@ executor could later be swapped for it.
 
 ## Next turn
 
-**Turn 10: cross-environment delegation.** (Turn 9 still needs the owner's
-manual Electron smoke.)
+**Turn 11: one executor per environment, PTY, Terminal panel.** (Turns 9
+and 10 still need the owner's manual Electron checks.)
 
 ## Gates for every turn
 
@@ -876,11 +876,104 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ### Turn 10: cross-environment delegation
 
-- Status: planned
+- Status: done with deviations (owner Electron check pending)
 - Scope: `spawn_agent` can target another environment; the child thread is
   bound there with a grant derived from the parent under an explicit owner
   policy for crossing environments.
-- Outcome: _(fill in)_
+- Outcome:
+  - **Owner decisions** (asked before building):
+    - A child works in an existing Workbench project in the other
+      environment, or in a subfolder of one.
+    - A subfolder gets an auto-created project, marked "created by
+      delegation".
+    - Authorization is per target project: "Accept delegated work: Off / up
+      to Read only / up to Workspace / up to Full access", default Off.
+    - The parent gets the child's final message, as in Codex.
+    - The child appears in the target project's thread list, marked
+      "Delegated", with a chip in the parent's transcript.
+  - **Why existing machinery wasn't reused.** Today's `spawn_agent` children
+    are reasoning-only (no tools) or isolated-worktree workers. Worktree
+    workers have a fixed tool set with no shell, use a git worktree of the
+    parent project in the parent's environment, can't run on Windows (no
+    containment there), and are enabled by a deployment environment variable.
+    The grant inheritance helper forbids changing environment
+    (`child_environment_must_equal_parent_environment`). A delegated child is
+    therefore a real Direct thread in the target project, the same agent as
+    a thread opened there. The executor, file and command routing, the
+    model's environment block, grants, and MCP are all keyed on the project,
+    so binding the child to a project reuses all of them. No second
+    placement has to be threaded through every path, and neither side works
+    through `\\wsl$` or `/mnt/c`.
+  - **Policy** (`src/main/direct/agents/cross-environment-delegation.js`):
+    - A project's `delegation` holds `acceptAccess`, `includeSubfolders`, and
+      `createdBy`. It is normalized in `normalizeProject` only when set, and
+      edited in the Workbench project editor's new "Delegated work" section.
+    - Targets are projects that accept work, run Direct with tools, aren't
+      the source, and aren't archived.
+    - A request is resolved with the target environment's own path rules:
+      POSIX in WSL; on Windows, drive paths compared case-insensitively.
+      Paths are normalized first, and a shared name prefix doesn't count as
+      containment.
+    - A folder with a project of its own follows that project's setting.
+    - A subfolder is checked to exist through its environment's executor
+      (registry `listDirectory`). Its project is then created once,
+      serialized, inheriting the enclosing project's environment, runtime,
+      and limit, with no subfolders of its own.
+  - **`spawn_agent`** gains `target_project` and `target_folder`. Each turn,
+    its description lists the allowed targets (only when there are any).
+    - Refusals come back immediately with a reason, e.g. the list of valid
+      targets.
+    - A delegated child can't delegate again and isn't offered targets.
+    - Delegated spawns skip the active sub-agent policy, which shapes
+      in-place children; the owner's per-project setting is the policy here.
+    - Child Access is the lower of the parent thread's Access and the
+      target's limit.
+  - **Child runner** (`delegated-thread-runner.js`). The pool gets a third
+    runner kind, `delegated_thread`; list, inspect, wait, capacity, and
+    cancellation work unchanged. The runner:
+    - starts the child through a renderer-less surface session (so every
+      tool path behaves as on screen), with `delegatedFrom` recorded on the
+      session;
+    - runs one turn with the task, framed as delegated, and waits until the
+      turn is terminal;
+    - stops the child on cancellation, after 30 minutes, or as soon as it
+      asks for a person (delegated agents can't ask the user);
+    - returns the child's last assistant message. The pool bounds it to
+      12,000 characters and marks truncation, and `wait_agent` passes it on
+      (`childOutputIncluded: true`).
+  - **UI.** The child stays an ordinary thread (no `agentKind`, which would
+    file it as a hidden worker). Its index entry, thread-list entry, and
+    deck row carry `delegatedFrom`, and the rail shows a "Delegated" badge
+    whose tooltip names the source. Spawn and wait notifications carry the
+    delegation, and the parent's "Sub-agents in this turn" row shows "task →
+    project · environment" with Access and folder in the tooltip. The chip
+    isn't clickable; the child is followed from its project.
+  - **Checks:**
+    - New `direct-cross-environment-delegation-regression` (10 checks)
+      passes in WSL and under Windows Node. It covers policy, targets, path
+      rules, project creation, pool settlement and truncation, and runner
+      stops (needs a person, timeout, cancel).
+    - An end-to-end run through the real controller, pool, and runner checks
+      refusal details and Access as the lower of the two. It also checks that
+      the child thread lives in the target project with a Windows grant, is
+      told it runs in PowerShell, is marked in the list and deck, and can't
+      re-delegate.
+    - Two runs where the delegated child really executes its command in the
+      other environment: PowerShell in a Windows folder, and bash in a WSL
+      folder. Each goes through the Windows or WSL executor, or in-process
+      for the host's own environment, depending on the host.
+    - `smoke-config-migration` provides the new import to its sandbox.
+    - `check:syntax`, `validate`, and the Workbench Electron smoke pass. The
+      first sweep caught one break in turn 9's
+      `direct-workbench-environment-ux-regression` (its fake DOM has no
+      `closest()`), which is fixed; it passes on both hosts. The full sweep
+      is 268 of 287, failures identical to **Known failing checks**.
+  - **Deviations:**
+    - No live provider run.
+    - The main-side subfolder project creation runs only inside Electron; its
+      pure parts and wiring are covered.
+    - The parent chip doesn't open the child's project.
+    - The owner's Electron check is pending.
 
 ### Turn 11: one executor per environment, PTY, Terminal panel
 
@@ -1070,6 +1163,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-06 | MCP servers run in the project's environment by default | That is where the agent's tools run, and it matches Codex. A server explicitly named for another environment needs a `cwd` there to anchor its executor, since executors are per project folder until turn 11. |
 | 2026-10-06 | Only the MCP transport crosses to an executor | The executor runs the same one-request exchange as the host and returns the raw result; trust, freshness, scope, and every envelope check stay on the host, so a remote server can't widen what a local one could do. Variable values come from the server's own environment, never from the host. |
 | 2026-10-06 | One file implementation, two placements | The executor runs the host's `LocalFilePort` natively, so local and WSL file rules can't drift apart; the host only plans. |
+| 2026-10-07 | A delegated child is a full Direct thread in a target project, not a worktree worker or a retargeted grant | Everything that places a thread in an environment is keyed on its project, so a project-bound child is native there by construction; worktree workers have no shell, stay in the parent's environment, and can't run on Windows. The owner's per-project "Accept delegated work" limit is the authorization, and the child's Access is the lower of it and the parent's. |
 | 2026-10-07 | Fast and Daybreak are per-thread modifiers sent only when the model's catalog entry offers them; the default model lives in project settings | Matches Codex's request shape (`service_tier: "priority"`, `access_programs.cyber`) and its live per-model data. Choosing a default is a different act from switching a thread's model, so the picker only switches (owner's call). |
 | 2026-10-07 | Model availability follows Codex: the account's `/models` list, signed in is ready, the server rejects | A per-model probe gated every new model behind a manual refresh and expired after 7 days; Codex trusts the list and handles rejection. The probe stays as an optional "Test model". `client_version` is the installed Codex CLI's, so the list matches what Codex itself would offer. |
 

@@ -251,6 +251,26 @@
               </select>
             </label>
           </section>
+          <section class="direct-project-binding-section" aria-labelledby="directProjectBindingDelegationHeading">
+            <div class="direct-project-binding-section-heading">
+              <h3 id="directProjectBindingDelegationHeading">Delegated work</h3>
+              <span>Agents in other projects can hand tasks to an agent here</span>
+            </div>
+            <label title="An agent in another project (for example in the other environment) can start an agent here to do part of its task. That agent's Access is the lower of the delegating thread's Access and this limit.">
+              <span>Accept delegated work</span>
+              <select id="directProjectBindingDelegationAccess" name="delegationAccess">
+                <option value="">Off</option>
+                <option value="read_only">Up to Read only</option>
+                <option value="workspace">Up to Workspace</option>
+                <option value="full_access">Up to Full access</option>
+              </select>
+            </label>
+            <label class="direct-project-binding-check">
+              <input id="directProjectBindingDelegationSubfolders" type="checkbox" name="delegationSubfolders" />
+              <span>Also in subfolders. Each subfolder used this way gets its own project, marked "created by delegation", with the same limit.</span>
+            </label>
+            <p id="directProjectBindingDelegationOrigin" class="direct-project-binding-note" hidden></p>
+          </section>
           <section class="direct-project-binding-evidence" data-morphic-region="project-binding-evidence-lane">
             <strong>Commit evidence</strong>
             <p id="directProjectBindingEvidence">The draft is provisional. Main revalidates the catalog, target revision, active work, and runtime binding before persistence.</p>

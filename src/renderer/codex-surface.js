@@ -7097,6 +7097,13 @@ function renderMorphicThreadRail() {
         environmentChip.textContent = environmentBadge.text;
         environmentChip.title = environmentBadge.title;
         badges.append(environmentChip);
+        if (row.delegatedFromLabel) {
+          const delegatedChip = document.createElement("span");
+          delegatedChip.className = "direct-delegated-badge";
+          delegatedChip.textContent = "Delegated";
+          delegatedChip.title = `${row.delegatedFromLabel}. Its final message went back to the agent that delegated it.`;
+          badges.append(delegatedChip);
+        }
         // Access is known for the focused thread only.
         const accessOption = posture.selected ? directAccessProfileOption(currentDirectAccessProfile()) : null;
         if (accessOption) {
@@ -9121,9 +9128,10 @@ function renderSubagentTurnActivity(turnKey) {
     chip.className = `collab-agent-chip status-${String(agent.status || "unknown").replace(/[^a-z0-9_-]/gi, "-")}`;
     chip.textContent = `${agent.displayLabel} · ${String(agent.status || "unknown").replace(/_/g, " ")}`;
     chip.disabled = !agent.clickable;
+    const delegatedEvent = agent.events?.find?.((event) => event?.kind === "delegated_child");
     chip.title = agent.clickable
       ? `Open ${agent.displayLabel} turn activity in the Sub-agents panel`
-      : `${agent.displayLabel} is only available as an unmapped notification`;
+      : delegatedEvent?.detail || `${agent.displayLabel} is only available as an unmapped notification`;
     chip.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -9136,6 +9144,33 @@ function renderSubagentTurnActivity(turnKey) {
 
   bubble.appendChild(root);
   maybeAutoScrollBottom();
+}
+
+// A child delegated to another project shows in this turn's sub-agent row
+// with where it runs; it is followed from that project's thread list.
+function recordDelegatedChildActivity(params = {}) {
+  const delegation = params?.delegation;
+  if (params?.observationKind !== "native_child_agent_runtime" || !delegation || typeof delegation !== "object") return;
+  if (params.threadId && String(params.threadId) !== String(state.threadId || "")) return;
+  const childAgentId = String(params.childAgentId || "").trim();
+  if (!childAgentId) return;
+  const turnKey = String(params.turnId || "live");
+  const where = [String(delegation.targetProjectName || "another project"), String(delegation.environment?.label || "")]
+    .filter(Boolean).join(" · ");
+  const lifecycle = String(params.lifecycleState || "");
+  const status = ["accepted", "queued"].includes(lifecycle) ? "creating" : lifecycle === "running" ? "running" : lifecycle;
+  recordSubagentTurnEvent(turnKey, {
+    threadId: `delegated:${childAgentId}`,
+    label: `${params.taskName || "Delegated task"} → ${where}`,
+  }, {
+    kind: "delegated_child",
+    clickable: false,
+    status: normalizeAgentWorkingStatus(status || "running"),
+    label: "Delegated",
+    detail: `Runs in ${where}${delegation.accessProfile ? ` with ${directAccessProfileOption(delegation.accessProfile)?.label || delegation.accessProfile}` : ""}${delegation.folder ? `, in ${delegation.folder}` : ""}. Open that project's thread list to follow it.`,
+    observedAt: params.observedAt || new Date().toISOString(),
+  });
+  renderSubagentTurnActivity(turnKey);
 }
 
 function recordCollabTurnActivity(turnKey, item) {
@@ -10406,6 +10441,7 @@ function handleNotification(method, params) {
   }
   if (method === "direct/runtime-status") {
     recordRuntimeObservation(params);
+    recordDelegatedChildActivity(params);
     return;
   }
   if (method === "serverRequest/resolved") {

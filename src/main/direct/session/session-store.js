@@ -460,10 +460,30 @@ function readJsonFile(filePath) {
   }
 }
 
+function delegatedFromRecord(value) {
+  if (!isPlainObject(value) || !normalizeString(value.projectId, "")) return null;
+  const environment = isPlainObject(value.environment) ? value.environment : {};
+  return {
+    projectId: normalizeString(value.projectId, ""),
+    projectName: normalizeString(value.projectName, "").slice(0, 160),
+    threadId: normalizeString(value.threadId, ""),
+    childAgentId: normalizeString(value.childAgentId, ""),
+    environment: {
+      kind: normalizeString(environment.kind, ""),
+      distro: normalizeString(environment.distro, ""),
+      label: normalizeString(environment.label, ""),
+    },
+    accessProfile: normalizeString(value.accessProfile, ""),
+    accessCeiling: normalizeString(value.accessCeiling, ""),
+    delegatedAt: normalizeString(value.delegatedAt, ""),
+  };
+}
+
 function indexEntryFromSession(session) {
   const sessionId = normalizeString(session.sessionId, "");
   const turns = Array.isArray(session.turns) ? session.turns : [];
   return {
+    ...(delegatedFromRecord(session.delegatedFrom) ? { delegatedFrom: delegatedFromRecord(session.delegatedFrom) } : {}),
     sessionId,
     projectId: normalizeString(session.projectId, ""),
     title: normalizeString(session.title, "Untitled direct session"),
@@ -990,6 +1010,8 @@ class DirectSessionStore {
       // The thread's Daybreak choice; each turn sends it only when the
       // turn's model offers Daybreak.
       daybreakEnabled: input.daybreakEnabled === true,
+      // Set when an agent in another project delegated this thread's task.
+      ...(delegatedFromRecord(input.delegatedFrom) ? { delegatedFrom: delegatedFromRecord(input.delegatedFrom) } : {}),
       agentId: normalizeString(input.agentId, ""),
       agentRunId: normalizeString(input.agentRunId, ""),
       parentAgentId: normalizeString(input.parentAgentId, ""),

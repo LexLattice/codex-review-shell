@@ -207,6 +207,13 @@ const {
   DirectServerMetadataAdapter,
   detectCodexClientVersion,
 } = require("./main/direct/provider/metadata-adapter");
+const { createDelegatedThreadRunner } = require("./main/direct/agents/delegated-thread-runner");
+const {
+  buildDelegatedProject,
+  normalizeProjectDelegation,
+  projectEnvironment: delegationProjectEnvironment,
+  resolveDelegationTarget,
+} = require("./main/direct/agents/cross-environment-delegation");
 const {
   assertProviderHostedToolsStatusSafe,
   buildProviderHostedToolsStatus,
@@ -2821,6 +2828,9 @@ function normalizeProject(input, index = 0) {
     },
     handoffs: normalizeHandoffs(raw.handoffs, id, threadIds),
     ignoredWatchedArtifactPaths,
+    // Whether other projects' agents may delegate work here; absent means
+    // they may not.
+    ...(normalizeProjectDelegation(raw.delegation) ? { delegation: normalizeProjectDelegation(raw.delegation) } : {}),
     createdAt: normalizeString(raw.createdAt, now),
     updatedAt: normalizeString(raw.updatedAt, now),
   };
@@ -4565,9 +4575,102 @@ function ensureDirectNativeAgentPool() {
     providerProfiles: directNativeChildProviderProfiles(),
     providerTurnRunner: (input) => runDirectNativeChildProviderByProfile(input),
     workspaceWorkerRunner: (input) => runDirectWorkspaceWorkerTurn(input),
+    // The pool exists before the controller, so the runner is built on
+    // first use.
+    delegatedThreadRunner: (input) => ensureDirectDelegatedThreadRunner()(input),
     workspaceWorkerLifecycleRegistry: ensureWorkspaceWorkerLifecycleRegistry(),
   });
   return directNativeAgentPool;
+}
+
+let directDelegatedThreadRunner = null;
+let directDelegationProjectChain = Promise.resolve();
+
+function ensureDirectDelegatedThreadRunner() {
+  directDelegatedThreadRunner ||= createDelegatedThreadRunner({
+    controller: ensureDirectLiveTextController(),
+    SurfaceSession: DirectLiveTextSurfaceSession,
+    resolveTarget: (delegation) => resolveDirectDelegationTargetProject(delegation),
+  });
+  return directDelegatedThreadRunner;
+}
+
+function delegationCodeError(code, message) {
+  const error = new Error(message || code);
+  error.code = code;
+  return error;
+}
+
+// A subfolder target must exist in its environment before a project is
+// created for it; the environment's own executor checks.
+async function assertDirectDelegationFolderExists(rootProject, folder) {
+  const environment = delegationProjectEnvironment(rootProject);
+  const environmentId = environment.kind === "wsl" ? `wsl:${environment.distro}` : environment.kind;
+  try {
+    await ensureDirectEnvironmentRegistry().listDirectory(environmentId, folder, { limit: 1 });
+  } catch (error) {
+    if (normalizeString(error?.code, "") === "direct_fs_list_not_found") {
+      throw delegationCodeError("direct_delegation_folder_not_found", `${folder} doesn't exist in ${environment.label}.`);
+    }
+    throw delegationCodeError(
+      normalizeString(error?.code, "direct_delegation_folder_unavailable"),
+      `${folder} couldn't be checked in ${environment.label}: ${normalizeString(error?.message, "unavailable")}`,
+    );
+  }
+}
+
+// Resolves where a delegated child runs. A subfolder of an accepting
+// project gets its own project (created once, serialized so concurrent
+// children can't create duplicates).
+function resolveDirectDelegationTargetProject(delegation = {}) {
+  const run = async () => {
+    const config = await loadConfig();
+    const sourceProject = config.projects.find((project) => project.id === delegation.sourceProjectId) || { id: delegation.sourceProjectId };
+    const resolution = resolveDelegationTarget({
+      projects: config.projects,
+      sourceProject,
+      targetProject: delegation.targetProject,
+      targetFolder: delegation.targetFolder,
+    });
+    if (!resolution.ok) throw delegationCodeError(resolution.code, resolution.message);
+    if (!resolution.needsProject) {
+      const project = config.projects.find((entry) => entry.id === resolution.targetProjectId);
+      if (!project) throw delegationCodeError("direct_delegation_target_unknown", "The delegation target project no longer exists.");
+      return { project, folder: resolution.folder, projectCreated: false, accessCeiling: resolution.accessCeiling };
+    }
+    const rootProject = config.projects.find((entry) => entry.id === resolution.rootProjectId);
+    await assertDirectDelegationFolderExists(rootProject, resolution.folder);
+    const latest = await loadConfig();
+    const knownIds = new Set(latest.projects.map((project) => project.id));
+    let projectId = newId("project");
+    while (knownIds.has(projectId)) projectId = newId("project");
+    const template = defaultConfig().projects[0];
+    const created = normalizeProject({
+      ...template,
+      ...buildDelegatedProject({
+        rootProject,
+        folder: resolution.folder,
+        sourceProject,
+        sourceThreadId: delegation.sourceThreadId,
+      }),
+      id: projectId,
+      laneBindings: [],
+      lastActiveBindingId: "",
+      handoffs: [],
+      ignoredWatchedArtifactPaths: [],
+    }, latest.projects.length);
+    const saved = await saveConfig({ ...latest, projects: [...latest.projects, created] });
+    emitShellEvent({ type: "config-updated", reason: "direct-delegation-project-created", config: saved, at: nowIso() });
+    return {
+      project: saved.projects.find((project) => project.id === projectId) || created,
+      folder: resolution.folder,
+      projectCreated: true,
+      accessCeiling: resolution.accessCeiling,
+    };
+  };
+  const next = directDelegationProjectChain.then(run, run);
+  directDelegationProjectChain = next.catch(() => {});
+  return next;
 }
 
 function ensureDirectActiveSubAgentPolicyService() {
@@ -4683,6 +4786,9 @@ function ensureDirectLiveTextController() {
     modelEvidenceResolver: (context) =>
       resolveDirectLiveModelEvidence(context),
     providerCatalogRefresher: ({ project }) => refreshDirectProviderMetadataForProject(project),
+    // The owner's projects, for spawn_agent delegation targets (cached so
+    // each turn's tool description can list them synchronously).
+    delegationProjectsResolver: () => configCache?.projects || [],
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     subAgentPool: ensureDirectNativeAgentPool(),
@@ -7715,8 +7821,18 @@ function projectWithDirectWorkbenchBinding(project = {}, operation = {}, index =
   const codexBinding = typeof operation.defaultModel === "string"
     ? { ...alignedBinding, model: operation.defaultModel }
     : alignedBinding;
+  // Delegation acceptance is the owner's call per project; a project
+  // created by delegation keeps that record.
+  const delegation = typeof operation.delegationAccess === "string"
+    ? normalizeProjectDelegation({
+        acceptAccess: operation.delegationAccess,
+        includeSubfolders: operation.delegationSubfolders === true,
+        createdBy: project.delegation?.createdBy || null,
+      })
+    : normalizeProjectDelegation(project.delegation);
   return normalizeProject({
     ...project,
+    delegation,
     id: project.id,
     name: operation.displayName,
     repoPath: projectRepoPathFromWorkspace(operation.workspace),
@@ -7775,6 +7891,9 @@ async function performDirectWorkbenchProjectBindingMutation(operation = {}) {
         workspace: operation.workspace,
         runtimePath: operation.runtimePath,
         ...(typeof operation.defaultModel === "string" ? { defaultModel: operation.defaultModel } : {}),
+        ...(typeof operation.delegationAccess === "string"
+          ? { delegationAccess: operation.delegationAccess, delegationSubfolders: operation.delegationSubfolders === true }
+          : {}),
       },
     });
 

@@ -33,6 +33,9 @@
   const editorLocalPath = document.getElementById("directProjectBindingLocalPath");
   const editorRuntimePath = document.getElementById("directProjectBindingRuntimePath");
   const editorDefaultModel = document.getElementById("directProjectBindingDefaultModel");
+  const editorDelegationAccess = document.getElementById("directProjectBindingDelegationAccess");
+  const editorDelegationSubfolders = document.getElementById("directProjectBindingDelegationSubfolders");
+  const editorDelegationOrigin = document.getElementById("directProjectBindingDelegationOrigin");
   const editorEvidence = document.getElementById("directProjectBindingEvidence");
   const editorCommit = document.getElementById("directProjectBindingCommit");
   const lifecyclePanel = document.getElementById("directProjectLifecyclePanel");
@@ -588,9 +591,26 @@
     editorLocalPath.value = workspace.localPath || "";
     editorRuntimePath.value = fields.runtimePath || "app-server";
     fillDefaultModelOptions(fields.defaultModel || "");
+    if (editorDelegationAccess) editorDelegationAccess.value = fields.delegationAccess || "";
+    if (editorDelegationSubfolders) editorDelegationSubfolders.checked = fields.delegationSubfolders === true;
+    if (editorDelegationOrigin) {
+      editorDelegationOrigin.hidden = fields.createdByDelegation !== true;
+      editorDelegationOrigin.textContent = "Created by delegation: an agent in another project delegated work to this folder.";
+    }
+    syncDelegationFields();
     syncWorkspaceFields();
     if (environmentModel) refreshEnvironmentOptions();
   }
+
+  // Subfolders only make sense while the project accepts delegated work.
+  function syncDelegationFields() {
+    if (!editorDelegationSubfolders) return;
+    const accepting = Boolean(editorDelegationAccess?.value);
+    if (!accepting) editorDelegationSubfolders.checked = false;
+    const row = editorDelegationSubfolders.closest?.("label");
+    if (row) row.hidden = !accepting;
+  }
+  editorDelegationAccess?.addEventListener("change", syncDelegationFields);
 
   // Choices come from the account's model list, the same list the composer
   // picker shows (codex-surface.js publishes it as DirectModelCatalog).
@@ -693,6 +713,9 @@
           workspace: bindingWorkspaceFromForm(),
           runtimePath: editorRuntimePath.value,
           ...(editorDefaultModel ? { defaultModel: editorDefaultModel.value } : {}),
+          ...(editorDelegationAccess
+            ? { delegationAccess: editorDelegationAccess.value, delegationSubfolders: editorDelegationSubfolders?.checked === true }
+            : {}),
         },
       });
       if (!receipt?.ok || !["accepted", "completed"].includes(receipt.status)) {

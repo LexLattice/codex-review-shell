@@ -77,6 +77,13 @@ const {
   selfConstitutionEnvironmentProjection,
 } = require("../runtime/execution-environment-contract");
 const {
+  delegationTargetsDescription,
+  listDelegationTargets,
+  lowerAccessProfile,
+  projectEnvironment: delegationProjectEnvironment,
+  resolveDelegationTarget,
+} = require("../agents/cross-environment-delegation");
+const {
   buildAgentGraph,
   buildWorkerGraphAlignment,
   validateWorkerGraphAlignment,
@@ -1102,6 +1109,20 @@ function isNativeSubAgentRuntimeToolName(toolName = "") {
   return NATIVE_SUB_AGENT_RUNTIME_TOOL_SET.has(normalizeString(toolName, ""));
 }
 
+function spawnRequestsDelegation(args = {}) {
+  return Boolean(normalizeString(args?.target_project || args?.targetProject || args?.target_folder || args?.targetFolder, ""));
+}
+
+// spawn_agent's description lists this turn's delegation targets.
+function withDelegationTargets(tools, targets) {
+  if (!Array.isArray(tools) || !Array.isArray(targets) || !targets.length) return tools;
+  return tools.map((tool) => {
+    const name = normalizeString(tool?.name || tool?.function?.name, "");
+    if (name !== "spawn_agent" || typeof tool.description !== "string") return tool;
+    return { ...tool, description: `${tool.description}\n\n${delegationTargetsDescription(targets)}` };
+  });
+}
+
 function workspaceWorkerSpawnHasUndeclaredFields(args = {}) {
   const admittedFields = new Set([
     "task_name",
@@ -1829,6 +1850,7 @@ function threadListEntryFromIndexEntry(entry = {}) {
   const sessionId = normalizeString(entry.sessionId, "");
   const agentKind = normalizeString(entry.agentKind, "");
   return {
+    ...(isPlainObject(entry.delegatedFrom) ? { delegatedFrom: { ...entry.delegatedFrom } } : {}),
     id: sessionId,
     threadId: sessionId,
     title: normalizeString(entry.title, "Direct live text session"),
@@ -1985,6 +2007,8 @@ class DirectLiveTextController {
     this.modelEvidenceResolver = typeof options.modelEvidenceResolver === "function" ? options.modelEvidenceResolver : null;
     // Refreshes the account's /models catalog for a project; returns a promise.
     this.providerCatalogRefresher = typeof options.providerCatalogRefresher === "function" ? options.providerCatalogRefresher : null;
+    // The owner's projects, for spawn_agent delegation to another project.
+    this.delegationProjectsResolver = typeof options.delegationProjectsResolver === "function" ? options.delegationProjectsResolver : null;
     this.implementationProofEvidenceResolver = typeof options.implementationProofEvidenceResolver === "function" ? options.implementationProofEvidenceResolver : null;
     this.activationStatusResolver = typeof options.activationStatusResolver === "function" ? options.activationStatusResolver : null;
     this.subAgentStatusSurfaceResolver = typeof options.subAgentStatusSurfaceResolver === "function" ? options.subAgentStatusSurfaceResolver : null;
@@ -2920,7 +2944,10 @@ class DirectLiveTextController {
       project: project || {},
       session,
     });
-    return { ...composition, tools: applyEnvironmentToToolSchemas(composition.tools, facts) };
+    return {
+      ...composition,
+      tools: withDelegationTargets(applyEnvironmentToToolSchemas(composition.tools, facts), this.delegationTargetsFor(project || {}, session)),
+    };
   }
 
   compileSelfConstitutionSnapshot(input = {}) {
@@ -3363,6 +3390,8 @@ class DirectLiveTextController {
       reasoningEffort,
       serviceTier,
       daybreakEnabled: params.daybreakEnabled === true,
+      // Only the delegation runner (owner-controlled, in main) sets this.
+      ...(context.ownerControlled === true && isPlainObject(params.delegatedFrom) ? { delegatedFrom: params.delegatedFrom } : {}),
       runtimeMode: normalizeCodexBinding(project.surfaceBinding?.codex || {}).runtimeMode,
       directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       modelSource: status.modelSource,
@@ -7293,6 +7322,79 @@ class DirectLiveTextController {
       blockerCode,
       observedAt: nowIso(),
       message,
+      // Lets the parent's transcript show where a delegated child runs.
+      ...(isPlainObject(providerOutput.delegation || firstUpdate.delegation)
+        ? { delegation: { ...(providerOutput.delegation || firstUpdate.delegation) } }
+        : {}),
+    });
+  }
+
+  // Projects this thread's agent may delegate to (main reads them from the
+  // owner's project settings). A delegated child never delegates again.
+  delegationProjects() {
+    if (!this.delegationProjectsResolver) return [];
+    try {
+      const projects = this.delegationProjectsResolver();
+      return Array.isArray(projects) ? projects : [];
+    } catch {
+      return [];
+    }
+  }
+
+  delegationTargetsFor(project = {}, session = {}) {
+    if (isPlainObject(session?.delegatedFrom)) return [];
+    return listDelegationTargets(this.delegationProjects(), project);
+  }
+
+  /**
+   * spawn_agent with target_project/target_folder: a full agent in another
+   * project, usually the other environment. The owner's per-project
+   * acceptance is the policy here, so the active sub-agent policy (which
+   * shapes in-place children) doesn't apply. The child's Access is the lower
+   * of this thread's Access and the target's limit.
+   */
+  launchDelegatedChild({ args = {}, session = {}, turn = {}, project = {}, projectId = "", workThreadId = "", sessionId = "" } = {}) {
+    const blocked = (blockerCode, blockerDetail = "") => ({ status: "blocked", blockerCode, blockerDetail, updates: [] });
+    if (isPlainObject(session.delegatedFrom)) {
+      return blocked("direct_delegated_child_cannot_delegate", "A delegated agent can't delegate further.");
+    }
+    const targetProject = normalizeString(args.target_project || args.targetProject, "");
+    const targetFolder = normalizeString(args.target_folder || args.targetFolder, "");
+    const resolution = resolveDelegationTarget({
+      projects: this.delegationProjects(),
+      sourceProject: project,
+      targetProject,
+      targetFolder,
+    });
+    if (!resolution.ok) return blocked(resolution.code, resolution.message);
+    const grant = this.resolveHarnessGrant(project, session);
+    const parentAccessProfile = grant ? grantAccessProfile(grant) : "read_only";
+    return this.subAgentPool.launch({
+      projectId,
+      workThreadId,
+      primaryThreadId: sessionId,
+      parentAgentId: normalizeString(session.agentThreadId || session.agentId, sessionId),
+      taskName: args.task_name || args.taskName,
+      message: args.message,
+      model: args.model,
+      reasoningEffort: args.reasoning_effort || args.reasoningEffort,
+      parentModel: normalizeString(turn.model, session.model),
+      parentReasoningEffort: normalizeString(turn.reasoningEffort, session.reasoningEffort),
+      delegation: {
+        targetProjectId: resolution.targetProjectId || resolution.rootProjectId,
+        targetProjectName: normalizeString(resolution.target?.name, ""),
+        environment: resolution.target?.environment || {},
+        folder: resolution.folder,
+        accessCeiling: resolution.accessCeiling,
+        accessProfile: lowerAccessProfile(parentAccessProfile, resolution.accessCeiling),
+        targetProject,
+        targetFolder,
+        sourceProjectId: normalizeString(project.id, projectId),
+        sourceProjectName: normalizeString(project.name, ""),
+        sourceThreadId: sessionId,
+        sourceEnvironment: delegationProjectEnvironment(project),
+        parentAccessProfile,
+      },
     });
   }
 
@@ -7314,6 +7416,8 @@ class DirectLiveTextController {
         blockerCode: "direct_native_agent_pool_unavailable",
         updates: [],
       };
+    } else if (toolName === "spawn_agent" && spawnRequestsDelegation(args)) {
+      runtimeResult = this.launchDelegatedChild({ args, session, turn, project, projectId, workThreadId, sessionId });
     } else if (toolName === "spawn_agent") {
       let spawnArgs = args;
       let activeSubAgentPolicyDecision = null;
@@ -7495,6 +7599,9 @@ class DirectLiveTextController {
           kind: "spawn_agent_result",
           status: normalizeString(runtimeResult.status, "blocked"),
           blockerCode: normalizeString(runtimeResult.blockerCode, ""),
+          // Delegation refusals explain themselves (e.g. which targets exist).
+          ...(normalizeString(runtimeResult.blockerDetail, "") ? { blockerDetail: normalizeString(runtimeResult.blockerDetail, "") } : {}),
+          ...(isPlainObject(runtimeResult.delegation) ? { delegation: { ...runtimeResult.delegation } } : {}),
           taskName: normalizeString(runtimeResult.taskName, ""),
           childAgentId: normalizeString(runtimeResult.childAgentId, ""),
           state: normalizeString(runtimeResult.state, runtimeResult.status),
@@ -7534,7 +7641,16 @@ class DirectLiveTextController {
           blockerCode: normalizeString(runtimeResult.blockerCode, ""),
           updates: (Array.isArray(runtimeResult.updates) ? runtimeResult.updates : []).map((update) => {
             const workspaceWorker = normalizeString(update.workspaceMode, "reasoning_only") === "isolated_worktree";
+            // A delegated child's final message comes back, as in Codex.
+            const delegated = isPlainObject(update.delegation);
             return {
+              ...(delegated
+                ? {
+                    delegation: { ...update.delegation },
+                    finalMessage: typeof update.finalMessage === "string" ? update.finalMessage : "",
+                    finalMessageTruncated: update.finalMessageTruncated === true,
+                  }
+                : {}),
               childAgentId: normalizeString(update.childAgentId, ""),
               taskName: normalizeString(update.taskName, ""),
               state: normalizeString(update.state, ""),
@@ -7558,8 +7674,8 @@ class DirectLiveTextController {
               epistemicCaptureOmission: update.epistemicCaptureOmission || null,
               evidenceConfidence: normalizeString(update.evidenceConfidence, "unknown"),
               continuationTrace: update.continuationTrace || null,
-              childOutputIncluded: false,
-              rawChildProseIncluded: false,
+              childOutputIncluded: delegated,
+              rawChildProseIncluded: delegated,
             };
           }),
           pool: runtimeResult.pool || this.subAgentPool?.descriptor?.() || null,
@@ -10160,7 +10276,7 @@ class DirectLiveTextController {
               reasoningEffort,
               serviceTier,
               cyberAccessProgram,
-              tools: environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot),
+              tools: withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)),
               toolChoicePolicy: "auto",
             })
           : buildTextOnlyProbeRequest({
@@ -10198,7 +10314,7 @@ class DirectLiveTextController {
           reasoningEffort,
           serviceTier,
           cyberAccessProgram,
-          tools: environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot),
+          tools: withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)),
           toolChoicePolicy: "auto",
         });
       }

@@ -127,6 +127,16 @@ function buildThreadDeckRow(entry = {}, options = {}) {
     runtimeMode: normalizeString(entry.runtimeMode, "direct-experimental"),
     directTransport: normalizeString(entry.directTransport, "direct-live-text"),
     agentKind: normalizeString(entry.agentKind, ""),
+    ...(entry.delegatedFrom && typeof entry.delegatedFrom === "object"
+      ? {
+          delegatedFrom: {
+            projectId: normalizeString(entry.delegatedFrom.projectId, ""),
+            projectName: boundedString(entry.delegatedFrom.projectName, 160),
+            environmentLabel: boundedString(entry.delegatedFrom.environment?.label, 60),
+            accessProfile: normalizeString(entry.delegatedFrom.accessProfile, ""),
+          },
+        }
+      : {}),
     agentThreadId: normalizeString(entry.agentThreadId, threadId),
     parentThreadId: normalizeString(entry.parentThreadId, ""),
     primaryThreadId: normalizeString(entry.primaryThreadId, ""),
