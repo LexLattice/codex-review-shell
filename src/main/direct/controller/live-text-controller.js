@@ -10616,6 +10616,14 @@ class DirectLiveTextController {
         });
       }
       this.applyDirectAttachmentPayloads(requestBody, providerAttachmentPayloads);
+      if (normalizeString(selfConstitutionSnapshot?.digest, "") && Array.isArray(requestBody.input)) {
+        // Per-turn facts go after the dialogue so the instructions, tools,
+        // and earlier history stay a cacheable prefix across turns.
+        requestBody.input.push({
+          role: "developer",
+          content: [{ type: "input_text", text: `Self constitution snapshot for this turn: ${selfConstitutionSnapshot.digest}.` }],
+        });
+      }
       requestShape = {
         ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
         directTurnOwnerControlled: ownerControlled,

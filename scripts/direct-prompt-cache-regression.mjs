@@ -6,6 +6,8 @@
 // instructions and tools byte-identical and add their guidance as a trailing
 // developer message; before, each appended its guidance to the instructions,
 // which shifted everything after them, so no continuation hit the cache.
+// Across turns the instructions stay identical too: the per-turn
+// self-constitution digest follows the dialogue instead of leading it.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -76,7 +78,8 @@ const controller = new DirectLiveTextController({
 });
 let turnStartIndex = 0;
 let currentSteps = steps;
-const isGuidance = (item) => item?.role === "developer";
+const isSnapshotNote = (item) => item?.role === "developer" && /^Self constitution snapshot/.test(item.content?.[0]?.text || "");
+const isGuidance = (item) => item?.role === "developer" && !isSnapshotNote(item);
 
 try {
   const surface = new DirectLiveTextSurfaceSession(null, { controller, project });
@@ -105,6 +108,8 @@ try {
   }
   const [initial, ...continuations] = first;
   assert(!initial.body.input.some(isGuidance), "the first request has no continuation guidance");
+  assert(isSnapshotNote(initial.body.input.at(-1)), "the per-turn snapshot digest follows the dialogue");
+  assert(!/sha256:[0-9a-f]{64}/.test(initial.body.instructions), "no per-turn digest in the instructions");
   for (const [index, { body }] of continuations.entries()) {
     const previous = first[index].body;
     assert.equal(body.instructions, initial.body.instructions, `request ${index + 2}: instructions stay identical`);
@@ -120,11 +125,20 @@ try {
   assert.match(continuations[0].body.input.at(-1).content[0].text, /write_stdin/);
   assert.equal(await fs.readFile(path.join(workspace, "hello.txt"), "utf8"), "hello, cache\n");
 
-  // A second turn on the same thread uses the same key.
+  // A second turn on the same thread uses the same key, the same
+  // instructions and tools, and a user message that starts with the earlier
+  // dialogue, so the cache covers everything up to the new turn.
   const second = await runTurn("Thanks.", []);
   assert.equal(second.length, 1);
   assert.equal(second[0].body.prompt_cache_key, threadId);
   assert.equal(second[0].headers["session-id"], threadId);
+  assert.equal(second[0].body.instructions, initial.body.instructions, "instructions are identical across turns");
+  assert.equal(JSON.stringify(second[0].body.tools), JSON.stringify(initial.body.tools), "tools are identical across turns");
+  const third = await runTurn("And once more.", []);
+  const userText = (body) => body.input[0].content[0].text;
+  const secondDialogue = userText(second[0].body).split("[CURRENT USER INTENT]")[0];
+  assert(secondDialogue.length > 0 && userText(third[0].body).startsWith(secondDialogue), "the next turn's dialogue extends the previous one");
+  assert.equal(third[0].body.instructions, initial.body.instructions);
 
   console.log(JSON.stringify({ ok: true, requests: requests.length, cacheKey: "thread", instructionsStable: true, toolsStable: true, inputPrefixStable: true }));
 } finally {

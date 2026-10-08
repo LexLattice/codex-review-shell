@@ -1306,11 +1306,15 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
     their guidance as a trailing developer message. Live, luna/low, 3 runs
     each: 20 to 59% of input tokens cached on WSL and 41 to 52% on Windows
     (before: 0 to 10%). The backend usually serves the cache from two
-    requests back, not the one just before. Not addressed: a new turn
-    still starts with a cold prompt, because recent dialogue and the
-    self-constitution snapshot are rendered into each turn's instructions
-    rather than sent as stable history items. Gate:
-    `npm run direct:prompt-cache`.
+    requests back, not the one just before. Across turns, the only
+    per-turn text in the instructions was the self-constitution digest
+    near the top; it now follows the dialogue as a developer message
+    ("Self constitution snapshot for this turn: sha256:…"), so a thread's
+    instructions and tools are identical from turn to turn and each turn's
+    quoted dialogue extends the previous one (captured live). Live, a third
+    turn read 2,816 of 3,800 input tokens from the cache. Long threads
+    still lose the prefix when the recent-dialogue cap drops the oldest
+    messages. Gate: `npm run direct:prompt-cache`.
   - Seen in the same timelines, not caused by Direct: an occasional
     request streams quickly and then pauses 14 to 119 s before a short
     answer (no reasoning tokens), inside the backend's stream.

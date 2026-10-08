@@ -554,8 +554,11 @@ function renderDirectSelfConstitutionInstructions(snapshot = {}) {
   const workspaceSentence = binding.bindingKind === "reasoning_only"
     ? "This turn has no workspace binding."
     : `The active workspace is a ${binding.bindingKind} on the ${binding.substrateKind} substrate; its persistence is ${binding.persistence}.${environment ? ` Its tools run natively in ${environment.environmentKind}${environment.distro ? ` (${environment.distro})` : ""} with the ${environment.shell?.name || "unknown"} shell and ${environment.pathStyle} paths under the ${environment.accessProfile} access profile.` : ""}`;
+  // No digest here: the digest changes every turn, and anything per-turn in
+  // the instructions defeats the prompt cache for the whole request. The
+  // controller sends it as a separate, trailing developer message.
   return [
-    `Authoritative Direct self constitution (${snapshot.digest}).`,
+    "Authoritative Direct self constitution.",
     `You are the ${snapshot.identity.roleId} role in the ${snapshot.identity.laneKind} lane for project ${snapshot.identity.projectId}.`,
     workspaceSentence,
     "Treat that workspace statement as authoritative: never describe a persistent project checkout as disposable, temporary, or isolated unless this snapshot says so.",

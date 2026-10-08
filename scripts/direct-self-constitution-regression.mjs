@@ -336,7 +336,11 @@ try {
     persistedLiveTurn.selfConstitutionSnapshot.digest,
     persistedLiveTurn.requestShape.selfConstitutionSnapshotDigest,
   );
-  assert(providerRequest.instructions.includes(persistedLiveTurn.selfConstitutionSnapshot.digest));
+  // The per-turn digest is a trailing developer message, never part of the
+  // instructions, which must stay identical across turns for the prompt cache.
+  assert.equal(providerRequest.instructions.includes(persistedLiveTurn.selfConstitutionSnapshot.digest), false);
+  assert.equal(providerRequest.input.at(-1).role, "developer");
+  assert(providerRequest.input.at(-1).content[0].text.includes(persistedLiveTurn.selfConstitutionSnapshot.digest));
   assert.equal(persistedLiveTurn.requestShape.selfConstitutionRawWorkspacePathIncluded, false);
   assert.equal(persistedLiveTurn.requestShape.selfConstitutionRawSecretIncluded, false);
 

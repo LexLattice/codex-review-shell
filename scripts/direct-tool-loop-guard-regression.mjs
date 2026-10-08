@@ -124,7 +124,8 @@ let checks = 0;
   assert.equal(bodies[1].input.at(-1).role, "developer");
   assert.match(bodies[1].input.at(-1).content[0].text, /inspecting again returns the same account/);
   assert.equal(bodies[1].instructions, bodies[0].instructions);
-  assert.equal(last.filter((item) => item.role === "developer").length, 1, "only the current guidance is sent");
+  const guidanceItems = last.filter((item) => item.role === "developer" && !/^Self constitution snapshot/.test(item.content?.[0]?.text || ""));
+  assert.equal(guidanceItems.length, 1, "only the current guidance is sent");
   checks += 1;
 }
 
