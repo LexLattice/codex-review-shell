@@ -558,6 +558,26 @@ class DirectFullAccessLocalEnvironmentExecutor {
   }
 
   async applyPatch(port, input, params, grant, expected, authorization) {
+    let plans;
+    try {
+      plans = await this.planPatch(port, input, params, grant);
+    } catch (error) {
+      // Planning re-reads and re-matches every target before anything is
+      // written, so an apply that fails here provably changed nothing (for
+      // example, the file changed after the dry run).
+      if (params.mode === "apply" && error && typeof error === "object") {
+        error.authoritativeNoEffect = true;
+        error.effectPhase = "before_effect";
+      }
+      throw error;
+    }
+    const patchText = String(params.patch || "");
+    if (params.mode !== "apply") return this.publicPatchResult(patchText, plans, "dryRun", grant, expected, authorization);
+    await port.commit(grant, plans, input);
+    return this.publicPatchResult(patchText, plans, "apply", grant, expected, authorization);
+  }
+
+  async planPatch(port, input, params, grant) {
     const patchText = String(params.patch || "");
     const patches = parseUnifiedPatch(patchText);
     const plans = [];
@@ -608,9 +628,7 @@ class DirectFullAccessLocalEnvironmentExecutor {
         _afterText: afterText,
       });
     }
-    if (params.mode !== "apply") return this.publicPatchResult(patchText, plans, "dryRun", grant, expected, authorization);
-    await port.commit(grant, plans, input);
-    return this.publicPatchResult(patchText, plans, "apply", grant, expected, authorization);
+    return plans;
   }
 
   publicPatchResult(patchText, plans, mode, grant, expected, authorization) {

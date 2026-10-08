@@ -1245,9 +1245,14 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   confirmed live (miss → read → retry → done). The misleading "tool
   continuation evidence is not enabled" warning now appears only for a
   turn that is actually stuck. Gate: `npm run direct:patch-codex-format`.
-  Remaining: the no-grant path in `wsl-agent.js` still takes only unified
-  diffs; a failed or ambiguous patch *apply* (after a good dry run) still
-  ends the turn.
+  A patch that passes its dry run but fails to apply also goes back to the
+  model and the turn continues. The apply re-reads and re-matches every
+  file before writing, so a failure there (for example, the file changed
+  after the dry run) is reported with `workspaceChanged: false`; a failure
+  while writing is reported as `patch_execution_ambiguous` with
+  `workspaceMayHaveChanged: true` and "read them before retrying". Gate:
+  `npm run direct:patch-apply-failure`. Remaining: the no-grant path in
+  `wsl-agent.js` still takes only unified diffs.
 - Agent-driven testing: `scripts/direct-drive.mjs` drives the real app
   (hidden, isolated test profile, test control port) on Windows or WSL; see
   `docs/DIRECT_AGENT_DRIVEN_TESTING.md`. Fixed from its first live runs:

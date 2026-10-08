@@ -6463,6 +6463,7 @@ class DirectLiveTextController {
         message: normalizeString(failure.message, "The tool call failed."),
       },
       ...(failure.workspaceChanged === false ? { workspaceChanged: false } : {}),
+      ...(failure.workspaceMayHaveChanged === true ? { workspaceMayHaveChanged: true } : {}),
     };
     const envelope = {
       schema: "direct_tool_failure_result_envelope@1",
@@ -9304,16 +9305,32 @@ class DirectLiveTextController {
       obligationId,
       approvedBy: normalizeString(options.approvedBy, "local-user"),
     });
+    const canReturnFailure = isPlainObject(this.sessionStore.readTurn(sessionId, turnId)?.admittedProviderContext);
     const executed = await executeApprovedPatchApplyObligation({
       sessionStore: this.sessionStore,
       sessionId,
       turnId,
       obligationId,
       clientPatchDecisionId: normalizeString(options.clientPatchDecisionId, ""),
+      continueOnFailure: canReturnFailure,
       workspaceRequest: fullAccessBinding
         ? (method, params) => this.fullAccessLocalEnvironmentExecutor.request(fullAccessBinding, method, params)
         : (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
     });
+    if (canReturnFailure && !executed.reused && (executed.failed || executed.ambiguous)) {
+      // As with a patch that fails its dry run, a failed apply is an answer
+      // for the model. When the failure can't prove nothing was written, the
+      // model is told to re-read the files before retrying.
+      const failedObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
+      await this.returnToolFailureToModel(surfaceSession, sessionId, turnId, failedObligation, project, {
+        code: executed.ambiguous ? "patch_execution_ambiguous" : normalizeString(executed.result?.error?.code, "patch_execution_failed"),
+        message: executed.ambiguous
+          ? `${normalizeString(executed.result?.error?.message, "Applying the patch failed.")} Some files may have been changed; read them before retrying.`
+          : `${normalizeString(executed.result?.error?.message, "Applying the patch failed.")} Nothing was written; read the file and retry.`,
+        ...(executed.failed ? { workspaceChanged: false } : { workspaceMayHaveChanged: true }),
+      });
+      return { decision: "approved", failureReturnedToModel: true, turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)), result: executed.result };
+    }
     if (await this.continueToolBatch(surfaceSession, sessionId, turnId, obligationId, project)) {
       return { decision: "approved", deferredToBatch: true, turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)), result: executed.result };
     }
