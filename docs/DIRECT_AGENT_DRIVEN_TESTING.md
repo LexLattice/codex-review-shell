@@ -69,6 +69,7 @@ folder (`<test data>/direct-test/suite`) it empties first.
 | `edit_and_run` | edits `hello.py`, runs it, quotes the output, no failed calls |
 | `slow_command_one_call` | a 3 s command finishes in one `exec_command` (no `write_stdin` polling) |
 | `patch_recovery` | a patch written against the wrong line recovers and the file ends correct |
+| `workspace_patch` | in a Workspace thread `apply_patch` writes through the sandboxed writer |
 | `stop_ends_commands` | Stop after 15 s aborts the turn and the running command stops writing |
 | `question_to_owner` | `request_user_input` reaches the owner and the answer comes back |
 | `permission_request` | a Read only thread asks with `request_permissions`, gets Workspace for the turn, writes the file, and is back at Read only |

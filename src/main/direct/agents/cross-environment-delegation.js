@@ -103,6 +103,15 @@ function folderRelation(kind, root, folder, hostPlatform = process.platform) {
   return fold(folder).startsWith(fold(prefix)) ? "inside" : "outside";
 }
 
+// Containment on resolved paths: both the accepting project's folder and the
+// requested subfolder as the target environment resolves them (symlinks
+// followed), so a link inside the project can't point the child elsewhere.
+function canonicalFolderWithinRoot(kind, realRoot, realFolder, hostPlatform = process.platform) {
+  const folder = normalizeNativeFolder(kind, realFolder, hostPlatform);
+  if (!folder) return false;
+  return ["same", "inside"].includes(folderRelation(kind, realRoot, folder, hostPlatform));
+}
+
 function isDirectToolProject(project = {}) {
   const codex = isPlainObject(project.surfaceBinding?.codex) ? project.surfaceBinding.codex : {};
   const runtimeMode = normalizeString(codex.runtimeMode, "");
@@ -311,6 +320,7 @@ module.exports = {
   DELEGATION_ACCESS_PROFILES,
   accessLabel,
   buildDelegatedProject,
+  canonicalFolderWithinRoot,
   composeDelegatedTaskPrompt,
   delegationTargetsDescription,
   isDirectToolProject,

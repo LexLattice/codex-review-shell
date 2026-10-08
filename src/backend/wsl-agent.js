@@ -6398,8 +6398,13 @@ async function executorFsList(params = {}) {
   }
   entries.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) : a.kind === "directory" ? -1 : 1));
   const parent = path.dirname(resolved);
+  // The folder with symlinks resolved, for callers that must check
+  // containment on what the path really is.
+  let realPath = resolved;
+  try { realPath = await fs.realpath(resolved); } catch {}
   return {
     path: resolved,
+    realPath,
     // On Windows a drive root's parent is the drive list.
     parent: parent !== resolved ? parent : windows ? "drives" : "",
     home,
@@ -6432,11 +6437,11 @@ async function executorFsRead(params = {}) {
   const grant = executorFileGrant(params);
   const resolved = port.resolveTarget({}, grant, params.path, params.purpose === "patch" ? "patch target" : "read_file path");
   if (params.purpose === "patch") {
-    const target = await port.readPatchTarget(resolved, String(params.operation || "update"));
+    const target = await port.readPatchTarget(resolved, String(params.operation || "update"), {}, grant);
     return { exists: target.exists, bytesBase64: target.bytes.toString("base64") };
   }
   await port.assertReadable(grant, resolved);
-  const { size, bytes } = await port.readFile(resolved, params.maxBytes);
+  const { size, bytes } = await port.readFile(resolved, params.maxBytes, {}, grant);
   return { size, bytesBase64: bytes.toString("base64") };
 }
 

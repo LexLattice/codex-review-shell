@@ -213,8 +213,10 @@ const { createDelegatedThreadRunner } = require("./main/direct/agents/delegated-
 const { DirectTerminalService } = require("./main/direct/terminal/terminal-service");
 const {
   buildDelegatedProject,
+  canonicalFolderWithinRoot,
   normalizeProjectDelegation,
   projectEnvironment: delegationProjectEnvironment,
+  projectRoot: delegationProjectRoot,
   resolveDelegationTarget,
 } = require("./main/direct/agents/cross-environment-delegation");
 const {
@@ -4621,21 +4623,38 @@ function delegationCodeError(code, message) {
 }
 
 // A subfolder target must exist in its environment before a project is
-// created for it; the environment's own executor checks.
-async function assertDirectDelegationFolderExists(rootProject, folder) {
+// created for it, and must really be inside the accepting project: the
+// environment's own executor resolves both (following symlinks), and the
+// project is created on the resolved folder. A lexical check alone let a
+// symlink inside the project point the child outside it.
+async function resolveDirectDelegationFolder(rootProject, folder) {
   const environment = delegationProjectEnvironment(rootProject);
   const environmentId = environment.kind === "wsl" ? `wsl:${environment.distro}` : environment.kind;
-  try {
-    await ensureDirectEnvironmentRegistry().listDirectory(environmentId, folder, { limit: 1 });
-  } catch (error) {
-    if (normalizeString(error?.code, "") === "direct_fs_list_not_found") {
-      throw delegationCodeError("direct_delegation_folder_not_found", `${folder} doesn't exist in ${environment.label}.`);
+  const registry = ensureDirectEnvironmentRegistry();
+  const list = async (target) => {
+    try {
+      return await registry.listDirectory(environmentId, target, { limit: 1 });
+    } catch (error) {
+      if (normalizeString(error?.code, "") === "direct_fs_list_not_found") {
+        throw delegationCodeError("direct_delegation_folder_not_found", `${target} doesn't exist in ${environment.label}.`);
+      }
+      throw delegationCodeError(
+        normalizeString(error?.code, "direct_delegation_folder_unavailable"),
+        `${target} couldn't be checked in ${environment.label}: ${normalizeString(error?.message, "unavailable")}`,
+      );
     }
+  };
+  const rootListing = await list(delegationProjectRoot(rootProject));
+  const folderListing = await list(folder);
+  const realRoot = normalizeString(rootListing?.realPath || rootListing?.path, "");
+  const realFolder = normalizeString(folderListing?.realPath || folderListing?.path, "");
+  if (!realRoot || !realFolder || !canonicalFolderWithinRoot(environment.kind, realRoot, realFolder)) {
     throw delegationCodeError(
-      normalizeString(error?.code, "direct_delegation_folder_unavailable"),
-      `${folder} couldn't be checked in ${environment.label}: ${normalizeString(error?.message, "unavailable")}`,
+      "direct_delegation_folder_outside_project",
+      `${folder} resolves outside the project that accepts delegated work, so it can't be a delegation target.`,
     );
   }
+  return realFolder;
 }
 
 // Resolves where a delegated child runs. A subfolder of an accepting
@@ -4658,7 +4677,7 @@ function resolveDirectDelegationTargetProject(delegation = {}) {
       return { project, folder: resolution.folder, projectCreated: false, accessCeiling: resolution.accessCeiling };
     }
     const rootProject = config.projects.find((entry) => entry.id === resolution.rootProjectId);
-    await assertDirectDelegationFolderExists(rootProject, resolution.folder);
+    const realFolder = await resolveDirectDelegationFolder(rootProject, resolution.folder);
     const latest = await loadConfig();
     const knownIds = new Set(latest.projects.map((project) => project.id));
     let projectId = newId("project");
@@ -4668,7 +4687,7 @@ function resolveDirectDelegationTargetProject(delegation = {}) {
       ...template,
       ...buildDelegatedProject({
         rootProject,
-        folder: resolution.folder,
+        folder: realFolder,
         sourceProject,
         sourceThreadId: delegation.sourceThreadId,
       }),
@@ -4682,7 +4701,7 @@ function resolveDirectDelegationTargetProject(delegation = {}) {
     emitShellEvent({ type: "config-updated", reason: "direct-delegation-project-created", config: saved, at: nowIso() });
     return {
       project: saved.projects.find((project) => project.id === projectId) || created,
-      folder: resolution.folder,
+      folder: realFolder,
       projectCreated: true,
       accessCeiling: resolution.accessCeiling,
     };

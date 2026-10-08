@@ -131,6 +131,22 @@ const scenarios = [
     },
   },
   {
+    name: "workspace_patch",
+    async run(ctx) {
+      // Workspace patches are written from inside the sandbox.
+      fs.writeFileSync(path.join(ctx.folder, "ws.txt"), "mode = old\n");
+      const result = chat("In ws.txt, use apply_patch to change `mode = old` to `mode = new`.", ["--project", ctx.projectId, "--access", "workspace"]);
+      const text = fs.readFileSync(path.join(ctx.folder, "ws.txt"), "utf8");
+      return [
+        [result.report.state === "completed", `turn ${result.report.state}`],
+        [toolNames(result.report).includes("apply_patch"), "used apply_patch"],
+        [/mode = new/.test(text), "ws.txt changed"],
+        [failedCalls(result.report).length === 0, "no failed tool calls"],
+        [true, "", result],
+      ];
+    },
+  },
+  {
     name: "stop_ends_commands",
     async run(ctx) {
       const counter = path.join(ctx.folder, "counter.txt");

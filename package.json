@@ -304,6 +304,7 @@
     "direct:request-permissions": "node ./scripts/direct-request-permissions-regression.mjs",
     "direct:windows-prewarm": "node ./scripts/direct-windows-prewarm-regression.mjs",
     "direct:history-items": "node ./scripts/direct-history-items-regression.mjs",
+    "direct:review-findings": "node ./scripts/direct-review-findings-regression.mjs",
     "direct:agent-codex-patch": "node ./scripts/direct-agent-codex-patch-regression.mjs",
     "direct:drive": "node ./scripts/direct-drive.mjs",
     "direct:self-constitution": "npm run check:self-constitution-syntax && node ./scripts/direct-self-constitution-regression.mjs",

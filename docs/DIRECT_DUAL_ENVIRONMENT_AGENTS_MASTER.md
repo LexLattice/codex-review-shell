@@ -1205,6 +1205,36 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   model's response has paused … still waiting") and another when it
   resumes; the request's longest silence and stall count are recorded and
   shown by `direct-drive`. Gate: `npm run direct:stream-stall`.
+- Fixed 2026-10-09, from the Codex reviews of PR #313 (all three verified
+  against the code first):
+  - **Delegated subfolders followed symlinks** (P1). The subfolder check
+    compared path text only, so `<accepting project>/link` pointing
+    elsewhere counted as inside. The target environment's executor now
+    reports each folder's resolved path (`fs/list` `realPath`); the
+    accepting project's folder and the requested subfolder must be
+    contained on those resolved paths (`canonicalFolderWithinRoot`), and
+    the delegated project is created on the resolved folder.
+  - **Parent-bound launches without setpriv** (P1). A `dieWithParent`
+    launch silently lost its parent-death signal (still marked guaranteed)
+    when the trusted `/usr/bin/setpriv` was missing. It is now refused
+    (`workspace_linux_pid_namespace_parent_death_unavailable`).
+  - **Symlink races in Workspace and Read only file operations**
+    (security, P1). Host-side checks and the later open, write, or rename
+    were separate steps, so a sandboxed command swapping a folder for a
+    symlink in between could redirect them outside the project. Reads now
+    re-resolve the path after opening and require it to name the very file
+    opened (same device and inode) and to be allowed (credential stores
+    and outside-the-environment reads refused; patch targets must be
+    inside the project). Workspace patch writes run inside the sandbox,
+    like Codex's apply_patch: `sandboxed-file-writer.js` under bubblewrap
+    on Linux and the Low-integrity job runner on Windows, started with the
+    app's own runtime (node, or Electron as node), so a swapped path can't
+    reach outside whatever it resolves to. Full access still writes from
+    the host. A write that fails partway is reported as ambiguous. Windows
+    doesn't let a folder move while a file in it is open, so the read race
+    exists only on Linux.
+  - Gate: `npm run direct:review-findings` (Linux and Windows Node); live
+    suite `workspace_patch` passes on both hosts.
 - Changed 2026-10-08: earlier turns reach the model as Codex sends them.
   An implementation turn after the first replays each earlier turn as
   input items: the user's message, every call the model made
@@ -1528,6 +1558,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-08 | Continuations keep the full tool set, have no step cap, and run several calls per response in order; only per-call limits stay | Owner's call, matching Codex. A self-constitution check had left the model with no tools ("this continuation exposes no executable tool interface"), and per-family rules and step caps stopped real work midway. |
 | 2026-10-08 | "No step cap" covers distinct work only; the same call with the same result repeating is stopped | Owner's call, after a 58-call `inspect_self_constitution` loop. |
 | 2026-10-08 | Agent testing drives the real app through an opt-in local test control port, with an isolated profile, `gpt-6-luna`/low by default, on both hosts | Owner's call. The older headless scripts built their own reduced controller or tool loop, so they didn't test what the owner runs. |
+| 2026-10-09 | Workspace patch writes run inside the sandbox; Workspace and Read only reads are identity-checked after opening | Owner's call after the security review. Node has no directory-relative file calls, so the host can't close a symlink race on its own; the sandbox can't reach outside however a path resolves. This is how Codex runs apply_patch. |
 | 2026-10-08 | `request_permissions` raises the thread's Access profile for the turn or the thread; it doesn't grant per-path or network-only permissions | Owner's call. It reuses Direct's grants and sandboxes as they are; Codex's path-scoped form would mean widening bubblewrap binds and Windows labels per request. |
 | 2026-10-08 | Every request carries the thread ID as `prompt_cache_key` and `session-id`/`thread-id` headers; continuation guidance is a trailing developer message, not an instructions suffix | Matches the Codex CLI's cache identity. The backend's cache matches exact prefixes, so a turn's instructions and tools must not change between its requests. |
 | 2026-10-08 | `exec_command` waits up to 10 s (`yield_time_ms`, max 30 s, at most half the idle timeout) for the command to finish; `write_stdin` waits 250 ms, or 5 s for an empty poll (supersedes the 100 ms first yield in the 2026-10-06 rows) | Codex's defaults. A 100 ms wait turned every command longer than that into an extra provider round trip, measured live at up to 19 s, and a write to the exited process then failed the turn. |

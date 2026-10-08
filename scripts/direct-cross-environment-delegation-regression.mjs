@@ -473,7 +473,11 @@ try {
     const main = read("src/main.js");
     assert.match(main, /delegatedThreadRunner: \(input\) => ensureDirectDelegatedThreadRunner\(\)\(input\),/);
     assert.match(main, /delegationProjectsResolver: \(\) => configCache\?\.projects \|\| \[\],/);
-    assert.match(main, /await assertDirectDelegationFolderExists\(rootProject, resolution\.folder\);/);
+    // The subfolder is checked and the project created on the resolved
+    // (symlink-free) folder, which must be inside the accepting project.
+    assert.match(main, /const realFolder = await resolveDirectDelegationFolder\(rootProject, resolution\.folder\);/);
+    assert.match(main, /canonicalFolderWithinRoot\(environment\.kind, realRoot, realFolder\)/);
+    assert.match(main, /buildDelegatedProject\(\{\s*rootProject,\s*folder: realFolder,/);
     assert.match(main, /const next = directDelegationProjectChain\.then\(run, run\);/);
     assert.match(main, /\.\.\.\(normalizeProjectDelegation\(raw\.delegation\) \? \{ delegation: normalizeProjectDelegation\(raw\.delegation\) \} : \{\}\),/);
     const composer = read("src/main/direct/bridge/role-lane-tool-bundle-composer.js");

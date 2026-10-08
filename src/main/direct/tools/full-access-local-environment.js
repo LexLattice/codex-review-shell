@@ -8,7 +8,69 @@ const {
   authorizeDirectThreadHarnessCapability,
   validateDirectThreadHarnessGrant,
 } = require("../authority/direct-thread-harness-grant");
-const { sandboxedReadRefusal, workspaceExecutesLocally } = require("./exec-sandbox");
+const { spawn } = require("node:child_process");
+const { BubblewrapExecSandbox, sandboxedReadRefusal, workspaceExecutesLocally } = require("./exec-sandbox");
+const { WindowsJobSandbox } = require("./windows-job-runner");
+
+const SANDBOXED_WRITER_PATH = path.join(__dirname, "sandboxed-file-writer.js");
+const SANDBOXED_WRITE_TIMEOUT_MS = 30_000;
+const SANDBOXED_WRITER_ENV_KEYS = [
+  "PATH", "HOME", "SystemRoot", "ComSpec", "PATHEXT", "windir", "SystemDrive",
+  "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "ProgramData",
+  "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "USERNAME", "OS",
+  "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS",
+];
+
+// Runs sandboxed-file-writer.js inside the Workspace sandbox of this host
+// (bubblewrap on Linux, the Low-integrity job runner on Windows) with this
+// process's own runtime (node, or Electron as node).
+function runSandboxedWrites({ root, files }) {
+  const platform = process.platform;
+  const sandbox = platform === "win32" ? new WindowsJobSandbox({ platform }) : new BubblewrapExecSandbox({ platform });
+  const plan = sandbox.wrap({
+    sandboxMode: "workspace-write",
+    root,
+    cwd: root,
+    command: process.execPath,
+    args: [SANDBOXED_WRITER_PATH],
+  });
+  const env = { ELECTRON_RUN_AS_NODE: "1" };
+  for (const key of SANDBOXED_WRITER_ENV_KEYS) if (process.env[key] !== undefined) env[key] = process.env[key];
+  Object.assign(env, plan.env || {});
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(plan.command, plan.args, { cwd: root, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    } catch (error) {
+      reject(localError("direct_access_profile_sandboxed_write_unavailable", `The sandboxed writer couldn't start (${error?.code || error?.message || "error"}).`));
+      return;
+    }
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (chunk) => { out += chunk; });
+    child.stderr.on("data", (chunk) => { err += chunk; });
+    const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, SANDBOXED_WRITE_TIMEOUT_MS);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(localError("direct_access_profile_sandboxed_write_unavailable", `The sandboxed writer couldn't start (${error?.code || "error"}).`));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (plan.scratchDir) fs.rm(plan.scratchDir, { recursive: true, force: true, maxRetries: 3 }, () => {});
+      let result = null;
+      try { result = JSON.parse(out); } catch {}
+      if (code === 0 && result?.ok === true) {
+        resolve(result);
+        return;
+      }
+      reject(localError(
+        normalizeString(result?.code, "direct_access_profile_sandboxed_write_failed"),
+        normalizeString(result?.message, `The sandboxed write failed${err ? `: ${boundedString(err.trim(), 200)}` : ""}.`),
+      ));
+    });
+    child.stdin.end(JSON.stringify({ root, files }));
+  });
+}
 
 const LOCAL_EXECUTOR_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 
@@ -326,6 +388,46 @@ class LocalFilePort {
     this.workspaceRootResolver = typeof options.workspaceRootResolver === "function"
       ? options.workspaceRootResolver
       : (input = {}) => input.workspaceRoot || input.project?.workspaceRoot || "";
+    this.sandboxedWriter = typeof options.sandboxedWriter === "function" ? options.sandboxedWriter : runSandboxedWrites;
+  }
+
+  // Sandboxed profiles: the checks before opening and the open itself are
+  // separate steps, so a concurrent (sandboxed) command could swap a path for
+  // a symlink in between. After opening, the path is resolved again and must
+  // still name the very file that was opened, and that file must be allowed.
+  async assertOpenedFileAllowed(grant, resolved, handle, purpose = "read") {
+    if (!grant || grant.sandboxMode === "danger-full-access") return;
+    const changed = () => localError("direct_access_profile_path_changed", "The file changed while it was being opened. Try again.");
+    const opened = await handle.stat();
+    let real;
+    let current;
+    try {
+      real = fs.realpathSync(resolved.target);
+      current = fs.statSync(real);
+    } catch {
+      throw changed();
+    }
+    if (current.dev !== opened.dev || current.ino !== opened.ino) throw changed();
+    let realRoot = resolved.root;
+    try { realRoot = fs.realpathSync(resolved.root); } catch {}
+    if (purpose === "patch") {
+      if (!pathIsInside(realRoot, real)) {
+        throw localError(
+          "direct_access_profile_path_outside_workspace",
+          "Workspace access only allows changes inside the project folder. Ask the user to switch Access to Full access to change files outside it.",
+        );
+      }
+      return;
+    }
+    const refusal = sandboxedReadRefusal(real, { workspaceRoot: realRoot });
+    if (refusal) {
+      throw localError(
+        refusal,
+        refusal === "direct_access_profile_credential_store_hidden"
+          ? "Workspace and Read-only access cannot read credential stores. Ask the user to switch Access to Full access if this file is needed."
+          : "Workspace and Read-only access cannot read outside this environment's own filesystem. Ask the user to switch Access to Full access if this file is needed.",
+      );
+    }
   }
 
   resolveTarget(input, grant, rawPath, label) {
@@ -361,7 +463,7 @@ class LocalFilePort {
     }
   }
 
-  async readFile(resolved, maxBytesInput) {
+  async readFile(resolved, maxBytesInput, _input = {}, grant = null) {
     let handle;
     try {
       handle = await fsp.open(resolved.target, "r");
@@ -369,6 +471,7 @@ class LocalFilePort {
       throw localError("direct_full_access_file_unavailable", "The selected local file is unavailable.");
     }
     try {
+      await this.assertOpenedFileAllowed(grant, resolved, handle, "read");
       const initialStat = await handle.stat();
       if (!initialStat.isFile()) throw localError("direct_full_access_file_invalid", "The selected local path is not a regular file.");
       const requestedBytes = Number(maxBytesInput);
@@ -390,7 +493,7 @@ class LocalFilePort {
     }
   }
 
-  async readPatchTarget(resolved, operation) {
+  async readPatchTarget(resolved, operation, _input = {}, grant = null) {
     let handle;
     try {
       handle = await fsp.open(resolved.target, "r");
@@ -399,6 +502,7 @@ class LocalFilePort {
       throw localError("direct_full_access_patch_target_unavailable", "The selected local patch target is unavailable.");
     }
     try {
+      await this.assertOpenedFileAllowed(grant, resolved, handle, "patch");
       const initialStat = await handle.stat();
       if (!initialStat.isFile()) throw localError("direct_full_access_patch_target_invalid", "The selected local patch target is not a regular file.");
       if (initialStat.size > MAX_PATCH_TARGET_BYTES) throw localError("direct_full_access_patch_target_oversized", "The selected local patch target exceeds the bounded patch input limit.");
@@ -444,14 +548,30 @@ class LocalFilePort {
     for (const plan of plans) {
       await this.assertWritable(grant, plan._resolved);
       if (!plan.beforeExists) {
-        const current = await this.readPatchTarget(plan._resolved, "create");
+        const current = await this.readPatchTarget(plan._resolved, "create", {}, grant);
         if (current.exists) throw localError("direct_full_access_patch_target_exists", "Patch create target appeared before apply.");
         continue;
       }
-      const current = await this.readPatchTarget(plan._resolved, plan.operation === "delete" ? "delete" : "update");
+      const current = await this.readPatchTarget(plan._resolved, plan.operation === "delete" ? "delete" : "update", {}, grant);
       if (!current.exists || sha256(current.bytes.toString("utf8")) !== plan.beforeDigest) {
         throw localError("direct_full_access_patch_conflict", "The selected local patch target changed before apply.");
       }
+    }
+    if (grant?.sandboxMode === "workspace-write") {
+      // Workspace writes happen inside the sandbox, like Codex's apply_patch:
+      // the host checks above can't stop a path from being swapped for a
+      // symlink before a host-side write, but the sandbox can't reach
+      // outside the project however the path resolves.
+      const root = fs.realpathSync(plans[0]._resolved.root);
+      await this.sandboxedWriter({
+        root,
+        files: plans.map((plan) => ({
+          target: path.join(root, path.relative(plan._resolved.root, plan._resolved.target)),
+          operation: plan.operation === "delete" ? "delete" : "write",
+          contentBase64: plan.operation === "delete" ? "" : Buffer.from(plan._afterText, "utf8").toString("base64"),
+        })),
+      });
+      return;
     }
     for (const plan of plans) {
       const target = plan._resolved.target;

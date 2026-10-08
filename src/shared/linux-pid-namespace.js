@@ -98,10 +98,18 @@ function trustedSetprivAvailable() {
 /**
  * Spawns `command args` in a new user+PID namespace. `options.env` is used
  * exactly as given; `options.dieWithParent` also ends the namespace when the
- * caller dies (setpriv PDEATHSIG, when a trusted setpriv exists). Other
- * options pass to child_process.spawn.
+ * caller dies (setpriv PDEATHSIG) and is refused without a trusted setpriv.
+ * Other options pass to child_process.spawn.
  */
 function spawnInLinuxPidNamespace(command, args = [], options = {}) {
+  // A caller that asked for the tree to die with it relies on that; without
+  // a trusted setpriv there is no parent-death signal, so refuse rather than
+  // start a namespace that could outlive a killed caller.
+  if (options.dieWithParent === true && !trustedSetprivAvailable()) {
+    const error = new Error(`Parent-bound process containment needs a trusted ${TRUSTED_SETPRIV_PATH} (util-linux), which isn't available.`);
+    error.code = "workspace_linux_pid_namespace_parent_death_unavailable";
+    throw error;
+  }
   const { fd, identity } = openTrustedUnshareLauncher();
   const requestedStdio = Array.isArray(options.stdio)
     ? options.stdio.slice(0, 3)
@@ -121,7 +129,7 @@ function spawnInLinuxPidNamespace(command, args = [], options = {}) {
   // unshare does not die with its parent, so a SIGKILLed caller would
   // orphan the namespace. setpriv sets PDEATHSIG and execs the launcher in
   // place; the signal survives exec, and --kill-child then takes the tree.
-  const dieWithParent = options.dieWithParent === true && trustedSetprivAvailable();
+  const dieWithParent = options.dieWithParent === true;
   const { dieWithParent: _dieWithParent, env, stdio: _stdio, ...spawnOptions } = options;
   let child;
   try {
