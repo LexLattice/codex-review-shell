@@ -509,6 +509,9 @@ function requestShapeForDiagnostic(requestBody = {}) {
     serviceTier: normalizeString(requestBody.service_tier || requestBody.serviceTier, ""),
     ...(requestBody.access_programs?.cyber ? { cyberAccessProgram: normalizeString(requestBody.access_programs.cyber, "") } : {}),
     ...(requestBody.prompt_cache_key ? { promptCacheKeySent: true } : {}),
+    ...(Array.isArray(requestBody.input) && requestBody.input.some((item) => item?.type === "reasoning")
+      ? { reasoningItemCount: requestBody.input.filter((item) => item?.type === "reasoning").length }
+      : {}),
     ...(isPlainObject(requestBody.text?.format)
       ? {
           textFormatType: normalizeString(
@@ -777,6 +780,7 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
   const onTransportTrace = options.onTransportTrace;
   let rawText = "";
   let buffer = "";
+  const reasoningItems = [];
   let rawBytes = 0;
   let reservedRawBytes = 0;
   let reservedRawEvents = 0;
@@ -866,6 +870,8 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     const rawIndex = rawEvents.length;
     rawEvents.push(rawEvent);
     notifyTransportTrace(onTransportTrace, "raw_event_parsed", { rawIndex });
+    const reasoningItem = encryptedReasoningItem(rawEvent);
+    if (reasoningItem) reasoningItems.push(reasoningItem);
     timing.rawEventCount = rawEvents.length;
     if (!timing.firstSseFrameAt) {
       timing.firstSseFrameAt = nowIso();
@@ -1009,9 +1015,33 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     rawEvents,
     normalizedEvents,
     unknownRawTypes,
+    reasoningItems,
     timing,
     error,
     commitError,
+  };
+}
+
+const MAX_REASONING_ITEM_CHARS = 512 * 1024;
+
+// A finished reasoning item with its encrypted content, as Codex keeps it:
+// sent back before the calls it led to, it lets the model continue its own
+// reasoning instead of rebuilding it after every tool result (store is
+// false, so the backend keeps nothing between requests).
+function encryptedReasoningItem(rawEvent) {
+  if (!isPlainObject(rawEvent)) return null;
+  const type = normalizeString(rawEvent.event || rawEvent.type || rawEvent.data?.type, "").toLowerCase();
+  if (type !== "response.output_item.done") return null;
+  const data = isPlainObject(rawEvent.data) ? rawEvent.data : rawEvent;
+  const item = isPlainObject(data.item) ? data.item : null;
+  if (!item || item.type !== "reasoning") return null;
+  const encrypted = typeof item.encrypted_content === "string" ? item.encrypted_content : "";
+  if (!encrypted || encrypted.length > MAX_REASONING_ITEM_CHARS) return null;
+  return {
+    type: "reasoning",
+    ...(normalizeString(item.id, "") ? { id: normalizeString(item.id, "") } : {}),
+    summary: Array.isArray(item.summary) ? item.summary.filter((entry) => isPlainObject(entry)).map((entry) => ({ type: normalizeString(entry.type, "summary_text"), text: String(entry.text ?? "") })) : [],
+    encrypted_content: encrypted,
   };
 }
 
@@ -1176,6 +1206,11 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
   if (promptCacheKey && isPlainObject(requestBody) && !requestBody.prompt_cache_key) {
     requestBody = { ...requestBody, prompt_cache_key: promptCacheKey };
   }
+  // As Codex does on every request: return reasoning as encrypted content so
+  // it can be sent back with the next request of the turn.
+  if (options.includeReasoningContent !== false && isPlainObject(requestBody) && !Array.isArray(requestBody.include)) {
+    requestBody = { ...requestBody, include: ["reasoning.encrypted_content"] };
+  }
   const limits = transportLimits(options);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("Direct Codex streaming request requires fetch.");
@@ -1189,6 +1224,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
   let rawEvents = [];
   let normalizedEvents = [];
   let unknownRawTypes = [];
+  let reasoningItems = [];
   let error = null;
   let responseOk = false;
   let streamStarted = false;
@@ -1257,6 +1293,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
         rawEvents = streamed.rawEvents;
         normalizedEvents = streamed.normalizedEvents;
         unknownRawTypes = streamed.unknownRawTypes;
+        reasoningItems = Array.isArray(streamed.reasoningItems) ? streamed.reasoningItems : [];
         timing.firstSseFrameAt = streamed.timing.firstSseFrameAt;
         timing.firstNormalizedEventAt = streamed.timing.firstNormalizedEventAt;
         timing.streamCompletedAt = streamed.timing.streamCompletedAt;
@@ -1368,6 +1405,9 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
     rawEvents: redactFixture(rawEvents),
     normalizedEvents,
     unknownRawTypes,
+    // Encrypted reasoning items, kept out of normalized events (and so out
+    // of transcripts); callers attach them to the calls they led to.
+    reasoningItems,
     terminal,
     error,
     // The server's model-catalog version; a change means /models changed.
@@ -1522,7 +1562,10 @@ async function runPersistedTextOnlyDirectProbe(options = {}) {
   if (result.normalizedEvents.length) {
     sessionStore.appendNormalizedEvents(session.sessionId, turn.turnId, result.normalizedEvents, options);
   }
-  const obligationResult = sessionStore.addToolObligations(session.sessionId, turn.turnId, result.normalizedEvents, options);
+  const obligationResult = sessionStore.addToolObligations(session.sessionId, turn.turnId, result.normalizedEvents, {
+    ...options,
+    reasoningItems: result.reasoningItems,
+  });
   const terminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents);
   const completedTurn = sessionStore.updateTurnState(
     session.sessionId,
@@ -1713,6 +1756,7 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
       stepOrdinal: currentStepOrdinal + 1,
       parentResponseId,
       parentResponseSource: "native_direct_tool_continuation_stream",
+      reasoningItems: result.reasoningItems,
     });
     // Like Codex, the model may call any tool declared on this continuation,
     // as many as it likes in one response; the controller runs them in order

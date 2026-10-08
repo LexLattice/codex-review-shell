@@ -1647,12 +1647,20 @@ class DirectSessionStore {
     const existingTurnObligations = new Map((Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
       .map((obligation) => [obligation.obligationId, obligation]));
     const returnedObligationIds = [];
+    // The response's encrypted reasoning rides on its first new call, so a
+    // continuation can send it back right before the calls it led to.
+    const reasoningItems = Array.isArray(options.reasoningItems) ? options.reasoningItems.filter((item) => item?.type === "reasoning") : [];
+    let reasoningAttached = false;
     for (const obligation of obligations) {
       const existing = existingTurnObligations.get(obligation.obligationId) ||
         equivalentTerminalObligation([...existingTurnObligations.values()], obligation);
       if (existing && existing.obligationId !== obligation.obligationId) {
         existingTurnObligations.set(existing.obligationId, mergeToolObligation(existing, obligation));
         continue;
+      }
+      if (!existing && !reasoningAttached && reasoningItems.length) {
+        obligation.precedingReasoningItems = reasoningItems;
+        reasoningAttached = true;
       }
       existingTurnObligations.set(obligation.obligationId, mergeToolObligation(existing, obligation));
       if (!DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES.has(normalizeString(existing?.status, ""))) {
@@ -1675,9 +1683,11 @@ class DirectSessionStore {
       const existingSessionObligations = new Map((Array.isArray(session.unresolvedObligations) ? session.unresolvedObligations : [])
         .map((obligation) => [obligation.obligationId, obligation]));
       for (const obligation of obligations) {
+        // Encrypted reasoning stays on the turn only.
+        const { precedingReasoningItems: _reasoning, ...turnObligation } = existingTurnObligations.get(obligation.obligationId) || {};
         existingSessionObligations.set(
           obligation.obligationId,
-          mergeToolObligation(existingSessionObligations.get(obligation.obligationId), existingTurnObligations.get(obligation.obligationId)),
+          mergeToolObligation(existingSessionObligations.get(obligation.obligationId), turnObligation),
         );
       }
       this.writeSession({
@@ -1753,8 +1763,9 @@ class DirectSessionStore {
     this.writeTurn(nextTurn);
     const session = this.readSession(sessionId);
     if (session) {
+      const { precedingReasoningItems: _reasoning, ...sessionObligation } = nextObligation;
       const sessionObligations = (Array.isArray(session.unresolvedObligations) ? session.unresolvedObligations : [])
-        .map((entry) => entry?.obligationId === obligation.obligationId ? nextObligation : entry);
+        .map((entry) => entry?.obligationId === obligation.obligationId ? sessionObligation : entry);
       const nextMessages = Array.isArray(session.messages)
         ? session.messages.map((message) => ({
             ...message,
