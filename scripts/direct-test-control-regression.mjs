@@ -136,6 +136,13 @@ try {
   assert.match(report.toolCalls[0].output, /^completed · exit 0\nstdout: control-ok/);
   assert.equal(report.assistant, "The command printed control-ok.");
   assert.equal(report.user, "Run the check.");
+  // The timeline splits wall time into requests and the gaps between them.
+  assert(report.requests.every((request) => Number.isFinite(request.timing?.sentAtMs) && Number.isFinite(request.timing?.modelMs)));
+  assert.deepEqual(report.timeline.map((entry) => entry.phase), [
+    "before first request", "request 1", "tools/harness before request 2", "request 2", "after last request",
+  ]);
+  assert(report.timeline.every((entry) => Number.isFinite(entry.ms) && entry.ms >= 0), JSON.stringify(report.timeline));
+  assert(Number.isFinite(report.toolCalls[0].execMs), "an exec call reports how long the process ran");
   assert.equal(bodies[0].reasoning?.effort, "low");
   assert.equal(bodies[0].model, "gpt-6-luna");
   const events = await call("GET", `/v1/events?projectId=${projectId}&since=${turn.body.eventSeq}`);

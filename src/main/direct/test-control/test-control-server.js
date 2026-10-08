@@ -371,7 +371,9 @@ class DirectTestControlServer {
         outcome = "timeout";
         break;
       }
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      // A pending tool-call stop is checked often: quick commands settle
+      // within one exec call, so a turn can make several calls per 200 ms.
+      await new Promise((resolve) => setTimeout(resolve, stopAfterToolCalls && !stopped ? 20 : 200));
     }
     const report = this.buildTurnReport(threadId, turnId, { textLimit: Number(body.textLimit), rawOutputs: body.rawOutputs === true });
     return {
@@ -437,7 +439,7 @@ class DirectTestControlServer {
           const at = normalizeString(line.capturedAt || record.capturedAt, "");
           if (!record.request || !at || at < normalizeString(turn.createdAt, "")) continue;
           if (turn.completedAt && at > turn.completedAt && turn.state !== "aborted") continue;
-          shapes.push({ at, kind: name.replace(/\.redacted\.jsonl$/, ""), request: record.request });
+          shapes.push({ at, kind: name.replace(/\.redacted\.jsonl$/, ""), request: record.request, timing: record.lifecycle?.timing || {} });
         }
       }
     } catch {}
@@ -445,9 +447,13 @@ class DirectTestControlServer {
     // and usage records pair up in order; a stopped request leaves a record
     // with no usage after the last pair.
     shapes.sort((a, b) => a.at.localeCompare(b.at));
+    const started = Date.parse(turn.createdAt || "") || 0;
+    const ended = Date.parse(turn.completedAt || turn.failedAt || turn.abortedAt || turn.updatedAt || "") || 0;
+    const requestTiming = shapes.map((shape) => requestTimingFor(shape.timing, started));
     const requests = usage.map((entry, index) => {
       const shape = shapes[index]?.request || null;
       return {
+        ...(requestTiming[index] ? { timing: requestTiming[index] } : {}),
         n: index + 1,
         inputTokens: Number(entry.inputTokens || 0),
         cachedInputTokens: Number(entry.cachedInputTokens || 0),
@@ -464,8 +470,12 @@ class DirectTestControlServer {
     const results = new Map((Array.isArray(turn.toolResults) ? turn.toolResults : []).map((result) => [result.obligationId, result]));
     const toolCalls = obligations.map((obligation, index) => {
       const result = results.get(obligation.obligationId) || obligation.result || null;
+      const exec = obligation.statefulExecResult || null;
+      const execStarted = Date.parse(exec?.startedAt || "") || 0;
+      const execEnded = Date.parse(exec?.completedAt || "") || 0;
       return {
         n: index + 1,
+        ...(execStarted ? { execMs: execEnded ? execEnded - execStarted : null, execState: normalizeString(exec.status, "") } : {}),
         step: Number(obligation.stepOrdinal || 0) || undefined,
         tool: normalizeString(obligation.name, ""),
         args: clip(normalizeString(obligation.argumentsText, ""), textLimit ? Math.min(textLimit, 400) : 0),
@@ -487,8 +497,6 @@ class DirectTestControlServer {
       cachedInputTokens: sum.cachedInputTokens + Number(entry.cachedInputTokens || 0),
       outputTokens: sum.outputTokens + Number(entry.outputTokens || 0),
     }), { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 });
-    const started = Date.parse(turn.createdAt || "") || 0;
-    const ended = Date.parse(turn.completedAt || turn.failedAt || turn.abortedAt || turn.updatedAt || "") || 0;
     return {
       threadId,
       turnId,
@@ -499,11 +507,48 @@ class DirectTestControlServer {
       durationMs: started && ended ? ended - started : null,
       user: clip(userText, textLimit),
       requests,
+      timeline: turnTimeline(requestTiming, started && ended ? ended - started : null),
       totals: { requests: requests.length, toolCalls: toolCalls.length, ...totals },
       toolCalls,
       assistant: clip(assistantText, textLimit ? Math.max(textLimit, 4000) : 0),
     };
   }
+}
+
+// Offsets are from turn start; waitMs is send → response headers (backend
+// queue), modelMs is headers → stream end (the model producing its answer).
+function requestTimingFor(timing = {}, turnStartedMs = 0) {
+  const at = (key) => Date.parse(normalizeString(timing[key], "")) || 0;
+  const sent = at("firstAttemptAt") || at("requestBuiltAt");
+  const headers = at("responseHeadersAt");
+  const done = at("streamCompletedAt");
+  if (!sent || !turnStartedMs) return null;
+  return {
+    sentAtMs: sent - turnStartedMs,
+    ...(headers ? { waitMs: headers - sent } : {}),
+    ...(headers && done ? { modelMs: done - headers } : {}),
+    ...(done ? { doneAtMs: done - turnStartedMs } : {}),
+  };
+}
+
+// Splits the turn's wall time into provider requests and the harness/tool
+// gaps between them, so a slow turn shows where its time went.
+function turnTimeline(requestTiming = [], durationMs = null) {
+  const phases = [];
+  let cursor = 0;
+  requestTiming.forEach((timing, index) => {
+    if (!timing) return;
+    const gap = timing.sentAtMs - cursor;
+    phases.push({ phase: index === 0 ? "before first request" : `tools/harness before request ${index + 1}`, ms: gap });
+    if (timing.doneAtMs !== undefined) {
+      phases.push({ phase: `request ${index + 1}`, ms: timing.doneAtMs - timing.sentAtMs });
+      cursor = timing.doneAtMs;
+    } else {
+      cursor = timing.sentAtMs;
+    }
+  });
+  if (durationMs !== null && phases.length) phases.push({ phase: "after last request", ms: durationMs - cursor });
+  return phases;
 }
 
 // The part of a tool's output a tester reads first: a command's exit and

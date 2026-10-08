@@ -5945,32 +5945,62 @@ class DirectLiveTextController {
         projectId: normalizeString(project.id || project.projectId || session.projectId, ""),
         executionEnvironmentDigest: normalizeString(grant?.executionEnvironmentDigest || session.executionEnvironmentDigest, ""),
       };
-      let result = toolName === "exec_command"
-        ? this.statefulExecSessionManager.start({
+      const requestedYieldMs = Number.isFinite(Number(args.yield_time_ms ?? args.yieldTimeMs))
+        ? Number(args.yield_time_ms ?? args.yieldTimeMs)
+        : undefined;
+      const stdinSessionId = args.sessionId || args.session_id || args.execSessionId;
+      const stdinText = args.chars ?? args.input ?? args.data ?? "";
+      let result;
+      if (toolName === "exec_command") {
+        result = this.statefulExecSessionManager.start({
+          ...binding,
+          cmd: args.cmd,
+          command: args.command || args.executable,
+          args: args.args || args.argv,
+          cwd: args.cwd || args.workdir,
+          env: args.env,
+          stdinPolicy: args.stdinPolicy,
+          idleTimeoutMs: args.idleTimeoutMs,
+          hardTimeoutMs: args.hardTimeoutMs,
+          tty: args.tty === true,
+        });
+      } else {
+        try {
+          result = this.statefulExecSessionManager.writeStdin({
             ...binding,
-            cmd: args.cmd,
-            command: args.command || args.executable,
-            args: args.args || args.argv,
-            cwd: args.cwd || args.workdir,
-            env: args.env,
-            stdinPolicy: args.stdinPolicy,
-            idleTimeoutMs: args.idleTimeoutMs,
-            hardTimeoutMs: args.hardTimeoutMs,
-            tty: args.tty === true,
-          })
-        : this.statefulExecSessionManager.writeStdin({
-            ...binding,
-            sessionId: args.sessionId || args.session_id || args.execSessionId,
-            input: args.chars ?? args.input ?? args.data ?? "",
+            sessionId: stdinSessionId,
+            input: stdinText,
             eof: args.eof === true,
           });
-      if (toolName === "exec_command" && typeof this.statefulExecSessionManager.initialYield === "function") {
-        // Provider-originated exec must expose a controller-owned bounded
-        // initial observation, allowing short commands to settle while
-        // keeping interactive sessions live for the declared stdin path.
+        } catch (error) {
+          // The process can exit while the model is still deciding what to
+          // send; report how it ended instead of failing the turn.
+          const settled = error?.code === "direct_stateful_exec_session_not_live"
+            && typeof this.statefulExecSessionManager.settledResult === "function"
+            ? this.statefulExecSessionManager.settledResult({ ...binding, sessionId: stdinSessionId }, {
+                stdinAccepted: false,
+                eofRequested: args.eof === true,
+                alreadyTerminal: true,
+              })
+            : null;
+          if (!settled) throw error;
+          result = settled;
+        }
+      }
+      if (typeof this.statefulExecSessionManager.initialYield === "function"
+        && (toolName === "exec_command" || result.status === "running")) {
+        // Wait (bounded) for the process to settle so short commands finish in
+        // one call; interactive sessions stay live for write_stdin.
+        const emptyPoll = toolName === "write_stdin" && !stdinText && args.eof !== true;
         result = await this.statefulExecSessionManager.initialYield({
           ...binding,
           sessionId: result.sessionId,
+          yieldTimeMs: requestedYieldMs ?? (toolName === "exec_command" ? undefined : (emptyPoll ? 5_000 : 250)),
+          resultExtra: toolName === "exec_command" ? undefined : {
+            stdinAccepted: result.stdinAccepted === true,
+            eofRequested: result.eofRequested === true,
+            ...(result.emptyPoll ? { emptyPoll: true } : {}),
+          },
         });
       }
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {

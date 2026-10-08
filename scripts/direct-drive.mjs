@@ -296,12 +296,20 @@ function formatReport(report, extra = {}) {
   if (report.user) lines.push(`user: ${report.user}`);
   const t = report.totals || {};
   lines.push(`requests ${t.requests} · tool calls ${t.toolCalls} · in ${formatNumber(t.inputTokens)} (cached ${formatNumber(t.cachedInputTokens)}) · out ${formatNumber(t.outputTokens)}`);
+  const ms = (value) => `${(Number(value || 0) / 1000).toFixed(1)}s`;
   for (const request of report.requests || []) {
     const shape = request.toolsDeclared === undefined ? "" : ` · tools ${request.toolsDeclared} · input items ${request.inputItems} · call outputs ${request.callOutputs}`;
-    lines.push(`  #${request.n}${shape} · in ${formatNumber(request.inputTokens)} · out ${formatNumber(request.outputTokens)}`);
+    const timing = request.timing
+      ? ` · wait ${ms(request.timing.waitMs)} · model ${request.timing.modelMs === undefined ? "?" : ms(request.timing.modelMs)}`
+      : "";
+    lines.push(`  #${request.n}${shape} · in ${formatNumber(request.inputTokens)} · out ${formatNumber(request.outputTokens)}${timing}`);
+  }
+  if ((report.timeline || []).length) {
+    lines.push(`timeline: ${report.timeline.map((entry) => `${entry.phase} ${ms(entry.ms)}`).join(" · ")}`);
   }
   for (const call of report.toolCalls || []) {
-    lines.push(`  ${call.n}. [step ${call.step ?? "?"}] ${call.tool} ${call.args || ""} → ${call.status}${call.failure ? ` (${call.failure})` : ""}`);
+    const exec = call.execMs !== undefined ? ` [exec ${call.execMs === null ? `still ${call.execState || "running"}` : ms(call.execMs)}]` : "";
+    lines.push(`  ${call.n}. [step ${call.step ?? "?"}] ${call.tool} ${call.args || ""} → ${call.status}${call.failure ? ` (${call.failure})` : ""}${exec}`);
     if (call.output) lines.push(`     ${call.output.replace(/\n/g, "\n     ")}`);
   }
   for (const decision of extra.ownerDecisions || []) lines.push(`  owner: ${decision.decision} ${decision.method} ${decision.summary || ""}`);

@@ -288,6 +288,7 @@ function directImplementationToolSchemas(toolNames = []) {
           idleTimeoutMs: { type: "number" },
           hardTimeoutMs: { type: "number" },
           tty: { type: "boolean", description: "True runs the command in a terminal (24x80): output is the terminal's, with stdout and stderr merged, and write_stdin input is typed into it, for programs that need a terminal (REPLs, prompts, full-screen tools). False or omitted uses plain pipes." },
+          yield_time_ms: { type: "number", description: "How long to wait for the command to finish before returning a running session (default 10000, max 30000). Use a short value for interactive programs that wait for input." },
         },
         anyOf: [
           { required: ["cmd"] },
@@ -299,7 +300,7 @@ function directImplementationToolSchemas(toolNames = []) {
     write_stdin: {
       type: "function",
       name: "write_stdin",
-      description: "Write bounded input or EOF to one exact live exec_command session.",
+      description: "Write bounded input or EOF to one exact live exec_command session, or send empty input to wait for more output. Returns the session's output and state; if the process has already exited, returns its final result.",
       parameters: {
         type: "object",
         properties: {
@@ -308,6 +309,7 @@ function directImplementationToolSchemas(toolNames = []) {
           input: { type: "string" },
           chars: { type: "string", description: "Vanilla app-server alias for input." },
           eof: { type: "boolean" },
+          yield_time_ms: { type: "number", description: "How long to wait for the process to finish after writing (default 250, or 5000 for an empty poll; max 30000)." },
         },
         anyOf: [
           { required: ["session_id"] },

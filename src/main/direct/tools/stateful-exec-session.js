@@ -25,7 +25,11 @@ const DIRECT_STATEFUL_EXEC_RESULT_SCHEMA = "direct_stateful_exec_result@1";
 const STATEFUL_EXEC_CAPABILITY_NAMES = Object.freeze(["exec_command", "write_stdin"]);
 const DEFAULT_EXEC_OUTPUT_BUDGET_CHARS = 24_000;
 const DEFAULT_EXEC_PROVIDER_RESULT_BUDGET_CHARS = 12_000;
-const DEFAULT_EXEC_INITIAL_YIELD_MS = 100;
+// Matches Codex unified exec: a command gets up to 10 s to finish before the
+// model sees a running session, so short commands settle in one call instead
+// of forcing a poll round trip through the provider.
+const DEFAULT_EXEC_INITIAL_YIELD_MS = 10_000;
+const MAX_EXEC_YIELD_MS = 30_000;
 const DEFAULT_EXEC_CANCEL_ESCALATION_MS = 200;
 const DEFAULT_EXEC_IDLE_ESCALATION_MS = 200;
 const STATEFUL_EXEC_DISPOSE_TERM_GRACE_MS = 200;
@@ -641,7 +645,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     this.defaultHardTimeoutMs = boundedInteger(options.hardTimeoutMs, DEFAULT_EXEC_HARD_TIMEOUT_MS, 25, 10 * 60_000);
     this.defaultOutputBudgetChars = boundedInteger(options.outputBudgetChars, DEFAULT_EXEC_OUTPUT_BUDGET_CHARS, 256, MAX_EXEC_OUTPUT_BUDGET_CHARS);
     this.defaultProviderResultBudgetChars = boundedInteger(options.providerResultBudgetChars, DEFAULT_EXEC_PROVIDER_RESULT_BUDGET_CHARS, 128, MAX_EXEC_PROVIDER_RESULT_BUDGET_CHARS);
-    this.initialYieldMs = boundedInteger(options.initialYieldMs, DEFAULT_EXEC_INITIAL_YIELD_MS, 25, 2_000);
+    this.initialYieldMs = boundedInteger(options.initialYieldMs, DEFAULT_EXEC_INITIAL_YIELD_MS, 25, MAX_EXEC_YIELD_MS);
     this.sessions = new Map();
     this.disposed = false;
     this.disposePromise = null;
@@ -1201,10 +1205,23 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     return record.completion;
   }
 
+  // Returns a session's settled result without writing, so input aimed at a
+  // process that already exited can still report how it ended.
+  settledResult(input = {}, extra = {}) {
+    const record = this.exactRecord(input);
+    this.resolveGrant({ ...input, harnessGrant: record.grant, executionEnvironmentDigest: record.executionEnvironmentDigest }, "write_stdin");
+    return record.settled ? this.publicResult(record, extra) : null;
+  }
+
   async initialYield(input = {}) {
     const record = this.exactRecord(input);
     this.resolveGrant({ ...input, harnessGrant: record.grant, executionEnvironmentDigest: record.executionEnvironmentDigest }, "exec_command");
-    if (record.settled) return this.publicResult(record);
+    const extra = input.resultExtra && typeof input.resultExtra === "object" ? input.resultExtra : {};
+    if (record.settled) return this.publicResult(record, extra);
+    // A silent process waiting for input would hit its idle timeout before the
+    // model ever saw it, so the wait stays well inside that window.
+    const idleCapMs = Number(record.idleTimeoutMs) > 0 ? Math.floor(Number(record.idleTimeoutMs) / 2) : MAX_EXEC_YIELD_MS;
+    const yieldMs = Math.max(25, Math.min(idleCapMs, boundedInteger(input.yieldTimeMs, this.initialYieldMs, 25, MAX_EXEC_YIELD_MS)));
     return new Promise((resolve) => {
       let settled = false;
       let timer = null;
@@ -1216,10 +1233,10 @@ class DirectStatefulExecSessionManager extends EventEmitter {
         resolve(result);
       };
       const onCompleted = (result) => {
-        if (result?.sessionId === record.sessionId) finish(result);
+        if (result?.sessionId === record.sessionId) finish(Object.keys(extra).length ? this.publicResult(record, extra) : result);
       };
       this.on("completed", onCompleted);
-      timer = setTimeout(() => finish(this.publicResult(record)), this.initialYieldMs);
+      timer = setTimeout(() => finish(this.publicResult(record, extra)), yieldMs);
     });
   }
 

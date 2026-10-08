@@ -41,6 +41,12 @@ and a readable output summary (`--raw` for exactly what the model saw),
 owner decisions, warnings, the reply, and the end state. `--json` gives the
 same as data.
 
+Each request also shows `wait` (sent to response headers: backend queue)
+and `model` (headers to stream end: the model producing its answer). The
+`timeline` line splits the turn's wall time into requests and the
+tools/harness gaps between them, and exec calls show how long the process
+ran, so a slow turn shows where its time went.
+
 Owner requests: `--approvals approve` (default) answers approvals and
 questions automatically (`--answer TEXT` for questions); `--approvals
 pending` returns as soon as one is raised, then use `respond --key K
