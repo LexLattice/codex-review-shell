@@ -73,6 +73,7 @@ folder (`<test data>/direct-test/suite`) it empties first.
 | `question_to_owner` | `request_user_input` reaches the owner and the answer comes back |
 | `permission_request` | a Read only thread asks with `request_permissions`, gets Workspace for the turn, writes the file, and is back at Read only |
 | `path_in_prompt` | an absolute path in the prompt is accepted |
+| `remembers_tool_output` | a follow-up turn answers what an earlier command printed from history, without a tool call |
 | `follow_up_turn` | a second turn on the edit thread works; prints its cached input |
 
 `--only a,b` runs some; `--json` adds a machine-readable summary; `--model`

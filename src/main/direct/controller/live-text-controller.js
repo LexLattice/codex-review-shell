@@ -95,6 +95,7 @@ const {
   issueWorkspaceParentAuthorityFromDelegationPolicy,
 } = require("../agents/workspace-worker-delegation-policy");
 const { buildDirectThreadDeckProjection } = require("../thread/thread-deck");
+const { scanTextForRawExposure } = require("../thread/renderer-transcript-projection");
 const {
   assertDirectAttachmentCapabilityProjectionSafe,
   assertDirectAttachmentSubmitPacketSafe,
@@ -257,6 +258,30 @@ const SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS = [
   "The snapshot is current as of this turn; inspecting again returns the same account, so answer from it.",
   "If the user's request needs other work, carry it out with the declared tools; otherwise answer directly.",
 ].join(" ");
+// Bounds for earlier turns replayed as history items.
+const HISTORY_BUDGET_CHARS = 60_000;
+const HISTORY_TOOL_OUTPUT_CHARS = 2_000;
+const HISTORY_ARGUMENTS_CHARS = 8_000;
+const HISTORY_TEXT_CHARS = 16_000;
+
+// Text going back to the provider as history: bounded, and withheld if the
+// exposure scan blocks it (secrets, raw backend frames).
+function historyText(text = "", limit = HISTORY_TEXT_CHARS) {
+  const value = String(text ?? "");
+  if (scanTextForRawExposure(value).some((finding) => finding.severity === "block")) {
+    return "[withheld from history: failed the exposure scan]";
+  }
+  return value.length > limit ? `${value.slice(0, limit)}\n[… truncated in history]` : value;
+}
+
+function historyToolOutput(toolName = "", outputText) {
+  if (typeof outputText !== "string" || !outputText) return JSON.stringify({ status: "no_result_recorded" });
+  if (toolName === DIRECT_SELF_CONSTITUTION_TOOL_NAME) {
+    return JSON.stringify({ kind: "inspect_self_constitution_result", status: "completed", note: "Snapshot omitted from history; call inspect_self_constitution for the current one." });
+  }
+  return historyText(outputText, HISTORY_TOOL_OUTPUT_CHARS);
+}
+
 // request_permissions, Direct's form of Codex's tool: the model asks the
 // owner to raise the thread's Access for this turn or for the thread.
 const REQUEST_PERMISSIONS_TOOL_NAME = "request_permissions";
@@ -7332,6 +7357,90 @@ class DirectLiveTextController {
     return [...JSON.parse(JSON.stringify(admitted.input)), ...items];
   }
 
+  // Earlier turns of the thread as Codex sends them: each user message, the
+  // calls the model made with their (bounded) outputs, and its reply, as
+  // real input items. The quoted transcript collapsed every tool call to a
+  // placeholder line, so the model couldn't see what it had done, and its
+  // shape changed every turn, defeating the prompt cache. Oldest turns drop
+  // first beyond the budget.
+  priorTurnHistoryItems(sessionId = "", currentTurnId = "") {
+    const session = this.sessionStore.readSession(sessionId) || {};
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    const turns = [];
+    for (const summary of Array.isArray(session.turns) ? session.turns : []) {
+      const turnId = normalizeString(summary?.turnId, "");
+      if (!turnId || turnId === currentTurnId) continue;
+      const turn = this.sessionStore.readTurn(sessionId, turnId);
+      if (!turn || turn.preTransportFailed === true || !TERMINAL_TURN_STATES.has(normalizeString(turn.state, ""))) continue;
+      const items = [];
+      const userText = (Array.isArray(turn.input) ? turn.input : [])
+        .map((entry) => normalizeString(entry?.text, ""))
+        .filter(Boolean)
+        .join("\n\n");
+      if (userText) items.push({ role: "user", content: [{ type: "input_text", text: historyText(userText) }] });
+      const results = new Map((Array.isArray(turn.toolResults) ? turn.toolResults : []).map((result) => [result.obligationId, result]));
+      for (const obligation of Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : []) {
+        const callId = normalizeString(obligation?.callId, "");
+        const name = normalizeString(obligation?.name, "");
+        if (!callId || !name) continue;
+        const outputText = historyToolOutput(name, results.get(obligation.obligationId)?.providerOutputText ?? obligation.result?.providerOutputText);
+        if (normalizeString(obligation.providerCallType || obligation.toolType, "") === "custom_tool_call") {
+          items.push(
+            { type: "custom_tool_call", call_id: callId, name, input: historyText(obligation.argumentsText || "", HISTORY_ARGUMENTS_CHARS) },
+            { type: "custom_tool_call_output", call_id: callId, output: outputText },
+          );
+        } else {
+          items.push(
+            { type: "function_call", call_id: callId, name, arguments: historyText(normalizeString(obligation.argumentsText, "{}"), HISTORY_ARGUMENTS_CHARS) },
+            { type: "function_call_output", call_id: callId, output: outputText },
+          );
+        }
+      }
+      const message = messages.find((entry) => entry?.id === turnId);
+      const replyText = (Array.isArray(message?.items) ? message.items : [])
+        .filter((item) => item?.type === "agentMessage")
+        .map((item) => normalizeString(item.text, ""))
+        .filter(Boolean)
+        .join("\n\n");
+      if (replyText) items.push({ role: "assistant", content: [{ type: "output_text", text: historyText(replyText) }] });
+      if (items.length) turns.push(items);
+    }
+    let budget = HISTORY_BUDGET_CHARS;
+    const kept = [];
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      const size = JSON.stringify(turns[index]).length;
+      if (kept.length && size > budget) break;
+      budget -= size;
+      kept.unshift(turns[index]);
+    }
+    return { items: kept.flat(), turnCount: kept.length, omittedTurnCount: turns.length - kept.length };
+  }
+
+  // The turn's input with history as items: earlier turns, then this turn's
+  // other context evidence (it changes per turn, so it sits after the
+  // history), then the current user message.
+  structuredHistoryInput(sessionId = "", currentTurnId = "", contextPack = {}) {
+    const history = this.priorTurnHistoryItems(sessionId, currentTurnId);
+    if (!history.items.length) return null;
+    const messages = Array.isArray(contextPack?.messages) ? contextPack.messages : [];
+    const current = messages.find((message) => message?.authority === "current-user-intent");
+    if (!current) return null;
+    const evidence = messages.filter((message) => message &&
+      message !== current &&
+      message.authority !== "harness-policy" &&
+      !(message.authority === "historical-evidence" && message.sourceProjectionId));
+    const evidenceText = evidence.map((message) => normalizeString(message.text, "")).filter(Boolean).join("\n\n");
+    // The user's own words, as they will appear in the next turn's history,
+    // so that turn's prefix matches this one.
+    const currentText = String(current.text || "").replace(/^\[CURRENT USER INTENT\]\n/, "");
+    const input = [
+      ...history.items,
+      ...(evidenceText ? [{ role: "user", content: [{ type: "input_text", text: evidenceText }] }] : []),
+      { role: "user", content: [{ type: "input_text", text: currentText }] },
+    ];
+    return { input, turnCount: history.turnCount, itemCount: history.items.length, omittedTurnCount: history.omittedTurnCount };
+  }
+
   // Continuations keep the turn's instructions byte-identical and add their
   // guidance as a trailing developer message: the backend's prompt cache
   // matches exact prefixes, and a changed instruction suffix would push the
@@ -10250,7 +10359,11 @@ class DirectLiveTextController {
   applyDirectAttachmentPayloads(requestBody = {}, payloads = []) {
     if (!Array.isArray(payloads) || !payloads.length) return requestBody;
     const body = requestBody;
-    const message = Array.isArray(body.input) && isPlainObject(body.input[0]) ? body.input[0] : null;
+    // Attachments belong to the current user message: the last one, after
+    // any earlier turns replayed as history.
+    const message = Array.isArray(body.input)
+      ? [...body.input].reverse().find((item) => isPlainObject(item) && item.role === "user") || null
+      : null;
     if (!message) throw new Error("Direct provider attachment input message is unavailable.");
     if (!Array.isArray(message.content)) message.content = [];
     for (const payload of payloads) {
@@ -10938,6 +11051,10 @@ class DirectLiveTextController {
           toolChoicePolicy: "auto",
         });
       }
+      const historyInput = implementationTier && useRecentDialogue && contextResult
+        ? this.structuredHistoryInput(session.sessionId, turn.turnId, contextResult.contextPack)
+        : null;
+      if (historyInput) requestBody.input = historyInput.input;
       this.applyDirectAttachmentPayloads(requestBody, providerAttachmentPayloads);
       if (normalizeString(selfConstitutionSnapshot?.digest, "") && Array.isArray(requestBody.input)) {
         // Per-turn facts go after the dialogue so the instructions, tools,
@@ -10954,6 +11071,12 @@ class DirectLiveTextController {
         serviceTier,
         ...(cyberAccessProgram ? { cyberAccessProgram } : {}),
         ...selfConstitutionRequestShapeFields(selfConstitutionSnapshot),
+        ...(historyInput ? {
+          historyItemsUsed: true,
+          historyTurnCount: historyInput.turnCount,
+          historyItemCount: historyInput.itemCount,
+          historyOmittedTurnCount: historyInput.omittedTurnCount,
+        } : {}),
         ...(activeSubAgentPolicySemanticResult?.settlement
           ? {
               activeSubAgentPolicySemanticSettlementId:

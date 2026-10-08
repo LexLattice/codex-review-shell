@@ -135,9 +135,12 @@ try {
   assert.equal(second[0].body.instructions, initial.body.instructions, "instructions are identical across turns");
   assert.equal(JSON.stringify(second[0].body.tools), JSON.stringify(initial.body.tools), "tools are identical across turns");
   const third = await runTurn("And once more.", []);
-  const userText = (body) => body.input[0].content[0].text;
-  const secondDialogue = userText(second[0].body).split("[CURRENT USER INTENT]")[0];
-  assert(secondDialogue.length > 0 && userText(third[0].body).startsWith(secondDialogue), "the next turn's dialogue extends the previous one");
+  // Earlier turns are input items; the next turn's input starts with this
+  // turn's input up to and including its user message.
+  const secondInput = second[0].body.input;
+  const secondUserIndex = secondInput.findIndex((item) => item.role === "user" && item.content?.[0]?.text === "Thanks.");
+  assert(secondUserIndex > 0, "the second turn replays the first as items before its own message");
+  assert.deepEqual(third[0].body.input.slice(0, secondUserIndex + 1), secondInput.slice(0, secondUserIndex + 1), "the next turn's input extends the previous one");
   assert.equal(third[0].body.instructions, initial.body.instructions);
 
   console.log(JSON.stringify({ ok: true, requests: requests.length, cacheKey: "thread", instructionsStable: true, toolsStable: true, inputPrefixStable: true }));

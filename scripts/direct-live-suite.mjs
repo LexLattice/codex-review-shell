@@ -189,6 +189,20 @@ const scenarios = [
     },
   },
   {
+    name: "remembers_tool_output",
+    async run(ctx) {
+      const token = `tok-${Math.random().toString(36).slice(2, 10)}`;
+      const first = chat(`Run exactly this command and just say done: ${isWindows ? `Write-Output ${token}` : `echo ${token}`}`, ["--project", ctx.projectId]);
+      const second = chat("Without running anything, what exactly did that command print?", ["--project", ctx.projectId, "--thread", first.report.threadId]);
+      return [
+        [first.report.state === "completed" && second.report.state === "completed", `turns ${first.report.state}, ${second.report.state}`],
+        [(second.report.toolCalls || []).length === 0, `answered from history (${(second.report.toolCalls || []).length} tool calls)`],
+        [(second.report.assistant || "").includes(token), "reply quotes the earlier output"],
+        [true, "", second],
+      ];
+    },
+  },
+  {
     name: "follow_up_turn",
     async run(ctx) {
       if (!ctx.editThreadId) return [[false, "needs edit_and_run first"]];

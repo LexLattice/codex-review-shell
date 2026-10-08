@@ -1205,6 +1205,24 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   model's response has paused … still waiting") and another when it
   resumes; the request's longest silence and stall count are recorded and
   shown by `direct-drive`. Gate: `npm run direct:stream-stall`.
+- Changed 2026-10-08: earlier turns reach the model as Codex sends them.
+  An implementation turn after the first replays each earlier turn as
+  input items: the user's message, every call the model made
+  (`function_call` / `custom_tool_call`) with its output (each output
+  capped at 2,000 characters; self-constitution snapshots replaced by a
+  short note; anything the exposure scan blocks is withheld), and the
+  model's reply. Oldest turns drop first beyond a 60,000-character budget
+  (`historyOmittedTurnCount`). Per-turn context evidence (epistemic,
+  semantic, manager graph) follows the history, and the current message is
+  the user's own words, so each turn's input begins with the previous
+  turn's history. Before, the history was one quoted transcript where
+  every tool call was a placeholder line ("ready_for_provider_continuation"),
+  so the model re-ran commands to recall what they printed. The context
+  pack and request manifest still record the quoted form; the turn's
+  `requestShape` marks `historyItemsUsed` with the counts. Live: asked what
+  an earlier command printed, the model answers from history without a
+  tool call (live suite `remembers_tool_output`). Gate:
+  `npm run direct:history-items`.
 - Added 2026-10-08: Windows commands start in an already-running
   PowerShell. The local process backend (also used natively by the
   Windows executor) keeps one idle shell per launch shape (sandbox
