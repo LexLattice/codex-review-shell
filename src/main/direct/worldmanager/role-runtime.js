@@ -1308,7 +1308,9 @@ class DirectRoleRuntime {
           id: context.compiledAgentContextId,
           digest: context.digest,
         },
-      }, { project, surfaceSession: null });
+      // The role runtime is harness-owned main-process code; its per-turn
+      // effort selection is an owner choice, not a stale renderer request.
+      }, { project, surfaceSession: null, ownerControlled: true });
       turnId = normalizeString(ack.turn?.id, "");
       completion = await this.controller.waitForTurnCompletion({
         sessionId: directSessionId,
@@ -1670,7 +1672,7 @@ class DirectRoleRuntime {
           id: context.compiledAgentContextId,
           digest: context.digest,
         },
-      }, { project, surfaceSession: input.surfaceSession || null });
+      }, { project, surfaceSession: input.surfaceSession || null, ownerControlled: true });
       run.directTurnId = ack.turn.id;
       run.state = "running";
       run.digest = digestFor(

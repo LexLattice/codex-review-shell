@@ -56,17 +56,9 @@ function sseFor(id, payload) {
   const text = typeof payload === "string"
     ? payload
     : JSON.stringify(payload);
-  return {
-    ok: true,
-    status: 200,
-    statusText: "OK",
-    headers: {
-      get: (name) =>
-        String(name || "").toLowerCase() === "content-type"
-          ? "text/event-stream"
-          : "",
-    },
-    text: async () => [
+  // The transport reads provider bodies incrementally to enforce its output
+  // budget, so fixtures must return a real streaming Response.
+  return new Response([
       "event: response.created",
       `data: ${JSON.stringify({
         response: { id, model: "gpt-5.4" },
@@ -93,8 +85,7 @@ function sseFor(id, payload) {
       "",
       "data: [DONE]",
       "",
-    ].join("\n"),
-  };
+  ].join("\n"), { status: 200, statusText: "OK", headers: { "content-type": "text/event-stream" } });
 }
 
 const rootDir = fs.mkdtempSync(

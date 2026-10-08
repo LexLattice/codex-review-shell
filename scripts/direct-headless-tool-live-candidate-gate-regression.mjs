@@ -139,7 +139,7 @@ const validateOnlyGate = buildDirectHeadlessToolClassLiveCandidateGate({
 assert.deepEqual(validateDirectHeadlessToolClassLiveCandidateGate(validateOnlyGate), [], "validate-only live candidate gate should validate");
 assert.equal(validateOnlyGate.status, "passed", "validate-only gate should pass");
 assert.equal(validateOnlyGate.eligibleCandidateCount, 0, "validate-only gate must not produce live candidates");
-assert.equal(validateOnlyGate.summary.byGateStatus.blocked_fixture_not_executed, 5, "validate-only fixture rows should remain blocked");
+assert.equal(validateOnlyGate.summary.byGateStatus.blocked_fixture_not_executed, 6, "validate-only fixture rows should remain blocked");
 assert.equal(validateOnlyGate.summary.byGateStatus.blocked_projection_only, 10, "projection rows should remain blocked");
 assert.equal(validateOnlyGate.summary.byGateStatus.blocked_unsupported, 3, "unsupported rows should remain blocked");
 assert.equal(validateOnlyGate.providerTransportStarted, false, "gate must not start provider transport");
@@ -202,8 +202,8 @@ const gate = buildDirectHeadlessToolClassLiveCandidateGate({
 assert.deepEqual(validateDirectHeadlessToolClassLiveCandidateGate(gate), [], "final live candidate gate should validate");
 assert.equal(gate.status, "passed", "final live candidate gate should pass");
 if (executeFixtures) {
-  assert.equal(gate.eligibleCandidateCount, 5, "executed gate should mark five classes as live-smoke candidates");
-  assert.equal(gate.summary.byGateStatus.eligible_live_candidate, 5, "executed gate eligible count should match");
+  assert.equal(gate.eligibleCandidateCount, 6, "executed gate should mark six classes as live-smoke candidates");
+  assert.equal(gate.summary.byGateStatus.eligible_live_candidate, 6, "executed gate eligible count should match");
   assert.equal(gate.summary.byGateStatus.blocked_projection_only, 10, "executed gate should preserve projection blocks");
   assert.equal(gate.summary.byGateStatus.blocked_unsupported, 3, "executed gate should preserve unsupported blocks");
   assert(gate.rows.filter((row) => row.eligibleForLiveSmoke).every((row) => row.requiredConditions.includes("explicit_live_smoke_mode_required")), "eligible rows should require explicit live smoke mode");
@@ -211,7 +211,7 @@ if (executeFixtures) {
   assert(execSessionRow?.requiredConditions.includes("process_spawn_policy_required"), "stateful exec candidate should require process policy");
 } else {
   assert.equal(gate.eligibleCandidateCount, 0, "default gate should not mark candidates without fixture execution");
-  assert.equal(gate.summary.byGateStatus.blocked_fixture_not_executed, 5, "default gate should block unexecuted fixtures");
+  assert.equal(gate.summary.byGateStatus.blocked_fixture_not_executed, 6, "default gate should block unexecuted fixtures");
 }
 
 const outputPath = writeGateIfRequested(gate, options.output);

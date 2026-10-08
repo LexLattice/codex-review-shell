@@ -615,7 +615,13 @@ async function main() {
       directThreadHarnessGrantId: grant.grantId,
     },
   });
-  sessionStore.updateTurnState(controllerSession.sessionId, providerTurn.turnId, "streaming", {});
+  sessionStore.updateTurnState(controllerSession.sessionId, providerTurn.turnId, "streaming", {
+    admittedProviderContext: controller.captureAdmittedProviderContext(providerTurn, {
+      model: providerTurn.model,
+      input: [{ role: "user", content: [{ type: "input_text", text: providerTurn.input[0].text }] }],
+      instructions: "Original provider instructions for the task-bound process.",
+    }),
+  });
   const providerObligation = sessionStore.addToolObligations(controllerSession.sessionId, providerTurn.turnId, [{
     type: "tool_call_completed",
     itemId: "exec_item",
@@ -640,15 +646,19 @@ async function main() {
   assert(providerBodies[0].tools.some((tool) => tool.name === "exec_command"));
   assert(providerBodies[0].tools.some((tool) => tool.name === "write_stdin"));
   assert.match(JSON.stringify(providerBodies[1]), /stdinAccepted/);
-  assert.match(providerBodies[1].instructions, /exec_command/);
-  assert.match(providerBodies[1].instructions, /write_stdin/);
-  assert.match(providerBodies[1].instructions, new RegExp(providerState.statefulExecSessionId));
-  assert.doesNotMatch(providerBodies[1].instructions, /request only read_file|may request at most one additional read_file/i);
-  assert.match(providerBodies[1].instructions, /final/);
-  assert.match(providerBodies[1].instructions, /exec_command is permitted, including its shell-backed command execution/);
-  assert.match(providerBodies[1].instructions, /write_stdin is permitted only with the exact returned live session ID/);
-  assert.doesNotMatch(providerBodies[1].instructions, /Do not request[^.]*\bshell\b/i);
-  assert.match(providerBodies[1].instructions, /Do not request read_file, workspace, patch, browser, network, MCP/);
+  // Continuations keep the turn's tools (as in Codex): the exec guidance
+  // (a trailing developer message, so the instructions stay cacheable) pins
+  // the live session ID for write_stdin and restricts nothing else.
+  const stdinGuidance = providerBodies[1].input.at(-1);
+  assert.equal(stdinGuidance.role, "developer");
+  const stdinGuidanceText = stdinGuidance.content[0].text;
+  assert.match(stdinGuidanceText, /write_stdin/);
+  assert.match(stdinGuidanceText, new RegExp(providerState.statefulExecSessionId));
+  assert.match(stdinGuidanceText, /any of the declared tools/);
+  assert.match(stdinGuidanceText, /answer when the task is done/);
+  assert.doesNotMatch(stdinGuidanceText, /Do not request|must not be requested|request only read_file|at most one/i);
+  assert.equal(providerBodies[1].instructions, providerBodies[0].instructions, "continuations keep the turn's instructions");
+  assert(providerBodies[1].tools.some((tool) => tool.name === "exec_command"), "exec_command stays declared after write_stdin");
   assert.equal(sessionStore.readTurn(controllerSession.sessionId, providerTurn.turnId).state, "completed");
   assert.equal(providerState.statefulExecResult.status, "running", "interactive provider exec must remain live after the bounded initial yield");
   assert.equal(providerState.statefulExecResult.sessionState, "running");
@@ -665,7 +675,13 @@ async function main() {
       directThreadHarnessGrantId: grant.grantId,
     },
   });
-  sessionStore.updateTurnState(controllerSession.sessionId, delayedProviderTurn.turnId, "streaming", {});
+  sessionStore.updateTurnState(controllerSession.sessionId, delayedProviderTurn.turnId, "streaming", {
+    admittedProviderContext: controller.captureAdmittedProviderContext(delayedProviderTurn, {
+      model: delayedProviderTurn.model,
+      input: [{ role: "user", content: [{ type: "input_text", text: delayedProviderTurn.input[0].text }] }],
+      instructions: "Original provider instructions for the delayed task-bound process.",
+    }),
+  });
   const delayedProviderObligation = sessionStore.addToolObligations(controllerSession.sessionId, delayedProviderTurn.turnId, [{
     type: "tool_call_completed",
     itemId: "delayed_exec_item",
@@ -686,7 +702,11 @@ async function main() {
   assert(delayedProviderState.statefulExecResult.stdoutPreview.includes("delayed-provider"));
   assert.equal(providerBodies.length, 3, "delayed provider exec should produce one additional continuation");
   assert.match(JSON.stringify(providerBodies[2]), /delayed-provider/);
-  assert.match(providerBodies[2].input?.[0]?.content?.[0]?.text || "", /"exitCode":0/);
+  const delayedEvidence = sessionStore.readTurn(controllerSession.sessionId, delayedProviderTurn.turnId)
+    .toolResults.find((result) => result.obligationId === delayedProviderObligation.obligationId);
+  assert.equal(JSON.parse(delayedEvidence.providerOutputText).exitCode, 0);
+  assert(providerBodies[2].input.some((item) => item.type === "function_call_output" && item.output === delayedEvidence.providerOutputText),
+    "the exact successful process result must reach the provider");
   assert.equal(sessionStore.readTurn(controllerSession.sessionId, delayedProviderTurn.turnId).state, "completed");
 
   const failed = manager.start({

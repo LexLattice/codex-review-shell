@@ -1,11 +1,15 @@
 "use strict";
 
 const crypto = require("node:crypto");
-const fs = require("node:fs");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
-const { spawn } = require("node:child_process");
 const { StringDecoder } = require("node:string_decoder");
+const {
+  BASE_COMMAND_ENVIRONMENT_KEYS,
+  LocalChildProcessBackend,
+  statefulExecError,
+} = require("./exec-process-backends");
+const { normalizePtySize } = require("./pty-frames");
 const {
   authorizeDirectThreadHarnessCapability,
   validateDirectThreadHarnessGrant,
@@ -21,7 +25,11 @@ const DIRECT_STATEFUL_EXEC_RESULT_SCHEMA = "direct_stateful_exec_result@1";
 const STATEFUL_EXEC_CAPABILITY_NAMES = Object.freeze(["exec_command", "write_stdin"]);
 const DEFAULT_EXEC_OUTPUT_BUDGET_CHARS = 24_000;
 const DEFAULT_EXEC_PROVIDER_RESULT_BUDGET_CHARS = 12_000;
-const DEFAULT_EXEC_INITIAL_YIELD_MS = 100;
+// Matches Codex unified exec: a command gets up to 10 s to finish before the
+// model sees a running session, so short commands settle in one call instead
+// of forcing a poll round trip through the provider.
+const DEFAULT_EXEC_INITIAL_YIELD_MS = 10_000;
+const MAX_EXEC_YIELD_MS = 30_000;
 const DEFAULT_EXEC_CANCEL_ESCALATION_MS = 200;
 const DEFAULT_EXEC_IDLE_ESCALATION_MS = 200;
 const STATEFUL_EXEC_DISPOSE_TERM_GRACE_MS = 200;
@@ -69,7 +77,10 @@ const SESSION_STATES = new Set([
   "unknown",
 ]);
 const TERMINAL_SESSION_STATES = new Set(["completed", "failed", "cancelled", "timeout"]);
-const TRANSPORT_MODES = new Set(["plain_pipe", "pty_deferred"]);
+const TRANSPORT_MODES = new Set(["plain_pipe", "pty", "pty_deferred"]);
+// Raw terminal output kept per terminal session for people watching it in
+// the Terminal panel (separate from the model's bounded output budget).
+const TERMINAL_REPLAY_BYTES = 256 * 1024;
 const OUTPUT_STREAMS = new Set(["stdout", "stderr", "combined", "system"]);
 const STDIN_POLICIES = new Set(["disabled", "line_input", "eof_only", "blocked_until_policy"]);
 const CLEANUP_STATES = new Set(["not_required", "pending", "completed", "failed", "unknown"]);
@@ -203,7 +214,7 @@ function buildStatefulExecSessionPlan(input = {}) {
     commandClass: boundedString(source.commandClass || "unknown", 80),
     cwdEvidenceKey: boundedString(source.cwdEvidenceKey || source.workspaceEvidenceKey, 180),
     transportMode,
-    ptyModeEnabled: false,
+    ptyModeEnabled: transportMode === "pty",
     plainPipeModeEnabled: transportMode === "plain_pipe",
     sessionState,
     terminal: TERMINAL_SESSION_STATES.has(sessionState),
@@ -517,12 +528,6 @@ function assertStatefulExecSessionSurfaceSafe(surface = {}) {
   return true;
 }
 
-function statefulExecError(code, message) {
-  const error = new Error(message);
-  error.code = code;
-  return error;
-}
-
 function boundedInteger(value, fallback, minimum, maximum) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
@@ -564,23 +569,9 @@ function normalizeShellCommand(value) {
   return text;
 }
 
-function normalizeExecRelativePath(value, label) {
-  const text = normalizeString(value, "").replace(/\\/g, "/");
-  if (!text) return "";
-  if (
-    text.startsWith("/") ||
-    /^[A-Za-z]:\//.test(text) ||
-    text.split("/").includes("..") ||
-    /[\0-\x1f\x7f]/.test(text)
-  ) {
-    throw statefulExecError("direct_stateful_exec_cwd_invalid", `${label} must be a workspace-relative directory.`);
-  }
-  return text.replace(/^\.\/+/, "");
-}
-
 function safeExecEnvironment(extra = {}) {
   const result = {};
-  for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot", "ComSpec", "LANG", "LC_ALL"]) {
+  for (const key of [...BASE_COMMAND_ENVIRONMENT_KEYS, "LANG", "LC_ALL"]) {
     if (process.env[key]) result[key] = process.env[key];
   }
   result.CI = "1";
@@ -617,23 +608,6 @@ function assertExecCommandAllowed(command, allowedCommands) {
   }
 }
 
-function processTreeKill(child, signal = "SIGTERM") {
-  if (!child) return false;
-  let killed = false;
-  if (process.platform !== "win32" && Number.isInteger(child.pid) && child.pid > 0) {
-    try {
-      process.kill(-child.pid, signal);
-      killed = true;
-    } catch (error) {
-      if (!['ESRCH', 'EINVAL'].includes(error?.code)) throw error;
-    }
-  }
-  if (!killed && typeof child.kill === "function" && !child.killed) {
-    try { killed = child.kill(signal) || killed; } catch {}
-  }
-  return killed;
-}
-
 function sessionScopeMatches(record, input = {}) {
   const scope = normalizeExecScope(input, record?.grant || null);
   return (
@@ -645,26 +619,33 @@ function sessionScopeMatches(record, input = {}) {
 }
 
 /**
- * Main-process owner of actual plain-pipe process sessions.  This deliberately
- * lives beside the stateful projection so the projection and execution share
- * one session identity and one exact task/project/environment scope check.
+ * Host-side router for plain-pipe process sessions. It owns session identity,
+ * the exact task/project/environment scope and grant checks, budgets,
+ * timeouts, output admission, and events. Everything that touches the
+ * execution environment (workspace resolution, sandboxing, spawning, tree
+ * kill) belongs to a process backend; see exec-process-backends.js.
  */
 class DirectStatefulExecSessionManager extends EventEmitter {
   constructor(options = {}) {
     super();
-    this.spawnImpl = typeof options.spawnImpl === "function" ? options.spawnImpl : spawn;
     this.grantStore = options.grantStore || null;
-    this.workspaceRootResolver = typeof options.workspaceRootResolver === "function"
-      ? options.workspaceRootResolver
-      : (input = {}) => input.workspaceRoot || input.project?.workspaceRoot || "";
     this.allowedCommands = options.allowedCommands
       ? new Set([...options.allowedCommands].map((value) => String(value).toLowerCase()))
       : null;
+    this.localBackend = new LocalChildProcessBackend({
+      spawnImpl: options.spawnImpl,
+      workspaceRootResolver: options.workspaceRootResolver,
+      sandbox: options.sandbox,
+      workspaceLocalityResolver: options.workspaceLocalityResolver,
+    });
+    this.backendResolver = typeof options.backendResolver === "function"
+      ? options.backendResolver
+      : () => this.localBackend;
     this.defaultIdleTimeoutMs = boundedInteger(options.idleTimeoutMs, DEFAULT_EXEC_IDLE_TIMEOUT_MS, 25, 10 * 60_000);
     this.defaultHardTimeoutMs = boundedInteger(options.hardTimeoutMs, DEFAULT_EXEC_HARD_TIMEOUT_MS, 25, 10 * 60_000);
     this.defaultOutputBudgetChars = boundedInteger(options.outputBudgetChars, DEFAULT_EXEC_OUTPUT_BUDGET_CHARS, 256, MAX_EXEC_OUTPUT_BUDGET_CHARS);
     this.defaultProviderResultBudgetChars = boundedInteger(options.providerResultBudgetChars, DEFAULT_EXEC_PROVIDER_RESULT_BUDGET_CHARS, 128, MAX_EXEC_PROVIDER_RESULT_BUDGET_CHARS);
-    this.initialYieldMs = boundedInteger(options.initialYieldMs, DEFAULT_EXEC_INITIAL_YIELD_MS, 25, 2_000);
+    this.initialYieldMs = boundedInteger(options.initialYieldMs, DEFAULT_EXEC_INITIAL_YIELD_MS, 25, MAX_EXEC_YIELD_MS);
     this.sessions = new Map();
     this.disposed = false;
     this.disposePromise = null;
@@ -738,55 +719,16 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     return { grant, scope, authorization };
   }
 
+  backendFor(input = {}, grant = null) {
+    const backend = this.backendResolver(input, grant);
+    if (!backend || typeof backend.resolveWorkspace !== "function" || typeof backend.planLaunch !== "function" || typeof backend.launch !== "function") {
+      throw statefulExecError("direct_stateful_exec_backend_unavailable", "No process backend is available for this execution environment.");
+    }
+    return backend;
+  }
+
   workspaceFor(input, grant) {
-    const kind = normalizeString(grant?.executionEnvironment?.kind || input.executionEnvironment?.kind, "local");
-    if (kind !== "local") {
-      throw statefulExecError("direct_stateful_exec_environment_not_local", "This slice executes only in the exact selected local workspace environment.");
-    }
-    const rootCandidate = this.workspaceRootResolver(input, grant?.executionEnvironment || {});
-    const root = path.resolve(String(rootCandidate || ""));
-    if (!rootCandidate || !fs.existsSync(root)) {
-      throw statefulExecError("direct_stateful_exec_workspace_unavailable", "The selected local execution environment has no available workspace root.");
-    }
-    const fullAccess = grant?.sandboxMode === "danger-full-access";
-    const requestedCwd = normalizeString(input.cwdRelPath || input.cwd, "");
-    const rel = fullAccess
-      ? requestedCwd.replace(/\\/g, "/")
-      : normalizeExecRelativePath(requestedCwd, "cwd");
-    if (/[\0-\x1f\x7f]/.test(rel)) {
-      throw statefulExecError("direct_stateful_exec_cwd_invalid", "Stateful exec cwd contains control characters.");
-    }
-    const cwd = path.resolve(root, rel || ".");
-    if (fullAccess) {
-      let cwdReal;
-      try {
-        cwdReal = fs.realpathSync(cwd);
-        if (!fs.statSync(cwdReal).isDirectory()) throw new Error("not a directory");
-      } catch (error) {
-        if (error?.code?.startsWith("direct_stateful_exec_")) throw error;
-        throw statefulExecError("direct_stateful_exec_cwd_unavailable", "Stateful exec cwd is unavailable in the selected local environment.");
-      }
-      return { root, cwd: cwdReal, cwdRelPath: path.relative(root, cwdReal).split(path.sep).join("/") || "." };
-    }
-    const relative = path.relative(root, cwd);
-    if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
-      throw statefulExecError("direct_stateful_exec_cwd_outside_workspace", "Stateful exec cwd must remain inside the selected workspace.");
-    }
-    let rootReal;
-    let cwdReal;
-    try {
-      rootReal = fs.realpathSync(root);
-      cwdReal = fs.realpathSync(cwd);
-      const realRelative = path.relative(rootReal, cwdReal);
-      if (realRelative.startsWith(`..${path.sep}`) || realRelative === ".." || path.isAbsolute(realRelative)) {
-        throw statefulExecError("direct_stateful_exec_cwd_outside_workspace", "Stateful exec cwd resolves outside the selected workspace.");
-      }
-      if (!fs.statSync(cwdReal).isDirectory()) throw new Error("not a directory");
-    } catch (error) {
-      if (error?.code?.startsWith("direct_stateful_exec_")) throw error;
-      throw statefulExecError("direct_stateful_exec_cwd_unavailable", "Stateful exec cwd is unavailable in the selected workspace.");
-    }
-    return { root: rootReal, cwd: cwdReal, cwdRelPath: relative.split(path.sep).join("/") };
+    return this.backendFor(input, grant).resolveWorkspace(input, grant);
   }
 
   start(input = {}) {
@@ -802,7 +744,15 @@ class DirectStatefulExecSessionManager extends EventEmitter {
           return arg;
         })
       : []);
-    const workspace = this.workspaceFor(input, grant);
+    const backend = this.backendFor(input, grant);
+    const workspace = backend.resolveWorkspace(input, grant);
+    const sandboxMode = normalizeString(grant?.sandboxMode, "danger-full-access");
+    // Like Codex's exec_command `tty`: the command gets a terminal (24x80
+    // unless sized), and its output is the terminal's.
+    const tty = input.tty === true ? normalizePtySize({ rows: input.rows, cols: input.cols }) : null;
+    // Planning may refuse (for example, no sandbox available); that must
+    // surface as an error before any session exists.
+    const spawnPlan = backend.planLaunch({ sandboxMode, workspace, shellCommand, command, args, tty });
     const stdinPolicy = normalizeEnum(input.stdinPolicy || input.stdinMode, STDIN_POLICIES, "line_input");
     const explicitSessionHandle = normalizeString(input.execSessionId || input.processSessionId || input.sessionHandleId, "");
     const sessionId = explicitSessionHandle
@@ -828,9 +778,16 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       commandPreview: boundedString(commandPreviewFrom({ command, args }), 180),
       cwdRelPath: workspace.cwdRelPath,
       cwd: workspace.cwd,
-      env: safeExecEnvironment(input.env),
+      env: tty ? { ...safeExecEnvironment(input.env), TERM: "xterm-256color" } : safeExecEnvironment(input.env),
       stdinPolicy,
-      transportMode: "plain_pipe",
+      backendId: backend.id,
+      sandboxMode,
+      sandboxLauncher: spawnPlan.launcher,
+      networkAccess: spawnPlan.networkAccess !== false,
+      transportMode: tty ? "pty" : "plain_pipe",
+      tty,
+      terminalReplay: [],
+      terminalReplayBytes: 0,
       sessionState: "starting",
       startedAt: now,
       completedAt: "",
@@ -852,6 +809,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       stderrDecoder: new StringDecoder("utf8"),
       outputDecodersFlushed: false,
       sequence: 0,
+      process: null,
       child: null,
       idleTimer: null,
       hardTimer: null,
@@ -871,15 +829,19 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     record.resolveCompletion = resolveCompletion;
     this.sessions.set(sessionId, record);
     try {
-      const child = this.spawnImpl(command, args, {
+      const handle = backend.launch(spawnPlan, {
         cwd: workspace.cwd,
         env: record.env,
-        shell: Boolean(shellCommand),
-        detached: process.platform !== "win32",
-        windowsHide: true,
-        stdio: ["pipe", "pipe", "pipe"],
+        // Remote backends build the base environment natively in their own
+        // environment and only receive the caller's requested additions.
+        requestedEnv: tty ? { ...(isPlainObject(input.env) ? input.env : {}), TERM: "xterm-256color" } : input.env,
+        project: input.project,
+        sessionId,
       });
-      record.child = child;
+      record.process = handle;
+      // Local backends expose the raw ChildProcess for diagnostics and tests;
+      // remote backends have none.
+      record.child = handle?.child || null;
       record.sessionState = "running";
       this.attachProcess(record);
       this.armTimers(record);
@@ -895,22 +857,41 @@ class DirectStatefulExecSessionManager extends EventEmitter {
 
   attachProcess(record) {
     const onData = (stream, chunk) => {
+      if (record.tty && stream === "stdout") this.recordTerminalBytes(record, chunk);
       const decoder = stream === "stdout" ? record.stdoutDecoder : record.stderrDecoder;
       this.recordOutput(record, stream, decoder.write(chunk));
     };
-    record.child?.stdout?.on("data", (chunk) => onData("stdout", chunk));
-    record.child?.stderr?.on("data", (chunk) => onData("stderr", chunk));
-    record.child?.stdout?.on("error", (error) => {
+    const handle = record.process;
+    if (!handle) return;
+    handle.onStdout((chunk) => onData("stdout", chunk));
+    handle.onStderr((chunk) => onData("stderr", chunk));
+    handle.onStdoutError((error) => {
       this.recordProcessFailure(record, "direct_stateful_exec_stdout_read_failed", error);
     });
-    record.child?.stderr?.on("error", (error) => {
+    handle.onStderrError((error) => {
       this.recordProcessFailure(record, "direct_stateful_exec_stderr_read_failed", error);
     });
-    record.child?.stdin?.on?.("error", (error) => this.handleStdinWriteError(record, error));
-    record.child?.on?.("error", (error) => {
+    handle.onStdinError((error) => this.handleStdinWriteError(record, error));
+    handle.onError((error) => {
       this.recordProcessFailure(record, "direct_stateful_exec_child_error", error);
     });
-    record.child?.on?.("close", (exitCode, signal) => {
+    // Optional hooks for remote backends: output dropped by the executor's
+    // forwarding cap still counts as activity, and a lost executor settles the
+    // session at once (there is no process left to wait for, and it is never
+    // re-run).
+    handle.onActivity?.(() => {
+      if (!record.settled) record.resetIdle?.();
+    });
+    handle.onLost?.((error) => {
+      if (record.settled) return;
+      this.flushOutput(record);
+      this.settle(record, {
+        sessionState: "failed",
+        errorCode: error?.code || "direct_stateful_exec_executor_lost",
+        spawnError: boundedString(error?.message || "The execution environment's executor stopped.", 500),
+      });
+    });
+    handle.onClose((exitCode, signal) => {
       if (record.settled) return;
       this.flushOutput(record);
       if (record.failurePending || record.stdinWriteError) {
@@ -926,6 +907,62 @@ class DirectStatefulExecSessionManager extends EventEmitter {
             : "failed";
       this.settle(record, { sessionState: terminalState, exitCode, signal });
     });
+  }
+
+  // Keeps the newest terminal output for viewers and announces it; the
+  // model's view stays the bounded preview in recordOutput.
+  recordTerminalBytes(record, chunk) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk || ""), "utf8");
+    if (!bytes.length) return;
+    record.terminalReplay.push(bytes);
+    record.terminalReplayBytes += bytes.length;
+    while (record.terminalReplayBytes > TERMINAL_REPLAY_BYTES && record.terminalReplay.length > 1) {
+      record.terminalReplayBytes -= record.terminalReplay.shift().length;
+    }
+    this.emit("terminal-data", {
+      sessionId: record.sessionId,
+      taskId: record.taskId,
+      projectId: record.projectId,
+      data: bytes,
+    });
+  }
+
+  resize(input = {}) {
+    const record = this.exactRecord(input);
+    this.resolveGrant({ ...input, harnessGrant: record.grant, executionEnvironmentDigest: record.executionEnvironmentDigest }, "write_stdin");
+    if (!record.tty || typeof record.process?.resize !== "function") {
+      throw statefulExecError("direct_pty_not_a_terminal", "Only terminal sessions (exec_command with tty) can be resized.");
+    }
+    record.tty = normalizePtySize({ rows: input.rows, cols: input.cols });
+    if (!record.settled) record.process.resize(record.tty.rows, record.tty.cols);
+    return this.publicResult(record, { resized: true });
+  }
+
+  // Terminal sessions for the Terminal panel: the owner's view of what
+  // agents run in a terminal, read-only and outside any grant.
+  terminalSessions(input = {}) {
+    const projectId = normalizeString(input.projectId, "");
+    return [...this.sessions.values()]
+      .filter((record) => record.tty && (!projectId || record.projectId === projectId))
+      .map((record) => ({
+        sessionId: record.sessionId,
+        taskId: record.taskId,
+        threadId: record.threadId,
+        projectId: record.projectId,
+        commandPreview: record.commandPreview,
+        sessionState: record.sessionState,
+        startedAt: record.startedAt,
+        completedAt: record.completedAt,
+        exitCode: record.exitCode,
+        rows: record.tty.rows,
+        cols: record.tty.cols,
+      }));
+  }
+
+  terminalReplay(input = {}) {
+    const record = this.sessions.get(normalizeString(input.sessionId, ""));
+    if (!record?.tty) return null;
+    return Buffer.concat(record.terminalReplay || []);
   }
 
   flushOutput(record) {
@@ -1005,7 +1042,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
   }
 
   requestKill(record, signal) {
-    try { processTreeKill(record.child, signal); } catch (error) {
+    try { record.process?.kill(signal); } catch (error) {
       this.emit("cleanup-error", { sessionId: record.sessionId, code: error?.code || "process_tree_kill_failed" });
     }
   }
@@ -1099,10 +1136,18 @@ class DirectStatefulExecSessionManager extends EventEmitter {
   writeStdin(input = {}) {
     const record = this.exactRecord(input);
     this.resolveGrant({ ...input, harnessGrant: record.grant, executionEnvironmentDigest: record.executionEnvironmentDigest }, "write_stdin");
-    if (!['running', 'stdin_waiting'].includes(record.sessionState) || !record.child?.stdin || record.child.stdin.destroyed) {
+    const text = normalizeExecInput(input.chars ?? input.input ?? input.data ?? "");
+    const emptyPoll = !text && input.eof !== true;
+    if (emptyPoll) {
+      return this.publicResult(record, {
+        emptyPoll: true,
+        stdinAccepted: false,
+        eofRequested: false,
+      });
+    }
+    if (!['running', 'stdin_waiting'].includes(record.sessionState) || !record.process?.stdinWritable()) {
       throw statefulExecError("direct_stateful_exec_session_not_live", "write_stdin requires an exact live process session.");
     }
-    const text = normalizeExecInput(input.chars ?? input.input ?? input.data ?? "");
     if (text && record.stdinPolicy !== "line_input") {
       throw statefulExecError("direct_stateful_exec_stdin_policy_blocked", "The process command class does not permit literal stdin input.");
     }
@@ -1117,8 +1162,8 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       this.handleStdinWriteError(record, error);
     };
     try {
-      if (text) record.child.stdin.write(text, onWriteError);
-      if (input.eof === true && !record.stdinWriteError && !record.settled) record.child.stdin.end(onWriteError);
+      if (text) record.process.writeStdin(text, onWriteError);
+      if (input.eof === true && !record.stdinWriteError && !record.settled) record.process.endStdin(onWriteError);
     } catch (error) {
       synchronousWriteError = error;
       this.handleStdinWriteError(record, error);
@@ -1160,10 +1205,23 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     return record.completion;
   }
 
+  // Returns a session's settled result without writing, so input aimed at a
+  // process that already exited can still report how it ended.
+  settledResult(input = {}, extra = {}) {
+    const record = this.exactRecord(input);
+    this.resolveGrant({ ...input, harnessGrant: record.grant, executionEnvironmentDigest: record.executionEnvironmentDigest }, "write_stdin");
+    return record.settled ? this.publicResult(record, extra) : null;
+  }
+
   async initialYield(input = {}) {
     const record = this.exactRecord(input);
     this.resolveGrant({ ...input, harnessGrant: record.grant, executionEnvironmentDigest: record.executionEnvironmentDigest }, "exec_command");
-    if (record.settled) return this.publicResult(record);
+    const extra = input.resultExtra && typeof input.resultExtra === "object" ? input.resultExtra : {};
+    if (record.settled) return this.publicResult(record, extra);
+    // A silent process waiting for input would hit its idle timeout before the
+    // model ever saw it, so the wait stays well inside that window.
+    const idleCapMs = Number(record.idleTimeoutMs) > 0 ? Math.floor(Number(record.idleTimeoutMs) / 2) : MAX_EXEC_YIELD_MS;
+    const yieldMs = Math.max(25, Math.min(idleCapMs, boundedInteger(input.yieldTimeMs, this.initialYieldMs, 25, MAX_EXEC_YIELD_MS)));
     return new Promise((resolve) => {
       let settled = false;
       let timer = null;
@@ -1175,10 +1233,10 @@ class DirectStatefulExecSessionManager extends EventEmitter {
         resolve(result);
       };
       const onCompleted = (result) => {
-        if (result?.sessionId === record.sessionId) finish(result);
+        if (result?.sessionId === record.sessionId) finish(Object.keys(extra).length ? this.publicResult(record, extra) : result);
       };
       this.on("completed", onCompleted);
-      timer = setTimeout(() => finish(this.publicResult(record)), this.initialYieldMs);
+      timer = setTimeout(() => finish(this.publicResult(record, extra)), yieldMs);
     });
   }
 
@@ -1194,6 +1252,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
         sessionState: TERMINAL_SESSION_STATES.has(source.sessionState) ? source.sessionState : "recovery_required",
         cleanupState: TERMINAL_SESSION_STATES.has(source.sessionState) ? "completed" : "unknown",
         recoveryClass: TERMINAL_SESSION_STATES.has(source.sessionState) ? "terminal_known" : "recovery_required",
+        process: null,
         child: null,
         settled: TERMINAL_SESSION_STATES.has(source.sessionState),
         outputFrames: Array.isArray(source.outputFrames) ? source.outputFrames : [],
@@ -1241,6 +1300,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
   dispose(reason = "stateful_exec_manager_disposed") {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
+    this.localBackend?.disposePrewarmed?.();
     this.disposePromise = (async () => {
       const records = [...this.sessions.values()].filter((record) => !record.settled);
       let sigkillEscalated = false;
@@ -1347,6 +1407,12 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       timedOut: record.timedOut === true,
       cancellationRequested: record.cancellationRequested === true,
       stdinPolicy: record.stdinPolicy || "blocked_until_policy",
+      sandboxMode: record.sandboxMode || "danger-full-access",
+      // A remote handle learns the real value from the executor once the
+      // process starts; the plan only guessed it.
+      networkAccess: typeof record.process?.networkAccess === "boolean"
+        ? record.process.networkAccess
+        : record.networkAccess !== false,
       stdinAccepted: extra.stdinAccepted === true,
       eofRequested: extra.eofRequested === true,
       errorCode: record.errorCode || "",

@@ -326,6 +326,7 @@ try {
       name: `${project.name} · ${workerKey}`,
       repoPath: privateWorkerRoot,
       workspace: { kind: "local", localPath: privateWorkerRoot, label: workerKey },
+      executorPlacement: "dedicated",
     };
     const workerSession = await manager.ensureForProject(privateWorkerProject, {
       workspaceHygiene: false,

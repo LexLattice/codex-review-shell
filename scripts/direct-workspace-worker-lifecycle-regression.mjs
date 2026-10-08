@@ -2901,9 +2901,21 @@ try {
       id: "project_admitted_during_drain",
       repoPath: path.join(temporaryRoot, "late"),
       workspace: { kind: "local", localPath: path.join(temporaryRoot, "late") },
+      executorPlacement: "dedicated",
     }),
     /Workspace backend intake is closed/,
     "drain atomically closes new backend-session admission",
+  );
+  // A project in the same environment would share the draining executor;
+  // attaching it is refused too.
+  await assert.rejects(
+    intakeBarrierManager.ensureForProject({
+      id: "project_attached_during_drain",
+      repoPath: path.join(temporaryRoot, "late"),
+      workspace: { kind: "local", localPath: path.join(temporaryRoot, "late") },
+    }),
+    (error) => error.code === "workspace_backend_manager_intake_closed",
+    "drain refuses attaching a project to a shared executor",
   );
   await assert.rejects(
     intakeBarrierManager.requestForProject(ownedBarrierProject, "readFile", {}),

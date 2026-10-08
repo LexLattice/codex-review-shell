@@ -613,10 +613,18 @@ function resolveConstitutionalMetaRoleRuntimeSelection(input = {}) {
     fail("constitutional_meta_role_runtime_policy_mismatch");
   }
   const catalog = input.catalog || { models: [] };
+  // With the account's live model list, only listed models are offered: a
+  // model only the bundled profile knows about would be refused.
+  const liveList = (Array.isArray(catalog.models) ? catalog.models : [])
+    .some((entry) => entry?.source === "server_model_list");
+  const offered = (model) => {
+    const found = modelDescriptor(catalog, model);
+    return found && (!liveList || found.source === "server_model_list") ? found : null;
+  };
   let selectedCandidate = null;
   let descriptor = null;
   for (const candidate of policy.primaryCandidates) {
-    const observed = modelDescriptor(catalog, candidate.model);
+    const observed = offered(candidate.model);
     if (!observed) continue;
     selectedCandidate = candidate;
     descriptor = observed;
@@ -630,9 +638,9 @@ function resolveConstitutionalMetaRoleRuntimeSelection(input = {}) {
       text(catalog.models?.[0]?.id || catalog.models?.[0]?.model, ""),
     ].filter(Boolean);
     const fallbackModel = fallbackModels.find((candidate) =>
-      modelDescriptor(catalog, candidate)) || "";
+      offered(candidate)) || "";
     if (fallbackModel) {
-      descriptor = modelDescriptor(catalog, fallbackModel);
+      descriptor = offered(fallbackModel);
       selectedCandidate = {
         provider: "chatgpt_direct",
         model: fallbackModel,

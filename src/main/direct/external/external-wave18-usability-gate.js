@@ -273,6 +273,7 @@ function buildCoreArtifacts(context, nowMs) {
     serverIdentityId: "mcp_server_project_fixture",
     resourceUri: "mcp://fixture/resource/image",
     mimeType: "image/png",
+    payload: Buffer.alloc(2048),
     byteCount: 2048,
     callId: "call_wave18_binary_resource",
   });

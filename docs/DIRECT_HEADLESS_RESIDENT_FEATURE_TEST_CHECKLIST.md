@@ -1,6 +1,8 @@
 # Direct Headless Resident Feature Test Checklist
 
-Status: working checklist for live headless validation after Wave 19.
+Status: historical (Wave 19). The live entry points below build their own
+reduced controller or tool loop, not the app's. To test real workflows, use
+`scripts/direct-drive.mjs`; see `DIRECT_AGENT_DRIVEN_TESTING.md`.
 
 Purpose:
 

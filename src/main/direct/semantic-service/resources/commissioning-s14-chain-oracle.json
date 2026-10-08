@@ -1,0 +1,57 @@
+{
+  "schema": "direct_commissioning_preadjudication@1",
+  "law": "docs/DIRECT_SEMANTIC_SERVICE_COMMISSIONING_V1.md",
+  "scope": "Finite fixture topology and explicit missing/stale/incomplete/alternative evidence; no production authority claim.",
+  "cases": [
+    {
+      "snapshotRef": "coherent-chain",
+      "disposition": "SUPPORTS",
+      "reasonCode": "FINITE_CHAIN_CONTIGUOUS"
+    },
+    {
+      "snapshotRef": "broken-occurrence-join",
+      "disposition": "REFUTES",
+      "reasonCode": "CHAIN_TOPOLOGY_INVALID"
+    },
+    {
+      "snapshotRef": "forked-predecessor",
+      "disposition": "REFUTES",
+      "reasonCode": "CHAIN_TOPOLOGY_INVALID"
+    },
+    {
+      "snapshotRef": "repeated-binding",
+      "disposition": "REFUTES",
+      "reasonCode": "CHAIN_TOPOLOGY_INVALID"
+    },
+    {
+      "snapshotRef": "cycle-to-genesis",
+      "disposition": "REFUTES",
+      "reasonCode": "CHAIN_TOPOLOGY_INVALID"
+    },
+    {
+      "snapshotRef": "foreign-entity",
+      "disposition": "REFUTES",
+      "reasonCode": "CHAIN_TOPOLOGY_INVALID"
+    },
+    {
+      "snapshotRef": "missing-lineage",
+      "disposition": "REMANDS",
+      "reasonCode": "INCOMPLETE_OR_MISSING_LINEAGE"
+    },
+    {
+      "snapshotRef": "stale-snapshot",
+      "disposition": "REMANDS",
+      "reasonCode": "STALE_SNAPSHOT"
+    },
+    {
+      "snapshotRef": "insufficient-domain",
+      "disposition": "REMANDS",
+      "reasonCode": "INCOMPLETE_OR_MISSING_LINEAGE"
+    },
+    {
+      "snapshotRef": "open-counterexample",
+      "disposition": "INCONCLUSIVE",
+      "reasonCode": "ALTERNATIVE_CHAIN_PRESENT"
+    }
+  ]
+}

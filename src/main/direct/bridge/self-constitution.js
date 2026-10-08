@@ -381,6 +381,9 @@ function compileDirectSelfConstitutionSnapshot(input = {}) {
       projectId,
       ...workspaceConstitution(project, session),
     },
+    executionEnvironment: isPlainObject(input.executionEnvironment)
+      ? { ...input.executionEnvironment, rawPathIncluded: false }
+      : null,
     capabilities: {
       potentialToolNames: potentialToolNames(input),
       declaredThisTurn: declaredToolNames(input),
@@ -547,11 +550,15 @@ function renderDirectSelfConstitutionInstructions(snapshot = {}) {
     ].filter(Boolean);
     return `${entry.roleId}[${dimensions.length ? dimensions.join(",") : "inherit request then parent"}]`;
   });
+  const environment = snapshot.executionEnvironment;
   const workspaceSentence = binding.bindingKind === "reasoning_only"
     ? "This turn has no workspace binding."
-    : `The active workspace is a ${binding.bindingKind} on the ${binding.substrateKind} substrate; its persistence is ${binding.persistence}.`;
+    : `The active workspace is a ${binding.bindingKind} on the ${binding.substrateKind} substrate; its persistence is ${binding.persistence}.${environment ? ` Its tools run natively in ${environment.environmentKind}${environment.distro ? ` (${environment.distro})` : ""} with the ${environment.shell?.name || "unknown"} shell and ${environment.pathStyle} paths under the ${environment.accessProfile} access profile.` : ""}`;
+  // No digest here: the digest changes every turn, and anything per-turn in
+  // the instructions defeats the prompt cache for the whole request. The
+  // controller sends it as a separate, trailing developer message.
   return [
-    `Authoritative Direct self constitution (${snapshot.digest}).`,
+    "Authoritative Direct self constitution.",
     `You are the ${snapshot.identity.roleId} role in the ${snapshot.identity.laneKind} lane for project ${snapshot.identity.projectId}.`,
     workspaceSentence,
     "Treat that workspace statement as authoritative: never describe a persistent project checkout as disposable, temporary, or isolated unless this snapshot says so.",

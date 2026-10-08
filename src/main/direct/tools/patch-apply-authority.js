@@ -500,13 +500,19 @@ async function executeApprovedPatchApplyObligation(options = {}) {
     }, {
       ...options,
       expectedExecutionClaimId: claim.claimId,
-      nextTurnState: "failed",
-      turnPatch: {
-        error: {
-          code: errorOutcome.status === "patch_execution_ambiguous" ? "patch_execution_ambiguous" : failure.error.code,
-          message: failure.error.message,
-        },
-      },
+      // A caller that hands the failure back to the model keeps the turn
+      // running; otherwise the failure ends it.
+      ...(options.continueOnFailure === true
+        ? { nextTurnState: "tool_waiting" }
+        : {
+            nextTurnState: "failed",
+            turnPatch: {
+              error: {
+                code: errorOutcome.status === "patch_execution_ambiguous" ? "patch_execution_ambiguous" : failure.error.code,
+                message: failure.error.message,
+              },
+            },
+          }),
     });
     return {
       reused: false,

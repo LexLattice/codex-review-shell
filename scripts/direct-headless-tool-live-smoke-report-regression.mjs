@@ -125,7 +125,7 @@ assert.equal(planOnlyReport.status, "passed", "plan-only live smoke report shoul
 assert.equal(planOnlyReport.liveSmokePassedCount, 0, "plan-only report must not claim live smoke passed");
 assert.equal(planOnlyReport.providerTransportStarted, false, "plan-only report must not start provider transport");
 assert.equal(planOnlyReport.liveSmokeStartedByRunner, false, "plan-only report must not start live smoke");
-assert.equal(planOnlyReport.summary.bySmokeStatus.blocked_by_candidate_gate, 18, "validate-only gate rows should stay blocked from live smoke");
+assert.equal(planOnlyReport.summary.bySmokeStatus.blocked_by_candidate_gate, 19, "validate-only gate rows should stay blocked from live smoke");
 
 const executedRealismReport = buildDirectHeadlessToolClassRealismReport({
   pack,
@@ -143,7 +143,7 @@ const candidateGate = buildDirectHeadlessToolClassLiveCandidateGate({
   nowMs: 0,
 });
 assert.deepEqual(validateDirectHeadlessToolClassLiveCandidateGate(candidateGate), [], "candidate gate should validate");
-assert.equal(candidateGate.eligibleCandidateCount, 5, "fixture-proven gate should have five candidates");
+assert.equal(candidateGate.eligibleCandidateCount, 6, "fixture-proven gate should have six candidates");
 
 const missingOptInReport = buildDirectHeadlessToolClassLiveSmokeReport({
   candidateGate,
@@ -172,7 +172,7 @@ const explicitPlanOnlyReport = buildDirectHeadlessToolClassLiveSmokeReport({
 assert.deepEqual(validateDirectHeadlessToolClassLiveSmokeReport(explicitPlanOnlyReport), [], "explicit plan-only report should validate");
 assert.equal(explicitPlanOnlyReport.executionMode, "plan_only", "explicit plan-only request should override supplied execute smoke evidence");
 assert.equal(explicitPlanOnlyReport.liveSmokePassedCount, 0, "plan-only request must not claim supplied live smoke evidence");
-assert.equal(explicitPlanOnlyReport.summary.bySmokeStatus.live_smoke_not_requested, 5, "plan-only request should leave eligible rows unexecuted");
+assert.equal(explicitPlanOnlyReport.summary.bySmokeStatus.live_smoke_not_requested, 6, "plan-only request should leave eligible rows unexecuted");
 
 const missingEvidenceReport = buildDirectHeadlessToolClassLiveSmokeReport({
   candidateGate,
@@ -187,7 +187,7 @@ const missingEvidenceReport = buildDirectHeadlessToolClassLiveSmokeReport({
 assert.deepEqual(validateDirectHeadlessToolClassLiveSmokeReport(missingEvidenceReport), [], "missing-evidence report should remain structurally valid");
 assert.equal(missingEvidenceReport.status, "failed", "executed smoke without evidence refs should fail");
 assert.equal(missingEvidenceReport.liveSmokePassedCount, 0, "executed smoke without evidence refs must not pass rows");
-assert.equal(missingEvidenceReport.summary.bySmokeStatus.live_smoke_failed, 5, "missing evidence should fail each eligible smoke row");
+assert.equal(missingEvidenceReport.summary.bySmokeStatus.live_smoke_failed, 6, "missing evidence should fail each eligible smoke row");
 assert(
   missingEvidenceReport.rows
     .filter((row) => row.eligibleForLiveSmoke)
@@ -216,15 +216,15 @@ const report = buildDirectHeadlessToolClassLiveSmokeReport({
 assert.deepEqual(validateDirectHeadlessToolClassLiveSmokeReport(report), [], "final live smoke report should validate");
 if (executeLiveSmoke) {
   assert.equal(report.status, "passed", "executed live smoke report should pass with supplied passing evidence");
-  assert.equal(report.liveSmokePassedCount, 5, "executed live smoke report should pass all five candidates");
-  assert.equal(report.summary.bySmokeStatus.live_smoke_passed, 5, "executed live smoke pass count should match");
+  assert.equal(report.liveSmokePassedCount, 6, "executed live smoke report should pass all six candidates");
+  assert.equal(report.summary.bySmokeStatus.live_smoke_passed, 6, "executed live smoke pass count should match");
   assert.equal(report.summary.bySmokeStatus.blocked_by_candidate_gate, 13, "executed live smoke should preserve blocked rows");
   assert.equal(report.providerTransportStarted, false, "fixture-supplied smoke evidence must not start provider transport");
   assert.equal(report.promotionGranted, false, "live smoke success must not grant promotion");
 } else {
   assert.equal(report.status, "passed", "default report should pass as a plan-only report");
   assert.equal(report.liveSmokePassedCount, 0, "default report should not pass smoke rows");
-  assert.equal(report.summary.bySmokeStatus.live_smoke_not_requested, 5, "default report should leave candidates unexecuted");
+  assert.equal(report.summary.bySmokeStatus.live_smoke_not_requested, 6, "default report should leave candidates unexecuted");
   assert.equal(report.summary.bySmokeStatus.blocked_by_candidate_gate, 13, "default report should preserve blocked rows");
 }
 

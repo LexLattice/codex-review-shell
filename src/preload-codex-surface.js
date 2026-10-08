@@ -32,6 +32,8 @@ const codexSurfaceApi = {
   updateRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:update", request || {}),
   refreshDirectRuntimeReadiness: (projectId, threadId = "") =>
     ipcRenderer.invoke("direct-runtime:refresh-readiness", { projectId, threadId }),
+  testDirectModel: (projectId, threadId = "") =>
+    ipcRenderer.invoke("direct-runtime:test-model", { projectId, threadId }),
   setDirectWorkbenchRuntimePath: (projectId, runtimePath, clientOperationId = "") =>
     ipcRenderer.invoke("direct-workbench:set-runtime-path", { projectId, runtimePath, clientOperationId }),
   getDirectImplementationLaneUiStatus: (projectId) => ipcRenderer.invoke("direct-ui:implementation-status", { projectId }),
@@ -347,6 +349,10 @@ if (directWorkbenchPreload) {
       ipcRenderer.invoke("direct-usage:overview", { ...options, projectId }),
     readDirectWorkbenchProjectDirectory: () =>
       ipcRenderer.invoke("direct-workbench:project-directory"),
+    listDirectWorkbenchEnvironments: () =>
+      ipcRenderer.invoke("direct-workbench:environments"),
+    browseDirectWorkbenchEnvironmentFolder: (payload = {}) =>
+      ipcRenderer.invoke("direct-workbench:browse-environment-folder", payload),
     readDirectWorkbenchProjectBindingDraft: (payload = {}) =>
       ipcRenderer.invoke("direct-workbench:project-binding-draft", payload),
     mutateDirectWorkbenchProjectBinding: (payload = {}) =>
@@ -375,6 +381,19 @@ if (directWorkbenchPreload) {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("direct-workbench:project-directory-event", listener);
       return () => ipcRenderer.removeListener("direct-workbench:project-directory-event", listener);
+    },
+    // Terminal panel: the owner's shells in the active project, and agents'
+    // terminal sessions (read-only).
+    listDirectTerminals: () => ipcRenderer.invoke("direct-terminal:list"),
+    createDirectTerminal: (rows, cols) => ipcRenderer.invoke("direct-terminal:create", { rows, cols }),
+    writeDirectTerminal: (terminalId, data) => ipcRenderer.invoke("direct-terminal:write", { terminalId, data }),
+    resizeDirectTerminal: (terminalId, rows, cols) => ipcRenderer.invoke("direct-terminal:resize", { terminalId, rows, cols }),
+    closeDirectTerminal: (terminalId) => ipcRenderer.invoke("direct-terminal:close", { terminalId }),
+    replayDirectTerminal: (terminalId, kind = "user") => ipcRenderer.invoke("direct-terminal:replay", { terminalId, kind }),
+    onDirectTerminalEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("direct-terminal:event", listener);
+      return () => ipcRenderer.removeListener("direct-terminal:event", listener);
     },
   });
   for (const key of Object.keys(codexSurfaceApi)) {

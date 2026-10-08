@@ -71,6 +71,19 @@ const {
 } = require("../tools/read-only-authority");
 const { normalizeCodexBinding } = require("../runtime/runtime-status");
 const {
+  applyEnvironmentToToolSchemas,
+  renderExecutionEnvironmentInstructions,
+  resolveExecutionEnvironmentFacts,
+  selfConstitutionEnvironmentProjection,
+} = require("../runtime/execution-environment-contract");
+const {
+  delegationTargetsDescription,
+  listDelegationTargets,
+  lowerAccessProfile,
+  projectEnvironment: delegationProjectEnvironment,
+  resolveDelegationTarget,
+} = require("../agents/cross-environment-delegation");
+const {
   buildAgentGraph,
   buildWorkerGraphAlignment,
   validateWorkerGraphAlignment,
@@ -82,6 +95,7 @@ const {
   issueWorkspaceParentAuthorityFromDelegationPolicy,
 } = require("../agents/workspace-worker-delegation-policy");
 const { buildDirectThreadDeckProjection } = require("../thread/thread-deck");
+const { scanTextForRawExposure } = require("../thread/renderer-transcript-projection");
 const {
   assertDirectAttachmentCapabilityProjectionSafe,
   assertDirectAttachmentSubmitPacketSafe,
@@ -116,17 +130,57 @@ const {
   validateDirectProviderMetadataProfile,
 } = require("../provider/metadata-adapter");
 const {
+  DIRECT_ACCESS_PROFILES,
   authorizeDirectThreadHarnessCapability,
   capabilityNames: harnessGrantCapabilityNames,
+  grantAccessProfile,
   inheritDirectThreadHarnessGrant,
+  normalizeAccessProfile,
   validateDirectThreadHarnessGrant,
 } = require("../authority/direct-thread-harness-grant");
 const {
   STATEFUL_EXEC_CAPABILITY_NAMES,
 } = require("../tools/stateful-exec-session");
+const { workspaceExecutesLocally } = require("../tools/exec-sandbox");
+
+// Tools withheld from each narrower profile.  Commands in those profiles go
+// through exec_command, which runs inside the sandbox; run_command would
+// bypass it through the workspace backend.
+const ACCESS_PROFILE_EXCLUDED_CAPABILITIES = Object.freeze({
+  full_access: new Set(),
+  workspace: new Set(["run_command"]),
+  read_only: new Set(["run_command", "apply_patch"]),
+});
+// Exec failures the model can recover from (or explain to the user) are
+// returned as tool results instead of failing the whole turn.
+const USER_ACTIONABLE_STATEFUL_EXEC_ERRORS = new Set([
+  "direct_stateful_exec_sandbox_unavailable",
+  "direct_stateful_exec_environment_not_local",
+  "direct_stateful_exec_workspace_unavailable",
+  "direct_stateful_exec_cwd_invalid",
+  "direct_stateful_exec_cwd_outside_workspace",
+  "direct_stateful_exec_cwd_unavailable",
+  "direct_stateful_exec_command_invalid",
+  "direct_stateful_exec_shell_blocked",
+  "direct_stateful_exec_command_not_admitted",
+  "direct_stateful_exec_argument_invalid",
+  "direct_stateful_exec_input_invalid",
+]);
+
+function accessProfileCapabilityNames(profile, names = []) {
+  const excluded = ACCESS_PROFILE_EXCLUDED_CAPABILITIES[profile] || ACCESS_PROFILE_EXCLUDED_CAPABILITIES.read_only;
+  return [...new Set(names)].filter((name) => !excluded.has(name));
+}
 
 const DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text";
-const DIRECT_SERVICE_TIERS = new Set(["fast", "flex"]);
+// "priority" is Codex's Fast; "fast" is its legacy alias and is stored as
+// "priority".
+const DIRECT_SERVICE_TIERS = new Set(["priority", "fast", "flex"]);
+
+function canonicalDirectServiceTier(value) {
+  const tier = normalizeString(value, "");
+  return tier.toLowerCase() === "fast" ? "priority" : tier;
+}
 const DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE = "direct_fork_preview_start_live_text@1";
 const DIRECT_MERGE_PREVIEW_START_REQUEST_SHAPE = "direct_merge_preview_start_live_text@1";
 const DIRECT_PRUNE_PREVIEW_START_REQUEST_SHAPE = "direct_prune_preview_start_live_text@1";
@@ -174,48 +228,95 @@ const NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES = Object.freeze([
   "wait_agent",
 ]);
 const NATIVE_SUB_AGENT_RUNTIME_TOOL_SET = new Set(NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES);
-const MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS = 32;
+// Every continuation offers the turn's full, grant-authorized tool set and
+// has no step cap (as in Codex); these only add what the last result means.
 const NATIVE_AGENT_RUNTIME_CONTINUATION_INSTRUCTIONS = [
-  "You are Codex orchestrating a Direct child-agent lifecycle after a resident agent-runtime result.",
+  "You are Codex continuing the user's turn after a child-agent result.",
   "Treat a spawn result in running, queued, or accepted state as launch acknowledgement only, never as evidence that the delegated task completed.",
   "Re-read the current user request and preserve its completion contract.",
-  "If the request requires child output, terminal state, inspection, or aggregated results, request exactly one supported next agent-runtime tool call: use wait_agent for pending children, then inspect_agent only when inspection evidence is requested or necessary.",
-  "If a bounded wait returns while a required child is still nonterminal, request another bounded wait rather than answering final.",
-  "Answer final only after the requested child lifecycle evidence is available, unless the user explicitly requested a background-only launch.",
+  "If the request needs child output, terminal state, inspection, or aggregated results, use wait_agent for pending children, and inspect_agent when inspection evidence is requested or necessary.",
+  "If a bounded wait returns while a required child is still nonterminal, wait again rather than answering final, unless the user asked for a background-only launch.",
   "Never invent child output, terminal state, continuation counts, transport counts, or epistemic-capture status.",
-  "Do not request workspace, shell, patch, browser, network, MCP, or unrelated tools in this continuation lane.",
+  "Any of the declared tools may be used as the task requires.",
 ].join(" ");
-function statefulExecContinuationInstructions(capabilityNames = [], sessionId = "") {
-  const allowed = [...new Set((Array.isArray(capabilityNames) ? capabilityNames : [])
-    .map((name) => normalizeString(name, ""))
-    .filter((name) => STATEFUL_EXEC_CAPABILITY_NAMES.includes(name)))];
-  const declared = allowed.length ? allowed.join(", ") : "no further stateful-exec tool";
+function statefulExecContinuationInstructions(_capabilityNames = [], sessionId = "") {
   const session = normalizeString(sessionId, "");
   return [
-    "You are Codex continuing after an owner-authorized stateful exec result.",
-    `Only the currently declared and granted stateful-exec family is available: ${declared}.`,
+    "You are Codex continuing the user's turn after a command result.",
     session
-      ? `If requesting write_stdin, use exactly the returned live session ID ${session}; never invent, substitute, or omit the session ID.`
-      : "If requesting write_stdin, use exactly the returned live session ID from the quoted stateful result; never invent or substitute a session ID.",
-    "Use the quoted stateful result as evidence and preserve its terminal or live state.",
-    "If no further stateful call is needed, answer final.",
-    allowed.includes("exec_command")
-      ? "exec_command is permitted, including its shell-backed command execution."
-      : "exec_command is not declared and must not be requested.",
-    allowed.includes("write_stdin")
-      ? "write_stdin is permitted only with the exact returned live session ID."
-      : "write_stdin is not declared and must not be requested.",
-    "Do not request read_file, workspace, patch, browser, network, MCP, or any undeclared or unrelated tool.",
-    "Never invent process, session, output, completion, or continuation state.",
+      ? `If you use write_stdin for this command, use exactly its live session ID ${session}; never invent, substitute, or omit the session ID.`
+      : "If you use write_stdin, use exactly the returned live session ID from the quoted result; never invent or substitute a session ID.",
+    "Use the quoted result as evidence and preserve its terminal or live state; never invent process, session, output, or completion state.",
+    "Keep working on the user's request with any of the declared tools, as many calls as it takes, and answer when the task is done.",
   ].join(" ");
 }
 const SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS = [
-  "You are Codex continuing after an owner-issued inspect_self_constitution result.",
+  "You are Codex continuing the user's turn after an inspect_self_constitution result.",
   "Use the returned snapshot as the authoritative account of your current role, project/workspace binding, persistence, declared versus potential capabilities, authority state, provider readiness, context binding, and delegation capacity.",
   "Distinguish potential, selected, authorized, and executed capability states exactly as represented.",
   "Do not use stale generic prompt prose to override the snapshot, and do not invent unavailable runtime facts.",
-  "Answer the user's introspection question directly without requesting another tool.",
+  "The snapshot is current as of this turn; inspecting again returns the same account, so answer from it.",
+  "If the user's request needs other work, carry it out with the declared tools; otherwise answer directly.",
 ].join(" ");
+// Bounds for earlier turns replayed as history items.
+const HISTORY_BUDGET_CHARS = 60_000;
+const HISTORY_TOOL_OUTPUT_CHARS = 2_000;
+const HISTORY_ARGUMENTS_CHARS = 8_000;
+const HISTORY_TEXT_CHARS = 16_000;
+
+// Text going back to the provider as history: bounded, and withheld if the
+// exposure scan blocks it (secrets, raw backend frames).
+function historyText(text = "", limit = HISTORY_TEXT_CHARS) {
+  const value = String(text ?? "");
+  if (scanTextForRawExposure(value).some((finding) => finding.severity === "block")) {
+    return "[withheld from history: failed the exposure scan]";
+  }
+  return value.length > limit ? `${value.slice(0, limit)}\n[… truncated in history]` : value;
+}
+
+function historyToolOutput(toolName = "", outputText) {
+  if (typeof outputText !== "string" || !outputText) return JSON.stringify({ status: "no_result_recorded" });
+  if (toolName === DIRECT_SELF_CONSTITUTION_TOOL_NAME) {
+    return JSON.stringify({ kind: "inspect_self_constitution_result", status: "completed", note: "Snapshot omitted from history; call inspect_self_constitution for the current one." });
+  }
+  return historyText(outputText, HISTORY_TOOL_OUTPUT_CHARS);
+}
+
+// request_permissions, Direct's form of Codex's tool: the model asks the
+// owner to raise the thread's Access for this turn or for the thread.
+const REQUEST_PERMISSIONS_TOOL_NAME = "request_permissions";
+const ACCESS_PROFILE_RANK = Object.freeze({ read_only: 0, workspace: 1, full_access: 2 });
+function requestPermissionsToolSchema(currentProfile = "") {
+  const currentRank = ACCESS_PROFILE_RANK[currentProfile] ?? ACCESS_PROFILE_RANK.full_access;
+  const higher = Object.keys(ACCESS_PROFILE_RANK).filter((profile) => ACCESS_PROFILE_RANK[profile] > currentRank);
+  if (!higher.length) return null;
+  return {
+    type: "function",
+    name: REQUEST_PERMISSIONS_TOOL_NAME,
+    description: [
+      "Ask the user to raise this thread's access and wait for the answer.",
+      "Workspace: edit files in the project and run commands in a sandbox. Full access: no sandbox, the whole machine and the network.",
+      "The user can allow it for this turn or for the rest of the thread, or decline; with access granted, later tool calls in this turn use it.",
+      "Use it only when the task needs access the thread doesn't have (for example the network, files outside the project, or editing in a Read only thread).",
+    ].join(" "),
+    parameters: {
+      type: "object",
+      properties: {
+        access: { type: "string", enum: higher, description: "The access level to ask for." },
+        scope: { type: "string", enum: ["turn", "thread"], description: "What you suggest; the user decides." },
+        reason: { type: "string", description: "Short reason shown to the user." },
+      },
+      required: ["access", "reason"],
+      additionalProperties: false,
+    },
+  };
+}
+function withPermissionsTool(tools, grant) {
+  if (!Array.isArray(tools) || !isPlainObject(grant)) return tools;
+  if (tools.some((tool) => normalizeString(tool?.name || tool?.function?.name, "") === REQUEST_PERMISSIONS_TOOL_NAME)) return tools;
+  const schema = requestPermissionsToolSchema(grantAccessProfile(grant));
+  return schema ? [...tools, schema] : tools;
+}
 const EXTERNAL_DISCOVERY_TOOL_NAMES = Object.freeze([
   "tool_search",
   "list_mcp_resources",
@@ -238,25 +339,40 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function liveModelEvidenceBlockerReason(reason = "") {
-  const normalized = normalizeString(reason, "");
-  if ([
-    "expired",
-    "missing",
-    "scope_mismatch",
-    "candidate",
-    "unstable",
-    "rejected",
-  ].includes(normalized)) {
-    return `live_probe_evidence_${normalized}`;
-  }
-  return normalized;
+// The account's /models catalog as the picker sees it: listed (not hidden)
+// models from the server, in priority order, and the default among them.
+function providerModelCatalogView(metadata = {}) {
+  const profile = isPlainObject(metadata?.profile) ? metadata.profile : {};
+  const fromServer = normalizeString(profile.modelCatalog?.source, "") === "server_model_list";
+  const items = fromServer && Array.isArray(profile.modelCatalog?.items) ? profile.modelCatalog.items : [];
+  const listed = items
+    .filter((item) => isPlainObject(item) && item.hidden !== true && normalizeString(item.model || item.id, ""))
+    .map((item) => ({ id: normalizeString(item.id, ""), model: normalizeString(item.model || item.id, "") }));
+  const declaredDefault = normalizeString(profile.modelCatalog?.defaultModel, "");
+  return {
+    available: listed.length > 0,
+    state: normalizeString(metadata?.cacheState, "missing"),
+    listed,
+    defaultModel: listed.some((item) => item.model === declaredDefault || item.id === declaredDefault)
+      ? declaredDefault
+      : normalizeString(listed[0]?.model, ""),
+  };
+}
+
+/**
+ * A clear message when the provider refused the turn's model (for example
+ * a model this account or client can't use), or "" for other failures.
+ */
+function modelRejectionMessage(error = {}, httpStatus = 0, model = "") {
+  const status = Number(httpStatus) || Number(error?.status) || Number(/^http_(\d{3})$/.exec(normalizeString(error?.code, ""))?.[1]) || 0;
+  const message = normalizeString(error?.message, "");
+  if (![400, 403, 404].includes(status) || !/\bmodel\b/i.test(`${message} ${normalizeString(error?.code, "")}`)) return "";
+  const reason = (message || `HTTP ${status}`).replace(/[.\s]*$/, ".");
+  return `The provider refused model ${model || "(unknown)"}: ${reason} The model list is being refreshed; pick another model to continue.`;
 }
 
 function liveTextReadinessErrorMessage(status = {}) {
-  if (status.reason === "live_probe_evidence_expired") {
-    return "Direct live-model capability evidence expired. Run the scoped Direct live probe before starting another turn.";
-  }
+  if (status.status === "auth_required") return "Direct isn't signed in. Sign in to ChatGPT, then try again.";
   return status.reason || status.status;
 }
 
@@ -707,21 +823,25 @@ function sanitizeStatus(status = {}) {
 function buildDirectLiveTextCapabilities(status = {}, options = {}) {
   const ready = status.status === "ready";
   const harnessGrant = isPlainObject(options.harnessGrant) ? options.harnessGrant : null;
-  const fullAccess = ready && Boolean(harnessGrant && validateDirectThreadHarnessGrant(harnessGrant, { requireCurrent: true }).length === 0);
+  // `granted` is any current task grant; `fullAccess` keeps its historical
+  // meaning of the unrestricted profile only.
+  const granted = ready && Boolean(harnessGrant && validateDirectThreadHarnessGrant(harnessGrant, { requireCurrent: true }).length === 0);
+  const accessProfile = granted ? grantAccessProfile(harnessGrant) : "";
+  const fullAccess = granted && accessProfile === "full_access";
   const taskId = normalizeString(options.taskId, "");
   const readOnlyToolReady = ready && status.readOnlyToolContinuation?.status === "ready";
   const patchApplyReady = ready && status.patchApplyContinuation?.status === "ready";
   const commandExecutionReady = ready && status.commandExecutionContinuation?.status === "ready";
   const patchApplyApprovalReady = ready && scopedProofApprovalReady(status.patchApplyContinuation);
   const commandExecutionApprovalReady = ready && scopedProofApprovalReady(status.commandExecutionContinuation);
-  const statefulExecGranted = fullAccess &&
+  const statefulExecGranted = granted &&
     harnessGrantCapabilityNames(harnessGrant).includes("exec_command");
   const stdinGranted = statefulExecGranted &&
     harnessGrantCapabilityNames(harnessGrant).includes("write_stdin");
   const toolMethods = [];
-  if (readOnlyToolReady && !fullAccess) toolMethods.push("direct/tool/readOnly/requestApproval");
-  if (patchApplyReady && !fullAccess) toolMethods.push("direct/tool/patchApply/requestApproval");
-  if (commandExecutionReady && !fullAccess) toolMethods.push("direct/tool/command/requestApproval");
+  if (readOnlyToolReady && !granted) toolMethods.push("direct/tool/readOnly/requestApproval");
+  if (patchApplyReady && !granted) toolMethods.push("direct/tool/patchApply/requestApproval");
+  if (commandExecutionReady && !granted) toolMethods.push("direct/tool/command/requestApproval");
   const attachmentCapability = buildDirectAttachmentCapabilityProjection({
     runtimeKind: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
     workspaceKind: normalizeString(status.workspaceKind || status.workspace?.kind, ""),
@@ -730,8 +850,12 @@ function buildDirectLiveTextCapabilities(status = {}, options = {}) {
     providerAttachmentCapability: status.providerAttachmentCapability,
   });
   const metadata = isPlainObject(status.providerMetadataProfile) ? status.providerMetadataProfile : null;
-  const metadataFresh = !["stale", "missing", "failed", "invalid"].includes(normalizeString(status.providerMetadataCacheState, ""));
-  const modelCatalogAvailable = ready && metadataFresh && metadata?.modelCatalog?.status === "available" &&
+  // Listing doesn't depend on the selected model or readiness, and a stale
+  // catalog from the same account is still offered while a refresh runs (as
+  // Codex does).
+  const metadataUsable = !["missing", "failed", "invalid"].includes(normalizeString(status.providerMetadataCacheState, ""));
+  const metadataFresh = metadataUsable && normalizeString(status.providerMetadataCacheState, "") !== "stale";
+  const modelCatalogAvailable = metadataUsable && metadata?.modelCatalog?.status === "available" &&
     Array.isArray(metadata.modelCatalog.items) && metadata.modelCatalog.items.length > 0;
   const hostedToolNames = providerHostedToolNames(status);
   const externalToolNames = externalPromotedToolNames(status);
@@ -744,8 +868,9 @@ function buildDirectLiveTextCapabilities(status = {}, options = {}) {
     projectId: normalizeString(options.projectId, ""),
     grantId: normalizeString(harnessGrant?.grantId, ""),
     grantRevision: Number(harnessGrant?.grantRevision || 0),
-    current: fullAccess,
-    declaredToolNames: fullAccess ? harnessGrantCapabilityNames(harnessGrant) : [],
+    current: granted,
+    accessProfile,
+    declaredToolNames: granted ? harnessGrantCapabilityNames(harnessGrant) : [],
     rawGrantIncluded: false,
     rawProviderPayloadIncluded: false,
     rawPathIncluded: false,
@@ -802,7 +927,7 @@ function buildDirectLiveTextCapabilities(status = {}, options = {}) {
     },
     serviceTier: {
       canSetNextTurn: ready,
-      availableTiers: [...DIRECT_SERVICE_TIERS],
+      availableTiers: [...DIRECT_SERVICE_TIERS].filter((tier) => tier === canonicalDirectServiceTier(tier)),
     },
     usage: {
       canReadRateLimits: modelCatalogAvailable && metadataFresh && Boolean(metadata?.usage?.quota),
@@ -812,19 +937,23 @@ function buildDirectLiveTextCapabilities(status = {}, options = {}) {
       canReadStatus: ready && status.environmentStatusAvailable === true,
     },
     authority: {
-      commandApproval: fullAccess ? false : commandExecutionApprovalReady,
-      fileChangeApproval: fullAccess ? false : patchApplyApprovalReady,
+      commandApproval: granted ? false : commandExecutionApprovalReady,
+      fileChangeApproval: granted ? false : patchApplyApprovalReady,
       permissionsApproval: false,
       approvalPolicies: [
-        ...(fullAccess ? ["never"] : []),
+        ...(granted ? ["never"] : []),
         ...(readOnlyToolReady ? ["explicit-read-only-tool"] : []),
         ...(patchApplyApprovalReady ? ["explicit-patch-apply"] : []),
         ...(commandExecutionApprovalReady ? ["explicit-command-execution"] : []),
       ],
-      sandboxModes: fullAccess ? ["danger-full-access"] : [],
-      readOnlyToolApproval: fullAccess ? false : readOnlyToolReady,
-      patchApplyApproval: fullAccess ? false : patchApplyApprovalReady,
-      commandExecutionApproval: fullAccess ? false : commandExecutionApprovalReady,
+      sandboxModes: granted ? [harnessGrant.sandboxMode] : [],
+      readOnlyToolApproval: granted ? false : readOnlyToolReady,
+      patchApplyApproval: granted ? false : patchApplyApprovalReady,
+      commandExecutionApproval: granted ? false : commandExecutionApprovalReady,
+      taskGrantCurrent: granted,
+      taskAccessProfile: accessProfile,
+      taskAccessProfiles: Object.keys(DIRECT_ACCESS_PROFILES),
+      taskNetworkAccess: granted ? DIRECT_ACCESS_PROFILES[accessProfile]?.networkAccess === true : false,
       fullAccessTaskProfile: fullAccess,
       fullAccessGrantId: normalizeString(harnessGrant?.grantId, ""),
       fullAccessGrantRevision: Number(harnessGrant?.grantRevision || 0),
@@ -846,7 +975,8 @@ function buildDirectLiveTextCapabilities(status = {}, options = {}) {
           projectId: normalizeString(options.projectId, ""),
           grantId: normalizeString(harnessGrant?.grantId, ""),
           grantRevision: Number(harnessGrant?.grantRevision || 0),
-          current: fullAccess,
+          current: granted,
+          accessProfile,
           rawGrantIncluded: false,
         }
       : null,
@@ -1025,6 +1155,20 @@ function isReadOnlySubAgentStatusToolName(toolName = "") {
 
 function isNativeSubAgentRuntimeToolName(toolName = "") {
   return NATIVE_SUB_AGENT_RUNTIME_TOOL_SET.has(normalizeString(toolName, ""));
+}
+
+function spawnRequestsDelegation(args = {}) {
+  return Boolean(normalizeString(args?.target_project || args?.targetProject || args?.target_folder || args?.targetFolder, ""));
+}
+
+// spawn_agent's description lists this turn's delegation targets.
+function withDelegationTargets(tools, targets) {
+  if (!Array.isArray(tools) || !Array.isArray(targets) || !targets.length) return tools;
+  return tools.map((tool) => {
+    const name = normalizeString(tool?.name || tool?.function?.name, "");
+    if (name !== "spawn_agent" || typeof tool.description !== "string") return tool;
+    return { ...tool, description: `${tool.description}\n\n${delegationTargetsDescription(targets)}` };
+  });
 }
 
 function workspaceWorkerSpawnHasUndeclaredFields(args = {}) {
@@ -1215,11 +1359,85 @@ function buildSafeResidentUtilitySlice(toolName, projectId = "") {
   });
 }
 
+function toolBatchKey(sessionId, turnId) {
+  return `${normalizeString(sessionId, "")}:${normalizeString(turnId, "")}`;
+}
+
+// Distinct tool calls are never capped. A response that only repeats the
+// previous responses' exact call, after each returned the same result, is a
+// loop: after this many identical rounds the next one is refused.
+const REPEATED_TOOL_CALL_LIMIT = 3;
+// Polling tools legitimately repeat while waiting on a process or child.
+const REPEAT_GUARD_EXEMPT_TOOL_NAMES = new Set(["write_stdin", "wait_agent", "list_agents", "inspect_agent"]);
+// Result fields that change on every call without meaning anything changed.
+const VOLATILE_RESULT_KEY = /(^id$|Ids?$|^at$|At$|[Dd]igest$|Refs?$|Ms$|^sequence$)/;
+
+function canonicalToolArguments(argumentsText = "") {
+  const text = typeof argumentsText === "string" ? argumentsText.trim() : "";
+  try {
+    return stableStringify(JSON.parse(text || "{}"));
+  } catch {
+    return text;
+  }
+}
+
+function withoutVolatileKeys(value) {
+  if (Array.isArray(value)) return value.map(withoutVolatileKeys);
+  if (!isPlainObject(value)) return value;
+  const out = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (!VOLATILE_RESULT_KEY.test(key)) out[key] = withoutVolatileKeys(entry);
+  }
+  return out;
+}
+
+function comparableToolResult(result = {}) {
+  const text = typeof result?.providerOutputText === "string" ? result.providerOutputText : "";
+  try {
+    return stableStringify(withoutVolatileKeys(JSON.parse(text)));
+  } catch {
+    return text;
+  }
+}
+
+function toolCallSignature(obligations = []) {
+  return obligations
+    .map((obligation) => `${normalizeString(obligation?.name, "")}\u0000${canonicalToolArguments(obligation?.argumentsText)}`)
+    .sort()
+    .join("\u0001");
+}
+
+// The repeated call when `nextObligations` repeat the turn's last
+// REPEATED_TOOL_CALL_LIMIT responses exactly and those all got the same
+// result; otherwise null.
+function repeatedToolCallLoop(turn = {}, nextObligations = []) {
+  const next = (Array.isArray(nextObligations) ? nextObligations : []).filter((obligation) => obligation?.obligationId);
+  if (!next.length || next.some((obligation) => REPEAT_GUARD_EXEMPT_TOOL_NAMES.has(normalizeString(obligation.name, "")))) return null;
+  const nextIds = new Set(next.map((obligation) => obligation.obligationId));
+  const steps = new Map();
+  for (const obligation of Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : []) {
+    if (!obligation?.obligationId || nextIds.has(obligation.obligationId)) continue;
+    const key = String(obligation.stepOrdinal ?? obligation.parentResponseId ?? obligation.obligationId);
+    if (!steps.has(key)) steps.set(key, []);
+    steps.get(key).push(obligation);
+  }
+  const recent = [...steps.values()].slice(-REPEATED_TOOL_CALL_LIMIT);
+  if (recent.length < REPEATED_TOOL_CALL_LIMIT) return null;
+  const signature = toolCallSignature(next);
+  if (recent.some((group) => toolCallSignature(group) !== signature)) return null;
+  const results = recent.map((group) => group.map((obligation) => comparableToolResult(obligation.result)).join("\u0001"));
+  if (new Set(results).size !== 1) return null;
+  return { toolName: normalizeString(next[0].name, "tool"), repeats: REPEATED_TOOL_CALL_LIMIT + 1 };
+}
+
+// Deltas are joined exactly as streamed: their leading and trailing spaces
+// and newlines are the text's own (trimming each one ran words together).
 function assistantTextFromDirectEvents(normalizedEvents = []) {
-  return (Array.isArray(normalizedEvents) ? normalizedEvents : [])
+  const text = (Array.isArray(normalizedEvents) ? normalizedEvents : [])
     .filter((event) => event?.type === "message_delta")
-    .map((event) => normalizeString(event.text, ""))
+    .map((event) => (typeof event.text === "string" ? event.text : ""))
     .join("");
+  return text.trim() ? text : "";
 }
 
 function summarizeSubAgentStatusResult(toolName, result = {}) {
@@ -1424,8 +1642,16 @@ function implementationContextInstructions(contextInstructions = "", selfConstit
   const constitutionText = selfConstitutionSnapshot
     ? renderDirectSelfConstitutionInstructions(selfConstitutionSnapshot)
     : DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS;
-  if (!contextText) return constitutionText;
-  return `${contextText}\n\n${constitutionText}`;
+  const environmentText = renderExecutionEnvironmentInstructions(selfConstitutionSnapshot?.executionEnvironment);
+  const ownText = environmentText ? `${constitutionText}\n\n${environmentText}` : constitutionText;
+  if (!contextText) return ownText;
+  return `${contextText}\n\n${ownText}`;
+}
+
+// Shell- and path-dependent tool descriptions follow the same environment
+// facts the instructions render.
+function environmentToolsFor(tools, selfConstitutionSnapshot = null) {
+  return applyEnvironmentToToolSchemas(tools, selfConstitutionSnapshot?.executionEnvironment);
 }
 
 function selfConstitutionRequestShapeFields(snapshot = {}) {
@@ -1438,6 +1664,10 @@ function selfConstitutionRequestShapeFields(snapshot = {}) {
     selfConstitutionSubstrateKind: normalizeString(snapshot.projectBinding?.substrateKind, ""),
     selfConstitutionDeclaredToolCount: Number(snapshot.capabilities?.declaredThisTurn?.length || 0),
     selfConstitutionOwner: normalizeString(snapshot.currentness?.owner, ""),
+    executionEnvironmentKind: normalizeString(snapshot.executionEnvironment?.environmentKind, ""),
+    executionEnvironmentShell: normalizeString(snapshot.executionEnvironment?.shell?.name, ""),
+    executionEnvironmentAccessProfile: normalizeString(snapshot.executionEnvironment?.accessProfile, ""),
+    executionEnvironmentExecutesVia: normalizeString(snapshot.executionEnvironment?.executesVia, ""),
     selfConstitutionRawWorkspacePathIncluded: snapshot.safety?.rawWorkspacePathIncluded === true,
     selfConstitutionRawSecretIncluded: snapshot.safety?.rawSecretIncluded === true,
   };
@@ -1566,7 +1796,13 @@ function composeImplementationToolBundleForRequest(input = {}) {
     externalCapabilityProfile: input.externalCapabilityProfile,
     providerHostedToolsStatus: input.providerHostedToolsStatus,
     providerHostedActivationSnapshot: input.providerHostedToolsStatus?.activationSnapshot,
-    executionEnvironmentDigest: input.executionEnvironmentDigest || input.workThreadBindingDigest || controlledRoutingResult?.workThreadBinding?.bindingDigest || contextResult?.workThreadBinding?.bindingDigest,
+    // A task grant is scoped to the thread's execution environment, the
+    // digest recorded with the grant. A work-thread binding digest describes
+    // the routing context (and changes per turn), so it never stands in for
+    // that scope when a grant is checked.
+    executionEnvironmentDigest: input.harnessGrant
+      ? normalizeString(input.executionEnvironmentDigest, "")
+      : input.executionEnvironmentDigest || input.workThreadBindingDigest || controlledRoutingResult?.workThreadBinding?.bindingDigest || contextResult?.workThreadBinding?.bindingDigest,
     harnessGrant: input.harnessGrant,
     sourceMessageRef: directToolEvidenceRef("source_message", input.sourceMessageId || `${turnId}_user`, "Direct user message"),
     normalizedLaneRequestRef: directToolEvidenceRef("normalized_lane_request", input.normalizedLaneRequestId || `normalized_lane_request_${turnId}`, "Implementation lane request"),
@@ -1742,6 +1978,7 @@ function threadListEntryFromIndexEntry(entry = {}) {
   const sessionId = normalizeString(entry.sessionId, "");
   const agentKind = normalizeString(entry.agentKind, "");
   return {
+    ...(isPlainObject(entry.delegatedFrom) ? { delegatedFrom: { ...entry.delegatedFrom } } : {}),
     id: sessionId,
     threadId: sessionId,
     title: normalizeString(entry.title, "Direct live text session"),
@@ -1896,6 +2133,10 @@ class DirectLiveTextController {
     this.workThreadStore = options.workThreadStore || null;
     this.refreshCredentials = typeof options.refreshCredentials === "function" ? options.refreshCredentials : null;
     this.modelEvidenceResolver = typeof options.modelEvidenceResolver === "function" ? options.modelEvidenceResolver : null;
+    // Refreshes the account's /models catalog for a project; returns a promise.
+    this.providerCatalogRefresher = typeof options.providerCatalogRefresher === "function" ? options.providerCatalogRefresher : null;
+    // The owner's projects, for spawn_agent delegation to another project.
+    this.delegationProjectsResolver = typeof options.delegationProjectsResolver === "function" ? options.delegationProjectsResolver : null;
     this.implementationProofEvidenceResolver = typeof options.implementationProofEvidenceResolver === "function" ? options.implementationProofEvidenceResolver : null;
     this.activationStatusResolver = typeof options.activationStatusResolver === "function" ? options.activationStatusResolver : null;
     this.subAgentStatusSurfaceResolver = typeof options.subAgentStatusSurfaceResolver === "function" ? options.subAgentStatusSurfaceResolver : null;
@@ -1968,6 +2209,7 @@ class DirectLiveTextController {
     this.maxPromptChars = Number(options.maxPromptChars || DEFAULT_MAX_PROMPT_CHARS);
     this.maxAssistantChars = Number(options.maxAssistantChars || DEFAULT_MAX_ASSISTANT_CHARS);
     this.maxTransportOutputChars = Number(options.maxTransportOutputChars || Math.max(256 * 1024, this.maxAssistantChars * 8));
+    this.streamStallNoticeMs = Number(options.streamStallNoticeMs) > 0 ? Number(options.streamStallNoticeMs) : undefined;
     this.maxTransportBytes = Number(options.maxTransportBytes || Math.max(2 * 1024 * 1024, this.maxAssistantChars * 8));
     this.maxTransportFrameBytes = Number(options.maxTransportFrameBytes || 512 * 1024);
     this.maxTransportRawEvents = Number(options.maxTransportRawEvents || 10_000);
@@ -1985,10 +2227,28 @@ class DirectLiveTextController {
     this.toolDecisionClaims = new Map();
     this.toolDecisionResults = new Map();
     this.forkStartLocks = new Map();
+    // Calls from one model response still to run, per turn (see
+    // emitToolApprovalRequests).
+    this.toolBatches = new Map();
+    // One cancel signal per turn, shared by its first request and every
+    // continuation, so Stop ends the whole tool loop.
+    this.turnAbortControllers = new Map();
     this.turnStartAdmissions = new Map();
     this.epistemicLedgerTurnBindings = new Map();
     this.closed = false;
     this.statefulExecDisposePromise = null;
+  }
+
+  // The execution environment a thread's grant must be scoped to: the digest
+  // recorded when its access was chosen.
+  grantEnvironmentDigest(sessionOrId, project = {}) {
+    const session = typeof sessionOrId === "string"
+      ? this.sessionStore.readSession(sessionOrId) || {}
+      : isPlainObject(sessionOrId) ? sessionOrId : {};
+    return normalizeString(
+      session.executionEnvironmentDigest || session.workThreadBindingDigest || project.executionEnvironmentDigest,
+      "",
+    );
   }
 
   resolveHarnessGrant(project = {}, session = {}) {
@@ -1998,10 +2258,7 @@ class DirectLiveTextController {
       taskId: threadId,
       threadId,
       projectId,
-      executionEnvironmentDigest: normalizeString(
-        session.executionEnvironmentDigest || session.workThreadBindingDigest || project.executionEnvironmentDigest,
-        "",
-      ),
+      executionEnvironmentDigest: this.grantEnvironmentDigest(session, project),
       grantId: normalizeString(session.harnessGrantId, ""),
     };
     let grant = null;
@@ -2053,7 +2310,12 @@ class DirectLiveTextController {
     if (!this.fullAccessLocalEnvironmentExecutor) return null;
     const session = this.sessionStore.readSession(sessionId) || {};
     const grant = this.harnessGrantForTurn(sessionId, turnId, project);
-    if (!grant || grant.sandboxMode !== "danger-full-access" || grant.executionEnvironment?.kind !== "local") return null;
+    // The file executor serves workspaces local to this host directly and a
+    // WSL workspace opened from elsewhere through that environment's executor.
+    const servable = typeof this.fullAccessLocalEnvironmentExecutor.canServe === "function"
+      ? this.fullAccessLocalEnvironmentExecutor.canServe(grant || {}, project)
+      : workspaceExecutesLocally(grant?.executionEnvironment?.kind, project);
+    if (!grant || !grantAccessProfile(grant) || !servable) return null;
     const authorization = this.harnessGrantAuthorizationFor(sessionId, turnId, project, capabilityName);
     if (!authorization.authorized) return null;
     return {
@@ -2094,7 +2356,8 @@ class DirectLiveTextController {
         projectId: session.projectId,
         grantId: normalizeString(harnessGrant?.grantId, ""),
         grantRevision: Number(harnessGrant?.grantRevision || 0),
-        current: capabilities.authority?.fullAccessTaskProfile === true,
+        current: capabilities.authority?.taskGrantCurrent === true,
+        accessProfile: normalizeString(capabilities.authority?.taskAccessProfile, ""),
         rawGrantIncluded: false,
       },
     };
@@ -2130,51 +2393,54 @@ class DirectLiveTextController {
   }
 
   selectFullAccessTaskProfile(params = {}, context = {}) {
+    return this.selectTaskAccessProfile(params, context);
+  }
+
+  selectTaskAccessProfile(params = {}, context = {}) {
     const project = context.project || {};
-    if (!this.harnessGrantStore || typeof this.harnessGrantStore.issueFullAccess !== "function") {
-      const error = new Error("Direct full-access task profile selection is unavailable.");
-      error.code = "direct_thread_harness_grant_store_unavailable";
-      throw error;
-    }
-    const requestedProfile = normalizeString(
-      params.accessProfile || params.profile || params.taskProfile,
+    const requestedProfile = normalizeAccessProfile(
+      normalizeString(params.accessProfile || params.profile || params.taskProfile, ""),
       "",
     );
-    if (requestedProfile !== "full_access") {
-      const error = new Error("Direct task profile selection requires the owner-selected full_access profile.");
-      error.code = "direct_thread_harness_profile_not_full_access";
+    if (!requestedProfile) {
+      const error = new Error("Direct task access selection requires read_only, workspace, or full_access.");
+      error.code = "direct_thread_harness_profile_invalid";
+      throw error;
+    }
+    const store = this.harnessGrantStore;
+    const canIssue = store && (
+      typeof store.issueAccessProfile === "function" ||
+      (requestedProfile === "full_access" && typeof store.issueFullAccess === "function")
+    );
+    if (!canIssue) {
+      const error = new Error("Direct task access selection is unavailable.");
+      error.code = "direct_thread_harness_grant_store_unavailable";
       throw error;
     }
     const sessionId = normalizeString(params.sessionId || params.threadId, "");
     const session = sessionId ? this.sessionStore.readSession(sessionId) : null;
     if (!session || !sessionMatchesProject(session, normalizeString(project.id, ""))) {
-      const error = new Error("Direct full-access task profile selection requires an exact project-bound session.");
+      const error = new Error("Direct task access selection requires an exact project-bound session.");
       error.code = "direct_thread_harness_profile_scope_mismatch";
       throw error;
     }
-    const status = this.assertReady(project, { model: session.model });
-    const environment = this.executionEnvironmentForSession(project, session);
-    const grant = this.harnessGrantStore.issueFullAccess({
-      taskId: session.sessionId,
-      threadId: session.sessionId,
-      projectId: session.projectId,
-      executionEnvironment: environment,
-      capabilities: [
-        ...new Set([
-          ...implementationInitialPolicyCandidateToolNames(status, ""),
-          ...STATEFUL_EXEC_CAPABILITY_NAMES,
-        ]),
-      ],
-    });
-    this.sessionStore.writeSession({
-      ...session,
-      harnessAccessProfile: "full_access",
-      harnessGrantId: grant.grantId,
-      executionEnvironmentDigest: grant.executionEnvironmentDigest,
-    });
+    const currentGrant = this.resolveHarnessGrant(project, session);
+    const currentProfile = currentGrant ? grantAccessProfile(currentGrant) : "";
+    const turnActive = (Array.isArray(session.turns) ? session.turns : [])
+      .some((turn) => ACTIVE_TURN_STATES.has(normalizeString(turn?.state, "")));
+    // A running turn is bound to its grant revision; switching profiles under
+    // it would strand that turn without authority.
+    if (turnActive && currentProfile && currentProfile !== requestedProfile) {
+      const error = new Error("Access can't change while a turn is running. Stop the turn or wait for it to finish.");
+      error.code = "direct_thread_access_profile_turn_active";
+      throw error;
+    }
+    const grant = this.issueThreadAccessGrant(project, session, requestedProfile, { accessRevertAfterTurn: null });
     const projection = this.capabilitiesForTask(project, session.sessionId);
     return {
-      profile: "full_access",
+      profile: requestedProfile,
+      label: DIRECT_ACCESS_PROFILES[requestedProfile].label,
+      networkAccess: DIRECT_ACCESS_PROFILES[requestedProfile].networkAccess,
       grantId: grant.grantId,
       grantRevision: grant.grantRevision,
       approvalPolicy: grant.approvalPolicy,
@@ -2185,6 +2451,192 @@ class DirectLiveTextController {
       capabilities: projection.capabilities,
       taskBinding: projection.taskBinding,
     };
+  }
+
+  issueThreadAccessGrant(project = {}, session = {}, profile = "", sessionPatch = {}) {
+    const store = this.harnessGrantStore;
+    const status = this.assertReady(project, { model: session.model });
+    const issueInput = {
+      taskId: session.sessionId,
+      threadId: session.sessionId,
+      projectId: session.projectId,
+      executionEnvironment: this.executionEnvironmentForSession(project, session),
+      accessProfile: profile,
+      capabilities: accessProfileCapabilityNames(profile, [
+        ...implementationInitialPolicyCandidateToolNames(status, ""),
+        ...STATEFUL_EXEC_CAPABILITY_NAMES,
+      ]),
+    };
+    const grant = typeof store.issueAccessProfile === "function"
+      ? store.issueAccessProfile(issueInput)
+      : store.issueFullAccess(issueInput);
+    this.sessionStore.writeSession({
+      ...(this.sessionStore.readSession(session.sessionId) || session),
+      harnessAccessProfile: profile,
+      harnessGrantId: grant.grantId,
+      executionEnvironmentDigest: grant.executionEnvironmentDigest,
+      ...sessionPatch,
+    });
+    return grant;
+  }
+
+  // request_permissions granted: issue the higher Access now and rebind the
+  // running turn to it, so this turn's later calls use it. A turn-scoped
+  // grant records the Access to return to when the turn ends.
+  raiseAccessForTurn(project = {}, sessionId = "", turnId = "", profile = "", revertToProfile = "") {
+    const session = this.sessionStore.readSession(sessionId) || {};
+    const grant = this.issueThreadAccessGrant(project, session, profile, {
+      accessRevertAfterTurn: revertToProfile ? { turnId, profile: revertToProfile } : null,
+    });
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const requestShape = isPlainObject(turn.requestShape) ? turn.requestShape : {};
+    this.sessionStore.updateTurnState(sessionId, turnId, turn.state, {
+      requestShape: {
+        ...requestShape,
+        directThreadHarnessGrantId: grant.grantId,
+        declaredToolNames: [...new Set([
+          ...(Array.isArray(requestShape.declaredToolNames) ? requestShape.declaredToolNames : []),
+          ...harnessGrantCapabilityNames(grant),
+        ])],
+      },
+    });
+    return grant;
+  }
+
+  // Undoes a turn-scoped request_permissions grant once that turn is over
+  // (or, as a fallback, before the thread's next turn starts).
+  revertTurnScopedAccess(project = {}, sessionId = "", endedTurnId = "") {
+    const session = sessionId ? this.sessionStore.readSession(sessionId) : null;
+    const pending = isPlainObject(session?.accessRevertAfterTurn) ? session.accessRevertAfterTurn : null;
+    if (!pending || !this.harnessGrantStore) return null;
+    if (endedTurnId && pending.turnId !== endedTurnId) return null;
+    const turn = pending.turnId ? this.sessionStore.readTurn(sessionId, pending.turnId) : null;
+    if (turn && !TERMINAL_TURN_STATES.has(normalizeString(turn.state, ""))) return null;
+    const profile = normalizeAccessProfile(normalizeString(pending.profile, ""), "");
+    if (!profile) return null;
+    try {
+      return this.issueThreadAccessGrant(project, session, profile, { accessRevertAfterTurn: null });
+    } catch {
+      return null;
+    }
+  }
+
+  async emitPermissionsRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
+    const args = parseToolArgumentsObject(obligation);
+    const requested = normalizeAccessProfile(normalizeString(args.access || args.accessProfile || args.access_profile, ""), "");
+    const scope = normalizeString(args.scope, "") === "thread" ? "thread" : "turn";
+    const reason = normalizeString(args.reason, "").slice(0, 400);
+    const grant = this.harnessGrantForTurn(sessionId, turnId, project);
+    const current = grant ? grantAccessProfile(grant) : "";
+    const fail = (code, message) => this.returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation, project, { code, message });
+    if (!grant) return fail("request_permissions_no_grant", "This thread has no Access setting to raise.");
+    if (!requested) return fail("request_permissions_access_invalid", "access must be workspace or full_access.");
+    const label = DIRECT_ACCESS_PROFILES[requested]?.label || requested;
+    if ((ACCESS_PROFILE_RANK[requested] ?? -1) <= (ACCESS_PROFILE_RANK[current] ?? ACCESS_PROFILE_RANK.full_access)) {
+      return fail("request_permissions_not_higher", `The thread already has ${DIRECT_ACCESS_PROFILES[current]?.label || current} access, which covers ${label}.`);
+    }
+    if (!surfaceSession || typeof surfaceSession.createUserInputRequest !== "function") {
+      return fail("request_permissions_owner_unavailable", "No one is available to answer the request; continue within the current access.");
+    }
+    this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+      status: "waiting",
+      authorityState: "human_decision_waiting",
+      approvalAvailable: true,
+      continuationAllowed: true,
+      permissionRequest: { requestedProfile: requested, previousProfile: current, scope, reason },
+    }, {
+      nextTurnState: "authority_waiting",
+    });
+    const reach = DIRECT_ACCESS_PROFILES[requested]?.networkAccess ? "no sandbox, network on" : "sandboxed";
+    surfaceSession.createUserInputRequest({
+      params: {
+        sessionId,
+        turnId,
+        obligationId: obligation.obligationId,
+        permissionRequest: true,
+        requestedProfile: requested,
+        currentProfile: current,
+        suggestedScope: scope,
+        questions: [{
+          id: "permission_decision",
+          header: "Codex asks for more access",
+          question: `Raise this thread from ${DIRECT_ACCESS_PROFILES[current]?.label || current} to ${label} (${reach})? Reason: ${reason || "none given"}.`,
+          options: [
+            { id: "allow_turn", label: "Allow for this turn", description: `Back to ${DIRECT_ACCESS_PROFILES[current]?.label || current} when the turn ends.` },
+            { id: "allow_thread", label: "Allow for this thread", description: `The thread keeps ${label}.` },
+            { id: "deny", label: "Deny", description: "Codex continues with the current access." },
+          ],
+        }],
+        rawPromptIncluded: false,
+        authorityGranted: false,
+      },
+      summary: `request_permissions: ${label}`,
+    });
+    return 1;
+  }
+
+  async handlePermissionsResponse(context = {}, sessionId = "", turnId = "", obligation = {}, answers = []) {
+    const project = context.project || {};
+    const text = answers.map((value) => normalizeString(value, "").toLowerCase()).join(" ");
+    const decision = /\b(deny|decline|no|reject)\b/.test(text) && !/allow/.test(text)
+      ? "deny"
+      : /thread|session/.test(text)
+        ? "allow_thread"
+        : /allow|yes|approve|turn/.test(text)
+          ? "allow_turn"
+          : "deny";
+    const request = isPlainObject(obligation.permissionRequest) ? obligation.permissionRequest : {};
+    const previousLabel = DIRECT_ACCESS_PROFILES[request.previousProfile]?.label || request.previousProfile;
+    const label = DIRECT_ACCESS_PROFILES[request.requestedProfile]?.label || request.requestedProfile;
+    let providerOutput;
+    if (decision === "deny") {
+      providerOutput = {
+        kind: "request_permissions_result",
+        status: "denied",
+        accessProfile: request.previousProfile,
+        message: `The user declined. The thread stays at ${previousLabel}; continue within it or explain what couldn't be done.`,
+      };
+    } else {
+      const scope = decision === "allow_thread" ? "thread" : "turn";
+      let grant;
+      try {
+        grant = this.raiseAccessForTurn(project, sessionId, turnId, request.requestedProfile, scope === "turn" ? request.previousProfile : "");
+      } catch (error) {
+        providerOutput = {
+          kind: "request_permissions_result",
+          status: "failed",
+          accessProfile: request.previousProfile,
+          message: `The user allowed it, but the access couldn't be raised: ${normalizeString(error?.message, "unknown error")}`,
+        };
+      }
+      if (grant) {
+        providerOutput = {
+          kind: "request_permissions_result",
+          status: "granted",
+          accessProfile: request.requestedProfile,
+          scope,
+          networkAccess: DIRECT_ACCESS_PROFILES[request.requestedProfile]?.networkAccess === true,
+          tools: harnessGrantCapabilityNames(grant),
+          message: scope === "turn"
+            ? `Granted ${label} for this turn; the thread returns to ${previousLabel} when it ends.`
+            : `Granted ${label} for the rest of this thread.`,
+        };
+      }
+    }
+    const envelope = {
+      schema: "direct_permission_decision_result_envelope@1",
+      envelopeId: `permission_decision_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${decision}`).slice(0, 24)}`,
+      toolName: REQUEST_PERMISSIONS_TOOL_NAME,
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: "permission_decision",
+      status: "ready_for_provider_continuation",
+      providerOutput,
+      sideEffectExecuted: providerOutput.status === "granted",
+      rawWorkspacePathIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    return this.continueAfterSafeResidentUtilityResult(context.surfaceSession, sessionId, turnId, obligation, envelope, project);
   }
 
   statefulExecSessionContext(params = {}, context = {}, options = {}) {
@@ -2518,11 +2970,114 @@ class DirectLiveTextController {
   }
 
   requestedModelForProject(project = {}, options = {}) {
-    return normalizeString(
-      options.model || options.requestedModel ||
-        project.surfaceBinding?.codex?.model || project.codex?.model || "",
-      "",
-    );
+    return normalizeString(options.model || options.requestedModel, "") ||
+      this.defaultModelForProject(project);
+  }
+
+  configuredModelForProject(project = {}) {
+    return normalizeString(project.surfaceBinding?.codex?.model || project.codex?.model, "");
+  }
+
+  // The model's entry in the account's model list, or null when the list
+  // isn't loaded or doesn't include it.
+  catalogModelDescriptor(project = {}, model = "") {
+    const id = normalizeString(model, "");
+    if (!id) return null;
+    const profile = this.resolveProviderMetadataStatus(project)?.profile;
+    if (normalizeString(profile?.modelCatalog?.source, "") !== "server_model_list") return null;
+    const items = Array.isArray(profile.modelCatalog.items) ? profile.modelCatalog.items : [];
+    return items.find((item) => isPlainObject(item) && (item.model === id || item.id === id)) || null;
+  }
+
+  // Like Codex, a tier the model doesn't offer is dropped rather than sent.
+  // Without the model's entry the tier is passed through for the provider
+  // to judge.
+  effectiveServiceTier(project = {}, model = "", tier = "") {
+    const canonical = canonicalDirectServiceTier(tier);
+    if (!canonical) return "";
+    const descriptor = this.catalogModelDescriptor(project, model);
+    if (!descriptor || !Array.isArray(descriptor.serviceTiers)) return canonical;
+    const offered = descriptor.serviceTiers.map((entry) => canonicalDirectServiceTier(entry?.id));
+    return offered.includes(canonical) ? canonical : "";
+  }
+
+  // Daybreak is requested only when the account's list says this model
+  // accepts it (`available_access_programs.cyber`); otherwise the field is
+  // omitted and the backend keeps its automatic behavior.
+  cyberAccessProgramFor(project = {}, model = "", daybreakEnabled = false) {
+    if (daybreakEnabled !== true) return "";
+    const programs = this.catalogModelDescriptor(project, model)?.accessPrograms?.cyber;
+    return Array.isArray(programs) && programs.includes("daybreak_blue") ? "daybreak_blue" : "";
+  }
+
+  // Codex never sends "ultra": it requests the model's multi-agent effort
+  // from the account's list, else "max" if offered, else the highest level
+  // the model offers.
+  providerReasoningEffortFor(project = {}, model = "", effort = "") {
+    const chosen = normalizeString(effort, "");
+    if (chosen !== "ultra") return chosen;
+    const descriptor = this.catalogModelDescriptor(project, model);
+    const multiAgent = normalizeString(descriptor?.multiAgentReasoningEffort, "");
+    if (multiAgent && multiAgent !== "ultra") return multiAgent;
+    const offered = (Array.isArray(descriptor?.supportedReasoningEfforts) ? descriptor.supportedReasoningEfforts : [])
+      .map((entry) => normalizeString(entry?.reasoningEffort || entry, ""))
+      .filter((value) => value && value !== "ultra");
+    if (offered.includes("max")) return "max";
+    const order = ["minimal", "low", "medium", "high", "xhigh", "max"];
+    const best = offered.filter((value) => order.includes(value)).sort((a, b) => order.indexOf(a) - order.indexOf(b)).at(-1);
+    return best || "xhigh";
+  }
+
+  // Effort, speed, and Daybreak for a thread that starts outside turn/start
+  // (fork, derived fork, import continuation): explicit options first, then
+  // the source thread's choices, then the project's default effort.
+  runtimeChoicesFor(project = {}, model = "", options = {}, sourceSessionId = "") {
+    let source = {};
+    try {
+      source = (sourceSessionId && this.sessionStore.readSession(sourceSessionId)) || {};
+    } catch {}
+    const sessionReasoningEffort = normalizeString(options.reasoningEffort || options.reasoning_effort, "")
+      || normalizeString(source.reasoningEffort, "")
+      || normalizeString(project?.surfaceBinding?.codex?.reasoningEffort, "");
+    const selectedTier = canonicalDirectServiceTier(options.serviceTier || options.service_tier)
+      || canonicalDirectServiceTier(source.serviceTier);
+    const daybreakEnabled = typeof options.daybreakEnabled === "boolean"
+      ? options.daybreakEnabled
+      : source.daybreakEnabled === true;
+    return {
+      sessionReasoningEffort,
+      reasoningEffort: this.providerReasoningEffortFor(project, model, sessionReasoningEffort),
+      serviceTier: this.effectiveServiceTier(project, model, selectedTier),
+      daybreakEnabled,
+      cyberAccessProgram: this.cyberAccessProgramFor(project, model, daybreakEnabled),
+    };
+  }
+
+  // A project's model is only a default. Once the account's list stops
+  // offering it, the list's default takes over; an explicit thread or turn
+  // model is never replaced.
+  defaultModelForProject(project = {}, providerMetadataStatus = null) {
+    const configured = this.configuredModelForProject(project);
+    const metadata = isPlainObject(providerMetadataStatus) ? providerMetadataStatus : this.resolveProviderMetadataStatus(project);
+    const catalog = providerModelCatalogView(metadata);
+    if (configured && (!catalog.available || catalog.listed.some((item) => item.model === configured || item.id === configured))) {
+      return configured;
+    }
+    return catalog.defaultModel || configured;
+  }
+
+  // Like Codex: a response whose X-Models-Etag differs from the catalog's
+  // ETag means /models changed, and a refused model means the catalog may be
+  // out of date. Either refreshes the catalog in the background.
+  noteProviderCatalogSignal(project = {}, signal = {}) {
+    if (!this.providerCatalogRefresher || !normalizeString(project?.id, "")) return;
+    const modelsEtag = normalizeString(signal.modelsEtag, "");
+    const catalogEtag = normalizeString(this.resolveProviderMetadataStatus(project)?.profile?.modelCatalog?.etag, "");
+    const etagChanged = Boolean(modelsEtag) && modelsEtag !== catalogEtag;
+    if (!etagChanged && signal.modelRejected !== true) return;
+    Promise.resolve()
+      .then(() => this.providerCatalogRefresher({ project, reason: signal.modelRejected ? "model_rejected" : "models_etag_changed" }))
+      .catch(() => {});
   }
 
   resolveLiveModelEvidence(project = {}, requestedModel = "") {
@@ -2690,17 +3245,64 @@ class DirectLiveTextController {
     };
   }
 
-  modelEvidenceForProject(project = {}, options = {}) {
-    const requestedModel = this.requestedModelForProject(project, options);
+  /**
+   * Which model a turn uses and what is known about it. As in Codex, the
+   * account's /models catalog is what the picker offers and supplies the
+   * default; it does not gate a turn, and neither does an optional "Test
+   * model" probe: a signed-in account may call any model, and the server's
+   * answer is authoritative (see modelRejectionMessage).
+   */
+  modelEvidenceForProject(project = {}, options = {}, providerMetadataStatus = null) {
+    const metadata = isPlainObject(providerMetadataStatus) ? providerMetadataStatus : this.resolveProviderMetadataStatus(project);
+    const catalog = providerModelCatalogView(metadata);
+    const explicitModel = normalizeString(options.model || options.requestedModel, "");
+    const configuredModel = this.configuredModelForProject(project);
+    const requestedModel = explicitModel || this.defaultModelForProject(project, metadata);
     const staticEvidence = modelEvidenceFor(this.profileDoc, requestedModel);
-    const liveEvidence = this.resolveLiveModelEvidence(project, requestedModel || staticEvidence.model);
-    if (liveEvidence?.accepted) return liveEvidence;
+    const model = requestedModel || catalog.defaultModel || staticEvidence.model;
+    const listed = catalog.listed.find((item) => item.model === model || item.id === model) || null;
+    const liveEvidence = this.resolveLiveModelEvidence(project, model);
+    const fromCatalogDefault = !explicitModel && Boolean(catalog.defaultModel) && model === catalog.defaultModel && model !== configuredModel;
     return {
-      ...staticEvidence,
-      reason: liveModelEvidenceBlockerReason(liveEvidence?.reason) ||
-        (staticEvidence.accepted ? "" : "accepted_text_model_required"),
+      model,
+      modelSource: fromCatalogDefault
+        ? "provider_model_catalog_default"
+        : requestedModel
+          ? (listed ? "provider_model_catalog" : "configured")
+          : staticEvidence.modelSource,
+      // The project's configured model when the account's list no longer
+      // offers it (it has been replaced by the list's default).
+      configuredModelUnavailable: !explicitModel && configuredModel && model !== configuredModel ? configuredModel : "",
+      modelEvidenceState: listed
+        ? "provider_listed"
+        : catalog.available ? "provider_unlisted" : "provider_catalog_unavailable",
+      accepted: true,
+      reason: "",
+      providerListed: Boolean(listed),
+      providerCatalogState: catalog.state,
+      evidenceId: liveEvidence?.accepted ? normalizeString(liveEvidence.evidenceId, "") : "",
       liveProbeEvidence: liveEvidence?.liveProbeEvidence || null,
       liveProbeEvidenceId: normalizeString(liveEvidence?.evidenceId, ""),
+    };
+  }
+
+  // Continuation requests re-declare tools; they carry the same
+  // environment-specialized descriptions as the turn's first request.
+  withEnvironmentTools(composition, project = {}, sessionId = "", harnessGrant = null) {
+    if (!isPlainObject(composition) || !Array.isArray(composition.tools) || !composition.tools.length) return composition;
+    const session = this.sessionStore.readSession(normalizeString(sessionId, "")) || {};
+    const grant = isPlainObject(harnessGrant) ? harnessGrant : this.resolveHarnessGrant(project || {}, session);
+    const facts = resolveExecutionEnvironmentFacts({
+      grant,
+      project: project || {},
+      session,
+    });
+    return {
+      ...composition,
+      tools: withPermissionsTool(
+        withDelegationTargets(applyEnvironmentToToolSchemas(composition.tools, facts), this.delegationTargetsFor(project || {}, session)),
+        grant,
+      ),
     };
   }
 
@@ -2726,8 +3328,16 @@ class DirectLiveTextController {
           threadId: normalizeString(session.sessionId, ""),
         })
       : null;
+    const executionEnvironment = isPlainObject(input.executionEnvironment)
+      ? input.executionEnvironment
+      : selfConstitutionEnvironmentProjection(resolveExecutionEnvironmentFacts({
+          grant: isPlainObject(input.harnessGrant) ? input.harnessGrant : this.resolveHarnessGrant(project, session),
+          project,
+          session,
+        }));
     return compileDirectSelfConstitutionSnapshot({
       ...input,
+      executionEnvironment,
       project,
       session,
       status,
@@ -2740,10 +3350,10 @@ class DirectLiveTextController {
 
   statusForProject(project = {}, options = {}) {
     const auth = this.authStatus();
-    const evidence = this.modelEvidenceForProject(project, options);
+    const providerMetadataStatus = this.resolveProviderMetadataStatus(project);
+    const evidence = this.modelEvidenceForProject(project, options, providerMetadataStatus);
     const implementationLaneProof = this.resolveImplementationProofEvidence(project, evidence.model);
     const externalCapabilityProfile = this.resolveExternalCapabilityProfile(project);
-    const providerMetadataStatus = this.resolveProviderMetadataStatus(project);
     const providerHostedToolsStatus = this.resolveProviderHostedToolsStatus(project, providerMetadataStatus);
     const readOnlyToolContinuation = mergeScopedProofWithProfileEvidence(
       readOnlyContinuationEvidenceFor(this.profileDoc),
@@ -2763,21 +3373,17 @@ class DirectLiveTextController {
       "run_command",
       "scoped_command_execution_proof_required",
     );
-    let status = "ready";
-    let reason = "";
-    if (auth.status !== "authenticated") {
-      status = "auth_required";
-      reason = "direct_auth_required";
-    } else if (!evidence.accepted) {
-      status = "profile_required";
-      reason = evidence.reason || "accepted_text_model_required";
-    }
+    // Signed in is ready, as in Codex.
+    const status = auth.status === "authenticated" ? "ready" : "auth_required";
+    const reason = status === "ready" ? "" : "direct_auth_required";
     return {
       status,
       turnRunnable: status === "ready",
       model: evidence.model,
       modelSource: evidence.modelSource,
       modelEvidenceState: evidence.modelEvidenceState,
+      providerListed: evidence.providerListed,
+      providerCatalogState: evidence.providerCatalogState,
       transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       workspaceKind: normalizeString(project.workspace?.kind, ""),
       appServerRequired: false,
@@ -2924,6 +3530,8 @@ class DirectLiveTextController {
       defaultReasoningEffort: normalizeString(item.defaultReasoningEffort, ""),
       serviceTiers: Array.isArray(item.serviceTiers) ? item.serviceTiers : [],
       defaultServiceTier: normalizeString(item.defaultServiceTier, ""),
+      accessPrograms: isPlainObject(item.accessPrograms) ? item.accessPrograms : null,
+      modelSpecialty: normalizeString(item.modelSpecialty, ""),
       inputModalities: Array.isArray(item.inputModalities) ? item.inputModalities : [],
       contextWindow: item.contextWindow,
       maxContextWindow: item.maxContextWindow,
@@ -3103,9 +3711,9 @@ class DirectLiveTextController {
         if (!sessionMatchesProject(existing, projectId)) {
           throw new Error("Direct live text session does not belong to the active project.");
         }
-        const accessProfile = normalizeString(params.accessProfile || params.profile || params.taskProfile, "");
-        const selected = accessProfile === "full_access"
-          ? this.selectFullAccessTaskProfile({ sessionId: existing.sessionId, accessProfile }, context)
+        const accessProfile = normalizeAccessProfile(normalizeString(params.accessProfile || params.profile || params.taskProfile, ""), "");
+        const selected = accessProfile
+          ? this.selectTaskAccessProfile({ sessionId: existing.sessionId, accessProfile }, context)
           : null;
         const refreshed = this.sessionStore.readSession(existing.sessionId) || existing;
         const projection = this.capabilitiesForTask(project, refreshed.sessionId);
@@ -3122,7 +3730,7 @@ class DirectLiveTextController {
     }
     const model = normalizeString(params.model, "") || status.model;
     const reasoningEffort = normalizeString(params.reasoningEffort || params.reasoning_effort, "");
-    const serviceTier = normalizeString(params.serviceTier || params.service_tier, "");
+    const serviceTier = canonicalDirectServiceTier(params.serviceTier || params.service_tier);
     if (serviceTier && !DIRECT_SERVICE_TIERS.has(serviceTier)) {
       const error = new Error(`Direct service tier is not supported: ${serviceTier}`);
       error.code = "direct_service_tier_unsupported";
@@ -3137,6 +3745,9 @@ class DirectLiveTextController {
       model,
       reasoningEffort,
       serviceTier,
+      daybreakEnabled: params.daybreakEnabled === true,
+      // Only the delegation runner (owner-controlled, in main) sets this.
+      ...(context.ownerControlled === true && isPlainObject(params.delegatedFrom) ? { delegatedFrom: params.delegatedFrom } : {}),
       runtimeMode: normalizeCodexBinding(project.surfaceBinding?.codex || {}).runtimeMode,
       directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       modelSource: status.modelSource,
@@ -3176,8 +3787,9 @@ class DirectLiveTextController {
       workThreadId: workThreadCarrier.workThreadId,
       workThreadBindingDigest: normalizeString(workThreadCarrier.workThreadBinding?.bindingDigest, ""),
     });
-    const accessProfile = normalizeString(params.accessProfile || params.profile || params.taskProfile, "") === "full_access"
-      ? this.selectFullAccessTaskProfile({ sessionId: session.sessionId, accessProfile: "full_access" }, context)
+    const requestedAccessProfile = normalizeAccessProfile(normalizeString(params.accessProfile || params.profile || params.taskProfile, ""), "");
+    const accessProfile = requestedAccessProfile
+      ? this.selectTaskAccessProfile({ sessionId: session.sessionId, accessProfile: requestedAccessProfile }, context)
       : null;
     const refreshedSession = this.sessionStore.readSession(session.sessionId) || session;
     const projection = this.capabilitiesForTask(project, refreshedSession.sessionId);
@@ -3486,8 +4098,8 @@ class DirectLiveTextController {
       throw error;
     }
     const sourceGrant = this.resolveHarnessGrant(project, source);
-    if (source.harnessAccessProfile === "full_access" && !sourceGrant) {
-      const error = new Error("Direct fork cannot inherit a missing or stale full-access source grant.");
+    if (normalizeAccessProfile(source.harnessAccessProfile, "") && !sourceGrant) {
+      const error = new Error("Direct fork cannot inherit a missing or stale source task grant.");
       error.code = "direct_fork_source_grant_invalid";
       throw error;
     }
@@ -3663,15 +4275,16 @@ class DirectLiveTextController {
         error.code = "direct_fork_operation_recovery_ambiguous";
         throw error;
       }
-      if (refreshed.harnessAccessProfile !== "full_access" || refreshed.harnessGrantId !== childGrant.grantId) {
+      const childAccessProfile = grantAccessProfile(childGrant);
+      if (refreshed.harnessAccessProfile !== childAccessProfile || refreshed.harnessGrantId !== childGrant.grantId) {
         this.sessionStore.writeSession({
           ...refreshed,
-          harnessAccessProfile: "full_access",
+          harnessAccessProfile: childAccessProfile,
           harnessGrantId: childGrant.grantId,
           executionEnvironmentDigest: childGrant.executionEnvironmentDigest,
         });
       }
-    } else if (child.harnessAccessProfile === "full_access" || child.harnessGrantId) {
+    } else if (normalizeAccessProfile(child.harnessAccessProfile, "") || child.harnessGrantId) {
       const error = new Error("Direct fork recovery found unexpected full-access child authority.");
       error.code = "direct_fork_operation_recovery_ambiguous";
       throw error;
@@ -4430,12 +5043,16 @@ class DirectLiveTextController {
         error.code = error.message;
         throw error;
       }
+      const forkChoices = this.runtimeChoicesFor(project, model, options, normalizeString(seedPreview.items[0]?.threadId, ""));
       session = this.sessionStore.createSession({
         projectId,
         workspace: isPlainObject(project.workspace) ? project.workspace : {},
         workspaceDisplayPath: workspaceDisplayPath(project),
         title: `Fork from ${normalizeString(seedPreview.items[0]?.threadId, "direct thread")}`,
         model,
+        reasoningEffort: forkChoices.sessionReasoningEffort,
+        serviceTier: forkChoices.serviceTier,
+        daybreakEnabled: forkChoices.daybreakEnabled,
         runtimeMode: "direct-experimental",
         directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
         modelSource: status.modelSource,
@@ -4455,6 +5072,9 @@ class DirectLiveTextController {
       turn = this.sessionStore.createTurn(session.sessionId, {
         input: [{ role: "current_user_intent", text: currentUserPrompt }],
         model,
+        reasoningEffort: forkChoices.reasoningEffort,
+        serviceTier: forkChoices.serviceTier || null,
+        cyberAccessProgram: forkChoices.cyberAccessProgram,
         clientTurnRequestId: clientForkStartId,
         requestShape: { schema: DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE, requestShapeHash },
         sourceClass: "forked-direct-native",
@@ -4603,6 +5223,10 @@ class DirectLiveTextController {
           model: requestBody.model,
           prompt: requestBody.input?.[0]?.content?.[0]?.text || contextResult.providerInput.prompt,
           instructions: requestBody.instructions,
+          reasoningEffort: forkChoices.reasoningEffort,
+          serviceTier: forkChoices.serviceTier,
+          cyberAccessProgram: forkChoices.cyberAccessProgram,
+          promptCacheKey: session.sessionId,
           fetchImpl: this.fetchImpl || undefined,
           signal: options.signal,
           onLifecycle: (event) => {
@@ -4879,12 +5503,19 @@ class DirectLiveTextController {
         currentUserPrompt,
       }, options);
       const derivedForkSeed = derivedSeedResult.derivedForkSeed;
+      const forkChoices = this.runtimeChoicesFor(project, model, options, normalizeString(
+        derivedForkSeed.parentLineage?.sourceThreadIds?.[0] || seedPreview.items?.[0]?.threadId,
+        "",
+      ));
       session = this.sessionStore.createSession({
         projectId,
         workspace: isPlainObject(project.workspace) ? project.workspace : {},
         workspaceDisplayPath: workspaceDisplayPath(project),
         title: `Fork from ${sourcePreviewKind.replace("_", " ")}`,
         model,
+        reasoningEffort: forkChoices.sessionReasoningEffort,
+        serviceTier: forkChoices.serviceTier,
+        daybreakEnabled: forkChoices.daybreakEnabled,
         runtimeMode: "direct-experimental",
         directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
         modelSource: status.modelSource,
@@ -4910,6 +5541,9 @@ class DirectLiveTextController {
       turn = this.sessionStore.createTurn(session.sessionId, {
         input: [{ role: "current_user_intent", text: currentUserPrompt }],
         model,
+        reasoningEffort: forkChoices.reasoningEffort,
+        serviceTier: forkChoices.serviceTier || null,
+        cyberAccessProgram: forkChoices.cyberAccessProgram,
         clientTurnRequestId: clientDerivedForkStartId,
         requestShape: { schema: requestShapeClass, requestShapeHash, sourcePreviewKind },
         sourceClass: "forked-direct-native",
@@ -5054,6 +5688,10 @@ class DirectLiveTextController {
           model: requestBody.model,
           prompt: requestBody.input?.[0]?.content?.[0]?.text || contextResult.providerInput.prompt,
           instructions: requestBody.instructions,
+          reasoningEffort: forkChoices.reasoningEffort,
+          serviceTier: forkChoices.serviceTier,
+          cyberAccessProgram: forkChoices.cyberAccessProgram,
+          promptCacheKey: session.sessionId,
           fetchImpl: this.fetchImpl || undefined,
           signal: options.signal,
           onLifecycle: (event) => {
@@ -5213,12 +5851,16 @@ class DirectLiveTextController {
       throw error;
     }
     const model = normalizeString(options.model, "") || status.model;
+    const importChoices = this.runtimeChoicesFor(project, model, options, normalizeString(seed.materializedSessionId, ""));
     const session = this.sessionStore.createSession({
       projectId: normalizeString(project.id || seed.projectId, ""),
       workspace: isPlainObject(project.workspace) ? project.workspace : {},
       workspaceDisplayPath: workspaceDisplayPath(project),
       title: `Checkpoint continuation ${normalizeString(seed.source?.sourceDisplayName, seed.importId)}`,
       model,
+      reasoningEffort: importChoices.sessionReasoningEffort,
+      serviceTier: importChoices.serviceTier,
+      daybreakEnabled: importChoices.daybreakEnabled,
       runtimeMode: "direct-experimental",
       directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       modelSource: status.modelSource,
@@ -5241,6 +5883,9 @@ class DirectLiveTextController {
       model,
       prompt: seed.seedText,
       instructions: "You are Codex running a fresh direct checkpoint continuation from quoted imported transcript evidence. Do not request tools.",
+      reasoningEffort: importChoices.reasoningEffort,
+      serviceTier: importChoices.serviceTier,
+      cyberAccessProgram: importChoices.cyberAccessProgram,
     });
     let requestShape = {
       ...requestShapeForDiagnostic(requestBody),
@@ -5253,6 +5898,9 @@ class DirectLiveTextController {
     const turn = this.sessionStore.createTurn(session.sessionId, {
       input: [{ role: "harness_checkpoint_seed", text: seed.seedText }],
       model: requestBody.model,
+      reasoningEffort: importChoices.reasoningEffort,
+      serviceTier: importChoices.serviceTier || null,
+      cyberAccessProgram: importChoices.cyberAccessProgram,
       clientTurnRequestId: clientCheckpointContinuationId,
       requestShape,
       sourceClass: "direct-import-checkpoint-continuation",
@@ -5321,6 +5969,10 @@ class DirectLiveTextController {
       model: requestBody.model,
       prompt: requestBody.input?.[0]?.content?.[0]?.text || seed.seedText,
       instructions: requestBody.instructions,
+      reasoningEffort: importChoices.reasoningEffort,
+      serviceTier: importChoices.serviceTier,
+      cyberAccessProgram: importChoices.cyberAccessProgram,
+      promptCacheKey: session.sessionId,
       fetchImpl: this.fetchImpl || undefined,
       signal: options.signal,
       onLifecycle: (event) => {
@@ -5481,6 +6133,14 @@ class DirectLiveTextController {
     return APPLY_PATCH_TOOL_NAMES.has(normalizeString(obligation.name, ""));
   }
 
+  // A thread grant that names the tool is the owner's authority to run it, as
+  // in Codex; a missing scoped proof stays a degraded witness, not a gate.
+  toolApprovalEvidenceReady(evidence = {}, obligation = {}, project = {}, toolName = "") {
+    if (scopedProofApprovalReady(evidence)) return true;
+    if (!continuationStatusReady(evidence)) return false;
+    return this.harnessGrantAuthorizationFor(obligation.sessionId, obligation.turnId, project, toolName).authorized === true;
+  }
+
   patchApplyRequestParams(obligation = {}, turn = {}, project = {}) {
     const parentResponseId = parentResponseIdForToolStep(turn, obligation);
     const parentResponseSource = parentResponseSourceForToolStep(obligation);
@@ -5496,7 +6156,7 @@ class DirectLiveTextController {
       hasContinuityHandle &&
       supportedCallType &&
       supportedNamespace &&
-      scopedProofApprovalReady(patchEvidence) &&
+      this.toolApprovalEvidenceReady(patchEvidence, obligation, project, "apply_patch") &&
       patchPlan?.status === "dry_run_passed" &&
       patchPlan?.preview?.truncated !== true;
     const obligationDigest = sha256(stableStringify({
@@ -5597,31 +6257,68 @@ class DirectLiveTextController {
         projectId: normalizeString(project.id || project.projectId || session.projectId, ""),
         executionEnvironmentDigest: normalizeString(grant?.executionEnvironmentDigest || session.executionEnvironmentDigest, ""),
       };
-      let result = toolName === "exec_command"
-        ? this.statefulExecSessionManager.start({
+      const requestedYieldMs = Number.isFinite(Number(args.yield_time_ms ?? args.yieldTimeMs))
+        ? Number(args.yield_time_ms ?? args.yieldTimeMs)
+        : undefined;
+      const stdinSessionId = args.sessionId || args.session_id || args.execSessionId;
+      const stdinText = args.chars ?? args.input ?? args.data ?? "";
+      let result;
+      if (toolName === "exec_command") {
+        result = this.statefulExecSessionManager.start({
+          ...binding,
+          cmd: args.cmd,
+          command: args.command || args.executable,
+          args: args.args || args.argv,
+          cwd: args.cwd || args.workdir,
+          env: args.env,
+          stdinPolicy: args.stdinPolicy,
+          idleTimeoutMs: args.idleTimeoutMs,
+          hardTimeoutMs: args.hardTimeoutMs,
+          tty: args.tty === true,
+        });
+        // Stop must reach the process during the initial wait below, before
+        // the session ID is recorded on the obligation.
+        if (!this.turnExecSessionIds) this.turnExecSessionIds = new Map();
+        if (!this.turnExecSessionIds.has(turnId)) this.turnExecSessionIds.set(turnId, new Set());
+        this.turnExecSessionIds.get(turnId).add(normalizeString(result.sessionId, ""));
+        if (this.turnAbortSignal(turnId)?.aborted) this.cancelTurnProcesses(sessionId, turnId, project);
+      } else {
+        try {
+          result = this.statefulExecSessionManager.writeStdin({
             ...binding,
-            cmd: args.cmd,
-            command: args.command || args.executable,
-            args: args.args || args.argv,
-            cwd: args.cwd || args.workdir,
-            env: args.env,
-            stdinPolicy: args.stdinPolicy,
-            idleTimeoutMs: args.idleTimeoutMs,
-            hardTimeoutMs: args.hardTimeoutMs,
-          })
-        : this.statefulExecSessionManager.writeStdin({
-            ...binding,
-            sessionId: args.sessionId || args.session_id || args.execSessionId,
-            input: args.chars ?? args.input ?? args.data ?? "",
+            sessionId: stdinSessionId,
+            input: stdinText,
             eof: args.eof === true,
           });
-      if (toolName === "exec_command" && typeof this.statefulExecSessionManager.initialYield === "function") {
-        // Provider-originated exec must expose a controller-owned bounded
-        // initial observation, allowing short commands to settle while
-        // keeping interactive sessions live for the declared stdin path.
+        } catch (error) {
+          // The process can exit while the model is still deciding what to
+          // send; report how it ended instead of failing the turn.
+          const settled = error?.code === "direct_stateful_exec_session_not_live"
+            && typeof this.statefulExecSessionManager.settledResult === "function"
+            ? this.statefulExecSessionManager.settledResult({ ...binding, sessionId: stdinSessionId }, {
+                stdinAccepted: false,
+                eofRequested: args.eof === true,
+                alreadyTerminal: true,
+              })
+            : null;
+          if (!settled) throw error;
+          result = settled;
+        }
+      }
+      if (typeof this.statefulExecSessionManager.initialYield === "function"
+        && (toolName === "exec_command" || result.status === "running")) {
+        // Wait (bounded) for the process to settle so short commands finish in
+        // one call; interactive sessions stay live for write_stdin.
+        const emptyPoll = toolName === "write_stdin" && !stdinText && args.eof !== true;
         result = await this.statefulExecSessionManager.initialYield({
           ...binding,
           sessionId: result.sessionId,
+          yieldTimeMs: requestedYieldMs ?? (toolName === "exec_command" ? undefined : (emptyPoll ? 5_000 : 250)),
+          resultExtra: toolName === "exec_command" ? undefined : {
+            stdinAccepted: result.stdinAccepted === true,
+            eofRequested: result.eofRequested === true,
+            ...(result.emptyPoll ? { emptyPoll: true } : {}),
+          },
         });
       }
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
@@ -5638,13 +6335,6 @@ class DirectLiveTextController {
         statefulExecSessionId: normalizeString(result.sessionId, args.sessionId || args.execSessionId),
         statefulExecResult: result,
       }, { nextTurnState: "continuation_ready" });
-      this.emitNotification(surfaceSession, "warning", {
-        threadId: sessionId,
-        turnId,
-        message: toolName === "exec_command"
-          ? "Direct started the exact task-bound stateful exec session without a per-call approval round trip."
-          : "Direct wrote to the exact task-bound stateful exec session without a per-call approval round trip.",
-      });
       const envelope = {
         schema: "direct_stateful_exec_tool_result_envelope@1",
         envelopeId: `stateful_exec_result_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${result.resultDigest}`).slice(0, 24)}`,
@@ -5670,6 +6360,9 @@ class DirectLiveTextController {
       );
       return 1;
     } catch (error) {
+      if (USER_ACTIONABLE_STATEFUL_EXEC_ERRORS.has(normalizeString(error?.code, ""))) {
+        return this.continueAfterRejectedStatefulExec(surfaceSession, sessionId, turnId, obligation, project, toolName, grantAuthorization, error);
+      }
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
         status: "unsupported",
         authorityState: "unsupported",
@@ -5690,6 +6383,51 @@ class DirectLiveTextController {
     }
   }
 
+  async continueAfterRejectedStatefulExec(surfaceSession, sessionId, turnId, obligation, project, toolName, grantAuthorization, error) {
+    const errorCode = normalizeString(error?.code, "stateful_exec_failed");
+    // Only harness-authored messages reach the provider; they carry no raw
+    // paths, commands, or environment values.
+    const providerOutput = {
+      schema: "direct_stateful_exec_rejection@1",
+      status: "rejected",
+      errorCode,
+      message: normalizeString(error?.message, "The command was not started.").slice(0, 600),
+      accessProfile: normalizeString(grantAuthorization?.accessProfile, ""),
+      sandboxMode: normalizeString(grantAuthorization?.sandboxMode, ""),
+      commandStarted: false,
+    };
+    this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+      status: "stateful_exec_rejected",
+      authorityState: "grant_auto_approval",
+      authorityMode: grantAuthorization.authorityMode,
+      harnessGrantId: grantAuthorization.grantId,
+      harnessGrantRevision: grantAuthorization.grantRevision,
+      approvalPolicy: grantAuthorization.approvalPolicy,
+      sandboxMode: grantAuthorization.sandboxMode,
+      approvalAvailable: false,
+      executionAllowed: false,
+      continuationAllowed: true,
+      failureKind: errorCode,
+    }, { nextTurnState: "continuation_ready" });
+    const envelope = {
+      schema: "direct_stateful_exec_tool_result_envelope@1",
+      envelopeId: `stateful_exec_rejection_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${errorCode}`).slice(0, 24)}`,
+      toolName,
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: "stateful_exec",
+      status: "ready_for_provider_continuation",
+      providerOutput,
+      sideEffectExecuted: false,
+      rawCommandIncluded: false,
+      rawInputIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
+    return 1;
+  }
+
   commandExecutionRequestParams(obligation = {}, turn = {}, project = {}) {
     const parentResponseId = parentResponseIdForToolStep(turn, obligation);
     const parentResponseSource = parentResponseSourceForToolStep(obligation);
@@ -5705,7 +6443,7 @@ class DirectLiveTextController {
       hasContinuityHandle &&
       supportedCallType &&
       supportedNamespace &&
-      scopedProofApprovalReady(commandEvidence) &&
+      this.toolApprovalEvidenceReady(commandEvidence, obligation, project, "run_command") &&
       commandPlan?.status === "planned";
     const obligationDigest = sha256(stableStringify({
       obligationId: normalizeString(obligation.obligationId, ""),
@@ -5832,7 +6570,9 @@ class DirectLiveTextController {
     if (!params.approvalAvailable) {
       const code = !params.hasContinuityHandle
         ? "continuation_missing_context_handle"
-        : (params.commandExecutionEvidence?.status !== "ready" ? "command_tool_evidence_missing" : "unsupported_command_tool_shape");
+        : (!this.toolApprovalEvidenceReady(params.commandExecutionEvidence, planned.obligation, project, "run_command")
+          ? "command_tool_evidence_missing"
+          : "unsupported_command_tool_shape");
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
         status: "unsupported",
         authorityState: "unsupported",
@@ -5928,6 +6668,16 @@ class DirectLiveTextController {
           : (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
       });
     } catch (error) {
+      // As in Codex, a patch that doesn't parse or doesn't match the file is
+      // an answer for the model (which can read the file and retry), not the
+      // end of the turn. Nothing was written: planning is a dry run.
+      if (isPlainObject(this.sessionStore.readTurn(sessionId, turnId)?.admittedProviderContext)) {
+        return this.returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation, project, {
+          code: error.code || "patch_plan_failed",
+          message: error.message || "Patch dry-run failed.",
+          workspaceChanged: false,
+        });
+      }
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
         status: "unsupported",
         authorityState: "unsupported",
@@ -5951,7 +6701,9 @@ class DirectLiveTextController {
     if (!params.approvalAvailable) {
       const code = !params.hasContinuityHandle
         ? "continuation_missing_context_handle"
-        : (params.patchApplyEvidence?.status !== "ready" ? "patch_tool_evidence_missing" : "unsupported_patch_tool_shape");
+        : (!this.toolApprovalEvidenceReady(params.patchApplyEvidence, planned.obligation, project, "apply_patch")
+          ? "patch_tool_evidence_missing"
+          : "unsupported_patch_tool_shape");
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
         status: "unsupported",
         authorityState: "unsupported",
@@ -6011,6 +6763,37 @@ class DirectLiveTextController {
       params,
       summary: params.files.map((file) => `${file.operation} ${file.path}`).join("; ") || "apply_patch",
     });
+    return 1;
+  }
+
+  // Records a tool call that failed before doing anything as its result, and
+  // continues the turn so the model sees the error.
+  async returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation = {}, project = {}, failure = {}) {
+    const toolName = normalizeString(obligation.name, "tool");
+    const providerOutput = {
+      kind: `${toolName}_result`,
+      status: "failed",
+      error: {
+        code: normalizeString(failure.code, "tool_call_failed"),
+        message: normalizeString(failure.message, "The tool call failed."),
+      },
+      ...(failure.workspaceChanged === false ? { workspaceChanged: false } : {}),
+      ...(failure.workspaceMayHaveChanged === true ? { workspaceMayHaveChanged: true } : {}),
+    };
+    const envelope = {
+      schema: "direct_tool_failure_result_envelope@1",
+      envelopeId: `tool_failure_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${providerOutput.error.code}`).slice(0, 24)}`,
+      toolName,
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: "tool_failure",
+      status: "failed",
+      providerOutput,
+      sideEffectExecuted: false,
+      rawWorkspacePathIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
     return 1;
   }
 
@@ -6269,6 +7052,9 @@ class DirectLiveTextController {
         session,
         sessionId,
         turnId,
+        // What the thread's Access authorizes, as in the turn-start snapshot;
+        // without it every tool read as needing per-action approval.
+        harnessGrant: this.harnessGrantForTurn(sessionId, turnId, options.project || {}),
         model: normalizeString(turn.model, session.model),
         reasoningEffort: normalizeString(turn.reasoningEffort, session.reasoningEffort),
         potentialToolNames: previousSnapshot.capabilities?.potentialToolNames,
@@ -6343,8 +7129,6 @@ class DirectLiveTextController {
   }
 
   utilityContinuationRequestFromEnvelope(sessionId, turnId, obligation = {}, envelope = {}) {
-    const nativeAgentRuntimeResult = normalizeString(envelope.resultKind, "") === "direct_sub_agent_runtime";
-    const statefulExecResult = normalizeString(envelope.resultKind, "") === "stateful_exec";
     const outputType = normalizeString(obligation.providerCallType || obligation.toolType, "") === "custom_tool_call"
       ? "custom_tool_call_output"
       : "function_call_output";
@@ -6369,9 +7153,7 @@ class DirectLiveTextController {
         toolLoopId: normalizeString(obligation.toolLoopId, `utility_loop_${sha256(`${sessionId}:${turnId}`).slice(0, 20)}`),
         stepId: normalizeString(obligation.stepId, `utility_step_${sha256(`${obligation.obligationId}:${resultId}`).slice(0, 20)}`),
         stepOrdinal: Number(obligation.stepOrdinal || 1) || 1,
-        maxStepCount: nativeAgentRuntimeResult
-          ? MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS
-          : statefulExecResult ? MAX_READONLY_TOOL_LOOP_STEPS : 1,
+        maxStepCount: MAX_READONLY_TOOL_LOOP_STEPS,
         parentResponseId: normalizeString(obligation.parentResponseId, ""),
         parentResponseSource: normalizeString(obligation.parentResponseSource, ""),
         parentResponseDigest: normalizeString(obligation.parentResponseDigest, ""),
@@ -6406,7 +7188,8 @@ class DirectLiveTextController {
       requestControls: {
         store: false,
         parallelToolCalls: false,
-        toolDeclarations: nativeAgentRuntimeResult || statefulExecResult,
+        // Every continuation declares the turn's grant-authorized tools.
+        toolDeclarations: true,
         toolOutputItem: true,
         previousResponseId: false,
       },
@@ -6426,6 +7209,7 @@ class DirectLiveTextController {
         ? "direct_epistemic_ledger_tool_result@1"
         : "direct_safe_resident_utility_result@1",
       resultId: normalizeString(continuationRequest.toolResult?.metadata?.resultId, ""),
+      obligationId: normalizeString(obligation.obligationId, ""),
       envelopeId: normalizeString(envelope.envelopeId, ""),
       envelopeDigest: normalizeString(envelope.envelopeDigest, ""),
       gateId: normalizeString(envelope.gateId, ""),
@@ -6463,6 +7247,228 @@ class DirectLiveTextController {
     return { result, continuationRequest, obligation: updated.obligation };
   }
 
+  captureAdmittedProviderContext(turn = {}, requestBody = {}) {
+    // Capture only after the initial request has been fully assembled, including
+    // admitted dialogue, attachments and instructions. This is continuity data;
+    // the current grant remains the sole source of executable capabilities.
+    const snapshot = {
+      schema: "direct_admitted_provider_context@1",
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      model: requestBody.model,
+      reasoningEffort: requestBody.reasoning?.effort || "",
+      serviceTier: requestBody.service_tier || "",
+      input: JSON.parse(JSON.stringify(requestBody.input || [])),
+      instructions: requestBody.instructions || "",
+    };
+    return { ...snapshot, digest: sha256(stableStringify(snapshot)) };
+  }
+
+  buildBoundUtilityContinuationContext(turn = {}, recorded = {}, sessionId = "", turnId = "") {
+    const remand = (code) => {
+      const error = new Error("The utility continuation lacks exact admitted context or result lineage.");
+      error.code = code;
+      throw error;
+    };
+    const admitted = turn.admittedProviderContext;
+    if (!isPlainObject(admitted) || admitted.schema !== "direct_admitted_provider_context@1") {
+      remand("direct_utility_continuation_context_missing");
+    }
+    const { digest, ...snapshot } = admitted;
+    if (!sessionId || !turnId || turn.sessionId !== sessionId || turn.turnId !== turnId ||
+        admitted.sessionId !== sessionId || admitted.turnId !== turnId ||
+        digest !== sha256(stableStringify(snapshot)) ||
+        !Array.isArray(admitted.input) || !admitted.input.length ||
+        typeof admitted.instructions !== "string" ||
+        admitted.model !== turn.model || admitted.reasoningEffort !== (turn.reasoningEffort || "") ||
+        admitted.serviceTier !== (turn.serviceTier || "")) {
+      remand("direct_utility_continuation_context_mismatch");
+    }
+    const obligations = new Map();
+    for (const obligation of turn.unresolvedObligations || []) {
+      if (!obligation?.obligationId || obligations.has(obligation.obligationId) ||
+          obligation.sessionId !== sessionId || obligation.turnId !== turnId) {
+        remand("direct_utility_continuation_result_lineage_mismatch");
+      }
+      obligations.set(obligation.obligationId, obligation);
+    }
+    const resultIds = new Set();
+    const obligationIds = new Set();
+    const priorToolResults = [];
+    for (const result of turn.toolResults || []) {
+      const obligation = obligations.get(result?.obligationId);
+      if (!obligation || !result.resultId || typeof result.providerOutputText !== "string" ||
+          resultIds.has(result.resultId) || obligationIds.has(result.obligationId) ||
+          obligation.result?.resultId !== result.resultId ||
+          stableStringify(obligation.result) !== stableStringify(result)) {
+        remand("direct_utility_continuation_result_lineage_mismatch");
+      }
+      resultIds.add(result.resultId);
+      obligationIds.add(result.obligationId);
+      priorToolResults.push({
+        obligationId: result.obligationId,
+        resultId: result.resultId,
+        toolName: obligation.name,
+        callId: obligation.callId,
+        providerCallType: normalizeString(obligation.providerCallType || obligation.toolType, "function_call"),
+        argumentsText: typeof obligation.argumentsText === "string" ? obligation.argumentsText : "",
+        resultKind: result.resultKind || result.schema,
+        providerOutputText: result.providerOutputText,
+      });
+    }
+    if (!priorToolResults.some((result) => result.resultId === recorded.result?.resultId &&
+        result.obligationId === recorded.result?.obligationId)) {
+      remand("direct_utility_continuation_current_result_missing");
+    }
+    const context = {
+      schema: "direct_bound_utility_continuation_context@1",
+      sessionId,
+      turnId,
+      admittedContextDigest: digest,
+      currentResultId: recorded.result.resultId,
+      currentObligationId: recorded.result.obligationId,
+      priorToolResults,
+      grantsAuthority: false,
+    };
+    return { ...context, digest: sha256(stableStringify(context)) };
+  }
+
+  // As in Codex: the turn's input, then each call the model made this turn
+  // followed by its output. Quoting results as user text instead left the
+  // model unable to tell it had already made a call, so it repeated it.
+  boundUtilityContinuationInput(admitted = {}, context = {}) {
+    const items = [];
+    for (const prior of context.priorToolResults || []) {
+      const callId = normalizeString(prior.callId, "");
+      const name = normalizeString(prior.toolName, "");
+      if (!callId || !name) continue;
+      if (prior.providerCallType === "custom_tool_call") {
+        items.push(
+          { type: "custom_tool_call", call_id: callId, name, input: prior.argumentsText || "" },
+          { type: "custom_tool_call_output", call_id: callId, output: prior.providerOutputText },
+        );
+      } else {
+        items.push(
+          { type: "function_call", call_id: callId, name, arguments: prior.argumentsText || "{}" },
+          { type: "function_call_output", call_id: callId, output: prior.providerOutputText },
+        );
+      }
+    }
+    return [...JSON.parse(JSON.stringify(admitted.input)), ...items];
+  }
+
+  // Earlier turns of the thread as Codex sends them: each user message, the
+  // calls the model made with their (bounded) outputs, and its reply, as
+  // real input items. The quoted transcript collapsed every tool call to a
+  // placeholder line, so the model couldn't see what it had done, and its
+  // shape changed every turn, defeating the prompt cache. Oldest turns drop
+  // first beyond the budget.
+  priorTurnHistoryItems(sessionId = "", currentTurnId = "") {
+    const session = this.sessionStore.readSession(sessionId) || {};
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    const turns = [];
+    for (const summary of Array.isArray(session.turns) ? session.turns : []) {
+      const turnId = normalizeString(summary?.turnId, "");
+      if (!turnId || turnId === currentTurnId) continue;
+      const turn = this.sessionStore.readTurn(sessionId, turnId);
+      if (!turn || turn.preTransportFailed === true || !TERMINAL_TURN_STATES.has(normalizeString(turn.state, ""))) continue;
+      const items = [];
+      const userText = (Array.isArray(turn.input) ? turn.input : [])
+        .map((entry) => normalizeString(entry?.text, ""))
+        .filter(Boolean)
+        .join("\n\n");
+      if (userText) items.push({ role: "user", content: [{ type: "input_text", text: historyText(userText) }] });
+      const results = new Map((Array.isArray(turn.toolResults) ? turn.toolResults : []).map((result) => [result.obligationId, result]));
+      for (const obligation of Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : []) {
+        const callId = normalizeString(obligation?.callId, "");
+        const name = normalizeString(obligation?.name, "");
+        if (!callId || !name) continue;
+        const outputText = historyToolOutput(name, results.get(obligation.obligationId)?.providerOutputText ?? obligation.result?.providerOutputText);
+        if (normalizeString(obligation.providerCallType || obligation.toolType, "") === "custom_tool_call") {
+          items.push(
+            { type: "custom_tool_call", call_id: callId, name, input: historyText(obligation.argumentsText || "", HISTORY_ARGUMENTS_CHARS) },
+            { type: "custom_tool_call_output", call_id: callId, output: outputText },
+          );
+        } else {
+          items.push(
+            { type: "function_call", call_id: callId, name, arguments: historyText(normalizeString(obligation.argumentsText, "{}"), HISTORY_ARGUMENTS_CHARS) },
+            { type: "function_call_output", call_id: callId, output: outputText },
+          );
+        }
+      }
+      const message = messages.find((entry) => entry?.id === turnId);
+      const replyText = (Array.isArray(message?.items) ? message.items : [])
+        .filter((item) => item?.type === "agentMessage")
+        .map((item) => normalizeString(item.text, ""))
+        .filter(Boolean)
+        .join("\n\n");
+      if (replyText) items.push({ role: "assistant", content: [{ type: "output_text", text: historyText(replyText) }] });
+      if (items.length) turns.push(items);
+    }
+    let budget = HISTORY_BUDGET_CHARS;
+    const kept = [];
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      const size = JSON.stringify(turns[index]).length;
+      if (kept.length && size > budget) break;
+      budget -= size;
+      kept.unshift(turns[index]);
+    }
+    return { items: kept.flat(), turnCount: kept.length, omittedTurnCount: turns.length - kept.length };
+  }
+
+  // The turn's input with history as items: earlier turns, then this turn's
+  // other context evidence (it changes per turn, so it sits after the
+  // history), then the current user message.
+  structuredHistoryInput(sessionId = "", currentTurnId = "", contextPack = {}) {
+    const history = this.priorTurnHistoryItems(sessionId, currentTurnId);
+    if (!history.items.length) return null;
+    const messages = Array.isArray(contextPack?.messages) ? contextPack.messages : [];
+    const current = messages.find((message) => message?.authority === "current-user-intent");
+    if (!current) return null;
+    const evidence = messages.filter((message) => message &&
+      message !== current &&
+      message.authority !== "harness-policy" &&
+      !(message.authority === "historical-evidence" && message.sourceProjectionId));
+    const evidenceText = evidence.map((message) => normalizeString(message.text, "")).filter(Boolean).join("\n\n");
+    // The user's own words, as they will appear in the next turn's history,
+    // so that turn's prefix matches this one.
+    const currentText = String(current.text || "").replace(/^\[CURRENT USER INTENT\]\n/, "");
+    const input = [
+      ...history.items,
+      ...(evidenceText ? [{ role: "user", content: [{ type: "input_text", text: evidenceText }] }] : []),
+      { role: "user", content: [{ type: "input_text", text: currentText }] },
+    ];
+    return { input, turnCount: history.turnCount, itemCount: history.items.length, omittedTurnCount: history.omittedTurnCount };
+  }
+
+  // Continuations keep the turn's instructions byte-identical and add their
+  // guidance as a trailing developer message: the backend's prompt cache
+  // matches exact prefixes, and a changed instruction suffix would push the
+  // tools and the whole input out of the cached prefix.
+  continuationRequestParts(admitted = {}, context = {}, continuationInstructions = "") {
+    const guidance = normalizeString(continuationInstructions, "");
+    return {
+      contextInput: [
+        ...this.boundUtilityContinuationInput(admitted, context),
+        ...(guidance ? [{ role: "developer", content: [{ type: "input_text", text: guidance }] }] : []),
+      ],
+      instructions: admitted.instructions,
+    };
+  }
+
+  // A file, patch, or command continuation resends what the turn started with
+  // (dialogue, attachments, instructions) plus every result so far, as the
+  // utility continuations do. Turns without a captured start keep the
+  // single-result context pack.
+  boundToolContinuationOptions(sessionId, turnId, obligationId, continuationInstructions = "") {
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    if (!isPlainObject(turn.admittedProviderContext)) return null;
+    const obligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId)?.obligation;
+    if (!isPlainObject(obligation?.result)) return null;
+    const context = this.buildBoundUtilityContinuationContext(turn, { result: obligation.result }, sessionId, turnId);
+    return this.continuationRequestParts(turn.admittedProviderContext, context, continuationInstructions);
+  }
+
   appendUtilityContinuationMessage(sessionId, turnId, continuationId, normalizedEvents = [], terminal = {}) {
     const text = assistantTextFromDirectEvents(normalizedEvents);
     if (!text) return;
@@ -6490,8 +7496,22 @@ class DirectLiveTextController {
 
   async continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation = {}, envelope = {}, project = {}) {
     const recorded = this.recordSafeResidentUtilityResult(sessionId, turnId, obligation, envelope);
+    if (await this.continueToolBatch(surfaceSession, sessionId, turnId, obligation.obligationId, project)) {
+      return {
+        decision: "utility_result_recorded",
+        deferredToBatch: true,
+        turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
+        obligation: recorded.obligation,
+        envelope,
+      };
+    }
     const continuationRequest = recorded.continuationRequest;
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const boundContinuationContext = this.buildBoundUtilityContinuationContext(turn, recorded, sessionId, turnId);
+    continuationRequest.context = boundContinuationContext;
+    this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+      continuationRequest,
+    }, { nextTurnState: "continuation_ready" });
     const resultKind = normalizeString(envelope.resultKind, "");
     const ledgerContinuation = resultKind === "epistemic_ledger_act";
     const selfConstitutionContinuation = resultKind === "self_constitution_snapshot";
@@ -6501,50 +7521,42 @@ class DirectLiveTextController {
       "sub_agent_inspect_status",
     ].includes(resultKind);
     const statefulExecContinuation = resultKind === "stateful_exec";
-    const residentContinuation = ledgerContinuation || agentRuntimeContinuation || statefulExecContinuation;
     const directStatus = this.statusForProject(project || {});
     const ledgerBinding = this.epistemicLedgerTurnBinding(sessionId, turnId);
-    const harnessGrant = statefulExecContinuation
-      ? this.harnessGrantForTurn(sessionId, turnId, project || {})
-      : null;
-    const continuationToolNames = ledgerContinuation
-      ? implementationContinuationToolNames(
-          directStatus,
-          userPromptTextFromTurn(turn),
-        )
-      : agentRuntimeContinuation
-        ? [
-            ...NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES,
-            ...READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES,
-          ]
-        : statefulExecContinuation
-          ? harnessGrantCapabilityNames(harnessGrant)
-              .filter((name) => STATEFUL_EXEC_CAPABILITY_NAMES.includes(name))
-        : [];
-    const continuationToolComposition = residentContinuation
-      ? composeImplementationToolBundleForRequest({
-          projectId: normalizeString(
-            project?.id || project?.projectId || project?.name,
-            ledgerBinding?.bundle?.scope?.projectId || "",
-          ),
-          sessionId,
-          turnId,
-          toolNames: continuationToolNames,
-          useLaneDefaultTools: false,
-          sourceMessageId: `${turnId}_${obligation.obligationId}_${ledgerContinuation ? "ledger" : "agent_runtime"}_continuation`,
-          normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligation.obligationId}_${Number(obligation.stepOrdinal || 1)}`,
-          workThreadId: normalizeString(
-            ledgerBinding?.bundle?.scope?.workThreadId,
-            directWorkThreadContextCarrier(turn, project, obligation).workThreadId,
-          ),
-          runtimeFactsId:
-            directStatus.evidenceId || "direct_runtime_facts",
-          externalCapabilityProfile: directStatus.externalCapabilityProfile,
-          providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
-          harnessGrant,
-          roleLedgerToolBundle: ledgerContinuation ? ledgerBinding?.bundle : null,
-        })
-      : { tools: [], toolNames: [] };
+    // Every continuation offers the turn's full tool set: what the thread's
+    // grant authorizes (or, without a grant, the turn's implementation tools),
+    // plus the turn's bound ledger operations. No step cap.
+    const harnessGrant = this.harnessGrantForTurn(sessionId, turnId, project || {});
+    const continuationToolNames = harnessGrant
+      ? harnessGrantCapabilityNames(harnessGrant)
+      : [
+          ...implementationContinuationToolNames(directStatus, userPromptTextFromTurn(turn)),
+          ...NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES,
+          ...READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES,
+        ];
+    const continuationToolComposition = this.withEnvironmentTools(composeImplementationToolBundleForRequest({
+      projectId: normalizeString(
+        project?.id || project?.projectId || project?.name,
+        ledgerBinding?.bundle?.scope?.projectId || "",
+      ),
+      sessionId,
+      turnId,
+      toolNames: [...new Set(continuationToolNames)],
+      useLaneDefaultTools: false,
+      sourceMessageId: `${turnId}_${obligation.obligationId}_continuation`,
+      normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligation.obligationId}_${Number(obligation.stepOrdinal || 1)}`,
+      workThreadId: normalizeString(
+        ledgerBinding?.bundle?.scope?.workThreadId,
+        directWorkThreadContextCarrier(turn, project, obligation).workThreadId,
+      ),
+      runtimeFactsId:
+        directStatus.evidenceId || "direct_runtime_facts",
+      externalCapabilityProfile: directStatus.externalCapabilityProfile,
+      providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
+      harnessGrant,
+      executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
+      roleLedgerToolBundle: ledgerBinding?.bundle || null,
+    }), project, sessionId, harnessGrant);
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       status: "continuation_sent",
       authorityState: "continuation_sent",
@@ -6561,24 +7573,34 @@ class DirectLiveTextController {
       refreshCredentials: this.refreshCredentials,
       profileDoc: this.profileDoc,
       model: normalizeString(turn.model, ""),
+      reasoningEffort: normalizeString(turn.reasoningEffort, ""),
+      serviceTier: normalizeString(turn.serviceTier || turn.service_tier, ""),
+      cyberAccessProgram: normalizeString(turn.cyberAccessProgram, ""),
+      promptCacheKey: sessionId,
       fetchImpl: this.fetchImpl || undefined,
-      instructions: agentRuntimeContinuation
-        ? NATIVE_AGENT_RUNTIME_CONTINUATION_INSTRUCTIONS
-        : statefulExecContinuation
-          ? statefulExecContinuationInstructions(
-              continuationToolNames,
-              normalizeString(
-                envelope.providerOutput?.sessionId ||
-                  envelope.providerOutput?.statefulExecSessionId ||
-                  obligation.statefulExecSessionId,
-                "",
-              ),
-            )
-        : selfConstitutionContinuation
-          ? SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS
-          : DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
+      signal: this.turnAbortSignal(turnId),
+      ...this.continuationRequestParts(
+        turn.admittedProviderContext,
+        boundContinuationContext,
+        agentRuntimeContinuation
+          ? NATIVE_AGENT_RUNTIME_CONTINUATION_INSTRUCTIONS
+          : statefulExecContinuation
+            ? statefulExecContinuationInstructions(
+                continuationToolNames,
+                normalizeString(
+                  envelope.providerOutput?.sessionId ||
+                    envelope.providerOutput?.statefulExecSessionId ||
+                    obligation.statefulExecSessionId,
+                  "",
+                ),
+              )
+          : selfConstitutionContinuation
+            ? SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS
+            : DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
+      ),
       continuationTools: continuationToolComposition.tools,
       onLifecycle: (event) => {
+        this.noteStreamStall(surfaceSession, sessionId, turnId, event);
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
             threadId: sessionId,
@@ -6593,7 +7615,7 @@ class DirectLiveTextController {
       this.sessionStore.appendNormalizedEvents(sessionId, turnId, result.normalizedEvents, {});
     }
     const streamTerminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents || []);
-    const nestedToolCall = residentContinuation && (result.normalizedEvents || []).some(
+    const nestedToolCall = (result.normalizedEvents || []).some(
       (event) =>
         event?.type === "tool_call_started" ||
         event?.type === "tool_call_delta" ||
@@ -6618,46 +7640,21 @@ class DirectLiveTextController {
         },
       );
       nextToolObligations = obligationResult.obligations;
-      const nextToolName = normalizeString(nextToolObligations[0]?.name, "");
-      const nextToolAllowed =
-        nextToolObligations.length === 1 &&
-        (ledgerContinuation
-          ? continuationToolComposition.toolNames.includes(nextToolName)
-          : statefulExecContinuation
-            ? continuationToolComposition.toolNames.includes(nextToolName) &&
-              this.harnessGrantAuthorizationFor(
-                sessionId,
-                turnId,
-                project,
-                nextToolName,
-              ).authorized
-          : isNativeSubAgentRuntimeToolName(nextToolName) ||
-            isReadOnlySubAgentStatusToolName(nextToolName));
-      const loopCap = agentRuntimeContinuation
-        ? MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS
-        : MAX_READONLY_TOOL_LOOP_STEPS;
-      const loopCapExceeded = nextStepOrdinal > loopCap;
-      if (nextToolAllowed && !loopCapExceeded) {
+      // Any declared tool may follow, several in one response; each one is
+      // then dispatched and authorized like the turn's first call.
+      const declaredNames = new Set(continuationToolComposition.toolNames);
+      const nextToolAllowed = nextToolObligations.length > 0 &&
+        nextToolObligations.every((next) => declaredNames.has(normalizeString(next?.name, "")));
+      if (nextToolAllowed) {
         terminal = { state: "tool_waiting", error: null };
-        continuationOutcome = ledgerContinuation
-          ? "next_epistemic_ledger_step"
-          : statefulExecContinuation
-            ? "next_stateful_exec_step"
-          : "next_native_agent_runtime_step";
+        continuationOutcome = "next_tool_step";
       } else {
-        const transitionKind = ledgerContinuation
-          ? "epistemic_ledger"
-          : statefulExecContinuation ? "stateful_exec" : "agent_runtime";
-        const failureKind = loopCapExceeded
-          ? `${transitionKind}_tool_loop_cap_exceeded`
-          : `unsupported_${transitionKind === "agent_runtime" ? "native_agent_runtime" : transitionKind}_transition`;
+        const failureKind = "undeclared_tool_call";
         terminal = {
           state: "failed",
           error: {
             code: failureKind,
-            message: loopCapExceeded
-              ? `Direct ${transitionKind.replaceAll("_", "-")} tool loop reached its configured step cap.`
-              : `Direct ${transitionKind.replaceAll("_", "-")} continuation emitted an unsupported or ambiguous tool transition.`,
+            message: "The model called a tool that wasn't declared for this continuation.",
           },
         };
         continuationOutcome = failureKind;
@@ -6678,10 +7675,7 @@ class DirectLiveTextController {
     }
     const continuationOk =
       (result.ok === true && terminal.state === "completed") ||
-      (
-        terminal.state === "tool_waiting" &&
-        ["next_epistemic_ledger_step", "next_native_agent_runtime_step", "next_stateful_exec_step"].includes(continuationOutcome)
-      );
+      (terminal.state === "tool_waiting" && continuationOutcome === "next_tool_step");
     const completedTurn = this.sessionStore.updateTurnState(sessionId, turnId, terminal.state, {
       continuationResponseId: normalizeString(result.responseId, ""),
       continuationResult: {
@@ -6708,31 +7702,18 @@ class DirectLiveTextController {
         continuationOutcome,
       },
     }, {});
-    if (residentContinuation) {
-      await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, {
-        turnState: completedTurn.state,
-        nextToolObligations,
-      }, project, {
-        streamPhase: ledgerContinuation
-          ? "ledger-continuation"
-          : statefulExecContinuation
-            ? "stateful-exec-continuation"
-          : "native-agent-runtime-continuation",
-        approvalMessage: `Direct ${ledgerContinuation ? "ledger" : statefulExecContinuation ? "stateful-exec" : "native-agent"} continuation advanced to another governed tool transition.`,
-        unavailableMessage: `Direct ${ledgerContinuation ? "ledger" : statefulExecContinuation ? "stateful-exec" : "native-agent"} continuation requested an unavailable transition.`,
-      });
-    } else {
-      this.emitNotification(surfaceSession, "turn/completed", {
-        threadId: sessionId,
-        turnId,
-        turn: {
-          id: turnId,
-          status: terminalStatusForState(completedTurn.state),
-          completedAt: nowSeconds(),
-          streamPhase: "utility-continuation",
-        },
-      });
-    }
+    await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, {
+      turnState: completedTurn.state,
+      nextToolObligations,
+    }, project, {
+      streamPhase: ledgerContinuation
+        ? "ledger-continuation"
+        : statefulExecContinuation
+          ? "stateful-exec-continuation"
+          : agentRuntimeContinuation
+            ? "native-agent-runtime-continuation"
+            : "utility-continuation",
+    });
     return {
       decision: "utility_continued",
       turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
@@ -6902,6 +7883,79 @@ class DirectLiveTextController {
       blockerCode,
       observedAt: nowIso(),
       message,
+      // Lets the parent's transcript show where a delegated child runs.
+      ...(isPlainObject(providerOutput.delegation || firstUpdate.delegation)
+        ? { delegation: { ...(providerOutput.delegation || firstUpdate.delegation) } }
+        : {}),
+    });
+  }
+
+  // Projects this thread's agent may delegate to (main reads them from the
+  // owner's project settings). A delegated child never delegates again.
+  delegationProjects() {
+    if (!this.delegationProjectsResolver) return [];
+    try {
+      const projects = this.delegationProjectsResolver();
+      return Array.isArray(projects) ? projects : [];
+    } catch {
+      return [];
+    }
+  }
+
+  delegationTargetsFor(project = {}, session = {}) {
+    if (isPlainObject(session?.delegatedFrom)) return [];
+    return listDelegationTargets(this.delegationProjects(), project);
+  }
+
+  /**
+   * spawn_agent with target_project/target_folder: a full agent in another
+   * project, usually the other environment. The owner's per-project
+   * acceptance is the policy here, so the active sub-agent policy (which
+   * shapes in-place children) doesn't apply. The child's Access is the lower
+   * of this thread's Access and the target's limit.
+   */
+  launchDelegatedChild({ args = {}, session = {}, turn = {}, project = {}, projectId = "", workThreadId = "", sessionId = "" } = {}) {
+    const blocked = (blockerCode, blockerDetail = "") => ({ status: "blocked", blockerCode, blockerDetail, updates: [] });
+    if (isPlainObject(session.delegatedFrom)) {
+      return blocked("direct_delegated_child_cannot_delegate", "A delegated agent can't delegate further.");
+    }
+    const targetProject = normalizeString(args.target_project || args.targetProject, "");
+    const targetFolder = normalizeString(args.target_folder || args.targetFolder, "");
+    const resolution = resolveDelegationTarget({
+      projects: this.delegationProjects(),
+      sourceProject: project,
+      targetProject,
+      targetFolder,
+    });
+    if (!resolution.ok) return blocked(resolution.code, resolution.message);
+    const grant = this.resolveHarnessGrant(project, session);
+    const parentAccessProfile = grant ? grantAccessProfile(grant) : "read_only";
+    return this.subAgentPool.launch({
+      projectId,
+      workThreadId,
+      primaryThreadId: sessionId,
+      parentAgentId: normalizeString(session.agentThreadId || session.agentId, sessionId),
+      taskName: args.task_name || args.taskName,
+      message: args.message,
+      model: args.model,
+      reasoningEffort: args.reasoning_effort || args.reasoningEffort,
+      parentModel: normalizeString(turn.model, session.model),
+      parentReasoningEffort: normalizeString(turn.reasoningEffort, session.reasoningEffort),
+      delegation: {
+        targetProjectId: resolution.targetProjectId || resolution.rootProjectId,
+        targetProjectName: normalizeString(resolution.target?.name, ""),
+        environment: resolution.target?.environment || {},
+        folder: resolution.folder,
+        accessCeiling: resolution.accessCeiling,
+        accessProfile: lowerAccessProfile(parentAccessProfile, resolution.accessCeiling),
+        targetProject,
+        targetFolder,
+        sourceProjectId: normalizeString(project.id, projectId),
+        sourceProjectName: normalizeString(project.name, ""),
+        sourceThreadId: sessionId,
+        sourceEnvironment: delegationProjectEnvironment(project),
+        parentAccessProfile,
+      },
     });
   }
 
@@ -6923,6 +7977,8 @@ class DirectLiveTextController {
         blockerCode: "direct_native_agent_pool_unavailable",
         updates: [],
       };
+    } else if (toolName === "spawn_agent" && spawnRequestsDelegation(args)) {
+      runtimeResult = this.launchDelegatedChild({ args, session, turn, project, projectId, workThreadId, sessionId });
     } else if (toolName === "spawn_agent") {
       let spawnArgs = args;
       let activeSubAgentPolicyDecision = null;
@@ -7104,6 +8160,9 @@ class DirectLiveTextController {
           kind: "spawn_agent_result",
           status: normalizeString(runtimeResult.status, "blocked"),
           blockerCode: normalizeString(runtimeResult.blockerCode, ""),
+          // Delegation refusals explain themselves (e.g. which targets exist).
+          ...(normalizeString(runtimeResult.blockerDetail, "") ? { blockerDetail: normalizeString(runtimeResult.blockerDetail, "") } : {}),
+          ...(isPlainObject(runtimeResult.delegation) ? { delegation: { ...runtimeResult.delegation } } : {}),
           taskName: normalizeString(runtimeResult.taskName, ""),
           childAgentId: normalizeString(runtimeResult.childAgentId, ""),
           state: normalizeString(runtimeResult.state, runtimeResult.status),
@@ -7143,7 +8202,16 @@ class DirectLiveTextController {
           blockerCode: normalizeString(runtimeResult.blockerCode, ""),
           updates: (Array.isArray(runtimeResult.updates) ? runtimeResult.updates : []).map((update) => {
             const workspaceWorker = normalizeString(update.workspaceMode, "reasoning_only") === "isolated_worktree";
+            // A delegated child's final message comes back, as in Codex.
+            const delegated = isPlainObject(update.delegation);
             return {
+              ...(delegated
+                ? {
+                    delegation: { ...update.delegation },
+                    finalMessage: typeof update.finalMessage === "string" ? update.finalMessage : "",
+                    finalMessageTruncated: update.finalMessageTruncated === true,
+                  }
+                : {}),
               childAgentId: normalizeString(update.childAgentId, ""),
               taskName: normalizeString(update.taskName, ""),
               state: normalizeString(update.state, ""),
@@ -7167,8 +8235,8 @@ class DirectLiveTextController {
               epistemicCaptureOmission: update.epistemicCaptureOmission || null,
               evidenceConfidence: normalizeString(update.evidenceConfidence, "unknown"),
               continuationTrace: update.continuationTrace || null,
-              childOutputIncluded: false,
-              rawChildProseIncluded: false,
+              childOutputIncluded: delegated,
+              rawChildProseIncluded: delegated,
             };
           }),
           pool: runtimeResult.pool || this.subAgentPool?.descriptor?.() || null,
@@ -7519,31 +8587,104 @@ class DirectLiveTextController {
     return 1;
   }
 
-  async emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligations = [], project = {}) {
-    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
-    if (obligations.length !== 1) {
-      for (const obligation of obligations) {
-        this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
-          status: "unsupported",
-          authorityState: "unsupported",
-          approvalAvailable: false,
-          executionAllowed: false,
-          continuationAllowed: false,
-          failureKind: "multiple_tool_calls_unsupported",
-        }, {
-          nextTurnState: "failed",
-          turnPatch: {
-            error: {
-              code: "multiple_tool_calls_unsupported",
-              message: "Direct read-only continuation supports exactly one tool obligation in this bundle.",
-            },
-          },
-        });
-      }
-      return 0;
+  turnAbortController(turnId) {
+    const key = normalizeString(turnId, "");
+    let controller = this.turnAbortControllers.get(key);
+    if (!controller) {
+      controller = new AbortController();
+      this.turnAbortControllers.set(key, controller);
     }
+    return controller;
+  }
+
+  turnAbortSignal(turnId) {
+    return this.turnAbortController(turnId).signal;
+  }
+
+  // A provider stream that pauses mid-response gets a visible note, so a
+  // long wait reads as the backend pausing rather than the app hanging.
+  noteStreamStall(surfaceSession, sessionId, turnId, event = {}) {
+    if (event.phase !== "stream_stalled" && event.phase !== "stream_resumed") return;
+    const seconds = Math.round(Number(event.silentMs || 0) / 1000);
+    const message = event.phase === "stream_stalled"
+      ? `The model's response has paused for ${seconds} s on the provider side; still waiting.`
+      : `The model's response resumed after a ${seconds} s pause.`;
+    this.emitNotification(surfaceSession, "warning", { threadId: sessionId, turnId, message, kind: event.phase });
+  }
+
+  forgetTurnRuntime(turnId, sessionId = "", project = null) {
+    const key = normalizeString(turnId, "");
+    this.turnAbortControllers.delete(key);
+    this.turnExecSessionIds?.delete(key);
+    if (sessionId && project) this.revertTurnScopedAccess(project, sessionId, key);
+  }
+
+  turnStopRequested(sessionId, turnId) {
+    if (this.turnAbortControllers.get(normalizeString(turnId, ""))?.signal.aborted) return true;
+    return normalizeString(this.sessionStore.readTurn(sessionId, turnId)?.state, "") === "aborted";
+  }
+
+  // Ends a stopped turn instead of running its next tool call. True when the
+  // turn was stopped.
+  endTurnIfStopped(surfaceSession, sessionId, turnId) {
+    if (!this.turnStopRequested(sessionId, turnId)) return false;
+    this.toolBatches.delete(toolBatchKey(sessionId, turnId));
+    const turn = this.sessionStore.readTurn(sessionId, turnId);
+    if (turn && turn.state !== "aborted") {
+      this.sessionStore.updateTurnState(sessionId, turnId, "aborted", { error: null });
+    }
+    this.emitNotification(surfaceSession, "turn/completed", {
+      threadId: sessionId,
+      turnId,
+      turn: { id: turnId, status: "aborted", completedAt: nowSeconds() },
+    });
+    return true;
+  }
+
+  async emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligations = [], project = {}) {
+    const list = (Array.isArray(obligations) ? obligations : []).filter((obligation) => obligation?.obligationId);
+    if (!list.length) return 0;
+    if (this.endTurnIfStopped(surfaceSession, sessionId, turnId)) return 0;
+    // Several calls in one response run one after another, in order. Each
+    // one's continuation is held back until the last, whose continuation
+    // carries every result (continuations quote all of the turn's results).
+    if (list.length > 1) {
+      this.toolBatches.set(toolBatchKey(sessionId, turnId), {
+        obligationIds: list.map((obligation) => obligation.obligationId),
+        next: 1,
+      });
+    }
+    return this.dispatchToolObligations(surfaceSession, sessionId, turnId, [list[0]], project);
+  }
+
+  // Called where a tool's continuation would be sent. True when that
+  // continuation is held back because more calls from the same response
+  // remain; the next one has then been dispatched.
+  async continueToolBatch(surfaceSession, sessionId, turnId, obligationId, project = {}) {
+    const key = toolBatchKey(sessionId, turnId);
+    const batch = this.toolBatches.get(key);
+    if (!batch || !batch.obligationIds.includes(obligationId)) return false;
+    if (this.endTurnIfStopped(surfaceSession, sessionId, turnId)) return true;
+    while (batch.next < batch.obligationIds.length) {
+      const nextId = batch.obligationIds[batch.next];
+      batch.next += 1;
+      const next = this.sessionStore.findToolObligation(sessionId, turnId, nextId)?.obligation;
+      if (!next) continue;
+      await this.dispatchToolObligations(surfaceSession, sessionId, turnId, [next], project);
+      return true;
+    }
+    this.toolBatches.delete(key);
+    return false;
+  }
+
+  async dispatchToolObligations(surfaceSession, sessionId, turnId, obligations = [], project = {}) {
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
     let createdCount = 0;
     for (const obligation of obligations) {
+      if (normalizeString(obligation.name, "") === REQUEST_PERMISSIONS_TOOL_NAME) {
+        createdCount += await this.emitPermissionsRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
       if (this.isEpistemicLedgerObligation(sessionId, turnId, obligation)) {
         createdCount += await this.emitEpistemicLedgerRequest(
           surfaceSession,
@@ -7589,7 +8730,7 @@ class DirectLiveTextController {
           return createdCount;
         }
         const params = this.readOnlyToolRequestParams(obligation, turn, project);
-        const loopCapExceeded = Number(params.stepOrdinal || 1) > MAX_READONLY_TOOL_LOOP_STEPS;
+        const loopCapExceeded = false; // No step cap (as in Codex).
         if (params.approvalAvailable && !loopCapExceeded) {
           const grantAuthorization = this.harnessGrantAuthorizationFor(
             sessionId,
@@ -7638,7 +8779,7 @@ class DirectLiveTextController {
       }
       if (typeof surfaceSession.createReadOnlyToolRequest !== "function") continue;
       const params = this.readOnlyToolRequestParams(obligation, turn, project);
-      const loopCapExceeded = Number(params.stepOrdinal || 1) > MAX_READONLY_TOOL_LOOP_STEPS;
+      const loopCapExceeded = false; // No step cap (as in Codex).
       if (!params.approvalAvailable || loopCapExceeded) {
         this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
           status: "unsupported",
@@ -7718,6 +8859,32 @@ class DirectLiveTextController {
   async emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, continuation = {}, project = {}, options = {}) {
     const streamPhase = normalizeString(options.streamPhase, "continuation");
     if (continuation.turnState === "tool_waiting" && Array.isArray(continuation.nextToolObligations) && continuation.nextToolObligations.length) {
+      const loop = repeatedToolCallLoop(this.sessionStore.readTurn(sessionId, turnId) || {}, continuation.nextToolObligations);
+      if (loop) {
+        const error = {
+          code: "repeated_tool_call",
+          message: `Stopped: the model called ${loop.toolName} ${loop.repeats} times in a row with the same arguments and got the same result each time.`,
+        };
+        for (const next of continuation.nextToolObligations) {
+          this.sessionStore.updateToolObligation(sessionId, turnId, next.obligationId, {
+            status: "unsupported",
+            authorityState: "unsupported",
+            approvalAvailable: false,
+            executionAllowed: false,
+            continuationAllowed: false,
+            failureKind: error.code,
+          }, { nextTurnState: "failed", turnPatch: { error } });
+        }
+        this.toolBatches.delete(toolBatchKey(sessionId, turnId));
+        this.forgetTurnRuntime(turnId, sessionId, project);
+        this.emitNotification(surfaceSession, "warning", { threadId: sessionId, turnId, message: error.message });
+        this.emitNotification(surfaceSession, "turn/completed", {
+          threadId: sessionId,
+          turnId,
+          turn: { id: turnId, status: "failed", completedAt: nowSeconds(), streamPhase, error },
+        });
+        return false;
+      }
       const nextToolItems = continuation.nextToolObligations.map(toolTranscriptItemFromObligation);
       const currentSession = this.sessionStore.readSession(sessionId);
       if (currentSession && Array.isArray(currentSession.messages)) {
@@ -7742,24 +8909,40 @@ class DirectLiveTextController {
         this.emitNotification(surfaceSession, "item/started", { threadId: sessionId, turnId, item });
         this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
       }
-      const createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, continuation.nextToolObligations, project);
+      // Calls the thread's access covers run without asking; only a request
+      // actually put to the owner (an rpc-request) needs a warning.
+      let ownerRequests = 0;
+      const countOwnerRequests = (event) => {
+        if (event?.type === "rpc-request") ownerRequests += 1;
+      };
+      surfaceSession?.on?.("event", countOwnerRequests);
+      let createdApprovalRequests = 0;
+      try {
+        createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, continuation.nextToolObligations, project);
+      } finally {
+        surfaceSession?.off?.("event", countOwnerRequests);
+      }
       const ledgerOnly = continuation.nextToolObligations.every((obligation) =>
         this.isEpistemicLedgerObligation(sessionId, turnId, obligation));
       const agentRuntimeOnly = continuation.nextToolObligations.every((obligation) =>
         this.isNativeSubAgentRuntimeObligation(obligation) || this.isReadOnlySubAgentStatusObligation(obligation));
-      if (!agentRuntimeOnly) {
-        this.emitNotification(surfaceSession, "warning", {
-          threadId: sessionId,
-          turnId,
-          message: ledgerOnly
-            ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
-            : createdApprovalRequests
-              ? normalizeString(options.approvalMessage, "Direct implementation continuation requested another tool. Local approval is required.")
-              : normalizeString(options.unavailableMessage, "Direct implementation continuation requested another tool call, but it is not available for approval."),
-        });
+      // Calls that ran (or failed with their own turn error) move the turn on;
+      // only a turn left waiting with nothing asked of the owner is stuck.
+      const stuck = !createdApprovalRequests &&
+        normalizeString(this.sessionStore.readTurn(sessionId, turnId)?.state, "") === "tool_waiting";
+      const message = ledgerOnly
+        ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
+        : ownerRequests
+          ? normalizeString(options.approvalMessage, "The next tool call needs your approval.")
+          : stuck
+            ? normalizeString(options.unavailableMessage, "Direct implementation continuation requested another tool call, but it is not available for approval.")
+            : "";
+      if (!agentRuntimeOnly && message) {
+        this.emitNotification(surfaceSession, "warning", { threadId: sessionId, turnId, message });
       }
       return true;
     }
+    if (TERMINAL_TURN_STATES.has(continuation.turnState)) this.forgetTurnRuntime(turnId, sessionId, project);
     this.emitNotification(surfaceSession, "turn/completed", {
       threadId: sessionId,
       turnId,
@@ -8119,6 +9302,9 @@ class DirectLiveTextController {
         if (!freeText) freeText = text;
       }
     }
+    if (normalizeString(obligation.name, "") === REQUEST_PERMISSIONS_TOOL_NAME) {
+      return this.handlePermissionsResponse(context, sessionId, turnId, obligation, selectedChoiceIds);
+    }
     const envelope = buildHumanDecisionAnswerResultEnvelope({
       decisionPacketId: normalizeString(params.decisionPacketId, ""),
       callId: normalizeString(obligation.callId, ""),
@@ -8305,6 +9491,9 @@ class DirectLiveTextController {
         ? (method, params) => this.fullAccessLocalEnvironmentExecutor.request(fullAccessBinding, method, params)
         : (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
     });
+    if (await this.continueToolBatch(surfaceSession, sessionId, turnId, obligationId, project)) {
+      return { decision: "approved", deferredToBatch: true, turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)), obligation: approved.obligation, result: executed.result };
+    }
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
     const parentResponseId = parentResponseIdForToolStep(turn, currentObligation);
@@ -8331,10 +9520,11 @@ class DirectLiveTextController {
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
       harnessGrant,
+      executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
-    const continuationTools = continuationToolComposition.tools;
+    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant).tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
@@ -8381,7 +9571,8 @@ class DirectLiveTextController {
         parallelToolCalls: false,
         hasInstructions: true,
         hasPreviousResponseId: false,
-        toolOutputItem: false,
+        // Replayed as call and output items when the turn's start was captured.
+        toolOutputItem: isPlainObject(turn?.admittedProviderContext),
         functionCallOutputCount: 0,
         customToolCallOutputCount: 0,
         providerCallType: normalizeString(continuationRequest.toolResult?.providerCallType, ""),
@@ -8473,6 +9664,8 @@ class DirectLiveTextController {
             normalizeString(continuationContext?.providerInput?.prompt, ""),
           ].filter(Boolean).join("\n\n")
         : normalizeString(continuationContext?.providerInput?.prompt, ""),
+      ...this.boundToolContinuationOptions(sessionId, turnId, obligationId, DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS),
+      signal: this.turnAbortSignal(turnId),
       continuationTransportMode: "fresh_context",
       endpoint: this.endpoint || undefined,
       authStore: this.currentAuthStore(),
@@ -8487,6 +9680,7 @@ class DirectLiveTextController {
           ?.bundle?.operationNames || [],
       continuationTools,
       onLifecycle: (event) => {
+        this.noteStreamStall(surfaceSession, sessionId, turnId, event);
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
             threadId: sessionId,
@@ -8503,8 +9697,6 @@ class DirectLiveTextController {
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
     await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, continuation, project, {
       streamPhase: "continuation",
-      approvalMessage: "Direct read-only continuation requested another file. Local approval is required for the next read.",
-      unavailableMessage: "Direct read-only continuation requested another tool call, but it is not available for approval.",
     });
     return {
       decision: "approved",
@@ -8539,16 +9731,35 @@ class DirectLiveTextController {
       obligationId,
       approvedBy: normalizeString(options.approvedBy, "local-user"),
     });
+    const canReturnFailure = isPlainObject(this.sessionStore.readTurn(sessionId, turnId)?.admittedProviderContext);
     const executed = await executeApprovedPatchApplyObligation({
       sessionStore: this.sessionStore,
       sessionId,
       turnId,
       obligationId,
       clientPatchDecisionId: normalizeString(options.clientPatchDecisionId, ""),
+      continueOnFailure: canReturnFailure,
       workspaceRequest: fullAccessBinding
         ? (method, params) => this.fullAccessLocalEnvironmentExecutor.request(fullAccessBinding, method, params)
         : (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
     });
+    if (canReturnFailure && !executed.reused && (executed.failed || executed.ambiguous)) {
+      // As with a patch that fails its dry run, a failed apply is an answer
+      // for the model. When the failure can't prove nothing was written, the
+      // model is told to re-read the files before retrying.
+      const failedObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
+      await this.returnToolFailureToModel(surfaceSession, sessionId, turnId, failedObligation, project, {
+        code: executed.ambiguous ? "patch_execution_ambiguous" : normalizeString(executed.result?.error?.code, "patch_execution_failed"),
+        message: executed.ambiguous
+          ? `${normalizeString(executed.result?.error?.message, "Applying the patch failed.")} Some files may have been changed; read them before retrying.`
+          : `${normalizeString(executed.result?.error?.message, "Applying the patch failed.")} Nothing was written; read the file and retry.`,
+        ...(executed.failed ? { workspaceChanged: false } : { workspaceMayHaveChanged: true }),
+      });
+      return { decision: "approved", failureReturnedToModel: true, turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)), result: executed.result };
+    }
+    if (await this.continueToolBatch(surfaceSession, sessionId, turnId, obligationId, project)) {
+      return { decision: "approved", deferredToBatch: true, turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)), result: executed.result };
+    }
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
     const parentResponseId = parentResponseIdForToolStep(turn, currentObligation);
@@ -8573,10 +9784,11 @@ class DirectLiveTextController {
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
       harnessGrant,
+      executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
-    const continuationTools = continuationToolComposition.tools;
+    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant).tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
@@ -8618,7 +9830,8 @@ class DirectLiveTextController {
         toolCount: continuationTools.length,
         declaredToolNames: declaredContinuationToolNames,
         toolDeclarations: continuationTools.length > 0,
-        toolOutputItem: false,
+        // Replayed as call and output items when the turn's start was captured.
+        toolOutputItem: isPlainObject(turn?.admittedProviderContext),
         parallelToolCalls: false,
         hasInstructions: true,
         hasPreviousResponseId: false,
@@ -8704,6 +9917,8 @@ class DirectLiveTextController {
             normalizeString(continuationContext?.providerInput?.prompt, ""),
           ].filter(Boolean).join("\n\n")
         : normalizeString(continuationContext?.providerInput?.prompt, ""),
+      ...this.boundToolContinuationOptions(sessionId, turnId, obligationId, DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS),
+      signal: this.turnAbortSignal(turnId),
       continuationTransportMode: "fresh_context",
       endpoint: this.endpoint || undefined,
       authStore: this.currentAuthStore(),
@@ -8718,6 +9933,7 @@ class DirectLiveTextController {
           ?.bundle?.operationNames || [],
       continuationTools,
       onLifecycle: (event) => {
+        this.noteStreamStall(surfaceSession, sessionId, turnId, event);
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
             threadId: sessionId,
@@ -8732,8 +9948,6 @@ class DirectLiveTextController {
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
     await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, continuation, project, {
       streamPhase: "patch-continuation",
-      approvalMessage: "Direct patch continuation requested another tool. Local approval is required to continue the repair loop.",
-      unavailableMessage: "Direct patch continuation requested another tool call, but it is not available for approval.",
     });
     return {
       decision: "approved",
@@ -8770,6 +9984,10 @@ class DirectLiveTextController {
       clientCommandDecisionId: normalizeString(options.clientCommandDecisionId, ""),
       workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, Math.max(this.readOnlyWorkspaceTimeoutMs, Number(params?.timeoutMs || 0) + 5000)),
     });
+    if (executed.result?.providerContinuationBlocked !== true &&
+        await this.continueToolBatch(surfaceSession, sessionId, turnId, obligationId, project)) {
+      return { decision: "approved", deferredToBatch: true, turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)), result: executed.result };
+    }
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
     if (executed.result?.providerContinuationBlocked === true) {
@@ -8831,10 +10049,11 @@ class DirectLiveTextController {
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
       providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
       harnessGrant,
+      executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
-    const continuationTools = continuationToolComposition.tools;
+    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant).tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
@@ -8878,7 +10097,8 @@ class DirectLiveTextController {
         toolCount: continuationTools.length,
         declaredToolNames: declaredContinuationToolNames,
         toolDeclarations: continuationTools.length > 0,
-        toolOutputItem: false,
+        // Replayed as call and output items when the turn's start was captured.
+        toolOutputItem: isPlainObject(turn?.admittedProviderContext),
         parallelToolCalls: false,
         hasInstructions: true,
         hasPreviousResponseId: false,
@@ -8961,6 +10181,8 @@ class DirectLiveTextController {
             normalizeString(continuationContext?.providerInput?.prompt, ""),
           ].filter(Boolean).join("\n\n")
         : normalizeString(continuationContext?.providerInput?.prompt, ""),
+      ...this.boundToolContinuationOptions(sessionId, turnId, obligationId, DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS),
+      signal: this.turnAbortSignal(turnId),
       continuationTransportMode: "fresh_context",
       endpoint: this.endpoint || undefined,
       authStore: this.currentAuthStore(),
@@ -8975,6 +10197,7 @@ class DirectLiveTextController {
           ?.bundle?.operationNames || [],
       continuationTools,
       onLifecycle: (event) => {
+        this.noteStreamStall(surfaceSession, sessionId, turnId, event);
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
             threadId: sessionId,
@@ -8989,8 +10212,6 @@ class DirectLiveTextController {
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
     await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, continuation, project, {
       streamPhase: "command-continuation",
-      approvalMessage: "Direct command continuation requested another tool. Local approval is required to continue the repair loop.",
-      unavailableMessage: "Direct command continuation requested another tool call, but it is not available for approval.",
     });
     return {
       decision: "approved",
@@ -9138,7 +10359,11 @@ class DirectLiveTextController {
   applyDirectAttachmentPayloads(requestBody = {}, payloads = []) {
     if (!Array.isArray(payloads) || !payloads.length) return requestBody;
     const body = requestBody;
-    const message = Array.isArray(body.input) && isPlainObject(body.input[0]) ? body.input[0] : null;
+    // Attachments belong to the current user message: the last one, after
+    // any earlier turns replayed as history.
+    const message = Array.isArray(body.input)
+      ? [...body.input].reverse().find((item) => isPlainObject(item) && item.role === "user") || null
+      : null;
     if (!message) throw new Error("Direct provider attachment input message is unavailable.");
     if (!Array.isArray(message.content)) message.content = [];
     for (const payload of payloads) {
@@ -9208,6 +10433,9 @@ class DirectLiveTextController {
     const project = context.project || {};
     const surfaceSession = context.surfaceSession;
     const sessionId = normalizeString(params.sessionId || params.threadId, "");
+    // A turn-scoped Access raise that outlived its turn (it ended without
+    // reaching the normal cleanup) is undone before the next turn.
+    if (this.sessionStore.readSession(sessionId)?.accessRevertAfterTurn) this.revertTurnScopedAccess(project, sessionId, "");
     const session = this.sessionStore.readSession(sessionId);
     if (!session) throw new Error(`Direct live text session not found: ${sessionId}`);
     if (!sessionMatchesProject(session, normalizeString(project.id, ""))) {
@@ -9343,9 +10571,10 @@ class DirectLiveTextController {
       "",
     );
     const boundSessionReasoningEffort = normalizeString(session.reasoningEffort, "");
-    const reasoningEffort = ownerControlled && requestedTurnReasoningEffort
+    const selectedReasoningEffort = ownerControlled && requestedTurnReasoningEffort
       ? requestedTurnReasoningEffort
       : normalizeString(boundSessionReasoningEffort, requestedTurnReasoningEffort);
+    const reasoningEffort = this.providerReasoningEffortFor(project, model, selectedReasoningEffort);
     if (
       requestedTurnReasoningEffort &&
       requestedTurnReasoningEffort !== boundSessionReasoningEffort && !ownerControlled
@@ -9355,23 +10584,36 @@ class DirectLiveTextController {
       error.canonicalReasoningEffort = boundSessionReasoningEffort;
       throw error;
     }
-    const requestedServiceTier = normalizeString(params.serviceTier || params.service_tier, "");
-    const serviceTier = requestedServiceTier || normalizeString(session.serviceTier, "");
-    if (serviceTier && !DIRECT_SERVICE_TIERS.has(serviceTier)) {
-      const error = new Error(`Direct service tier is not supported: ${serviceTier}`);
+    const requestedServiceTier = canonicalDirectServiceTier(params.serviceTier || params.service_tier);
+    const selectedServiceTier = requestedServiceTier || canonicalDirectServiceTier(session.serviceTier);
+    if (selectedServiceTier && !DIRECT_SERVICE_TIERS.has(selectedServiceTier)) {
+      const error = new Error(`Direct service tier is not supported: ${selectedServiceTier}`);
       error.code = "direct_service_tier_unsupported";
       throw error;
     }
-    if (requestedServiceTier && !ownerControlled && requestedServiceTier !== session.serviceTier) {
+    if (requestedServiceTier && !ownerControlled && requestedServiceTier !== canonicalDirectServiceTier(session.serviceTier)) {
       const error = new Error("The turn service tier is not owner-controlled for this Direct task.");
       error.code = "direct_turn_service_tier_not_owner_controlled";
       throw error;
     }
+    const serviceTier = this.effectiveServiceTier(project, model, selectedServiceTier);
+    const daybreakEnabled = ownerControlled && typeof params.daybreakEnabled === "boolean"
+      ? params.daybreakEnabled
+      : session.daybreakEnabled === true;
+    const cyberAccessProgram = this.cyberAccessProgramFor(project, model, daybreakEnabled);
     const existingTurnIds = this.sessionStore.listTurnIdsFromDisk(session.sessionId);
     const existingTurnCount = existingTurnIds.length;
     const summaries = Array.isArray(session.turns) ? session.turns : [];
-    const previousSummary = summaries.length ? summaries[summaries.length - 1] : null;
-    const previousTurn = previousSummary?.turnId ? this.sessionStore.readTurn(session.sessionId, previousSummary.turnId) : null;
+    // A turn that failed before provider transport never sent its prompt or
+    // added to the dialogue, so a follow-up builds on the last turn that ran.
+    let previousTurn = null;
+    let ranTurnCount = 0;
+    for (let index = summaries.length - 1; index >= 0; index -= 1) {
+      const candidate = summaries[index]?.turnId ? this.sessionStore.readTurn(session.sessionId, summaries[index].turnId) : null;
+      if (candidate?.preTransportFailed === true) continue;
+      ranTurnCount += 1;
+      if (!previousTurn) previousTurn = candidate;
+    }
     const binding = normalizeCodexBinding(project.surfaceBinding?.codex || {});
     const directLiveTier = (binding.runtimeMode === "direct" || binding.runtimeMode === "direct-experimental") &&
       binding.directTransport === "live-text";
@@ -9383,17 +10625,38 @@ class DirectLiveTextController {
       ? this.resolveHarnessGrant(project, session)
       : null;
     let activeSubAgentPolicySemanticResult = null;
+    let activeSubAgentPolicySemanticFailureCode = "";
     if (
       implementationTier &&
       this.activeSubAgentPolicySemanticPreflight
     ) {
-      activeSubAgentPolicySemanticResult =
-        await this.activeSubAgentPolicySemanticPreflight({
-          projectId: normalizeString(project.id, session.projectId),
+      // The preflight only decides whether this utterance revises sub-agent
+      // policy.  If it cannot settle, the existing policy stays in force and
+      // the user's turn proceeds instead of failing before the model runs.
+      try {
+        activeSubAgentPolicySemanticResult =
+          await this.activeSubAgentPolicySemanticPreflight({
+            projectId: normalizeString(project.id, session.projectId),
+            threadId: session.sessionId,
+            clientRequestId: clientTurnRequestId,
+            userText: rawPrompt,
+          });
+      } catch (error) {
+        this.assertOpen();
+        // Turn-admission races and the project-turn guard are integrity
+        // outcomes, not router unavailability.
+        if (["active_turn_exists", "direct_active_sub_agent_policy_turn_active"].includes(normalizeString(error?.code, ""))) throw error;
+        activeSubAgentPolicySemanticFailureCode = normalizeString(
+          error?.code,
+          "direct_active_sub_agent_policy_semantic_preflight_failed",
+        );
+        activeSubAgentPolicySemanticResult = null;
+        this.emitNotification(context.surfaceSession, "warning", {
           threadId: session.sessionId,
-          clientRequestId: clientTurnRequestId,
-          userText: rawPrompt,
+          code: activeSubAgentPolicySemanticFailureCode,
+          message: `Sub-agent policy check was unavailable for this message (${activeSubAgentPolicySemanticFailureCode}), so the existing sub-agent policy stays in effect.`,
         });
+      }
       this.assertOpen();
     }
     const implementationToolNames = implementationTier
@@ -9401,7 +10664,7 @@ class DirectLiveTextController {
       : [];
     const useRecentDialogue = compiledAgentContext
       ? false
-      : existingTurnCount > 0;
+      : existingTurnCount > 0 && ranTurnCount > 0;
     let frozenContextProjection = null;
     if (useRecentDialogue) {
       if (!previousTurn || !SAFE_TEXT_ONLY_FOLLOWUP_PREVIOUS_STATES.has(previousTurn.state)) {
@@ -9502,6 +10765,7 @@ class DirectLiveTextController {
           externalCapabilityProfile: status.externalCapabilityProfile,
           providerHostedToolsStatus: status.providerHostedToolsStatus,
           harnessGrant,
+          executionEnvironmentDigest: this.grantEnvironmentDigest(session, project),
         })
       : null;
     let requestBody = implementationTier
@@ -9511,7 +10775,8 @@ class DirectLiveTextController {
             prompt,
             reasoningEffort,
             serviceTier,
-            tools: implementationToolComposition.tools,
+            cyberAccessProgram,
+            tools: this.withEnvironmentTools(implementationToolComposition, project, session.sessionId, harnessGrant).tools,
             toolChoicePolicy: "auto",
           })
       : buildTextOnlyProbeRequest({
@@ -9520,18 +10785,21 @@ class DirectLiveTextController {
           prompt,
           reasoningEffort,
           serviceTier,
+          cyberAccessProgram,
         });
     const turn = this.sessionStore.createTurn(session.sessionId, {
       input: [{ role: "user", text: prompt }],
       model: requestBody.model,
       reasoningEffort,
-      serviceTier,
+      serviceTier: serviceTier || null,
+      cyberAccessProgram,
       clientTurnRequestId,
       requestShape: {
         ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
         directTurnOwnerControlled: ownerControlled,
         directTurnServiceTier: serviceTier,
         serviceTier,
+        ...(cyberAccessProgram ? { cyberAccessProgram } : {}),
         ...(activeSubAgentPolicySemanticResult?.settlement
           ? {
               activeSubAgentPolicySemanticSettlementId:
@@ -9541,7 +10809,12 @@ class DirectLiveTextController {
               activeSubAgentPolicySemanticSettlementState:
                 activeSubAgentPolicySemanticResult.settlement.state,
             }
-          : {}),
+          : activeSubAgentPolicySemanticFailureCode
+            ? {
+                activeSubAgentPolicySemanticSettlementState: "preflight_unavailable",
+                activeSubAgentPolicySemanticFailureCode,
+              }
+            : {}),
       },
     });
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
@@ -9634,6 +10907,7 @@ class DirectLiveTextController {
               providerHostedToolsStatus: status.providerHostedToolsStatus,
               roleLedgerToolBundle: epistemicLedgerTurnBinding?.bundle,
               harnessGrant,
+              executionEnvironmentDigest: this.grantEnvironmentDigest(session, project),
             })
           : null;
         selfConstitutionSnapshot = implementationTier
@@ -9733,7 +11007,9 @@ class DirectLiveTextController {
                 selfConstitutionSnapshot,
               ),
               reasoningEffort,
-              tools: implementationToolComposition.tools,
+              serviceTier,
+              cyberAccessProgram,
+              tools: withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant),
               toolChoicePolicy: "auto",
             })
           : buildTextOnlyProbeRequest({
@@ -9742,6 +11018,8 @@ class DirectLiveTextController {
               prompt: contextResult.providerInput.prompt,
               instructions: contextResult.providerInput.instructions,
               reasoningEffort,
+              serviceTier,
+              cyberAccessProgram,
             });
       }
       if (implementationTier && !selfConstitutionSnapshot) {
@@ -9767,17 +11045,38 @@ class DirectLiveTextController {
             selfConstitutionSnapshot,
           ),
           reasoningEffort,
-          tools: implementationToolComposition.tools,
+          serviceTier,
+          cyberAccessProgram,
+          tools: withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant),
           toolChoicePolicy: "auto",
         });
       }
+      const historyInput = implementationTier && useRecentDialogue && contextResult
+        ? this.structuredHistoryInput(session.sessionId, turn.turnId, contextResult.contextPack)
+        : null;
+      if (historyInput) requestBody.input = historyInput.input;
       this.applyDirectAttachmentPayloads(requestBody, providerAttachmentPayloads);
+      if (normalizeString(selfConstitutionSnapshot?.digest, "") && Array.isArray(requestBody.input)) {
+        // Per-turn facts go after the dialogue so the instructions, tools,
+        // and earlier history stay a cacheable prefix across turns.
+        requestBody.input.push({
+          role: "developer",
+          content: [{ type: "input_text", text: `Self constitution snapshot for this turn: ${selfConstitutionSnapshot.digest}.` }],
+        });
+      }
       requestShape = {
         ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
         directTurnOwnerControlled: ownerControlled,
         directTurnServiceTier: serviceTier,
         serviceTier,
+        ...(cyberAccessProgram ? { cyberAccessProgram } : {}),
         ...selfConstitutionRequestShapeFields(selfConstitutionSnapshot),
+        ...(historyInput ? {
+          historyItemsUsed: true,
+          historyTurnCount: historyInput.turnCount,
+          historyItemCount: historyInput.itemCount,
+          historyOmittedTurnCount: historyInput.omittedTurnCount,
+        } : {}),
         ...(activeSubAgentPolicySemanticResult?.settlement
           ? {
               activeSubAgentPolicySemanticSettlementId:
@@ -9790,7 +11089,12 @@ class DirectLiveTextController {
                 activeSubAgentPolicySemanticResult.settlement
                   .admittedPolicyRef || null,
             }
-          : {}),
+          : activeSubAgentPolicySemanticFailureCode
+            ? {
+                activeSubAgentPolicySemanticSettlementState: "preflight_unavailable",
+                activeSubAgentPolicySemanticFailureCode,
+              }
+            : {}),
         directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
         directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
         directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
@@ -9837,6 +11141,7 @@ class DirectLiveTextController {
       };
       this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
         requestShape,
+        admittedProviderContext: this.captureAdmittedProviderContext(turn, requestBody),
         ...(selfConstitutionSnapshot ? {
           selfConstitutionSnapshot,
         } : {}),
@@ -9929,7 +11234,7 @@ class DirectLiveTextController {
       item: userItem,
     });
 
-    const abortController = new AbortController();
+    const abortController = this.turnAbortController(turn.turnId);
     const run = this.runTurn({
       sessionId: session.sessionId,
       turnId: turn.turnId,
@@ -9942,6 +11247,7 @@ class DirectLiveTextController {
       model: requestBody.model,
       reasoningEffort,
       serviceTier,
+      cyberAccessProgram,
       project,
       surfaceSession,
       userItem,
@@ -9950,6 +11256,10 @@ class DirectLiveTextController {
     }).finally(() => {
       const active = this.activeRuns.get(turn.turnId);
       if (active?.promise === run) this.activeRuns.delete(turn.turnId);
+      // A turn waiting on the owner keeps its signal for the continuations
+      // that follow the decision.
+      const settled = this.sessionStore.readTurn(session.sessionId, turn.turnId);
+      if (!settled || TERMINAL_TURN_STATES.has(settled.state)) this.forgetTurnRuntime(turn.turnId, session.sessionId, project);
     });
     this.activeRuns.set(turn.turnId, { abortController, promise: run });
 
@@ -10173,6 +11483,7 @@ class DirectLiveTextController {
       model,
       reasoningEffort,
       serviceTier,
+      cyberAccessProgram,
       project,
       surfaceSession,
       userItem,
@@ -10231,6 +11542,7 @@ class DirectLiveTextController {
     };
     let epistemicContextDeliveryRecorded = false;
     const callerLifecycle = (event) => {
+      this.noteStreamStall(surfaceSession, sessionId, turnId, event);
       if (
         event.phase === "request_attempt" &&
         epistemicContextDeliveryBinding &&
@@ -10298,6 +11610,9 @@ class DirectLiveTextController {
       model,
       reasoningEffort,
       serviceTier,
+      cyberAccessProgram,
+      promptCacheKey: sessionId,
+      streamStallNoticeMs: this.streamStallNoticeMs,
       prompt,
       instructions,
       fetchImpl: this.fetchImpl || undefined,
@@ -10425,12 +11740,19 @@ class DirectLiveTextController {
       else if (terminalCode === "max_output" || terminalCode === "max_output_terminal") terminalState = "max_output_terminal";
       else if (terminal.state === "completed" && !assistantItem.text) terminalState = "empty_output_terminal";
     }
+    const rejectedModelMessage = terminal.state === "failed"
+      ? modelRejectionMessage(terminal.error || result.error || {}, result.response?.status, model)
+      : "";
+    const turnError = rejectedModelMessage
+      ? { ...(terminal.error || {}), code: "model_unavailable", message: rejectedModelMessage }
+      : terminal.error;
+    this.noteProviderCatalogSignal(project, { modelsEtag: result.modelsEtag, modelRejected: Boolean(rejectedModelMessage) });
     const completedTurn = this.sessionStore.updateTurnState(sessionId, turnId, terminalState, {
       ...(toolBlockedTextOnly
         ? { error: { code: "provider_tool_call_in_text_only_tier", message: "Direct text-only does not execute or continue tool calls." } }
         : terminalState === "empty_output_terminal"
           ? { error: { code: "empty_output_terminal", message: "Direct text-only response completed without assistant text." } }
-          : terminal.error ? { error: terminal.error } : {}),
+          : turnError ? { error: turnError } : {}),
       responseId: result.responseId || "",
       responseStatus: result.response?.status || 0,
       responseContentType: result.response?.contentType || "",
@@ -10444,21 +11766,36 @@ class DirectLiveTextController {
       } catch {}
     }
     if (obligationResult.obligations.length && !toolBlockedTextOnly) {
-      const createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligationResult.obligations, project);
+      // Tool calls the thread's access covers run without asking; only a
+      // request actually put to the owner (an rpc-request) needs a warning.
+      let ownerRequests = 0;
+      const countOwnerRequests = (event) => {
+        if (event?.type === "rpc-request") ownerRequests += 1;
+      };
+      surfaceSession?.on?.("event", countOwnerRequests);
+      let createdApprovalRequests = 0;
+      try {
+        createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligationResult.obligations, project);
+      } finally {
+        surfaceSession?.off?.("event", countOwnerRequests);
+      }
       const ledgerOnly = obligationResult.obligations.every((obligation) =>
         this.isEpistemicLedgerObligation(sessionId, turnId, obligation));
       const agentRuntimeOnly = obligationResult.obligations.every((obligation) =>
         this.isNativeSubAgentRuntimeObligation(obligation) || this.isReadOnlySubAgentStatusObligation(obligation));
-      if (!agentRuntimeOnly) {
-        this.emitNotification(surfaceSession, "warning", {
-          threadId: sessionId,
-          turnId,
-          message: ledgerOnly
-            ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
-            : createdApprovalRequests
-              ? "Direct live text detected a tool call. Local approval is required before local authority is used."
-              : "Direct live text detected a tool call, but the required direct tool continuation evidence is not enabled.",
-        });
+      // Calls that ran (or failed with their own turn error) move the turn on;
+      // only a turn left waiting with nothing asked of the owner is stuck.
+      const stuck = !createdApprovalRequests &&
+        normalizeString(this.sessionStore.readTurn(sessionId, turnId)?.state, "") === "tool_waiting";
+      const message = ledgerOnly
+        ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
+        : ownerRequests
+          ? "Direct live text detected a tool call. Local approval is required before local authority is used."
+          : stuck
+            ? "Direct live text detected a tool call, but the required direct tool continuation evidence is not enabled."
+            : "";
+      if (!agentRuntimeOnly && message) {
+        this.emitNotification(surfaceSession, "warning", { threadId: sessionId, turnId, message });
       }
     } else if (toolBlockedTextOnly) {
       this.emitNotification(surfaceSession, "warning", {
@@ -10548,6 +11885,38 @@ class DirectLiveTextController {
     };
   }
 
+  // Stop also ends the commands this turn started that are still running
+  // (earlier turns' processes, and the owner's own terminals, are untouched).
+  cancelTurnProcesses(sessionId, turnId, project = {}) {
+    if (!this.statefulExecSessionManager) return 0;
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const grant = this.harnessGrantForTurn(sessionId, turnId, project);
+    if (!grant) return 0;
+    const execSessionIds = new Set((Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .filter((obligation) => normalizeString(obligation.name, "") === "exec_command")
+      .map((obligation) => normalizeString(obligation.statefulExecSessionId || obligation.statefulExecResult?.sessionId, ""))
+      .filter(Boolean));
+    // A command still inside its initial wait isn't on its obligation yet.
+    for (const execSessionId of this.turnExecSessionIds?.get(turnId) || []) execSessionIds.add(execSessionId);
+    let cancelled = 0;
+    for (const execSessionId of execSessionIds) {
+      try {
+        const result = this.statefulExecSessionManager.cancel({
+          sessionId: execSessionId,
+          taskId: sessionId,
+          threadId: sessionId,
+          projectId: normalizeString(project.id || project.projectId, "") ||
+            normalizeString(this.sessionStore.readSession(sessionId)?.projectId, ""),
+          harnessGrant: grant,
+          grantId: grant.grantId,
+          executionEnvironmentDigest: grant.executionEnvironmentDigest,
+        });
+        if (result?.cancellationRequested && !result.alreadyTerminal) cancelled += 1;
+      } catch {}
+    }
+    return cancelled;
+  }
+
   interruptTurn(params = {}, context = {}) {
     const turnId = normalizeString(params.turnId, "");
     const sessionId = normalizeString(params.sessionId || params.threadId, "");
@@ -10565,6 +11934,10 @@ class DirectLiveTextController {
     if (TERMINAL_TURN_STATES.has(turn.state)) {
       return { turn: turnSnapshot(turn), status: `${turn.state}_already` };
     }
+    // Abort whatever request of the turn is in flight (first or continuation);
+    // the tool loop checks the same signal before each next call.
+    this.turnAbortController(turn.turnId).abort();
+    this.cancelTurnProcesses(sessionId, turnId, context.project || {});
     const active = this.activeRuns.get(turn.turnId);
     if (active?.abortController) {
       active.abortController.abort();
@@ -10588,7 +11961,7 @@ class DirectLiveTextController {
     if (method === "thread/start") return this.startThread(params, context);
     if (method === "thread/resume") return this.resumeThread(params, context);
     if (method === "thread/fork") return this.forkThread(params, context);
-    if (method === "thread/selectAccessProfile") return this.selectFullAccessTaskProfile(params, context);
+    if (method === "thread/selectAccessProfile") return this.selectTaskAccessProfile(params, context);
     if (method === "thread/list") return this.listThreads(params, context);
     if (method === "thread/read") return this.readThread(params, context);
     if (method === "thread/rollback") return this.rollbackThread(params, context);
@@ -10902,6 +12275,7 @@ module.exports = {
   DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
   DirectLiveTextController,
   DirectLiveTextSurfaceSession,
+  TERMINAL_TURN_STATES,
   buildDirectLiveTextCapabilities,
   composeImplementationToolBundleForRequest,
   implementationInitialPolicyCandidateToolNames,

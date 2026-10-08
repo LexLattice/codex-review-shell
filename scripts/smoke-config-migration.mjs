@@ -25,6 +25,12 @@ const {
 const {
   normalizeWorldManagerRuntimePreferences,
 } = require("../src/main/direct/worldmanager/runtime-settings");
+const {
+  normalizeConfiguredMcpServer,
+} = require("../src/main/direct/external/configured-mcp-adapter");
+const {
+  normalizeProjectDelegation,
+} = require("../src/main/direct/agents/cross-environment-delegation");
 const start = source.indexOf("function nowIso()");
 const end = source.indexOf("async function loadConfig()", start);
 if (start < 0 || end < 0) throw new Error("Unable to locate config-normalization block in main.js");
@@ -43,6 +49,8 @@ const sandbox = {
   defaultCodexHostRuntimeForWorkspace,
   normalizeDirectWorkbenchProjectLifecycleCatalog,
   normalizeWorldManagerRuntimePreferences,
+  normalizeConfiguredMcpServer,
+  normalizeProjectDelegation,
   CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES: 500,
   defaultUsageLedgerConfig,
   normalizeUsageLedgerConfig,

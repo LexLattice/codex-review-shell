@@ -232,13 +232,19 @@ function scanTextForRawExposure(text) {
     { reason: "secret_pattern", pattern: /\bcookie\s*:\s*[^;\s=]+=[^\s;]{6,}/i },
     { reason: "secret_pattern", pattern: /\b(access_token|refresh_token|id_token|session_id|csrf)\b\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{8,}/i },
     { reason: "raw_backend_frame", pattern: /\bresponse\.(output_item|function_call|created|completed)\b.*\{.*\}/i },
-    { reason: "raw_path", pattern: /(^|\s)([A-Za-z]:\\|\\\\wsl\$\\|\/(?:home|mnt|Users|tmp)\/)[^\s]+/ },
   ];
   for (const { reason, pattern } of blockPatterns) {
     if (pattern.test(value)) findings.push({ severity: "block", reason });
   }
   if (/\b(authorization|cookie|access token|refresh token|bearer)\b/i.test(value) && !findings.length) {
     findings.push({ severity: "warn", reason: "sensitive_keyword_without_value" });
+  }
+  // Paths are ordinary content for a coding agent (Codex sends them as
+  // written). Blocking them refused prompts that named a file, dropped the
+  // model's own replies from later turns' context, and withheld command
+  // output; they are noted, not blocked.
+  if (/(^|\s)([A-Za-z]:\\|\\\\wsl\$\\|\/(?:home|mnt|Users|tmp)\/)[^\s]+/.test(value)) {
+    findings.push({ severity: "warn", reason: "raw_path" });
   }
   return findings;
 }

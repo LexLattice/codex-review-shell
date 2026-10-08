@@ -49,8 +49,15 @@ fs.mkdirSync(rootDir, { recursive: true });
 const stopAtGate =
   process.env.CODEX_WORLD_MANAGER_SC11_STOP_AT_GATE === "1";
 const projectId = "project_runtime_evidence_fixture";
-let tick = Date.parse("2026-08-01T22:00:00.000Z");
-const now = () => (tick += 25);
+// Keep fixture timestamps in the same clock domain as the authority paths.
+// Patch/command result authorities record wall time because the controller does
+// not inject nowMs into those calls; a fixed historical clock makes the
+// repository observation appear stale even after the mocked effects complete.
+let tick = Date.now();
+const now = () => {
+  tick = Math.max(Date.now(), tick + 1);
+  return tick;
+};
 let controlStore = new DirectWorldManagerControlPlaneStore({ rootDir, now });
 const dbPath = controlStore.dbPath;
 
@@ -187,6 +194,7 @@ let roleRuntime = null;
 let worldManagerService = null;
 let providerSequence = 0;
 let repositoryRevision = 0;
+const repositoryObservationsByTurn = new Map();
 const providerRequests = [];
 const workspaceCalls = [];
 const lifecycleAutomations = [];
@@ -220,7 +228,7 @@ function repositoryObservation() {
     evidenceCatalogComplete: true,
     rawWorkspacePathIncluded: false,
     rawSecretIncluded: false,
-    observedAt: new Date(tick + 10_000).toISOString(),
+    observedAt: new Date(now()).toISOString(),
   };
 }
 
@@ -495,7 +503,14 @@ function makeFabric() {
         input.dispatchReceipt.workerSessionId,
         input.dispatchReceipt.workerTurnId,
       ),
-      repositoryObservation: repositoryObservation(),
+      repositoryObservation: (() => {
+        const observation = repositoryObservation();
+        repositoryObservationsByTurn.set(
+          input.dispatchReceipt.workerTurnId,
+          observation,
+        );
+        return observation;
+      })(),
       observationOnly: true,
       workspaceMutationEffect: false,
       canonicalEffect: false,
@@ -682,6 +697,23 @@ const exactProducerTurn = sessionStore.readTurn(
   producerSessionId,
   producerTurnId,
 );
+const acceptedRepositoryObservedAt = Date.parse(
+  repositoryObservationsByTurn.get(producerTurnId)?.observedAt || "",
+);
+const acceptedFocusedTestRecordedAt = Date.parse(
+  exactProducerTurn.toolResults.find((entry) => entry.tool === "run_command")
+    ?.recordedAt || "",
+);
+const acceptedReceiptRecordedAt = Date.parse(runtimeReceipt.recordedAt);
+const acceptedRepositoryObservation = repositoryObservationsByTurn.get(
+  producerTurnId,
+);
+assert.ok(acceptedRepositoryObservation);
+assert.ok(Number.isFinite(acceptedRepositoryObservedAt));
+assert.ok(Number.isFinite(acceptedFocusedTestRecordedAt));
+assert.ok(Number.isFinite(acceptedReceiptRecordedAt));
+assert.ok(acceptedRepositoryObservedAt >= acceptedFocusedTestRecordedAt);
+assert.ok(acceptedRepositoryObservedAt <= acceptedReceiptRecordedAt);
 const staleRuntimeReceipt = buildArtifactRuntimeEvidenceReceipt({
   projectId,
   lifecycleRef: runtimeReceipt.lifecycleRef,

@@ -607,7 +607,9 @@ async function main() {
       assertCase(cases, "electron_app_server_to_direct_switch_active", await selectedRuntimePath(window) === "direct-implementation", {
         selectedRuntimePath: await selectedRuntimePath(window),
       });
-      assertCase(cases, "electron_direct_switch_commits_activation", binding.runtimeMode === "direct-experimental" && binding.directTier === "implementation-lane", {
+      // The backend picker selects ordinary Direct (`selectOrdinaryDirectRuntime`),
+      // not the experimental activation.
+      assertCase(cases, "electron_direct_switch_commits_activation", binding.runtimeMode === "direct" && binding.directTier === "implementation-lane", {
         runtimeMode: binding.runtimeMode,
         directTier: binding.directTier,
       });
@@ -652,7 +654,9 @@ async function main() {
     launched = await launchApp(tempRoot);
     app = launched.app;
     window = launched.window;
-    const expectedRestartPath = "app-server";
+    // The visible backend picker persists its choice across restarts
+    // (`persistDefault = true` in the renderer).
+    const expectedRestartPath = directImplementationSelectionExercised ? "direct-implementation" : "app-server";
     assertCase(cases, "electron_restart_reads_persisted_default", await selectedRuntimePath(window) === expectedRestartPath, {
       expectedRestartPath,
       actualRestartPath: await selectedRuntimePath(window),

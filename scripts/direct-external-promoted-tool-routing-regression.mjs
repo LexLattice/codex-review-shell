@@ -44,12 +44,24 @@ function toolEvent(name, args, index = 1) {
 }
 
 async function runExternalObligation({ sessionStore, controller, surface, project, turnId, event }) {
-  sessionStore.createTurn("direct_session_external_tools", {
+  const createdTurn = sessionStore.createTurn("direct_session_external_tools", {
     turnId,
     state: "tool_waiting",
     model: "gpt-5.4",
     input: [{ role: "user", text: `Run ${event.name}.` }],
     responseId: `resp_initial_${turnId}`,
+  });
+  // Continuations require the turn's admitted initial provider context, which
+  // a real turn records when its first request is built.
+  sessionStore.writeTurn({
+    ...createdTurn,
+    admittedProviderContext: DirectLiveTextController.prototype.captureAdmittedProviderContext(createdTurn, {
+      model: createdTurn.model,
+      reasoning: { effort: createdTurn.reasoningEffort || "" },
+      service_tier: createdTurn.serviceTier || "",
+      input: [{ role: "user", content: [{ type: "input_text", text: `Run ${event.name}.` }] }],
+      instructions: "External promoted tool routing fixture instructions.",
+    }),
   });
   const obligations = sessionStore.addToolObligations(
     "direct_session_external_tools",
@@ -113,12 +125,7 @@ try {
     fetchImpl: async (_url, init) => {
       fetchCalls += 1;
       providerBodies.push(JSON.parse(init.body));
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => "text/event-stream" },
-        text: async () => continuationSse,
-      };
+      return new Response(continuationSse, { status: 200, headers: { "content-type": "text/event-stream" } });
     },
     activationStatusResolver: () => ({ status: "ready", model: "gpt-5.4" }),
     externalCapabilityProfileResolver: () => externalProfile,

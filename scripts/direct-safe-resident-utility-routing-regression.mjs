@@ -13,13 +13,21 @@ const {
   DirectLiveTextSurfaceSession,
 } = require("../src/main/direct/controller/live-text-controller");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
+const { buildReadOnlyToolContinuationProbeRequest } = require("../src/main/direct/transport/codex-responses-transport");
 
 const continuationSse = [
   "event: response.created",
   "data: {\"response\":{\"id\":\"resp_safe_utility_done\",\"model\":\"gpt-5.4\"}}",
   "",
+  // Streamed in pieces whose leading spaces and newlines are part of the text.
   "event: response.output_text.delta",
-  "data: {\"item_id\":\"msg_safe_utility_done\",\"delta\":\"Utility result received.\"}",
+  "data: {\"item_id\":\"msg_safe_utility_done\",\"delta\":\"Utility\"}",
+  "",
+  "event: response.output_text.delta",
+  "data: {\"item_id\":\"msg_safe_utility_done\",\"delta\":\" result received:\"}",
+  "",
+  "event: response.output_text.delta",
+  "data: {\"item_id\":\"msg_safe_utility_done\",\"delta\":\"\\n- **OS:** Windows\"}",
   "",
   "event: response.completed",
   "data: {\"response\":{\"id\":\"resp_safe_utility_done\",\"status\":\"completed\"}}",
@@ -79,11 +87,30 @@ try {
         ok: true,
         status: 200,
         headers: { get: () => "text/event-stream" },
-        text: async () => continuationSse,
+        body: {
+          async *[Symbol.asyncIterator]() {
+            yield new TextEncoder().encode(continuationSse);
+          },
+        },
       };
     },
     activationStatusResolver: () => ({ status: "ready", model: "gpt-5.4", context: { contextWindow: 100000, usedTokens: 25000, remainingTokens: 75000 } }),
   });
+  // This fixture enters after initial request admission; seed that exact boundary.
+  const admitFixtureContext = (sessionId, turnId) => {
+    const turn = sessionStore.readTurn(sessionId, turnId);
+    const body = {
+      model: turn.model,
+      reasoning: { effort: turn.reasoningEffort },
+      service_tier: turn.serviceTier,
+      input: [{ role: "user", content: [{ type: "input_text", text: turn.input[0].text }] }],
+      instructions: "Continue the fixture task using locally authorized tools.",
+    };
+    sessionStore.updateTurnState(sessionId, turnId, turn.state, {
+      admittedProviderContext: controller.captureAdmittedProviderContext(turn, body),
+    });
+  };
+  admitFixtureContext("direct_session_safe_utility", "turn_context");
   const project = { id: "project_safe_utility", name: "Safe utility fixture" };
   const surface = new DirectLiveTextSurfaceSession({ send: () => {}, isDestroyed: () => false }, { controller, project });
   await surface.connect({});
@@ -109,6 +136,80 @@ try {
   assert.equal(contextTurn.state, "completed", "context utility continuation should complete");
   assert.equal(contextTurn.unresolvedObligations[0].authorityState, "continuation_sent");
   assert.equal(contextTurn.unresolvedObligations[0].result.resultKind, "context_remaining_status");
+  // The saved reply (what the transcript shows after a restart) keeps the
+  // streamed text exactly; trimming each piece once ran the words together.
+  const savedReply = sessionStore.readSession("direct_session_safe_utility").messages
+    .find((message) => message.id === "turn_context").items
+    .find((item) => item.type === "agentMessage");
+  assert.equal(savedReply?.text, "Utility result received:\n- **OS:** Windows");
+
+  const recorded = { result: contextTurn.toolResults[0] };
+  const collect = (turn, current = recorded) => controller.buildBoundUtilityContinuationContext(
+    turn, current, contextTurn.sessionId, contextTurn.turnId,
+  );
+  const bound = collect(contextTurn);
+  assert.equal(bound.grantsAuthority, false);
+  assert.equal(bound.admittedContextDigest, contextTurn.admittedProviderContext.digest);
+  const rejected = [
+    ["missing context", (t) => { delete t.admittedProviderContext; }],
+    ["changed input", (t) => { t.admittedProviderContext.input[0].content[0].text += " altered"; }],
+    ["changed instructions", (t) => { t.admittedProviderContext.instructions += " altered"; }],
+    ["wrong task", (t) => { t.sessionId = "another_task"; }],
+    ["wrong turn", (t) => { t.turnId = "another_turn"; }],
+    ["changed effort", (t) => { t.reasoningEffort = "low"; }],
+    ["changed model", (t) => { t.model = "another-model"; }],
+    ["changed tier", (t) => { t.serviceTier = "flex"; }],
+    ["foreign context", (t) => { t.admittedProviderContext = controller.captureAdmittedProviderContext(
+      { ...t, sessionId: "another_task" }, capturedProviderBodies[0],
+    ); }],
+    ["foreign obligation", (t) => { t.unresolvedObligations[0].sessionId = "another_task"; }],
+    ["foreign obligation turn", (t) => { t.unresolvedObligations[0].turnId = "another_turn"; }],
+    ["missing producer", (t) => { t.unresolvedObligations = []; }],
+    ["wrong result identity", (t) => { t.toolResults[0].resultId = "other_result"; }],
+    ["changed result content", (t) => { t.toolResults[0].providerOutputText = "not the producer's output"; }],
+    ["duplicate result", (t) => { t.toolResults.push(structuredClone(t.toolResults[0])); }],
+    ["duplicate obligation", (t) => { t.unresolvedObligations.push(structuredClone(t.unresolvedObligations[0])); }],
+    ["missing current result", (t) => { t.toolResults = []; }],
+  ];
+  for (const [label, change] of rejected) {
+    const invalid = structuredClone(contextTurn);
+    change(invalid);
+    assert.throws(() => collect(invalid), (error) => error.code.startsWith("direct_utility_continuation_"), label);
+  }
+  assert.throws(() => collect(contextTurn, { result: { ...recorded.result, resultId: "absent" } }),
+    { code: "direct_utility_continuation_current_result_missing" });
+
+  const attachmentInput = [
+    ...contextTurn.admittedProviderContext.input,
+    { role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,fixture", detail: "original" }] },
+  ];
+  const inputWithEvidence = controller.boundUtilityContinuationInput({ input: attachmentInput }, bound);
+  assert.deepEqual(inputWithEvidence.slice(0, attachmentInput.length), attachmentInput, "admitted content and attachment bytes survive unchanged");
+  // Then each earlier call and its output, as Codex sends them.
+  const replayed = inputWithEvidence.slice(attachmentInput.length);
+  assert.equal(replayed.length, bound.priorToolResults.length * 2);
+  bound.priorToolResults.forEach((prior, index) => {
+    assert.equal(replayed[index * 2].call_id, prior.callId);
+    assert.equal(replayed[index * 2].name, prior.toolName);
+    assert.deepEqual(
+      { call_id: replayed[index * 2 + 1].call_id, output: replayed[index * 2 + 1].output },
+      { call_id: prior.callId, output: prior.providerOutputText },
+    );
+  });
+  for (const mode of ["fresh_context", "previous_response_id"]) {
+    const body = buildReadOnlyToolContinuationProbeRequest({
+      continuationRequest: contextTurn.unresolvedObligations[0].continuationRequest,
+      continuationTransportMode: mode,
+      previousResponseId: "fixture_parent",
+      contextInput: inputWithEvidence,
+      model: "gpt-5.6-sol",
+      reasoningEffort: "ultra",
+      serviceTier: "flex",
+    });
+    assert.equal(body.reasoning.effort, "ultra", "unsupported selections must reach the provider unchanged");
+    assert.equal(body.service_tier, "flex");
+    if (mode === "fresh_context") assert.deepEqual(body.input, inputWithEvidence);
+  }
 
   sessionStore.createTurn("direct_session_safe_utility", {
     turnId: "turn_input",
@@ -117,6 +218,7 @@ try {
     input: [{ role: "user", text: "Ask me." }],
     responseId: "resp_input",
   });
+  admitFixtureContext("direct_session_safe_utility", "turn_input");
   const inputObligations = sessionStore.addToolObligations(
     "direct_session_safe_utility",
     "turn_input",
@@ -159,6 +261,7 @@ try {
   console.log(JSON.stringify({
     ok: true,
     fetchCalls,
+    rejectedContextAndLineageCases: rejected.length + 1,
     contextAuthorityState: contextTurn.unresolvedObligations[0].authorityState,
     inputAuthorityState: answeredInputTurn.unresolvedObligations[0].authorityState,
     pendingRequestMethod: pendingRequest.method,

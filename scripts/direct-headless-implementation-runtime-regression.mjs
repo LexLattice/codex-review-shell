@@ -347,7 +347,10 @@ const controller = new DirectLiveTextController({
       assert.equal(body.store, false);
       assert.equal(body.parallel_tool_calls, false);
       assert(!("previous_response_id" in body));
-      assert(body.input?.[0]?.content?.[0]?.text?.includes("read_file_result"));
+      // The turn's original input comes first; the call and its output follow,
+      // then the continuation's guidance as a developer message.
+      assert.equal(body.input?.at(-1)?.role, "developer");
+      assert(body.input?.at(-2)?.type === "function_call_output" && body.input.at(-2).output.includes("read_file_result"));
     }
     return textResponse(isContinuation ? continuationSse : initialToolSse, 200, { "content-type": "text/event-stream" });
   },

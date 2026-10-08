@@ -143,39 +143,27 @@ try {
       readCredentials: () => ({ accessToken: "fixture-token" }),
     },
     endpoint: "https://chatgpt.test/backend-api/codex/responses",
+    // The transport reads provider bodies incrementally, so fixtures return
+    // real streaming Responses.
     fetchImpl: async (_url, init) => {
       parentBodies.push(JSON.parse(init.body));
+      const sse = (text) => new Response(text, { status: 200, headers: { "content-type": "text/event-stream" } });
       if (parentBodies.length === 1) {
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: () => "text/event-stream" },
-          text: async () => toolCallSse("resp_spawn_second", "spawn_agent", {
-            task_name: "bounded_analysis_two",
-            message: "Analyze the second bounded concern.",
-            fork_turns: "none",
-            model: "gpt-5.6-sol",
-            reasoning_effort: "high",
-          }),
-        };
+        return sse(toolCallSse("resp_spawn_second", "spawn_agent", {
+          task_name: "bounded_analysis_two",
+          message: "Analyze the second bounded concern.",
+          fork_turns: "none",
+          model: "gpt-5.6-sol",
+          reasoning_effort: "high",
+        }));
       }
       if (parentBodies.length === 2) {
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: () => "text/event-stream" },
-          text: async () => toolCallSse("resp_poll_second", "wait_agent", {
-            targets: ["bounded_analysis_two"],
-            timeout_ms: 0,
-          }),
-        };
+        return sse(toolCallSse("resp_poll_second", "wait_agent", {
+          targets: ["bounded_analysis_two"],
+          timeout_ms: 0,
+        }));
       }
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => "text/event-stream" },
-        text: async () => completedSse(`resp_parent_continuation_${parentBodies.length}`, "Parent continued."),
-      };
+      return sse(completedSse(`resp_parent_continuation_${parentBodies.length}`, "Parent continued."));
     },
     activationStatusResolver: () => ({ status: "ready", model: "gpt-5.6-sol" }),
     subAgentStatusSurfaceResolver: ({ sessionId, project }) => pool.statusSurface({
@@ -196,7 +184,24 @@ try {
     },
   };
 
-  sessionStore.createTurn("direct_parent_native_agents", {
+  // Continuations require the turn's admitted initial provider context, which
+  // a real turn records when its first request is built.
+  const createAdmittedTurn = (fields) => {
+    const turn = sessionStore.createTurn("direct_parent_native_agents", fields);
+    const text = fields.input?.[0]?.text || "";
+    sessionStore.writeTurn({
+      ...turn,
+      admittedProviderContext: controller.captureAdmittedProviderContext(turn, {
+        model: fields.model,
+        reasoning: { effort: fields.reasoningEffort || "" },
+        input: [{ role: "user", content: [{ type: "input_text", text }] }],
+        instructions: "Native agent routing fixture instructions.",
+      }),
+    });
+    return turn;
+  };
+
+  createAdmittedTurn({
     turnId: "turn_spawn",
     state: "tool_waiting",
     model: "gpt-5.6-sol",
@@ -232,13 +237,16 @@ try {
   assert.equal(parentBodies.length, 3, "spawn, nested spawn, and nested wait should remain in one provider turn");
   assert.match(JSON.stringify(parentBodies[0]), /spawn_agent_result/);
   assert.match(JSON.stringify(parentBodies[0]), /bounded_analysis/);
+  // Continuation guidance is the trailing developer message.
+  const spawnGuidance = parentBodies[0].input.at(-1);
+  assert.equal(spawnGuidance.role, "developer");
   assert.match(
-    parentBodies[0].instructions,
+    spawnGuidance.content[0].text,
     /launch acknowledgement only, never as evidence that the delegated task completed/,
     "native-agent continuation must preserve lifecycle closure rather than reuse read-file instructions",
   );
   assert.match(
-    parentBodies[0].instructions,
+    spawnGuidance.content[0].text,
     /use wait_agent for pending children/,
     "required child output must compile a bounded wait obligation into the parent continuation contract",
   );
@@ -284,7 +292,7 @@ try {
     "successful native child runtime transitions must not render as warnings",
   );
 
-  sessionStore.createTurn("direct_parent_native_agents", {
+  createAdmittedTurn({
     turnId: "turn_wait",
     state: "tool_waiting",
     model: "gpt-5.6-sol",
@@ -315,7 +323,7 @@ try {
   assert.equal(waitTurn.state, "completed");
   assert.equal(waitTurn.unresolvedObligations[0].result.resultKind, "direct_sub_agent_runtime");
 
-  sessionStore.createTurn("direct_parent_native_agents", {
+  createAdmittedTurn({
     turnId: "turn_spawn_workspace",
     state: "tool_waiting",
     model: "gpt-5.6-sol",

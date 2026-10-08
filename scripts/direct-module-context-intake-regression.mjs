@@ -18,6 +18,7 @@ const {
   buildDirectSettingsSurfaceProjection,
 } = require("../src/main/direct/ui/settings-surface");
 const {
+  DIRECT_INFORMATION_BRIDGE_ROWS,
   buildDirectInformationBridgeAudit,
 } = require("../src/main/direct/bridge/information-registry");
 
@@ -218,8 +219,9 @@ assert(intakeRegistryRow, "module context intake registry row should exist");
 assert.equal(intakeRegistryRow.role, "context_construction");
 assert.equal(intakeRegistryRow.implementationState, "partial");
 assert.equal(intakeRegistryRow.directPathPosture, "keep_guarded");
-assert.equal(audit.summary.totalRows, 37);
-assert.equal(audit.summary.byImplementationState.partial, 25);
+assert.deepEqual(audit.rows, DIRECT_INFORMATION_BRIDGE_ROWS, "audit must cover every current registry row");
+assert.equal(audit.summary.totalRows, DIRECT_INFORMATION_BRIDGE_ROWS.length);
+assert.equal(audit.summary.byImplementationState.partial, DIRECT_INFORMATION_BRIDGE_ROWS.filter((row) => row.implementationState === "partial").length);
 assert.equal(audit.summary.valid, true);
 
 console.log(JSON.stringify({

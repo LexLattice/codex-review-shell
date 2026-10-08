@@ -33,6 +33,21 @@ const {
   searchBoundedWorkspaceRepositoryText,
 } = require("../shared/workspace-repository-boundary");
 const { terminateWorkspaceProcessTree } = require("./workspace-process-tree");
+const {
+  EXECUTOR_METHODS,
+  EXECUTOR_PROCESS_EVENTS,
+  EXECUTOR_PROTOCOL_NAME,
+  EXECUTOR_PROTOCOL_VERSION,
+  IMPLEMENTED_EXECUTOR_METHODS,
+  describeExecutionEnvironment,
+  findExecutableOnPath,
+} = require("../shared/executor-protocol");
+const { BASE_COMMAND_ENVIRONMENT_KEYS, LocalChildProcessBackend } = require("../main/direct/tools/exec-process-backends");
+const { WINDOWS_JOB_LAUNCHER } = require("../main/direct/tools/windows-job-runner");
+const { PtyChannel } = require("../main/direct/tools/pty-frames");
+const { spawnInLinuxPidNamespace } = require("../shared/linux-pid-namespace");
+const { mcpServerEnvironment, requestMcpStdio } = require("../main/direct/external/mcp-stdio-transport");
+const { LocalFilePort, parseUnifiedPatch: parseCodexOrUnifiedPatch } = require("../main/direct/tools/full-access-local-environment");
 
 const PROTOCOL_VERSION = 1;
 // Keep the protocol line bounded while still admitting the largest supported
@@ -85,7 +100,6 @@ const DIRECT_WORKSPACE_WORKER_SEARCH_FILE_BYTES = 1024 * 1024;
 const DIRECT_WORKSPACE_WORKER_SEARCH_TOTAL_BYTES = 16 * 1024 * 1024;
 const DIRECT_WORKSPACE_WORKER_SEARCH_RESULT_LIMIT = 120;
 const DIRECT_WORKSPACE_WORKER_READ_LIMIT = 48 * 1024;
-const TRUSTED_UNSHARE_PATH = "/usr/bin/unshare";
 const SAFE_COMMAND_ENV_OVERRIDES = new Set([
   "CI",
   "NO_COLOR",
@@ -123,11 +137,11 @@ const SENSITIVE_READ_FILE_PATTERNS = [
   /(?:^|\/)\.ssh(?:\/|$)/i,
   /(?:^|\/)\.git\/config$/i,
 ];
-let reviewShellIgnorePromise = null;
+// One per project folder (an environment executor serves several).
+const reviewShellIgnorePromises = new Map();
 let gitWorktreeMutationQueue = Promise.resolve();
 let authoritativeWorkspaceWorkerBinding = null;
 let workspaceWorkerBindingInitialization = null;
-let trustedUnshareIdentity = null;
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -166,9 +180,97 @@ function parseArgv(argv) {
 }
 
 const argv = parseArgv(process.argv);
-const root = path.resolve(argv.root || process.cwd());
-const workspaceKind = argv["workspace-kind"] || "local";
-const projectId = argv["project-id"] || "unknown-project";
+// An environment executor (--environment) serves every project folder in its
+// environment, and each request names its project (params.projectContext). A
+// dedicated executor (a workspace worker's) is bound to one folder at launch.
+const environmentExecutor = argv.environment === "true";
+const executorWorkspaceKind = argv["workspace-kind"] || "local";
+const launchProject = environmentExecutor ? null : Object.freeze({
+  root: path.resolve(argv.root || process.cwd()),
+  workspaceKind: executorWorkspaceKind,
+  projectId: argv["project-id"] || "unknown-project",
+});
+const projectContextStorage = new AsyncLocalStorage();
+
+function currentProjectContext() {
+  return projectContextStorage.getStore() || launchProject;
+}
+
+function currentRoot() {
+  const context = currentProjectContext();
+  if (context) return context.root;
+  const error = new Error("This request needs its project: the executor serves several project folders.");
+  error.code = "executor_project_context_required";
+  throw error;
+}
+
+function currentRootOrEmpty() {
+  return currentProjectContext()?.root || "";
+}
+
+function currentWorkspaceKind() {
+  return currentProjectContext()?.workspaceKind || executorWorkspaceKind;
+}
+
+function currentProjectId() {
+  return currentProjectContext()?.projectId || "";
+}
+
+// Environment-wide work (capability probes) runs here, not in a project.
+function environmentCwd() {
+  return launchProject?.root || os.homedir();
+}
+
+function projectContextError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+// The project a request names: an absolute folder of this environment that
+// exists. Everything root-relative in the request (cwd, paths, sandbox
+// binds, containment checks) is then relative to it.
+async function resolveRequestProjectContext(raw) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw projectContextError("executor_project_context_invalid", "The request's project is malformed.");
+  }
+  const requested = typeof raw.root === "string" ? raw.root.trim() : "";
+  const absolute = process.platform === "win32"
+    ? /^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/.test(requested)
+    : path.posix.isAbsolute(requested);
+  if (!absolute) {
+    throw projectContextError("executor_project_context_invalid", "The request's project folder must be an absolute path in this environment.");
+  }
+  const kind = typeof raw.workspaceKind === "string" ? raw.workspaceKind : "";
+  if (kind !== executorWorkspaceKind) {
+    throw projectContextError("executor_project_context_environment_mismatch", "The request's project belongs to another environment.");
+  }
+  const resolved = path.resolve(requested);
+  let stat = null;
+  try {
+    stat = await fs.stat(resolved);
+  } catch {}
+  if (!stat?.isDirectory()) {
+    throw projectContextError("executor_project_root_unavailable", "The project folder doesn't exist in this environment.");
+  }
+  if (launchProject && !sameNativePath(resolved, launchProject.root)) {
+    throw projectContextError("executor_project_context_mismatch", "This executor is bound to another project folder.");
+  }
+  return Object.freeze({
+    root: resolved,
+    workspaceKind: kind,
+    projectId: typeof raw.projectId === "string" ? raw.projectId : "",
+  });
+}
+
+async function handleRequestInProject(method, params = {}) {
+  const context = await resolveRequestProjectContext(params.projectContext);
+  return context
+    ? projectContextStorage.run(context, () => handleRequest(method, params))
+    : handleRequest(method, params);
+}
+
 const sessionId = `agent_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 const STDIN_CLOSE_EXIT_GRACE_MS = 250;
 const STDIN_CLOSE_FORCE_EXIT_MS = 2000;
@@ -382,6 +484,8 @@ function scheduleProcessExit(code = 0, delayMs = STDIN_CLOSE_EXIT_GRACE_MS) {
 function requestShutdown(code = 0) {
   stdinClosed = true;
   requestExitCode(code);
+  terminateAllExecutorProcessSessions("SIGKILL");
+  abortAllExecutorMcpRequests();
   for (const child of activeChildProcesses) {
     terminateChild(child);
   }
@@ -589,13 +693,13 @@ function displayRelPath(value) {
 
 function resolveWithinRoot(relPath = "") {
   const rel = normalizeRelPath(relPath);
-  const fullPath = path.resolve(root, rel || ".");
-  const relative = path.relative(root, fullPath);
+  const fullPath = path.resolve(currentRoot(), rel || ".");
+  const relative = path.relative(currentRoot(), fullPath);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error("Requested path is outside the workspace root.");
   }
   return {
-    root,
+    root: currentRoot(),
     rel,
     fullPath,
     displayRel: displayRelPath(relative === "." ? "" : relative),
@@ -609,7 +713,7 @@ function pathIsUnderRoot(realRoot, realTarget) {
 
 async function resolveFileWithinRoot(relPath = "") {
   const resolved = resolveWithinRoot(relPath);
-  const realRoot = await fs.realpath(root);
+  const realRoot = await fs.realpath(currentRoot());
   const realTarget = await fs.realpath(resolved.fullPath);
   if (!pathIsUnderRoot(realRoot, realTarget)) {
     throw new Error("Requested path resolves outside the workspace root.");
@@ -775,8 +879,44 @@ function parseHunkHeader(line) {
   };
 }
 
+// Models write Codex's patch format (`*** Begin Patch`, bare `@@` hunks);
+// this path plans unified diffs, so translate it first. Hunks without line
+// numbers start at line 1 and are then located by their context, as the
+// grant-bound path does.
+function codexPatchAsUnifiedDiff(patchText) {
+  const text = String(patchText || "");
+  if (text.replace(/\r\n/g, "\n").split("\n")[0] !== "*** Begin Patch") return text;
+  let files;
+  try {
+    files = parseCodexOrUnifiedPatch(text);
+  } catch (error) {
+    throw new Error(error?.message || "Malformed Codex-format patch.");
+  }
+  const out = [];
+  for (const file of files) {
+    if (file.operation === "delete") {
+      const error = new Error("Patch deletes are deferred in v0.");
+      error.code = "PATCH_DELETE_DEFERRED";
+      throw error;
+    }
+    // git-style headers: this parser separates files only at `diff --git`.
+    out.push(`diff --git a/${file.relPath} b/${file.relPath}`);
+    if (file.operation === "create") out.push("new file mode 100644");
+    out.push(file.operation === "create" ? "--- /dev/null" : `--- a/${file.relPath}`, `+++ b/${file.relPath}`);
+    for (const hunk of file.hunks) {
+      const lines = hunk.lines.map((line) => (line === "" ? " " : line));
+      const oldCount = lines.filter((line) => line[0] !== "+").length;
+      const newCount = lines.filter((line) => line[0] !== "-").length;
+      const oldStart = file.operation === "create" ? 0 : Number(hunk.oldStart) || 1;
+      const newStart = Number(hunk.newStart) || 1;
+      out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`, ...lines);
+    }
+  }
+  return `${out.join("\n")}\n`;
+}
+
 function parseUnifiedPatch(patchText) {
-  const patch = String(patchText || "");
+  const patch = codexPatchAsUnifiedDiff(patchText);
   if (!patch.trim()) throw new Error("Patch text is empty.");
   if (patch.length > MAX_PATCH_TEXT_CHARS) {
     const error = new Error("Patch text exceeds the configured size limit.");
@@ -1047,10 +1187,10 @@ function locateHunkStart(beforeLines, hunk, preferredIndex, cursor) {
 async function resolvePatchTarget(relPath, options = {}) {
   const normalizedRel = assertPatchPathAllowed(relPath, options);
   const resolved = resolveWithinRoot(normalizedRel);
-  const realRoot = await fs.realpath(root);
+  const realRoot = await fs.realpath(currentRoot());
   const parentDir = path.dirname(resolved.fullPath);
   let nearestParent = parentDir;
-  while (!fsSync.existsSync(nearestParent) && nearestParent !== root && nearestParent !== path.dirname(nearestParent)) {
+  while (!fsSync.existsSync(nearestParent) && nearestParent !== currentRoot() && nearestParent !== path.dirname(nearestParent)) {
     nearestParent = path.dirname(nearestParent);
   }
   const realParent = await fs.realpath(nearestParent);
@@ -1154,7 +1294,7 @@ function assertNoEncodedTraversal(relPath = "") {
 }
 
 async function ensureAttachmentIgnoreInner() {
-  const base = path.join(root, ".codex", "review-shell");
+  const base = path.join(currentRoot(), ".codex", "review-shell");
   const ignorePath = path.join(base, ".gitignore");
   await fs.mkdir(base, { recursive: true });
   try {
@@ -1172,13 +1312,14 @@ async function ensureAttachmentIgnoreInner() {
 }
 
 async function ensureAttachmentIgnore() {
-  if (!reviewShellIgnorePromise) {
-    reviewShellIgnorePromise = ensureAttachmentIgnoreInner().catch((error) => {
-      reviewShellIgnorePromise = null;
+  const key = currentRoot();
+  if (!reviewShellIgnorePromises.has(key)) {
+    reviewShellIgnorePromises.set(key, ensureAttachmentIgnoreInner().catch((error) => {
+      reviewShellIgnorePromises.delete(key);
       throw error;
-    });
+    }));
   }
-  return reviewShellIgnorePromise;
+  return reviewShellIgnorePromises.get(key);
 }
 
 async function stageAttachment(params = {}) {
@@ -1311,12 +1452,12 @@ async function listTree(params = {}) {
   });
 
   return {
-    root,
+    root: currentRoot(),
     relPath: displayRel,
     entries,
     skipped,
     limit: DIRECTORY_ENTRY_LIMIT,
-    source: workspaceKind,
+    source: currentWorkspaceKind(),
   };
 }
 
@@ -1486,7 +1627,7 @@ async function repositorySemanticSnapshot() {
     "git",
     ["rev-parse", "--show-toplevel", "HEAD", "--abbrev-ref", "HEAD"],
     {
-      cwd: root,
+      cwd: currentRoot(),
       timeoutMs: 8_000,
       env: minimalCommandEnv(),
     },
@@ -1513,22 +1654,22 @@ async function repositorySemanticSnapshot() {
     branch = identityLines[2] || "";
     const [tracked, untracked, status, diff] = await Promise.all([
       captureProcess("git", ["ls-files", "-z"], {
-        cwd: root,
+        cwd: currentRoot(),
         timeoutMs: 12_000,
         env: minimalCommandEnv(),
       }),
       captureProcess("git", ["ls-files", "-z", "--others", "--exclude-standard"], {
-        cwd: root,
+        cwd: currentRoot(),
         timeoutMs: 12_000,
         env: minimalCommandEnv(),
       }),
       captureProcess("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
-        cwd: root,
+        cwd: currentRoot(),
         timeoutMs: 12_000,
         env: minimalCommandEnv(),
       }),
       captureProcess("git", ["diff", "--binary", "--no-ext-diff", "HEAD", "--"], {
-        cwd: root,
+        cwd: currentRoot(),
         timeoutMs: 20_000,
         env: minimalCommandEnv(),
       }),
@@ -1573,8 +1714,8 @@ async function repositorySemanticSnapshot() {
   const evidence = await repositorySemanticEvidence(manifestPaths);
   return {
     schema: "workspace_repository_semantic_observation@1",
-    projectId,
-    workspaceKind,
+    projectId: currentProjectId(),
+    workspaceKind: currentWorkspaceKind(),
     gitAvailable,
     headOid,
     branch,
@@ -1628,7 +1769,7 @@ function directEpistemicProfileRequest(params = {}) {
 
 async function directEpistemicFileDigest(relativePath, maxBytes) {
   const resolved = await resolveFileWithinRoot(relativePath);
-  if (!sameNativePath(resolved.realRoot, root) ||
+  if (!sameNativePath(resolved.realRoot, currentRoot()) ||
       !sameNativePath(resolved.fullPath, resolved.requestedFullPath)) {
     throw new Error("direct_epistemic_physical_path_rejected");
   }
@@ -1711,18 +1852,18 @@ async function directEpistemicUntrackedState(paths) {
 
 async function directEpistemicGitCapture() {
   const identity = await captureDigestProcess("git", ["rev-parse", "--show-toplevel", "HEAD", "--abbrev-ref", "HEAD"], {
-    cwd: root,
+    cwd: currentRoot(),
     timeoutMs: 10_000,
   });
   if (identity.exitCode !== 0 || identity.stdoutTruncated) throw new Error("direct_epistemic_git_identity_failed");
   const lines = identity.stdout.toString("utf8").split(/\r?\n/).filter(Boolean);
-  const realRoot = await fs.realpath(root);
-  const realGitRoot = await fs.realpath(lines[0] || root);
+  const realRoot = await fs.realpath(currentRoot());
+  const realGitRoot = await fs.realpath(lines[0] || currentRoot());
   if (!sameNativePath(realRoot, realGitRoot)) throw new Error("direct_epistemic_repository_root_mismatch");
   const [status, diff, untracked] = await Promise.all([
-    captureDigestProcess("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: root, timeoutMs: 20_000 }),
-    captureDigestProcess("git", ["diff", "--no-ext-diff", "--binary", "HEAD", "--"], { cwd: root, timeoutMs: 60_000, captureLimit: 0 }),
-    captureDigestProcess("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd: root, timeoutMs: 20_000 }),
+    captureDigestProcess("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: currentRoot(), timeoutMs: 20_000 }),
+    captureDigestProcess("git", ["diff", "--no-ext-diff", "--binary", "HEAD", "--"], { cwd: currentRoot(), timeoutMs: 60_000, captureLimit: 0 }),
+    captureDigestProcess("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd: currentRoot(), timeoutMs: 20_000 }),
   ]);
   if ([status, diff, untracked].some((entry) => entry.exitCode !== 0)) throw new Error("direct_epistemic_git_observation_failed");
   const untrackedPaths = untracked.stdout.toString("utf8").split("\0").filter(Boolean).sort();
@@ -2085,7 +2226,7 @@ async function repositoryRealizationContext(
         "HEAD",
       ],
       {
-        cwd: root,
+        cwd: currentRoot(),
         timeoutMs: 8_000,
         env: minimalCommandEnv(),
       },
@@ -2111,7 +2252,7 @@ async function repositoryRealizationContext(
               "--untracked-files=all",
             ],
             {
-              cwd: root,
+              cwd: currentRoot(),
               timeoutMs: 12_000,
               env: minimalCommandEnv(),
             },
@@ -2126,7 +2267,7 @@ async function repositoryRealizationContext(
               "--",
             ],
             {
-              cwd: root,
+              cwd: currentRoot(),
               timeoutMs: 20_000,
               env: minimalCommandEnv(),
             },
@@ -2139,8 +2280,8 @@ async function repositoryRealizationContext(
   return {
     schema:
       "workspace_aro_realization_context_observation@1",
-    projectId,
-    workspaceKind,
+    projectId: currentProjectId(),
+    workspaceKind: currentWorkspaceKind(),
     repositoryIdentity: {
       headOid:
         identityLines[0] || "",
@@ -2282,7 +2423,7 @@ async function readFilePreview(params = {}) {
     binary,
     limit,
     text: binary ? "" : buffer.toString("utf8"),
-    source: workspaceKind,
+    source: currentWorkspaceKind(),
   };
 }
 
@@ -2302,7 +2443,7 @@ async function readFileTransfer(params = {}) {
     size: stat.size,
     mimeType: mimeTypeForFileName(fileName),
     contentBase64: content.toString("base64"),
-    source: workspaceKind,
+    source: currentWorkspaceKind(),
   };
 }
 
@@ -2353,7 +2494,7 @@ async function listMatchingFiles(params = {}) {
   );
   const regexes = patterns.map(globToRegex).filter(Boolean);
   if (!regexes.length) {
-    return { root, patterns, entries: [], skipped: 0, scanned: 0, limit: MATCH_SCAN_LIMIT, source: workspaceKind };
+    return { root: currentRoot(), patterns, entries: [], skipped: 0, scanned: 0, limit: MATCH_SCAN_LIMIT, source: currentWorkspaceKind() };
   }
 
   const entries = [];
@@ -2391,7 +2532,7 @@ async function listMatchingFiles(params = {}) {
         await walk(childRel);
       } else if (type === "file" && !ignored.has(childRel) && matchesAnyPattern(childRel, regexes)) {
         try {
-          const stat = await fs.lstat(path.join(root, childRel.split("/").join(path.sep)));
+          const stat = await fs.lstat(path.join(currentRoot(), childRel.split("/").join(path.sep)));
           entries.push({
             name: dirent.name,
             relPath: childRel,
@@ -2410,14 +2551,14 @@ async function listMatchingFiles(params = {}) {
   await walk("");
   entries.sort((a, b) => b.mtimeMs - a.mtimeMs || a.relPath.localeCompare(b.relPath));
   return {
-    root,
+    root: currentRoot(),
     patterns,
     entries,
     skipped,
     scanned,
     limit: MATCH_SCAN_LIMIT,
     walkLimit: MATCH_WALK_LIMIT,
-    source: workspaceKind,
+    source: currentWorkspaceKind(),
   };
 }
 
@@ -2430,7 +2571,7 @@ async function resolvePathPreview(params = {}) {
     isFile: stat.isFile(),
     isDirectory: stat.isDirectory(),
     size: stat.size,
-    source: workspaceKind,
+    source: currentWorkspaceKind(),
   };
 }
 
@@ -2458,7 +2599,7 @@ async function captureDigestProcess(command, args, options = {}) {
     let spawned;
     try {
       spawned = spawnWorkspaceProcess(command, args, {
-        cwd: options.cwd || root,
+        cwd: options.cwd || currentRoot(),
         env: options.env || minimalCommandEnv(),
       });
     } catch (error) {
@@ -2665,7 +2806,7 @@ async function runCommand(params = {}) {
 
 function minimalCommandEnv(extraEnv = {}) {
   const base = {};
-  for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot", "ComSpec"]) {
+  for (const key of BASE_COMMAND_ENVIRONMENT_KEYS) {
     if (process.env[key]) base[key] = process.env[key];
   }
   base.CI = "1";
@@ -2680,61 +2821,6 @@ function minimalCommandEnv(extraEnv = {}) {
   return base;
 }
 
-function openTrustedUnshareLauncher() {
-  const noFollow = Number(fsSync.constants.O_NOFOLLOW || 0);
-  let fd;
-  try {
-    fd = fsSync.openSync(TRUSTED_UNSHARE_PATH, fsSync.constants.O_RDONLY | noFollow);
-    const before = fsSync.fstatSync(fd);
-    if (
-      !before.isFile() ||
-      before.uid !== 0 ||
-      (before.mode & 0o022) !== 0 ||
-      (before.mode & 0o111) === 0
-    ) {
-      const error = new Error("The Linux process-containment launcher failed its ownership or mode invariant.");
-      error.code = "workspace_linux_pid_namespace_launcher_untrusted";
-      throw error;
-    }
-    const digest = sha256Digest(fsSync.readFileSync(fd));
-    const after = fsSync.fstatSync(fd);
-    if (
-      before.dev !== after.dev ||
-      before.ino !== after.ino ||
-      before.size !== after.size ||
-      before.mtimeMs !== after.mtimeMs ||
-      before.ctimeMs !== after.ctimeMs
-    ) {
-      const error = new Error("The Linux process-containment launcher changed during verification.");
-      error.code = "workspace_linux_pid_namespace_launcher_changed";
-      throw error;
-    }
-    const identity = {
-      dev: String(after.dev),
-      ino: String(after.ino),
-      size: after.size,
-      mode: after.mode & 0o777,
-      uid: after.uid,
-      gid: after.gid,
-      digest,
-    };
-    const identityJson = canonicalJson(identity);
-    if (trustedUnshareIdentity && canonicalJson(trustedUnshareIdentity) !== identityJson) {
-      const error = new Error("The pinned Linux process-containment launcher identity drifted.");
-      error.code = "workspace_linux_pid_namespace_launcher_identity_drift";
-      throw error;
-    }
-    if (!trustedUnshareIdentity) trustedUnshareIdentity = identity;
-    return { fd, identity };
-  } catch (error) {
-    if (fd !== undefined) {
-      try { fsSync.closeSync(fd); } catch {}
-    }
-    if (!error.code) error.code = "workspace_linux_pid_namespace_launcher_unavailable";
-    throw error;
-  }
-}
-
 function containedWorkspaceProcessSpawn(command, args, options = {}) {
   const platform = options.platform || process.platform;
   if (platform !== "linux") {
@@ -2746,40 +2832,14 @@ function containedWorkspaceProcessSpawn(command, args, options = {}) {
       : "workspace_process_containment_unavailable";
     throw error;
   }
-  const { fd, identity } = openTrustedUnshareLauncher();
-  const requestedStdio = Array.isArray(options.stdio)
-    ? options.stdio.slice(0, 3)
-    : ["ignore", "pipe", "pipe"];
-  while (requestedStdio.length < 3) requestedStdio.push("pipe");
-  let child;
-  try {
-    child = spawn("/proc/self/fd/3", [
-      "--user",
-      "--map-current-user",
-      "--pid",
-      "--fork",
-      "--kill-child=SIGKILL",
-      "--mount-proc",
-      "--",
-      command,
-      ...args,
-    ], {
-      ...options,
-      env: minimalCommandEnv(options.env),
-      stdio: [...requestedStdio, fd],
-      shell: false,
-      windowsHide: true,
-      detached: true,
-    });
-    child.workspaceProcessContainment = {
-      guaranteed: true,
-      kind: "linux_pid_namespace",
-      launcherDigest: identity.digest,
-    };
-    return child;
-  } finally {
-    fsSync.closeSync(fd);
-  }
+  // exactEnv: the caller already built the environment (configured MCP
+  // servers get their own allowlist, not the command one).
+  const exactEnv = options.exactEnv === true && options.env && typeof options.env === "object";
+  const { exactEnv: _exactEnv, platform: _platform, ...spawnOptions } = options;
+  return spawnInLinuxPidNamespace(command, args, {
+    ...spawnOptions,
+    env: exactEnv ? { ...options.env } : minimalCommandEnv(options.env),
+  });
 }
 
 function spawnWorkspaceProcess(command, args, options = {}) {
@@ -2828,7 +2888,7 @@ function parseGitStatusPorcelain(text) {
 
 async function workspaceEffectSnapshot() {
   const git = await captureProcess("git", ["status", "--porcelain"], {
-    cwd: root,
+    cwd: currentRoot(),
     timeoutMs: 5000,
     env: minimalCommandEnv(),
   }).catch((error) => ({ exitCode: 1, stderr: error.message, stdout: "" }));
@@ -3071,7 +3131,7 @@ function captureProcess(command, args, options = {}) {
     let spawned;
     try {
       spawned = spawnWorkspaceProcess(command, args, {
-        cwd: options.cwd || root,
+        cwd: options.cwd || currentRoot(),
         env: minimalCommandEnv(options.env),
       });
     } catch (error) {
@@ -3186,7 +3246,7 @@ function safeWorkspaceWorkerBranch(value) {
 
 async function exactGitWorkspace() {
   const result = await captureProcess("git", ["rev-parse", "--show-toplevel", "--git-dir"], {
-    cwd: root,
+    cwd: currentRoot(),
     timeoutMs: 10_000,
   });
   if (result.exitCode !== 0) {
@@ -3196,7 +3256,7 @@ async function exactGitWorkspace() {
   }
   const lines = String(result.stdout || "").split(/\r?\n/).filter(Boolean);
   const topLevel = path.resolve(lines[0] || "");
-  const realRoot = await fs.realpath(root);
+  const realRoot = await fs.realpath(currentRoot());
   const realTopLevel = await fs.realpath(topLevel);
   const rootsMatch = process.platform === "win32"
     ? realRoot.toLowerCase() === realTopLevel.toLowerCase()
@@ -3291,9 +3351,9 @@ async function provisionGitWorktree(params = {}) {
   const sourceRepositoryDigest = sha256Digest(git.topLevel);
   const bindingBase = {
     schema: "direct_workspace_worker_binding@1",
-    projectId,
+    projectId: currentProjectId(),
     workerKey,
-    workspaceKind,
+    workspaceKind: currentWorkspaceKind(),
     branch,
     baseCommit,
     rootEvidenceDigest,
@@ -3402,19 +3462,19 @@ async function workspaceWorkerGitIdentity() {
   return {
     branch,
     headCommit,
-    rootEvidenceDigest: sha256Digest(await fs.realpath(root)),
+    rootEvidenceDigest: sha256Digest(await fs.realpath(currentRoot())),
   };
 }
 
 async function verifyWorkspaceWorkerBindingRealization(binding, options = {}) {
   const identity = await workspaceWorkerGitIdentity();
   const expectedSessionProjectId = `${binding.projectId}__${binding.workerKey}`.slice(0, 180);
-  if (projectId !== expectedSessionProjectId) {
+  if (currentProjectId() !== expectedSessionProjectId) {
     const error = new Error("Workspace worker binding project does not match the resident session.");
     error.code = "workspace_worker_binding_project_mismatch";
     throw error;
   }
-  if (binding.workspaceKind !== workspaceKind) {
+  if (binding.workspaceKind !== currentWorkspaceKind()) {
     const error = new Error("Workspace worker binding kind does not match the resident session.");
     error.code = "workspace_worker_binding_kind_mismatch";
     throw error;
@@ -3435,7 +3495,7 @@ async function verifyWorkspaceWorkerBindingRealization(binding, options = {}) {
     throw error;
   }
   const ancestor = await captureProcess("git", ["merge-base", "--is-ancestor", binding.baseCommit, identity.headCommit], {
-    cwd: root,
+    cwd: currentRoot(),
     timeoutMs: 10_000,
   });
   if (ancestor.exitCode !== 0) {
@@ -3447,6 +3507,11 @@ async function verifyWorkspaceWorkerBindingRealization(binding, options = {}) {
 }
 
 async function initializeWorkspaceWorkerBinding(params = {}) {
+  if (environmentExecutor) {
+    const error = new Error("A workspace worker's binding needs its own dedicated executor.");
+    error.code = "workspace_worker_binding_requires_dedicated_executor";
+    throw error;
+  }
   const binding = workspaceWorkerBindingBase(params.binding);
   if (!binding.projectId || !/^[a-f0-9]{40,64}$/i.test(binding.baseCommit)) {
     const error = new Error("Workspace worker binding evidence is incomplete.");
@@ -3571,7 +3636,7 @@ async function workspaceWorkerCanonicalFileEntry(relativePath, trackedPaths) {
     const resolved = await resolveFileWithinRoot(safePath);
     const requestedPath = path.resolve(resolved.requestedFullPath);
     const physicalPath = path.resolve(resolved.fullPath);
-    if (!sameNativePath(resolved.realRoot, root) || !sameNativePath(requestedPath, physicalPath)) return null;
+    if (!sameNativePath(resolved.realRoot, currentRoot()) || !sameNativePath(requestedPath, physicalPath)) return null;
     const requestedStat = await fs.lstat(resolved.requestedFullPath);
     if (requestedStat.isSymbolicLink() || !requestedStat.isFile()) return null;
     return {
@@ -3588,12 +3653,12 @@ async function workspaceWorkerCanonicalManifest() {
   await exactGitWorkspace();
   const [trackedResult, manifestResult] = await Promise.all([
     captureDigestProcess("git", ["ls-files", "--cached", "-z"], {
-      cwd: root,
+      cwd: currentRoot(),
       timeoutMs: 20_000,
       captureLimit: DIRECT_WORKSPACE_WORKER_MANIFEST_BYTES,
     }),
     captureDigestProcess("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
-      cwd: root,
+      cwd: currentRoot(),
       timeoutMs: 20_000,
       captureLimit: DIRECT_WORKSPACE_WORKER_MANIFEST_BYTES,
     }),
@@ -3728,7 +3793,7 @@ function workspaceWorkerTestProfile(base, repositoryPolicy, containment) {
   const profileBase = {
     schema: "direct_workspace_worker_test_profile@1",
     ...base,
-    workspaceKind,
+    workspaceKind: currentWorkspaceKind(),
     repositoryPolicyDigest: repositoryPolicy.profileDigest,
   };
   return {
@@ -3747,7 +3812,7 @@ function probeLinuxWorkspaceProcessContainment() {
     let child;
     try {
       child = trackChildProcess(containedWorkspaceProcessSpawn("true", [], {
-        cwd: root,
+        cwd: environmentCwd(),
         env: minimalCommandEnv(),
       }), { systemOwned: true });
     } catch (error) {
@@ -3829,7 +3894,7 @@ async function directTestProfile() {
       available: false,
       unavailableReason: containment.blockerCode,
       targetsAllowed: false,
-      workspaceKind,
+      workspaceKind: currentWorkspaceKind(),
       actions: [],
       actionsAllowed: [],
       defaultAction: "",
@@ -3850,7 +3915,7 @@ async function directTestProfile() {
       targetsAllowed: pinned.actions.some((action) => action.targetsAllowed),
     }, repositoryPolicy, containment);
   }
-  const packageJsonPath = path.join(root, "package.json");
+  const packageJsonPath = path.join(currentRoot(), "package.json");
   if (await pathExists(packageJsonPath)) {
     try {
       const packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
@@ -3869,7 +3934,7 @@ async function directTestProfile() {
     } catch {}
   }
   const pythonMarkers = ["pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini"];
-  if ((await Promise.all(pythonMarkers.map((name) => pathExists(path.join(root, name))))).some(Boolean)) {
+  if ((await Promise.all(pythonMarkers.map((name) => pathExists(path.join(currentRoot(), name))))).some(Boolean)) {
     return workspaceWorkerTestProfile({
       profileId: "python_pytest",
       command: process.platform === "win32" ? "python" : "python3",
@@ -3881,7 +3946,7 @@ async function directTestProfile() {
       targetsAllowed: true,
     }, repositoryPolicy, containment);
   }
-  const makefilePath = path.join(root, "Makefile");
+  const makefilePath = path.join(currentRoot(), "Makefile");
   if (await pathExists(makefilePath)) {
     const body = await fs.readFile(makefilePath, "utf8").catch(() => "");
     if (/^test\s*:/m.test(body)) {
@@ -3903,7 +3968,7 @@ async function directTestProfile() {
     profileDigest: "",
     available: false,
     targetsAllowed: false,
-    workspaceKind,
+    workspaceKind: currentWorkspaceKind(),
     actions: [],
     actionsAllowed: [],
     defaultAction: "",
@@ -4223,7 +4288,7 @@ function toGitExcludePatternPath(value) {
 
 async function ensureCodexSandboxArtifactIgnored() {
   const git = await captureProcess("git", ["rev-parse", "--show-toplevel", "--git-path", "info/exclude"], {
-    cwd: root,
+    cwd: currentRoot(),
     timeoutMs: 5000,
   }).catch((error) => ({ exitCode: 1, stderr: error.message }));
   if (git.exitCode !== 0) {
@@ -4236,10 +4301,10 @@ async function ensureCodexSandboxArtifactIgnored() {
   }
 
   const lines = String(git.stdout || "").split(/\r?\n/).filter(Boolean);
-  const topLevel = path.resolve(lines[0] || root);
+  const topLevel = path.resolve(lines[0] || currentRoot());
   const rawExcludePath = lines[1] || ".git/info/exclude";
-  const excludePath = path.isAbsolute(rawExcludePath) ? rawExcludePath : path.resolve(root, rawExcludePath);
-  const relRoot = path.relative(topLevel, root);
+  const excludePath = path.isAbsolute(rawExcludePath) ? rawExcludePath : path.resolve(currentRoot(), rawExcludePath);
+  const relRoot = path.relative(topLevel, currentRoot());
   const relPattern = toGitExcludePatternPath(relRoot);
   const pattern = relPattern ? `/${relPattern}/${CODEX_SANDBOX_ARTIFACT_NAME}` : `/${CODEX_SANDBOX_ARTIFACT_NAME}`;
 
@@ -4572,8 +4637,8 @@ async function listCodexThreads(params = {}) {
     : allEntries.filter((entry) => String(entry.threadId || "").trim());
   const entries = sortCodexThreadEntries(deduped).slice(0, limit);
   return {
-    root,
-    source: workspaceKind,
+    root: currentRootOrEmpty(),
+    source: currentWorkspaceKind(),
     codexHome: codexHomes[0] || "",
     sourceHomes: codexHomes,
     entries,
@@ -5518,8 +5583,8 @@ async function readCodexThreadTranscript(params = {}) {
   }));
 
   return {
-    root,
-    source: workspaceKind,
+    root: currentRootOrEmpty(),
+    source: currentWorkspaceKind(),
     threadId,
     sourceHome: session.sourceHome,
     title: session.title,
@@ -5954,23 +6019,491 @@ async function readJsonlFirstLine(fullPath) {
   }
 }
 
+// Executor process sessions (`process/*`). Unlike request-scoped backend
+// processes, a session outlives the request that started it: output, errors,
+// and exit are pushed as events keyed by the host router's session id, and
+// every session is killed when the executor shuts down. Containment on
+// Linux: full access runs under the PID-namespace launcher; sandboxed modes
+// run under bubblewrap, which unshares the PID namespace and dies with this
+// process. On Windows every profile runs under the job runner, whose Job
+// Object dies with it.
+const EXECUTOR_OUTPUT_CHUNK_BYTES = 64 * 1024;
+const EXECUTOR_OUTPUT_FORWARD_CAP_BYTES = 1024 * 1024;
+const EXECUTOR_ACTIVITY_INTERVAL_MS = 500;
+const executorProcessSessions = new Map();
+let executorProcessPlanner = null;
+
+function executorProcessError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function executorPlanner() {
+  if (!executorProcessPlanner) {
+    executorProcessPlanner = new LocalChildProcessBackend({
+      workspaceRootResolver: () => currentRoot(),
+      workspaceLocalityResolver: () => true,
+    });
+  }
+  return executorProcessPlanner;
+}
+
+function emitExecutorProcessEvent(type, session, payload = {}) {
+  sendEvent(type, { processSessionId: session.id, ...payload });
+}
+
+function forwardExecutorOutput(session, stream, chunk) {
+  const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk || ""), "utf8");
+  if (!buffer.length) return;
+  const remaining = EXECUTOR_OUTPUT_FORWARD_CAP_BYTES - session.forwardedBytes;
+  const admitted = remaining > 0 ? buffer.subarray(0, remaining) : Buffer.alloc(0);
+  for (let offset = 0; offset < admitted.length; offset += EXECUTOR_OUTPUT_CHUNK_BYTES) {
+    const slice = admitted.subarray(offset, offset + EXECUTOR_OUTPUT_CHUNK_BYTES);
+    emitExecutorProcessEvent(EXECUTOR_PROCESS_EVENTS.output, session, { stream, dataBase64: slice.toString("base64") });
+  }
+  session.forwardedBytes += admitted.length;
+  const dropped = buffer.length - admitted.length;
+  if (dropped > 0) {
+    // Past the cap only activity is reported, so the host's idle timer still
+    // sees a busy process without the executor flooding the transport.
+    session.droppedBytes += dropped;
+    const now = Date.now();
+    if (now - session.lastActivityAt >= EXECUTOR_ACTIVITY_INTERVAL_MS) {
+      session.lastActivityAt = now;
+      emitExecutorProcessEvent(EXECUTOR_PROCESS_EVENTS.activity, session, { droppedBytes: session.droppedBytes });
+    }
+  }
+}
+
+function signalExecutorProcessSession(session, signal) {
+  const child = session.child;
+  if (!child || session.exited) return false;
+  if (process.platform !== "win32" && Number.isInteger(child.pid) && child.pid > 0) {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch (error) {
+      if (!["ESRCH", "EINVAL"].includes(error?.code)) throw error;
+    }
+  }
+  try { return child.kill(signal); } catch { return false; }
+}
+
+function terminateAllExecutorProcessSessions(signal = "SIGKILL") {
+  for (const session of executorProcessSessions.values()) {
+    try { signalExecutorProcessSession(session, signal); } catch {}
+  }
+}
+
+function startExecutorProcessSession(params = {}) {
+  const id = String(params.processSessionId || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(id)) {
+    throw executorProcessError("direct_stateful_exec_session_id_invalid", "process/start requires a bounded session id.");
+  }
+  if (executorProcessSessions.has(id)) {
+    throw executorProcessError("direct_stateful_exec_session_exists", "The process session id is already in use.");
+  }
+  if (stdinClosed) {
+    throw executorProcessError("direct_stateful_exec_executor_shutting_down", "The executor is shutting down.");
+  }
+  const sandboxMode = ["read-only", "workspace-write", "danger-full-access"].includes(params.sandboxMode)
+    ? params.sandboxMode
+    : "danger-full-access";
+  const planner = executorPlanner();
+  const workspace = planner.resolveWorkspace(
+    { cwd: typeof params.cwd === "string" ? params.cwd : "" },
+    { sandboxMode, executionEnvironment: { kind: "local" } },
+  );
+  const shellCommand = typeof params.shellCommand === "string" ? params.shellCommand : "";
+  const command = String(params.command || "");
+  // A person's terminal: their interactive shell with their own environment,
+  // still contained so it ends with this executor.
+  const interactiveShell = params.interactiveShell === true;
+  if (!shellCommand && !command && !interactiveShell) {
+    throw executorProcessError("direct_stateful_exec_command_invalid", "process/start requires a command.");
+  }
+  // planLaunch turns a command string into the native shell invocation
+  // (bash -c here), the same way the host's local backend does.
+  const plan = planner.planLaunch({
+    sandboxMode,
+    workspace,
+    shellCommand,
+    command,
+    args: Array.isArray(params.args) ? params.args.map(String) : [],
+    tty: params.tty ? { rows: params.rows, cols: params.cols } : null,
+    interactiveShell,
+  });
+  const exactEnv = params.fullEnvironment === true;
+  const env = exactEnv
+    ? { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" }
+    : minimalCommandEnv(params.env);
+  // Windows: the job runner contains every profile, so the planner's own
+  // launch (which also cleans up the scratch TEMP) starts it directly.
+  const child = plan.launcher === WINDOWS_JOB_LAUNCHER
+    ? planner.launch(plan, { cwd: workspace.cwd, env }).child
+    : plan.launcher === "bubblewrap"
+    ? spawn(plan.command, plan.args, {
+        cwd: workspace.cwd,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        shell: false,
+        detached: true,
+        windowsHide: true,
+      })
+    : containedWorkspaceProcessSpawn(plan.command, plan.args, {
+        cwd: workspace.cwd,
+        env: exactEnv ? env : params.env,
+        exactEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+        dieWithParent: true,
+      });
+  const session = {
+    id,
+    child,
+    // Terminal sessions: input, resize, and signals go through the helper.
+    pty: plan.tty ? new PtyChannel(child.stdin, { platform: process.platform }) : null,
+    exited: false,
+    forwardedBytes: 0,
+    droppedBytes: 0,
+    lastActivityAt: 0,
+  };
+  executorProcessSessions.set(id, session);
+  child.stdout?.on("data", (chunk) => forwardExecutorOutput(session, "stdout", chunk));
+  child.stderr?.on("data", (chunk) => forwardExecutorOutput(session, "stderr", chunk));
+  const reportError = (source) => (error) => emitExecutorProcessEvent(EXECUTOR_PROCESS_EVENTS.error, session, {
+    source,
+    code: String(error?.code || ""),
+    message: String(error?.message || error || "").slice(0, 500),
+  });
+  child.stdout?.on("error", reportError("stdout"));
+  child.stderr?.on("error", reportError("stderr"));
+  child.stdin?.on("error", reportError("stdin"));
+  child.on("error", reportError("child"));
+  child.on("close", (exitCode, signal) => {
+    session.exited = true;
+    executorProcessSessions.delete(id);
+    emitExecutorProcessEvent(EXECUTOR_PROCESS_EVENTS.exited, session, {
+      exitCode: exitCode === undefined ? null : exitCode,
+      signal: signal || "",
+      droppedBytes: session.droppedBytes,
+    });
+  });
+  if (stdinClosed) signalExecutorProcessSession(session, "SIGKILL");
+  return {
+    processSessionId: id,
+    cwdRelPath: workspace.cwdRelPath,
+    launcher: [WINDOWS_JOB_LAUNCHER, "bubblewrap"].includes(plan.launcher) ? plan.launcher : "linux_pid_namespace",
+    networkAccess: plan.networkAccess !== false,
+    shell: plan.shellName || "",
+    tty: plan.tty || null,
+  };
+}
+
+function resizeExecutorProcessSession(params = {}) {
+  const session = executorProcessSessionFor(params);
+  if (!session.pty) {
+    throw executorProcessError("direct_pty_not_a_terminal", "process/resize applies to terminal sessions only.");
+  }
+  session.pty.resize(params.rows, params.cols);
+  return { resized: true };
+}
+
+function executorProcessSessionFor(params = {}) {
+  const session = executorProcessSessions.get(String(params.processSessionId || ""));
+  if (!session) {
+    throw executorProcessError("direct_stateful_exec_session_missing", "The process session is not known to this executor.");
+  }
+  return session;
+}
+
+function writeExecutorProcessSession(params = {}) {
+  const session = executorProcessSessionFor(params);
+  if (session.pty) {
+    if (!session.pty.writable()) {
+      throw executorProcessError("direct_stateful_exec_session_not_live", "The process session no longer accepts input.");
+    }
+    const typed = typeof params.dataBase64 === "string"
+      ? Buffer.from(params.dataBase64, "base64")
+      : Buffer.from(typeof params.data === "string" ? params.data : "", "utf8");
+    return new Promise((resolve, reject) => {
+      const finish = (error) => (error ? reject(Object.assign(error, { code: error.code || "EPIPE" })) : resolve({ accepted: true, eof: params.eof === true }));
+      if (typed.length) session.pty.write(typed, (error) => (error || params.eof !== true ? finish(error) : session.pty.eof(finish)));
+      else if (params.eof === true) session.pty.eof(finish);
+      else resolve({ accepted: false, eof: false });
+    });
+  }
+  const stdin = session.child.stdin;
+  if (!stdin || stdin.destroyed || stdin.writableEnded) {
+    throw executorProcessError("direct_stateful_exec_session_not_live", "The process session no longer accepts input.");
+  }
+  const text = typeof params.data === "string" ? params.data : "";
+  return new Promise((resolve, reject) => {
+    const finish = (error) => (error ? reject(Object.assign(error, { code: error.code || "EPIPE" })) : resolve({ accepted: true, eof: params.eof === true }));
+    if (text && params.eof === true) {
+      stdin.write(text, (error) => (error ? finish(error) : stdin.end(finish)));
+    } else if (text) {
+      stdin.write(text, finish);
+    } else if (params.eof === true) {
+      stdin.end(finish);
+    } else {
+      resolve({ accepted: false, eof: false });
+    }
+  });
+}
+
+function signalExecutorProcessSessionRequest(params = {}) {
+  const session = executorProcessSessionFor(params);
+  const signal = ["SIGTERM", "SIGKILL", "SIGINT"].includes(params.signal) ? params.signal : "SIGTERM";
+  if (session.pty) {
+    // The command has its own session on the terminal; the helper signals it.
+    session.pty.signal(signal);
+    if (signal !== "SIGINT") {
+      session.pty.close();
+      const timer = setTimeout(() => {
+        if (!session.exited) { try { signalExecutorProcessSession(session, "SIGKILL"); } catch {} }
+      }, signal === "SIGKILL" ? 200 : 1000);
+      timer.unref?.();
+    }
+    return { delivered: true, signal };
+  }
+  return { delivered: signalExecutorProcessSession(session, signal), signal };
+}
+
+// Configured MCP servers that live in this environment (`mcp/*`). The host
+// keeps trust, freshness, scope, and the result envelope; the executor runs
+// the same one-request stdio exchange the host runs for its own servers,
+// with the server contained like a full-access process session and its
+// allowlisted variables read from this environment.
+const executorMcpRequests = new Map();
+
+function spawnContainedMcpServer(command, args, options = {}) {
+  if (process.platform === "win32") {
+    const planner = executorPlanner();
+    const plan = planner.planLaunch({ sandboxMode: "danger-full-access", command, args });
+    return planner.launch(plan, { cwd: options.cwd, env: options.env }).child;
+  }
+  return containedWorkspaceProcessSpawn(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    exactEnv: true,
+    stdio: ["pipe", "pipe", "pipe"],
+    dieWithParent: true,
+  });
+}
+
+async function executorMcpRequest(params = {}) {
+  const id = String(params.mcpRequestId || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(id)) {
+    throw executorProcessError("direct_mcp_request_id_invalid", "mcp/request requires a bounded request id.");
+  }
+  if (executorMcpRequests.has(id)) {
+    throw executorProcessError("direct_mcp_request_exists", "The MCP request id is already in use.");
+  }
+  if (stdinClosed) {
+    throw executorProcessError("direct_stateful_exec_executor_shutting_down", "The executor is shutting down.");
+  }
+  const source = params.server && typeof params.server === "object" ? params.server : {};
+  const processEnv = Array.isArray(source.processEnv)
+    ? source.processEnv.filter((name) => typeof name === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+    : [];
+  const server = {
+    transportKind: "stdio",
+    command: typeof source.command === "string" ? source.command : "",
+    args: Array.isArray(source.args) ? source.args.map(String) : [],
+    cwd: typeof source.cwd === "string" && source.cwd.trim() ? source.cwd : currentRoot(),
+    processEnv,
+  };
+  const controller = new AbortController();
+  executorMcpRequests.set(id, controller);
+  try {
+    const result = await requestMcpStdio(
+      server,
+      String(params.method || ""),
+      params.params && typeof params.params === "object" ? params.params : {},
+      {
+        timeoutMs: params.timeoutMs,
+        signal: controller.signal,
+        env: mcpServerEnvironment(processEnv),
+        spawnProcess: spawnContainedMcpServer,
+      },
+    );
+    return { result };
+  } finally {
+    executorMcpRequests.delete(id);
+  }
+}
+
+function cancelExecutorMcpRequest(params = {}) {
+  const controller = executorMcpRequests.get(String(params.mcpRequestId || ""));
+  controller?.abort();
+  return { cancelled: Boolean(controller) };
+}
+
+function abortAllExecutorMcpRequests() {
+  for (const controller of executorMcpRequests.values()) controller.abort();
+}
+
+// Folder browsing (`fs/list`) for picking a project folder in this
+// environment. Lists one directory natively, directories first; with no
+// path it starts at the user's home (and on Windows, also offers drives).
+const FS_LIST_DEFAULT_LIMIT = 500;
+const FS_LIST_MAX_LIMIT = 2000;
+
+async function windowsDriveRoots() {
+  const drives = [];
+  for (const letter of "CDEFGHIJKLMNOPQRSTUVWXYZ") {
+    const drive = `${letter}:\\`;
+    try {
+      await fs.access(drive);
+      drives.push({ name: drive, path: drive, kind: "directory", hidden: false });
+    } catch {}
+  }
+  return drives;
+}
+
+async function executorFsList(params = {}) {
+  const windows = process.platform === "win32";
+  const requested = typeof params.path === "string" ? params.path.trim() : "";
+  const home = os.homedir();
+  if (windows && requested === "drives") {
+    return { path: "", parent: "", home, pathStyle: "windows", entries: await windowsDriveRoots(), truncated: false };
+  }
+  const target = requested || home;
+  if (!path.isAbsolute(target) || /[\0]/.test(target)) {
+    throw executorProcessError("direct_fs_list_path_invalid", "fs/list requires an absolute path in this environment.");
+  }
+  const resolved = path.resolve(target);
+  let dirents;
+  try {
+    dirents = await fs.readdir(resolved, { withFileTypes: true });
+  } catch (error) {
+    throw executorProcessError(
+      error?.code === "ENOENT" || error?.code === "ENOTDIR" ? "direct_fs_list_not_found" : "direct_fs_list_unavailable",
+      `This folder can't be listed (${error?.code || "error"}).`,
+    );
+  }
+  const includeFiles = params.includeFiles === true;
+  const limit = Math.max(1, Math.min(FS_LIST_MAX_LIMIT, Number.parseInt(params.limit, 10) || FS_LIST_DEFAULT_LIMIT));
+  const entries = [];
+  for (const dirent of dirents) {
+    let kind = dirent.isDirectory() ? "directory" : dirent.isFile() ? "file" : dirent.isSymbolicLink() ? "symlink" : "other";
+    if (kind === "symlink") {
+      try {
+        if ((await fs.stat(path.join(resolved, dirent.name))).isDirectory()) kind = "directory";
+      } catch {}
+    }
+    if (kind !== "directory" && !includeFiles) continue;
+    entries.push({ name: dirent.name, path: path.join(resolved, dirent.name), kind, hidden: dirent.name.startsWith(".") });
+  }
+  entries.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) : a.kind === "directory" ? -1 : 1));
+  const parent = path.dirname(resolved);
+  // The folder with symlinks resolved, for callers that must check
+  // containment on what the path really is.
+  let realPath = resolved;
+  try { realPath = await fs.realpath(resolved); } catch {}
+  return {
+    path: resolved,
+    realPath,
+    // On Windows a drive root's parent is the drive list.
+    parent: parent !== resolved ? parent : windows ? "drives" : "",
+    home,
+    pathStyle: windows ? "windows" : "posix",
+    entries: entries.slice(0, limit),
+    truncated: entries.length > limit,
+  };
+}
+
+// Executor file operations (`fs/*`). The host plans patches and checks
+// grants; the executor resolves paths natively, applies the access profile's
+// read and write rules, and revalidates before-digests immediately before
+// writing. Both sides run the same LocalFilePort.
+let executorFilePort = null;
+
+function executorFiles() {
+  if (!executorFilePort) executorFilePort = new LocalFilePort({ workspaceRootResolver: () => currentRoot() });
+  return executorFilePort;
+}
+
+function executorFileGrant(params = {}) {
+  const sandboxMode = ["read-only", "workspace-write", "danger-full-access"].includes(params.sandboxMode)
+    ? params.sandboxMode
+    : "read-only";
+  return { sandboxMode };
+}
+
+async function executorFsRead(params = {}) {
+  const port = executorFiles();
+  const grant = executorFileGrant(params);
+  const resolved = port.resolveTarget({}, grant, params.path, params.purpose === "patch" ? "patch target" : "read_file path");
+  if (params.purpose === "patch") {
+    const target = await port.readPatchTarget(resolved, String(params.operation || "update"), {}, grant);
+    return { exists: target.exists, bytesBase64: target.bytes.toString("base64") };
+  }
+  await port.assertReadable(grant, resolved);
+  const { size, bytes } = await port.readFile(resolved, params.maxBytes, {}, grant);
+  return { size, bytesBase64: bytes.toString("base64") };
+}
+
+async function executorFsStat(params = {}) {
+  const port = executorFiles();
+  const grant = executorFileGrant(params);
+  const resolved = port.resolveTarget({}, grant, params.path, "patch target");
+  if (params.check === "writable") await port.assertWritable(grant, resolved);
+  return { writable: params.check === "writable" };
+}
+
+async function executorFsApplyPlannedPatch(params = {}) {
+  const port = executorFiles();
+  const grant = executorFileGrant(params);
+  const files = Array.isArray(params.files) ? params.files : [];
+  if (!files.length || files.length > 16) {
+    throw executorProcessError("direct_full_access_patch_invalid", "fs/applyPlannedPatch requires between 1 and 16 planned files.");
+  }
+  const plans = files.map((file) => ({
+    operation: String(file.operation || ""),
+    beforeExists: file.beforeExists === true,
+    beforeDigest: String(file.beforeDigest || ""),
+    _resolved: port.resolveTarget({}, grant, file.path, "patch target"),
+    _afterText: typeof file.afterText === "string" ? file.afterText : "",
+  }));
+  await port.commit(grant, plans);
+  return { applied: plans.length };
+}
+
 async function handleRequest(method, params = {}) {
   if (method === "hello") {
-    const stat = await fs.stat(root);
-    if (!stat.isDirectory()) throw new Error("Workspace root is not a directory.");
+    // With a project (named in the request, or bound at launch) hello checks
+    // its folder and echoes it; an environment executor's own hello has none.
+    const project = currentProjectContext();
+    if (project) {
+      const stat = await fs.stat(project.root);
+      if (!stat.isDirectory()) throw new Error("Workspace root is not a directory.");
+    }
     const containment = await workspaceProcessContainmentStatus();
     const processBacked = containment.available === true;
     return {
       protocolVersion: PROTOCOL_VERSION,
       sessionId,
-      projectId,
-      workspaceKind,
-      root,
+      projectId: project?.projectId || "",
+      workspaceKind: currentWorkspaceKind(),
+      root: project?.root || "",
+      environmentExecutor,
       platform: process.platform,
       pid: process.pid,
       node: process.version,
       cwd: process.cwd(),
+      executorProtocol: {
+        name: EXECUTOR_PROTOCOL_NAME,
+        version: EXECUTOR_PROTOCOL_VERSION,
+        methods: [...IMPLEMENTED_EXECUTOR_METHODS],
+        sandbox: process.platform === "linux" && findExecutableOnPath("bwrap")
+          ? { available: true, kind: "bubblewrap" }
+          : { available: false, kind: "none" },
+      },
       capabilities: {
+        environmentDescribe: true,
+        processSessions: processBacked,
         listTree: true,
         readFilePreview: true,
         applyPatch: true,
@@ -6003,6 +6536,27 @@ async function handleRequest(method, params = {}) {
         importFile: true,
       },
     };
+  }
+  if (method === EXECUTOR_METHODS.fsRead) return executorFsRead(params);
+  if (method === EXECUTOR_METHODS.fsStat) return executorFsStat(params);
+  if (method === EXECUTOR_METHODS.fsApplyPlannedPatch) return executorFsApplyPlannedPatch(params);
+  if (method === EXECUTOR_METHODS.processStart) return startExecutorProcessSession(params);
+  if (method === EXECUTOR_METHODS.processWrite) return writeExecutorProcessSession(params);
+  if (method === EXECUTOR_METHODS.processSignal) return signalExecutorProcessSessionRequest(params);
+  if (method === EXECUTOR_METHODS.processResize) return resizeExecutorProcessSession(params);
+  if (method === EXECUTOR_METHODS.fsList) return executorFsList(params);
+  if (method === EXECUTOR_METHODS.mcpRequest) return executorMcpRequest(params);
+  if (method === EXECUTOR_METHODS.mcpCancel) return cancelExecutorMcpRequest(params);
+  if (method === EXECUTOR_METHODS.environmentDescribe) {
+    // On Windows, process sessions are contained by the job runner, which
+    // also provides the Workspace and Read-only sandbox.
+    const windowsRunner = process.platform === "win32" ? executorPlanner().sandbox.runner?.status?.() : null;
+    return describeExecutionEnvironment({
+      containment: windowsRunner || await workspaceProcessContainmentStatus(),
+      sandbox: windowsRunner ? { available: windowsRunner.available, kind: windowsRunner.kind } : undefined,
+      root: currentRootOrEmpty(),
+      workspaceKind: currentWorkspaceKind(),
+    });
   }
   if (method === "listTree") return listTree(params);
   if (method === "readFile") return readFilePreview(params);
@@ -6182,9 +6736,9 @@ async function handleLine(line) {
     result = requestScope
       ? await cancellableRequestContext.run(
           requestScope,
-          () => handleRequest(request.method, request.params || {}),
+          () => handleRequestInProject(request.method, request.params || {}),
         )
-      : await handleRequest(request.method, request.params || {});
+      : await handleRequestInProject(request.method, request.params || {});
   } catch (error) {
     requestError = mutationCommitFailureError(requestScope, error);
   } finally {
@@ -6220,20 +6774,30 @@ async function handleLine(line) {
 }
 
 async function main() {
-  try {
-    const stat = await fs.stat(root);
-    if (!stat.isDirectory()) throw new Error(`${root} is not a directory.`);
-  } catch (error) {
-    sendEvent("startup-error", { root, workspaceKind, projectId, error: error.message });
-    process.exitCode = 2;
-    return;
+  if (launchProject) {
+    try {
+      const stat = await fs.stat(launchProject.root);
+      if (!stat.isDirectory()) throw new Error(`${launchProject.root} is not a directory.`);
+    } catch (error) {
+      sendEvent("startup-error", { ...launchProject, error: error.message });
+      process.exitCode = 2;
+      return;
+    }
+  }
+
+  // The host stops executors with SIGTERM (and wsl.exe teardown can deliver
+  // SIGHUP). Without a handler Node exits at once and session processes under
+  // the PID-namespace launcher would be orphaned.
+  for (const signal of ["SIGTERM", "SIGHUP", "SIGINT"]) {
+    process.on(signal, () => requestShutdown(0));
   }
 
   sendEvent("ready", {
     protocolVersion: PROTOCOL_VERSION,
-    root,
-    workspaceKind,
-    projectId,
+    root: launchProject?.root || "",
+    workspaceKind: executorWorkspaceKind,
+    projectId: launchProject?.projectId || "",
+    environmentExecutor,
     pid: process.pid,
     platform: process.platform,
   });

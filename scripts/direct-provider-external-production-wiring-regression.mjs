@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -189,8 +190,18 @@ try {
   const childPid = Number(reaped.providerOutput.excerpt.match(/fixture-child-pid:(\d+)/)?.[1]);
   assert(Number.isInteger(childPid) && childPid > 0, "the reaping fixture must expose its child pid only in bounded test output");
   assert.match(reaped.providerOutput.excerpt, new RegExp(`fixture-child-pid:${childPid}`));
-  assert.ok(reapingElapsedMs >= 150 && reapingElapsedMs < 2_000, `MCP completion must await bounded SIGKILL cleanup: ${reapingElapsedMs}ms`);
-  assert.throws(() => process.kill(childPid, 0), (error) => error?.code === "ESRCH", "the MCP child must be reaped before request completion");
+  // The fixture ignores SIGTERM, so on POSIX completion waits for the SIGKILL
+  // escalation; on Windows every kill terminates at once.
+  const minimumReapMs = process.platform === "win32" ? 0 : 150;
+  assert.ok(reapingElapsedMs >= minimumReapMs && reapingElapsedMs < 2_000, `MCP completion must await bounded SIGKILL cleanup: ${reapingElapsedMs}ms`);
+  if (process.platform === "linux") {
+    // The server runs in its own PID namespace (turn 11b), so the pid it
+    // reports isn't a host pid; look for the server by its command line.
+    const survivors = spawnSync("pgrep", ["-f", "fixture-child-pid:"], { encoding: "utf8" });
+    assert.equal(survivors.status, 1, `the MCP child must be reaped before request completion: ${survivors.stdout}`);
+  } else {
+    assert.throws(() => process.kill(childPid, 0), (error) => error?.code === "ESRCH", "the MCP child must be reaped before request completion");
+  }
 
   const callsBeforeDynamic = discoveryCalls + readCalls;
   const dynamic = await envelope("mcp_dynamic_tool_call", { serverIdentityId, toolName: "read_only_status" }, "dynamic");

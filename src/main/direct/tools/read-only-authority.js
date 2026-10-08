@@ -16,7 +16,8 @@ const READ_FILE_TOOL_NAMES = new Set(["read_file", "readFile"]);
 const MAX_READ_FILE_BYTES = 384 * 1024;
 const MAX_PROVIDER_OUTPUT_CHARS = 64 * 1024;
 const MAX_APPROVAL_PREVIEW_CHARS = 512;
-const MAX_READONLY_TOOL_LOOP_STEPS = 8;
+// 0: a turn has no step cap (as in Codex); only the context window bounds it.
+const MAX_READONLY_TOOL_LOOP_STEPS = 0;
 const MAX_READONLY_TOOL_LOOP_TOTAL_PROVIDER_CHARS = 256 * 1024;
 const MAX_READONLY_TOOL_LOOP_REPEATED_PATH_READS = 2;
 const SUPPORTED_READONLY_CONTINUATION_KINDS = new Map([
@@ -384,26 +385,10 @@ function loopSummaryFromTurn(turn = {}, nextObligation = null) {
   };
 }
 
-function assertLoopCapsBeforeExecution(turn = {}, obligation = {}, options = {}) {
-  const stepOrdinal = Number(obligation.stepOrdinal || 1) || 1;
-  if (stepOrdinal > MAX_READONLY_TOOL_LOOP_STEPS) {
-    const error = new Error("Direct read-only tool loop step cap exceeded.");
-    error.code = "tool_loop_cap_exceeded";
-    throw error;
-  }
-  const summary = loopSummaryFromTurn(turn, obligation);
-  if (summary.providerOutputTotalChars > MAX_READONLY_TOOL_LOOP_TOTAL_PROVIDER_CHARS) {
-    const error = new Error("Direct read-only tool loop provider-output cap exceeded.");
-    error.code = "tool_loop_cap_exceeded";
-    throw error;
-  }
-  const parsed = assertReadFileObligation(obligation, { fullAccess: options.fullAccess === true });
-  const currentCount = Number(summary.repeatedPathReads[parsed.relPath] || 0);
-  if (currentCount > MAX_READONLY_TOOL_LOOP_REPEATED_PATH_READS) {
-    const error = new Error("Direct read-only tool loop repeated-path cap exceeded.");
-    error.code = "tool_loop_cap_exceeded";
-    throw error;
-  }
+// Like Codex, a turn has no step, total-output, or repeated-read caps; each
+// read is still validated and bounded on its own (per-call limits).
+function assertLoopCapsBeforeExecution(_turn = {}, obligation = {}, options = {}) {
+  assertReadFileObligation(obligation, { fullAccess: options.fullAccess === true });
 }
 
 function assertRecordedReadOnlyResult(obligation = {}) {

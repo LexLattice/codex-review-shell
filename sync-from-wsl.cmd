@@ -3,6 +3,10 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 set "SYNC_ROOT=%~dp0"
 if "%SYNC_ROOT:~-1%"=="\" set "SYNC_ROOT=%SYNC_ROOT:~0,-1%"
+if "%SYNC_ROOT:~0,2%"=="\\" (
+  >&2 echo Refusing to sync into %SYNC_ROOT%: the sync target must be a Windows folder, not the WSL checkout.
+  exit /b 1
+)
 pushd "%SYNC_ROOT%" >nul
 
 set "WSL_DISTRO=%CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO%"

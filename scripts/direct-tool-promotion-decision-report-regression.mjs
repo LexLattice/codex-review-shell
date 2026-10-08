@@ -125,7 +125,7 @@ function buildCandidateGate(nowMs = 0) {
     nowMs,
   });
   assert.deepEqual(validateDirectHeadlessToolClassLiveCandidateGate(candidateGate), [], "candidate gate should validate");
-  assert.equal(candidateGate.eligibleCandidateCount, 5, "candidate gate should expose five live-smoke candidates");
+  assert.equal(candidateGate.eligibleCandidateCount, 6, "candidate gate should expose six live-smoke candidates");
   return candidateGate;
 }
 
@@ -145,7 +145,7 @@ const planOnlyDecisionReport = buildDirectToolPromotionDecisionReport({
 });
 assert.deepEqual(validateDirectToolPromotionDecisionReport(planOnlyDecisionReport), [], "plan-only promotion report should validate");
 assert.equal(planOnlyDecisionReport.status, "passed", "plan-only promotion report should pass structurally");
-assert.equal(planOnlyDecisionReport.summary.byState.needs_more_evidence, 5, "unexecuted candidate rows should need more evidence");
+assert.equal(planOnlyDecisionReport.summary.byState.needs_more_evidence, 6, "unexecuted candidate rows should need more evidence");
 assert.equal(planOnlyDecisionReport.summary.byState.not_applicable, 13, "blocked rows should remain not applicable");
 assert.equal(planOnlyDecisionReport.activationGranted, false, "promotion decision must not activate tools");
 assert.equal(planOnlyDecisionReport.matrixPromotionCandidate, false, "plan-only evidence must not become a matrix promotion candidate");
@@ -175,10 +175,10 @@ const restrictedDecisionReport = buildDirectToolPromotionDecisionReport({
 });
 assert.deepEqual(validateDirectToolPromotionDecisionReport(restrictedDecisionReport), [], "restricted promotion report should validate");
 assert.equal(restrictedDecisionReport.status, "passed", "restricted promotion report should pass");
-assert.equal(restrictedDecisionReport.summary.byState.promotable_restricted, 5, "fixture live smoke should be restricted promotion evidence");
+assert.equal(restrictedDecisionReport.summary.byState.promotable_restricted, 6, "fixture live smoke should be restricted promotion evidence");
 assert.equal(
   restrictedDecisionReport.decisions.filter((row) => row.state === "promotable_restricted" && row.evidenceClass === "fixture_only").length,
-  5,
+  6,
   "fixture evidence class should be preserved on restricted promotion rows",
 );
 assert.equal(restrictedDecisionReport.summary.byState.not_applicable, 13, "blocked rows should remain not applicable");
@@ -209,8 +209,8 @@ const realProviderDecisionReport = buildDirectToolPromotionDecisionReport({
   toolConstitutionDigest: "tool_constitution_digest_fixture",
 });
 assert.deepEqual(validateDirectToolPromotionDecisionReport(realProviderDecisionReport), [], "real-provider promotion report should validate");
-assert.equal(realProviderDecisionReport.summary.byState.promotable, 5, "real-provider full-loop evidence should be promotable");
-assert.equal(realProviderDecisionReport.summary.byEvidenceClass.real_provider_full_loop, 5, "real provider evidence class should be preserved");
+assert.equal(realProviderDecisionReport.summary.byState.promotable, 6, "real-provider full-loop evidence should be promotable");
+assert.equal(realProviderDecisionReport.summary.byEvidenceClass.real_provider_full_loop, 6, "real provider evidence class should be preserved");
 assert.equal(realProviderDecisionReport.matrixPromotionCandidate, true, "real-provider full-loop evidence may become matrix candidate evidence");
 assert.equal(realProviderDecisionReport.activationGranted, false, "promotable does not activate tools");
 
@@ -235,7 +235,7 @@ const fullLoopEffectDecisionReport = buildDirectToolPromotionDecisionReport({
   nowMs: 0,
 });
 assert.deepEqual(validateDirectToolPromotionDecisionReport(fullLoopEffectDecisionReport), [], "full-loop effect promotion report should validate");
-assert.equal(fullLoopEffectDecisionReport.summary.byState.promotable, 5, "declared full-loop effects should not block promotion decisions");
+assert.equal(fullLoopEffectDecisionReport.summary.byState.promotable, 6, "declared full-loop effects should not block promotion decisions");
 const patchDecision = fullLoopEffectDecisionReport.decisions.find((row) => row.scope.toolClassId === "workspace_process.patch_apply");
 assert.equal(patchDecision.negativeEvidence.noOutOfContractProviderTransport, true, "declared full-loop provider transport should be in contract");
 assert.equal(patchDecision.negativeEvidence.noOutOfContractWorkspaceEffect, true, "declared patch workspace effect should be in contract");
@@ -261,7 +261,7 @@ const staleDecisionReport = buildDirectToolPromotionDecisionReport({
 });
 assert.deepEqual(validateDirectToolPromotionDecisionReport(staleDecisionReport), [], "stale promotion report should remain structurally valid");
 assert.equal(staleDecisionReport.status, "passed", "stale decisions are blocked rows, not schema failure");
-assert.equal(staleDecisionReport.summary.byState.blocked, 5, "stale promotion evidence should block eligible rows");
+assert.equal(staleDecisionReport.summary.byState.blocked, 6, "stale promotion evidence should block eligible rows");
 assert(
   staleDecisionReport.decisions
     .filter((row) => row.sourceSmokeStatus === "live_smoke_passed")

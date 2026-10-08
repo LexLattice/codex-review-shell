@@ -183,6 +183,23 @@ function defaultExamples() {
       forbiddenSideEffects: ["provider_transport", "goal_completion_claim", "context_mutation_without_gate"],
     },
     {
+      exampleId: "ex.session_control.self_constitution_read",
+      toolClassId: "session_control.self_constitution_read",
+      toolIdsCovered: ["direct.inspect_self_constitution"],
+      testMode: "headless_fixture",
+      realismTier: "headless_runtime",
+      runnerScripts: ["scripts/direct-self-constitution-regression.mjs"],
+      npmScripts: ["direct:self-constitution"],
+      inputExample: {
+        schema: "direct_inspect_self_constitution_example@1",
+        arguments: {},
+        rawWorkspacePathIncluded: false,
+      },
+      expectedEvidenceSchemas: ["direct_self_constitution_snapshot", "direct_self_constitution_result_envelope"],
+      successAssertions: ["snapshot is compiled from owner-issued harness state", "self-inspection is read-only and grants no authority", "result enters provider through bounded continuation"],
+      forbiddenSideEffects: ["workspace_write", "process_spawn", "authority_widening", "raw_workspace_path_exposure", "raw_secret_exposure"],
+    },
+    {
       exampleId: "ex.session_control.new_context_blocked",
       toolClassId: "session_control.new_context_blocked",
       toolIdsCovered: ["vanilla.new_context"],

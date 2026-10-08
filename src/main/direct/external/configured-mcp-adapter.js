@@ -1,12 +1,17 @@
 "use strict";
 
-const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
+const { spawn } = require("node:child_process");
+const {
+  DEFAULT_MCP_TIMEOUT_MS,
+  MAX_MCP_TIMEOUT_MS,
+  requestMcpStdio,
+} = require("./mcp-stdio-transport");
+const { EXECUTOR_METHODS } = require("../../../shared/executor-protocol");
+const { LocalChildProcessBackend } = require("../tools/exec-process-backends");
+const { workspaceExecutesLocally } = require("../tools/exec-sandbox");
+const { spawnInLinuxPidNamespace } = require("../../../shared/linux-pid-namespace");
 
-const MAX_MCP_RESULT_BYTES = 2 * 1024 * 1024;
-const MAX_MCP_HEADER_BYTES = 64 * 1024;
-const DEFAULT_MCP_TIMEOUT_MS = 15_000;
-const MAX_MCP_TIMEOUT_MS = 60_000;
 const MAX_DISCOVERY_RESULTS = 100;
 const MAX_DISCOVERY_BYTES = 512 * 1024;
 const MAX_MCP_BLOB_ENCODED_BYTES = 120_000;
@@ -16,8 +21,9 @@ const MAX_MCP_SCHEMA_NODES = 256;
 const MAX_MCP_SCHEMA_ARRAY_ITEMS = 64;
 const MAX_MCP_SCHEMA_STRING_BYTES = 4_096;
 const MAX_MCP_SCHEMA_ENCODED_BYTES = 64 * 1024;
-const MCP_CHILD_TERM_GRACE_MS = 200;
-const MCP_CHILD_CLEANUP_DEADLINE_MS = 2_000;
+// Extra time the host allows an executor beyond the server's own timeout.
+const MCP_EXECUTOR_TRANSPORT_GRACE_MS = 5_000;
+const MCP_PLACEMENT_KINDS = new Set(["project", "host", "local", "wsl", "windows"]);
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -234,7 +240,24 @@ function normalizeConfiguredMcpServer(input = {}) {
     processEnv: Object.freeze(arrayOrEmpty(environment.processEnv || source.processEnv)
       .map((value) => boundedString(value, 120))
       .filter((value) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(value))),
+    runsIn: normalizeRunsIn(source.runsIn || {
+      kind: source.environmentKind || environment.kind,
+      distro: source.distro || environment.distro,
+    }),
   });
+}
+
+/**
+ * Where a configured server's process runs. "project" (the default) is the
+ * project's own environment, the way Codex runs MCP servers where the agent
+ * runs; "host" is the Direct host itself; "wsl" (with a distro) and
+ * "windows" name an environment explicitly.
+ */
+function normalizeRunsIn(input) {
+  const source = typeof input === "string" ? { kind: input } : isPlainObject(input) ? input : {};
+  const requested = normalizeString(source.kind, "project").toLowerCase();
+  const kind = MCP_PLACEMENT_KINDS.has(requested) ? (requested === "local" ? "host" : requested) : "project";
+  return Object.freeze({ kind, distro: kind === "wsl" ? boundedString(source.distro, 120) : "" });
 }
 
 function configuredMcpServersForProject(project = {}) {
@@ -404,206 +427,6 @@ function externalResultPayload(result = {}) {
   };
 }
 
-function lineOrContentLengthParser(onMessage, onError) {
-  let buffer = Buffer.alloc(0);
-  let failed = false;
-  const fail = (error) => {
-    if (failed) return;
-    failed = true;
-    onError(error);
-  };
-  const contentLengthPrefix = "content-length";
-  const startsWithContentLengthPrefix = () => {
-    const prefixLength = Math.min(buffer.length, contentLengthPrefix.length);
-    if (!prefixLength) return false;
-    return buffer.toString("ascii", 0, prefixLength).toLowerCase() === contentLengthPrefix.slice(0, prefixLength);
-  };
-  return (chunk) => {
-    if (failed) return;
-    buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))]);
-    if (buffer.length > MAX_MCP_RESULT_BYTES) {
-      fail(scopeError("direct_mcp_result_too_large", "Configured MCP result exceeded the bounded output limit."));
-      return;
-    }
-    while (buffer.length) {
-      if (startsWithContentLengthPrefix() && buffer.length > MAX_MCP_HEADER_BYTES) {
-        const headerEnd = buffer.indexOf("\r\n\r\n");
-        if (headerEnd < 0 || headerEnd > MAX_MCP_HEADER_BYTES) {
-          fail(scopeError("direct_mcp_invalid_frame", "Configured MCP returned an oversized content-length header."));
-          return;
-        }
-      }
-      const separator = buffer.indexOf("\r\n\r\n");
-      if (startsWithContentLengthPrefix()) {
-        const firstNewline = buffer.indexOf("\n");
-        if (firstNewline >= 0 && buffer[firstNewline - 1] !== 13) {
-          fail(scopeError("direct_mcp_invalid_frame", "Configured MCP returned an invalid content-length frame."));
-          return;
-        }
-        const headerLineEnd = buffer.indexOf("\r\n");
-        if (headerLineEnd >= 0) {
-          const firstLine = buffer.toString("utf8", 0, headerLineEnd);
-          const declaredMatch = firstLine.match(/^content-length\s*:\s*(\d+)\s*$/i);
-          if (!declaredMatch) {
-            fail(scopeError("direct_mcp_invalid_frame", "Configured MCP returned an invalid content-length frame."));
-            return;
-          }
-          const declaredLength = Number(declaredMatch[1]);
-          if (!Number.isSafeInteger(declaredLength) || declaredLength > MAX_MCP_RESULT_BYTES) {
-            fail(scopeError("direct_mcp_result_too_large", "Configured MCP result exceeded the bounded output limit."));
-            return;
-          }
-        }
-        if (separator < 0) return;
-        const header = buffer.toString("utf8", 0, separator);
-        const match = header.match(/^content-length\s*:\s*(\d+)\s*(?:\r\n|$)/i);
-        if (!match) {
-          fail(scopeError("direct_mcp_invalid_frame", "Configured MCP returned an invalid content-length frame."));
-          return;
-        }
-        const length = Number(match[1]);
-        if (!Number.isSafeInteger(length) || length > MAX_MCP_RESULT_BYTES) {
-          fail(scopeError("direct_mcp_result_too_large", "Configured MCP result exceeded the bounded output limit."));
-          return;
-        }
-        const start = separator + 4;
-        if (buffer.length < start + length) return;
-        const body = buffer.subarray(start, start + length).toString("utf8");
-        buffer = buffer.subarray(start + length);
-        try { onMessage(JSON.parse(body)); } catch { fail(scopeError("direct_mcp_invalid_json", "Configured MCP returned invalid JSON.")); }
-        continue;
-      }
-      const newline = buffer.indexOf("\n");
-      if (newline < 0) return;
-      const line = buffer.subarray(0, newline).toString("utf8").trim();
-      buffer = buffer.subarray(newline + 1);
-      if (!line) continue;
-      try { onMessage(JSON.parse(line)); } catch { fail(scopeError("direct_mcp_invalid_json", "Configured MCP returned invalid JSON.")); }
-    }
-  };
-}
-
-function requestMcpJsonRpc(server, method, params = {}, options = {}) {
-  if (!server.command) return Promise.reject(scopeError("direct_mcp_transport_unavailable", "The configured MCP server has no local transport command."));
-  if (server.transportKind !== "stdio") return Promise.reject(scopeError("direct_mcp_transport_unsupported", "The configured MCP transport is not supported by Direct."));
-  const timeoutMs = boundedInteger(options.timeoutMs, DEFAULT_MCP_TIMEOUT_MS, 100, MAX_MCP_TIMEOUT_MS);
-  const signal = options.signal;
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let finishing = false;
-    let timer = null;
-    let child = null;
-    let childExited = false;
-    let resolveChildExit;
-    const childExit = new Promise((resolveExit) => { resolveChildExit = resolveExit; });
-    const isChildLive = () => Boolean(child && !childExited && child.exitCode === null && child.signalCode === null);
-    const markChildExited = () => {
-      if (childExited) return;
-      childExited = true;
-      resolveChildExit();
-    };
-    const waitForChildExit = async (durationMs) => {
-      if (!isChildLive()) return true;
-      let timeout;
-      await Promise.race([
-        childExit,
-        new Promise((resolveExit) => { timeout = setTimeout(resolveExit, durationMs); }),
-      ]);
-      if (timeout) clearTimeout(timeout);
-      return !isChildLive();
-    };
-    const cleanupChild = async () => {
-      if (!child || childExited) return true;
-      const cleanupDeadline = Date.now() + MCP_CHILD_CLEANUP_DEADLINE_MS;
-      if (isChildLive()) {
-        try { child.kill("SIGTERM"); } catch {}
-        await waitForChildExit(Math.min(MCP_CHILD_TERM_GRACE_MS, Math.max(0, cleanupDeadline - Date.now())));
-      }
-      if (isChildLive()) {
-        try { child.kill("SIGKILL"); } catch {}
-        await waitForChildExit(Math.max(0, cleanupDeadline - Date.now()));
-      }
-      return !isChildLive();
-    };
-    const finish = (error, result) => {
-      if (settled || finishing) return;
-      finishing = true;
-      if (timer) clearTimeout(timer);
-      timer = null;
-      if (signal) signal.removeEventListener?.("abort", abort);
-      child?.stdin?.destroy?.();
-      child?.stdout?.removeListener?.("data", parser);
-      child?.stderr?.removeListener?.("data", onStderr);
-      void (async () => {
-        const reaped = await cleanupChild();
-        const cleanupError = reaped ? null : scopeError("direct_mcp_cleanup_timeout", "Configured MCP process cleanup did not complete within the bounded deadline.");
-        settled = true;
-        child?.removeListener?.("error", onChildError);
-        child?.removeListener?.("exit", onChildExit);
-        child?.removeListener?.("close", onChildClose);
-        const finalError = error || cleanupError;
-        if (finalError) reject(finalError);
-        else resolve(result);
-      })();
-    };
-    const abort = () => finish(scopeError("direct_mcp_request_aborted", "Configured MCP request was cancelled."));
-    const send = (request) => {
-      if (finishing || !child?.stdin?.writable) return finish(scopeError("direct_mcp_transport_closed", "Configured MCP transport closed before the response."));
-      child.stdin.write(`${JSON.stringify(request)}\n`);
-    };
-    let phase = "initialize";
-    let activeRequestId = 1;
-    const parser = lineOrContentLengthParser((message) => {
-      if (finishing || !isPlainObject(message)) return;
-      if (message.method && !String(message.method).startsWith("notifications/")) {
-        return finish(scopeError("mcp_elicitation_owner_required", "Configured MCP requested owner-controlled interaction."));
-      }
-      if (Number(message.id) !== activeRequestId) return;
-      if (message.error) return finish(scopeError("direct_mcp_rpc_error", boundedString(message.error.message, 360) || "Configured MCP returned an error."));
-      if (phase === "initialize") {
-        phase = "request";
-        activeRequestId = 2;
-        send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
-        send({ jsonrpc: "2.0", id: activeRequestId, method, params });
-        return;
-      }
-      finish(null, message.result || {});
-    }, (error) => finish(error));
-    child = spawn(server.command, server.args, {
-      cwd: server.cwd || undefined,
-      env: server.processEnv.reduce((env, key) => {
-        if (process.env[key] !== undefined) env[key] = process.env[key];
-        return env;
-      }, {}),
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    const onStderr = (chunk) => {
-      if (String(chunk).length > MAX_MCP_RESULT_BYTES) finish(scopeError("direct_mcp_result_too_large", "Configured MCP stderr exceeded the bounded output limit."));
-    };
-    const onChildError = (error) => finish(error);
-    const onChildExit = (code, signalName) => {
-      markChildExited();
-      if (!settled) finish(scopeError("direct_mcp_transport_exited", `Configured MCP exited before completing the request (${code ?? signalName ?? "unknown"}).`));
-    };
-    const onChildClose = () => markChildExited();
-    child.stdout?.on("data", parser);
-    child.stderr?.on("data", onStderr);
-    child.once("error", onChildError);
-    child.once("exit", onChildExit);
-    child.once("close", onChildClose);
-    timer = setTimeout(() => finish(scopeError("direct_mcp_request_timeout", "Configured MCP request exceeded the timeout.")), timeoutMs);
-    timer.unref?.();
-    if (signal?.aborted) return abort();
-    signal?.addEventListener?.("abort", abort, { once: true });
-    send({ jsonrpc: "2.0", id: activeRequestId, method: "initialize", params: {
-      protocolVersion: "2025-06-18",
-      capabilities: {},
-      clientInfo: { name: "codex-direct", version: "1" },
-    }});
-  });
-}
-
 async function queryConfiguredServer(server, method, params, options = {}) {
   if (server.transportKind !== "stdio" && server.transportKind !== "fixture") {
     throw scopeError("direct_mcp_transport_unsupported", "The configured MCP transport is not supported by Direct.");
@@ -620,7 +443,125 @@ async function queryConfiguredServer(server, method, params, options = {}) {
     }
     throw scopeError("direct_mcp_transport_unavailable", "The configured MCP server has no local transport command.");
   }
-  return requestMcpJsonRpc(server, method, params, options);
+  const placement = mcpPlacementFor(server, options.project || {}, options);
+  if (placement.local) {
+    return requestMcpStdio(server, method, params, { timeoutMs: options.timeoutMs, signal: options.signal, spawnProcess: spawnOnHost });
+  }
+  return requestViaExecutor(placement, server, method, params, options);
+}
+
+function environmentLabel(kind) {
+  return kind === "wsl" ? "WSL" : kind === "windows" ? "Windows" : kind;
+}
+
+/**
+ * Resolves where a configured server runs: on this host, in the project's
+ * own executor, or (for an explicitly named environment that isn't the
+ * project's) in an executor anchored at the server's cwd there.
+ */
+function mcpPlacementFor(server, project = {}, options = {}) {
+  const runsIn = server.runsIn || { kind: "project", distro: "" };
+  if (runsIn.kind === "host") return { local: true, kind: "host" };
+  const workspace = isPlainObject(project.workspace) ? project.workspace : {};
+  const projectKind = normalizeString(workspace.kind, "local");
+  const projectDistro = normalizeString(workspace.distro, "");
+  const kind = runsIn.kind === "project" ? projectKind : runsIn.kind;
+  const distro = runsIn.kind === "project" ? projectDistro : runsIn.distro;
+  const locality = typeof options.workspaceLocalityResolver === "function"
+    ? options.workspaceLocalityResolver
+    : (candidateKind, candidateProject) => workspaceExecutesLocally(candidateKind, candidateProject);
+  if (kind === "local" || locality(kind, { workspace: { kind, distro } })) return { local: true, kind };
+  const sameDistro = kind !== "wsl" || !distro || !projectDistro || distro.toLowerCase() === projectDistro.toLowerCase();
+  if (kind === projectKind && sameDistro) return { local: false, kind, executorProject: project };
+  if (!server.cwd) {
+    throw scopeError(
+      "direct_mcp_environment_root_required",
+      `This MCP server runs in ${environmentLabel(kind)}, which is not this project's environment, so its config needs a cwd there.`,
+    );
+  }
+  return {
+    local: false,
+    kind,
+    executorProject: {
+      id: `${normalizeString(project.id, "project")}::mcp::${server.serverIdentityId}`,
+      name: `MCP ${server.displayName || server.serverIdentityId}`,
+      workspace: kind === "wsl" ? { kind, distro, linuxPath: server.cwd } : { kind, windowsPath: server.cwd },
+    },
+  };
+}
+
+let hostProcessBackend = null;
+
+// Host-local servers run contained, so their whole process tree is reaped
+// with them: under the job runner on Windows, in a PID namespace on Linux.
+function spawnOnHost(command, args, options = {}) {
+  if (process.platform === "linux") {
+    try {
+      return spawnInLinuxPidNamespace(command, args, {
+        ...options,
+        env: options.env || process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        dieWithParent: true,
+      });
+    } catch (error) {
+      // No trusted launcher on this host: run it as before, uncontained.
+      if (!String(error?.code || "").startsWith("workspace_linux_pid_namespace_launcher")) throw error;
+    }
+  }
+  if (process.platform !== "win32") {
+    const child = spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    child.workspaceProcessContainment = { guaranteed: false, kind: "none" };
+    return child;
+  }
+  hostProcessBackend ||= new LocalChildProcessBackend({ workspaceLocalityResolver: () => true });
+  const plan = hostProcessBackend.planLaunch({ sandboxMode: "danger-full-access", command, args });
+  return hostProcessBackend.launch(plan, options).child;
+}
+
+async function requestViaExecutor(placement, server, method, params, options = {}) {
+  const executors = options.mcpExecutors;
+  if (!executors || typeof executors.requestForProject !== "function") {
+    throw scopeError(
+      "direct_mcp_environment_unavailable",
+      `This MCP server runs in ${environmentLabel(placement.kind)}, and no executor for that environment is available.`,
+    );
+  }
+  const timeoutMs = boundedInteger(options.timeoutMs, DEFAULT_MCP_TIMEOUT_MS, 100, MAX_MCP_TIMEOUT_MS);
+  const mcpRequestId = `mcp_${crypto.randomBytes(12).toString("hex")}`;
+  const signal = options.signal;
+  const aborted = () => scopeError("direct_mcp_request_aborted", "Configured MCP request was cancelled.");
+  if (signal?.aborted) throw aborted();
+  let onAbort = null;
+  const abortPromise = new Promise((_, reject) => {
+    onAbort = () => {
+      executors.requestForProject(placement.executorProject, EXECUTOR_METHODS.mcpCancel, { mcpRequestId }, 10_000).catch(() => {});
+      reject(aborted());
+    };
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
+  try {
+    // Only the transport crosses: command, args, cwd, and the names of
+    // allowlisted variables, whose values come from that environment.
+    const response = await Promise.race([
+      executors.requestForProject(placement.executorProject, EXECUTOR_METHODS.mcpRequest, {
+        mcpRequestId,
+        server: {
+          transportKind: "stdio",
+          command: server.command,
+          args: [...server.args],
+          cwd: server.cwd,
+          processEnv: [...server.processEnv],
+        },
+        method,
+        params,
+        timeoutMs,
+      }, timeoutMs + MCP_EXECUTOR_TRANSPORT_GRACE_MS),
+      abortPromise,
+    ]);
+    return isPlainObject(response?.result) ? response.result : {};
+  } finally {
+    signal?.removeEventListener?.("abort", onAbort);
+  }
 }
 
 async function discoverConfiguredMcp(input = {}) {
@@ -698,10 +639,16 @@ async function readConfiguredMcpResource(input = {}) {
   };
 }
 
-function createDirectConfiguredMcpResolvers() {
+/**
+ * `options.executors` reaches servers that run in another environment; it
+ * needs `requestForProject(project, method, params, timeoutMs)`, which the
+ * workspace backend manager provides.
+ */
+function createDirectConfiguredMcpResolvers(options = {}) {
+  const withExecutors = (input) => (options.executors ? { ...input, mcpExecutors: options.executors } : input);
   return Object.freeze({
-    externalDiscoveryResolver: (input) => discoverConfiguredMcp(input),
-    mcpResourceReadResolver: (input) => readConfiguredMcpResource(input),
+    externalDiscoveryResolver: (input) => discoverConfiguredMcp(withExecutors(input)),
+    mcpResourceReadResolver: (input) => readConfiguredMcpResource(withExecutors(input)),
   });
 }
 
@@ -710,6 +657,7 @@ module.exports = {
   configuredMcpServerIdentityInput,
   createDirectConfiguredMcpResolvers,
   discoverConfiguredMcp,
+  mcpPlacementFor,
   normalizeConfiguredMcpServer,
   readConfiguredMcpResource,
 };

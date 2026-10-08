@@ -40,6 +40,12 @@ const {
 } = require("../src/main/direct/auth/auth-ipc");
 const { createDirectAuthLoginCoordinator } = require("../src/main/direct/auth/auth-login");
 const { codexAuthTokensFromCredentials } = require("../src/main/direct/auth/app-server-auth-bridge");
+// A continuation's guidance: its trailing developer message (the turn's
+// instructions stay identical so the prompt cache can reuse them).
+const continuationGuidanceText = (body = {}) => {
+  const last = Array.isArray(body.input) ? body.input.at(-1) : null;
+  return last?.role === "developer" ? String(last.content?.[0]?.text || "") : "";
+};
 const { createCodexCliAuthStore, createDirectAuthCompositeStore } = require("../src/main/direct/auth/codex-cli-auth");
 const { normalizeDirectCodexEvents, parseSseFixtureText } = require("../src/main/direct/normalizer/codex-event-normalizer");
 const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/profile-delta-builder");
@@ -2125,8 +2131,11 @@ try {
     },
   });
   const liveStatus = liveController.statusForProject(liveProject);
-  assert(liveStatus.status === "ready", "Expected accepted model and auth to make live text controller ready.");
-  assert(liveStatus.modelEvidenceState === "accepted", "Expected live text status to expose accepted model evidence.");
+  assert(liveStatus.status === "ready", "Expected auth to make live text controller ready.");
+  // Like Codex, membership in the account's model list is informational;
+  // without a fetched list it is reported as unavailable, not blocking.
+  assert(liveStatus.modelEvidenceState === "provider_catalog_unavailable", "Expected live text status to report that no model list was fetched.");
+  assert(liveStatus.providerListed === false, "Expected no provider listing without a model list.");
   assert(liveStatus.appServerRequired === false, "Live text controller must not require app-server.");
   assert(liveStatus.auth.rawTokensExposed === false, "Live text status must not expose raw tokens.");
   const activationBlockedLiveController = new DirectLiveTextController({
@@ -2157,11 +2166,9 @@ try {
     authStore: liveAuthStore,
     fetchImpl: async () => textResponse(liveSse, 200, { "content-type": "text/event-stream" }),
   });
-  assert(candidateController.statusForProject(liveProject).status === "profile_required", "Observed baseline models must not make live turns runnable.");
-  await assertRejects(
-    () => candidateController.startThread({}, { project: liveProject }),
-    "Expected live text thread start to require accepted or runtime-probed model evidence.",
-  );
+  // Signed in is ready, as in Codex: an unprobed model is not blocked, and the
+  // provider decides whether it accepts the model.
+  assert(candidateController.statusForProject(liveProject).status === "ready", "Unprobed models must not block live turns when signed in.");
 
   const promotionSse = [
     "event: response.created",
@@ -2280,10 +2287,10 @@ try {
     fetchImpl: async () => textResponse(promotionSse, 200, { "content-type": "text/event-stream" }),
   });
   const evidenceBackedStatus = evidenceBackedController.statusForProject(liveProject);
-  assert(evidenceBackedStatus.status === "ready", "Expected live probe evidence to unlock the candidate-profile live text controller.");
-  assert(evidenceBackedStatus.modelSource === "live-probe", "Expected live probe evidence to drive model source.");
-  assert(evidenceBackedStatus.modelEvidenceState === "runtime_probed", "Expected live probe evidence state to be runtime_probed.");
+  assert(evidenceBackedStatus.status === "ready", "Expected the candidate-profile live text controller to be ready when signed in.");
+  // A "Test model" result is still exposed as a diagnostic.
   assert(evidenceBackedStatus.liveProbeEvidence.usable === true, "Expected controller status to expose renderer-safe live evidence view.");
+  assert(evidenceBackedStatus.evidenceId === "live_probe_evidence_runtime_probed", "Expected the model test evidence id to stay visible.");
   let explicitlyScopedModel = "";
   const explicitlyScopedController = new DirectLiveTextController({
     sessionStore: liveSessionStore,
@@ -2365,17 +2372,9 @@ try {
     fetchImpl: async () => textResponse(promotionSse, 200, { "content-type": "text/event-stream" }),
   });
   const expiredEvidenceStatus = expiredEvidenceController.statusForProject(liveProject);
-  assert(expiredEvidenceStatus.status === "profile_required", "Expired live probe evidence must leave Direct blocked.");
-  assert(expiredEvidenceStatus.reason === "live_probe_evidence_expired", "Expired live probe evidence must expose a specific blocker reason.");
-  let expiredReadinessError = null;
-  try {
-    expiredEvidenceController.assertReady(liveProject);
-  } catch (error) {
-    expiredReadinessError = error;
-  }
-  assert(expiredReadinessError?.code === "profile_required", "Expired evidence must preserve the controller readiness error class.");
-  assert(expiredReadinessError?.blockerCode === "live_probe_evidence_expired", "Expired evidence must preserve the specific blocker code.");
-  assert(/capability evidence expired/i.test(expiredReadinessError?.message || ""), "Expired evidence must produce an actionable operator message.");
+  assert(expiredEvidenceStatus.status === "ready", "An expired model test must not block Direct.");
+  assert(expiredEvidenceStatus.liveProbeEvidence?.status === "expired", "An expired model test must be reported as expired, not passing.");
+  expiredEvidenceController.assertReady(liveProject);
 
   const nonRunnableEvidenceStore = new DirectLiveProbeEvidenceStore({
     rootDir: path.join(liveTextControllerParent, "non-runnable-direct-probe-evidence"),
@@ -2542,8 +2541,8 @@ try {
   const livePersisted = liveSessionStore.readSession(liveThread.thread.id);
   assert(livePersisted.runtimeMode === "direct-experimental", "Expected live text session runtime metadata.");
   assert(livePersisted.directTransport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT, "Expected live text session transport metadata.");
-  assert(livePersisted.modelSource === "odeu-profile", "Expected live text session model source metadata.");
-  assert(livePersisted.modelEvidenceState === "accepted", "Expected live text session model evidence metadata.");
+  assert(livePersisted.modelSource === "configured", "Expected live text session model source metadata.");
+  assert(livePersisted.modelEvidenceState === "provider_catalog_unavailable", "Expected live text session model evidence metadata.");
   assert(livePersisted.workspaceDisplayPath === "[REDACTED:private-path]", "Expected live text session workspace display path metadata.");
   assert(livePersisted.clientTurnRequests.client_req_live_text_1 === liveAck.turn.id, "Expected live text session to persist client turn id mapping.");
   const liveAssistant = livePersisted.messages[0].items.find((item) => item.type === "agentMessage");
@@ -2893,17 +2892,17 @@ try {
   assert(approvedToolContextPack.policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID, "Expected approved live tool continuation to use read-only tool context policy.");
   assert(approvedToolRequestManifest.enabledFeatures.previousResponseId === false, "Expected approved live tool manifest to record fresh-context continuity.");
   assert(approvedToolRequestManifest.enabledFeatures.store === false, "Expected approved live tool manifest to record store=false.");
-  assert(approvedToolRequestManifest.enabledFeatures.toolDeclarations === false, "Expected approved live tool manifest to disable new tool declarations.");
-  assert(approvedToolRequestManifest.enabledFeatures.toolOutputItem === false, "Expected approved live tool manifest to quote tool evidence rather than send provider-native tool-output items.");
+  assert(approvedToolRequestManifest.enabledFeatures.toolDeclarations === (approvedContinuationBody.tools?.length > 0), "Expected approved live tool manifest to record whether the continuation declares tools.");
+  assert(approvedToolRequestManifest.enabledFeatures.toolOutputItem === true, "Expected the manifest to record that tool output is sent as output items.");
   assert(approvedToolRequestManifest.continuity.continuityPolicy === "fresh_request_with_quoted_tool_result", "Expected approved live tool manifest to record quoted tool-result continuity.");
   assert(approvedToolRequestManifest.previousResponse.source === "native_direct_initial_stream", "Expected approved live tool manifest to cite native parent response source.");
   assert(approvedToolRequestManifest.contextPolicy.harnessPolicyDigest, "Expected approved live tool manifest to cite continuation harness policy.");
   assert(approvedToolRequestManifest.rawRequestBodyStored === false, "Expected approved live tool manifest not to store raw request body.");
   assert(!("previous_response_id" in approvedContinuationBody), "Expected approved ChatGPT continuation request not to send previous_response_id.");
-  assert(!approvedContinuationBody.input.some((item) => item.type === "function_call_output"), "Expected approved ChatGPT continuation request not to send function_call_output.");
-  assert(approvedContinuationBody.input[0].content[0].text.includes("read_file_result"), "Expected approved ChatGPT continuation request to quote read_file result evidence.");
-  assert(approvedContinuationBody.instructions.includes("You may request at most one additional read_file call"), "Expected approved live tool continuation request to preserve loop-aware continuation instructions.");
-  assert(approvedContinuationBody.instructions.includes("Do not request write, shell, network"), "Expected approved live tool continuation request to ban unsupported tools.");
+  assert(approvedContinuationBody.input.some((item) => item.type === "function_call" && approvedContinuationBody.input.some((output) => output.type === "function_call_output" && output.call_id === item.call_id)), "Expected ChatGPT continuation to replay the call followed by its output, as Codex does.");
+  assert(approvedContinuationBody.input.some((item) => item.type === "function_call_output" && item.output.includes("read_file_result")), "Expected approved ChatGPT continuation request to quote read_file result evidence.");
+  assert(continuationGuidanceText(approvedContinuationBody).includes("with any of the declared tools"), "Expected approved live tool continuation request to keep the turn's tools available.");
+  assert(!/at most one|Do not request/.test(approvedContinuationBody.instructions + continuationGuidanceText(approvedContinuationBody)), "Expected approved live tool continuation request not to restrict further tool calls.");
   const approvedObligation = approvedTurn.unresolvedObligations[0];
   assert(approvedObligation.status === "continuation_sent", "Expected approved obligation to record sent continuation.");
   assert(JSON.parse(approvedObligation.result.providerOutputText).kind === "read_file_result", "Expected approved provider output to use read_file_result envelope.");
@@ -3045,11 +3044,11 @@ try {
   assert(!("previous_response_id" in patchContinuationBody), "Expected ChatGPT patch continuation not to send unsupported previous_response_id.");
   assert(patchContinuationBody.store === false, "Expected patch continuation to assert store=false.");
   assert(patchContinuationBody.parallel_tool_calls === false, "Expected patch continuation to disable parallel tool calls.");
-  assert(!patchContinuationBody.input.some((item) => item.type === "function_call_output"), "Expected ChatGPT patch continuation not to send function_call_output.");
-  assert(patchContinuationBody.input[0].content[0].text.includes("apply_patch_result"), "Expected ChatGPT patch continuation to quote patch result evidence.");
+  assert(patchContinuationBody.input.some((item) => item.type === "function_call" && patchContinuationBody.input.some((output) => output.type === "function_call_output" && output.call_id === item.call_id)), "Expected ChatGPT continuation to replay the call followed by its output, as Codex does.");
+  assert(patchContinuationBody.input.some((item) => item.type === "function_call_output" && item.output.includes("apply_patch_result")), "Expected ChatGPT patch continuation to quote patch result evidence.");
   assert(
-    patchContinuationBody.instructions.includes("apply_patch result"),
-    `Expected patch continuation to send patch-specific harness policy, got: ${patchContinuationBody.instructions}`,
+    continuationGuidanceText(patchContinuationBody).includes("with any of the declared tools"),
+    `Expected patch continuation to keep the turn's tools available, got: ${continuationGuidanceText(patchContinuationBody)}`,
   );
   const patchTurn = patchToolStore.readTurn(patchThread.thread.id, patchAck.turn.id);
   assert(patchTurn.state === "completed", "Expected approved patch continuation to complete the turn.");
@@ -3059,8 +3058,8 @@ try {
   const patchContextPack = patchToolThreadStore.readContextPack(patchTurn.contextBuildId);
   const patchRequestManifest = patchToolThreadStore.readRequestManifest(patchTurn.requestManifestId);
   assert(patchContextPack.policy.policyId === DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID, "Expected patch continuation to use patch context policy.");
-  assert(patchRequestManifest.enabledFeatures.toolDeclarations === false, "Expected patch manifest to disable tool declarations.");
-  assert(patchRequestManifest.enabledFeatures.toolOutputItem === false, "Expected patch manifest to quote result evidence rather than send provider-native tool output.");
+  assert(patchRequestManifest.enabledFeatures.toolDeclarations === (patchContinuationBody.tools?.length > 0), "Expected patch manifest to record whether the continuation declares tools.");
+  assert(patchRequestManifest.enabledFeatures.toolOutputItem === true, "Expected the manifest to record that tool output is sent as output items.");
   assert(patchRequestManifest.continuity.continuityPolicy === "fresh_request_with_quoted_tool_result", "Expected patch manifest to record fresh quoted-result continuity.");
   assert(patchRequestManifest.enabledFeatures.parallelToolCalls === false, "Expected patch manifest to disable parallel tool calls.");
   await patchToolSurface.respond(patchApproval.key, {
@@ -3220,11 +3219,11 @@ try {
   assert(!("previous_response_id" in commandContinuationBody), "Expected ChatGPT command continuation not to send unsupported previous_response_id.");
   assert(commandContinuationBody.store === false, "Expected command continuation to assert store=false.");
   assert(commandContinuationBody.parallel_tool_calls === false, "Expected command continuation to disable parallel tool calls.");
-  assert(!commandContinuationBody.input.some((item) => item.type === "function_call_output"), "Expected ChatGPT command continuation not to send function_call_output.");
-  assert(commandContinuationBody.input[0].content[0].text.includes("run_command_result"), "Expected ChatGPT command continuation to quote command result evidence.");
+  assert(commandContinuationBody.input.some((item) => item.type === "function_call" && commandContinuationBody.input.some((output) => output.type === "function_call_output" && output.call_id === item.call_id)), "Expected ChatGPT continuation to replay the call followed by its output, as Codex does.");
+  assert(commandContinuationBody.input.some((item) => item.type === "function_call_output" && item.output.includes("run_command_result")), "Expected ChatGPT command continuation to quote command result evidence.");
   assert(
-    commandContinuationBody.instructions.includes("run_command result"),
-    `Expected command continuation to send command-specific harness policy, got: ${commandContinuationBody.instructions}`,
+    continuationGuidanceText(commandContinuationBody).includes("with any of the declared tools"),
+    `Expected command continuation to keep the turn's tools available, got: ${continuationGuidanceText(commandContinuationBody)}`,
   );
   const commandTurn = commandToolStore.readTurn(commandThread.thread.id, commandAck.turn.id);
   assert(commandTurn.state === "completed", "Expected approved command continuation to complete the turn.");
@@ -3236,8 +3235,8 @@ try {
   const commandContextPack = commandToolThreadStore.readContextPack(commandTurn.contextBuildId);
   const commandRequestManifest = commandToolThreadStore.readRequestManifest(commandTurn.requestManifestId);
   assert(commandContextPack.policy.policyId === DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID, "Expected command continuation to use command context policy.");
-  assert(commandRequestManifest.enabledFeatures.toolDeclarations === false, "Expected command manifest to disable tool declarations.");
-  assert(commandRequestManifest.enabledFeatures.toolOutputItem === false, "Expected command manifest to quote result evidence rather than send provider-native tool output.");
+  assert(commandRequestManifest.enabledFeatures.toolDeclarations === (commandContinuationBody.tools?.length > 0), "Expected command manifest to record whether the continuation declares tools.");
+  assert(commandRequestManifest.enabledFeatures.toolOutputItem === true, "Expected the manifest to record that tool output is sent as output items.");
   assert(commandRequestManifest.continuity.continuityPolicy === "fresh_request_with_quoted_tool_result", "Expected command manifest to record fresh quoted-result continuity.");
   assert(commandRequestManifest.enabledFeatures.parallelToolCalls === false, "Expected command manifest to disable parallel tool calls.");
   await commandToolSurface.respond(commandApproval.key, {
@@ -4893,8 +4892,8 @@ try {
     assert(toolContext.contextPack.policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID, "Expected read-only tool continuation context policy.");
     assert(toolContext.contextPack.messages.some((message) => message.authority === "tool-result-evidence"), "Expected tool result evidence in continuation context pack.");
     assert(toolContext.providerInput.instructions.includes("Fresh local authority"), "Expected continuation provider input to resend harness policy.");
-    assert(toolContext.providerInput.instructions.includes("You may request at most one additional read_file call"), "Expected continuation provider input to include loop-aware continuation guidance.");
-    assert(toolContext.providerInput.instructions.includes("Do not request write, shell, network"), "Expected continuation provider input to ban unsupported tools.");
+    assert(toolContext.providerInput.instructions.includes("with any of the declared tools"), "Expected continuation provider input to keep the turn's tools available.");
+    assert(!/at most one|Do not request/.test(toolContext.providerInput.instructions), "Expected continuation provider input not to restrict further tool calls.");
     assert(!toolContext.toolContinuationItems[0].text.includes("[LOCAL READ-ONLY TOOL RESULT EVIDENCE - QUOTED]"), "Expected tool continuation projection item text not to duplicate context-pack framing.");
     const continuationIntent = toolContext.contextPack.messages.find((message) => message.text.startsWith("[CONTINUATION INTENT]"));
     assert(

@@ -54,6 +54,32 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+// A delegated child is a full Direct thread in another project; the pool
+// tracks it like any child.
+const WORKSPACE_MODE_DELEGATED_THREAD = "delegated_thread";
+const DELEGATED_FINAL_MESSAGE_MAX_CHARS = 12_000;
+
+// What list/inspect/wait may show about a delegated child: where it runs
+// and with what Access, never the raw delegation input.
+function publicDelegation(input = {}) {
+  const environment = isPlainObject(input.environment) ? input.environment : {};
+  return {
+    targetProjectId: normalizeString(input.targetProjectId, ""),
+    targetProjectName: normalizeString(input.targetProjectName, ""),
+    environment: {
+      kind: normalizeString(environment.kind, ""),
+      distro: normalizeString(environment.distro, ""),
+      label: normalizeString(environment.label, ""),
+    },
+    folder: normalizeString(input.folder, ""),
+    projectCreated: input.projectCreated === true,
+    accessProfile: normalizeString(input.accessProfile, ""),
+    accessCeiling: normalizeString(input.accessCeiling, ""),
+    childThreadId: normalizeString(input.childThreadId, ""),
+    childTurnId: normalizeString(input.childTurnId, ""),
+  };
+}
+
 function normalizeCancellationReason(value, fallback = "direct_agent_cancelled") {
   const reasonCode = normalizeString(value, fallback);
   return CANCELLATION_REASON_PATTERN.test(reasonCode) ? reasonCode : fallback;
@@ -440,6 +466,11 @@ class DirectNativeAgentPool extends EventEmitter {
     this.workspaceWorkerRunner = typeof options.workspaceWorkerRunner === "function"
       ? options.workspaceWorkerRunner
       : null;
+    // Runs a delegated child as a full Direct thread in another project
+    // (usually another environment); see delegated-thread-runner.js.
+    this.delegatedThreadRunner = typeof options.delegatedThreadRunner === "function"
+      ? options.delegatedThreadRunner
+      : null;
     this.workspaceWorkerLifecycleRegistry = options.workspaceWorkerLifecycleRegistry || null;
     const recovery = this.workspaceWorkerLifecycleRegistry?.recoverySnapshot?.() || {
       status: "clean",
@@ -478,6 +509,7 @@ class DirectNativeAgentPool extends EventEmitter {
       providerTransportAvailable: Boolean(this.providerTurnRunner),
       providerProfiles: [...this.providerProfiles.values()].map((profile) => ({ ...profile })),
       workspaceWorkerRuntimeAvailable: Boolean(this.workspaceWorkerRunner),
+      delegatedThreadRuntimeAvailable: Boolean(this.delegatedThreadRunner),
       supportedWorkspaceModes: [WORKSPACE_MODE_REASONING_ONLY, WORKSPACE_MODE_ISOLATED_WORKTREE],
       supportedWorkspaceToolProfiles: ["read_only_worker", "implementation_worker"],
       closed: this.closed,
@@ -645,9 +677,18 @@ class DirectNativeAgentPool extends EventEmitter {
         toolProfile: effective.toolProfile,
       };
     }
+    const delegation = isPlainObject(input.delegation) ? publicDelegation(input.delegation) : null;
+    if (delegation) {
+      if (!this.delegatedThreadRunner) return this.launchResult(null, "blocked", "direct_delegated_thread_runner_missing");
+      if (!delegation.targetProjectId) return this.launchResult(null, "blocked", "direct_delegation_target_missing");
+    }
     let workspaceMode;
     let toolProfile;
     try {
+      if (delegation) {
+        workspaceMode = WORKSPACE_MODE_DELEGATED_THREAD;
+        toolProfile = WORKSPACE_MODE_DELEGATED_THREAD;
+      } else {
       workspaceMode = normalizeWorkspaceMode(input.workspaceMode || input.workspace_mode);
       const requestedToolProfile = normalizeString(input.toolProfile || input.tool_profile, "");
       if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && !requestedToolProfile) {
@@ -663,6 +704,7 @@ class DirectNativeAgentPool extends EventEmitter {
       toolProfile = workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
         ? normalizeToolProfile(requestedToolProfile)
         : "reasoning_only";
+      }
     } catch (error) {
       return this.launchResult(null, "blocked", normalizeString(error?.code, "direct_workspace_worker_request_invalid"));
     }
@@ -677,7 +719,10 @@ class DirectNativeAgentPool extends EventEmitter {
     if (providerProfile.status !== "ready") {
       return this.launchResult(null, "blocked", providerProfile.blockerCode || "direct_agent_provider_unavailable");
     }
-    if (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE && providerId !== PROVIDER_CHATGPT_DIRECT) {
+    if (
+      (workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE || workspaceMode === WORKSPACE_MODE_DELEGATED_THREAD) &&
+      providerId !== PROVIDER_CHATGPT_DIRECT
+    ) {
       return this.launchResult(null, "blocked", "direct_external_provider_workspace_mode_unsupported");
     }
     if (workspaceMode === WORKSPACE_MODE_REASONING_ONLY && !this.providerTurnRunner) {
@@ -872,6 +917,9 @@ class DirectNativeAgentPool extends EventEmitter {
             rawWorkspacePathIncluded: false,
           }
         : null,
+      delegation,
+      finalMessage: "",
+      finalMessageTruncated: false,
       state: this.activeCount < this.maxActiveChildren ? "accepted" : "queued",
       model,
       reasoningEffort,
@@ -886,7 +934,7 @@ class DirectNativeAgentPool extends EventEmitter {
       resultSummary: "",
       resultSummaryKind: workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
         ? "typed_status_code"
-        : "provider_summary",
+        : workspaceMode === WORKSPACE_MODE_DELEGATED_THREAD ? "child_final_message" : "provider_summary",
       blockerCode: "",
       resultDigest: "",
       continuationTrace: null,
@@ -908,6 +956,7 @@ class DirectNativeAgentPool extends EventEmitter {
       _task: task,
       _contextMessages: contextMessages,
       _project: workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE ? input.project : null,
+      _delegation: delegation ? { ...input.delegation } : null,
       _parentAuthorityPacket: parentAuthorityPacket,
       _delegationAuthority: delegationAuthority,
       _launchIdentity: launchIdentity,
@@ -1000,6 +1049,7 @@ class DirectNativeAgentPool extends EventEmitter {
         record?.activeSubAgentPolicyDecisionRef || null,
       activeSubAgentPolicyRef:
         record?.activeSubAgentPolicyRef || null,
+      ...(record?.delegation ? { delegation: { ...record.delegation, environment: { ...record.delegation.environment } } } : {}),
     };
     result.resultDigest = digestFor("direct-native-agent-launch@1", result);
     return result;
@@ -1203,6 +1253,19 @@ class DirectNativeAgentPool extends EventEmitter {
         registerEpistemicCaptureController: (controller) =>
           this.registerEpistemicCaptureController(record, controller),
       };
+      if (record.workspaceMode === WORKSPACE_MODE_DELEGATED_THREAD) {
+        return await this.delegatedThreadRunner({
+          ...commonInput,
+          delegation: record._delegation,
+          // The child thread exists once the runner creates it; list and
+          // inspect show it from then on.
+          onChildThread: (info = {}) => {
+            if (!record.delegation || record._settled) return;
+            record.delegation = publicDelegation({ ...record.delegation, ...info });
+            this.emit("changed", this.publicRecord(record));
+          },
+        });
+      }
       return record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
         ? await this.workspaceWorkerRunner({
             ...commonInput,
@@ -1282,6 +1345,8 @@ class DirectNativeAgentPool extends EventEmitter {
         workspaceExecution: result.workspaceExecution,
         mutationOutcome: result.mutationOutcome,
         continuationTrace: result.continuationTrace,
+        finalMessage: result.finalMessage,
+        delegation: result.delegation,
       });
     }).catch((error) => {
       if (record._settled) return;
@@ -1662,7 +1727,17 @@ class DirectNativeAgentPool extends EventEmitter {
     }
     record.resultSummaryKind = record.workspaceMode === WORKSPACE_MODE_ISOLATED_WORKTREE
       ? "typed_status_code"
-      : "provider_summary";
+      : record.workspaceMode === WORKSPACE_MODE_DELEGATED_THREAD ? "child_final_message" : "provider_summary";
+    if (record.workspaceMode === WORKSPACE_MODE_DELEGATED_THREAD) {
+      // Like Codex, the parent gets the delegated child's final message,
+      // bounded so one child can't flood the parent's context.
+      const finalMessage = typeof patch.finalMessage === "string" ? patch.finalMessage.trim() : "";
+      record.finalMessage = finalMessage.slice(0, DELEGATED_FINAL_MESSAGE_MAX_CHARS);
+      record.finalMessageTruncated = finalMessage.length > DELEGATED_FINAL_MESSAGE_MAX_CHARS;
+      if (isPlainObject(patch.delegation) && record.delegation) {
+        record.delegation = publicDelegation({ ...record.delegation, ...patch.delegation });
+      }
+    }
     if (workspaceExecution) record.workspaceExecution = workspaceExecution;
     const proposedCapture = normalizeEpistemicCapture(patch.epistemicCapture || {});
     const currentCapture = normalizeEpistemicCapture(record.epistemicCapture || {});
@@ -1688,6 +1763,7 @@ class DirectNativeAgentPool extends EventEmitter {
     record._task = "";
     record._contextMessages = [];
     record._project = null;
+    record._delegation = null;
     record._parentAuthorityPacket = null;
     record._pendingSettlement = null;
     this.queue = this.queue.filter((childAgentId) => childAgentId !== record.childAgentId);
@@ -2006,6 +2082,13 @@ class DirectNativeAgentPool extends EventEmitter {
       providerRoleLabelIgnored: record.providerRoleLabelIgnored === true,
       displayLabel: record.displayLabel,
       state: record.state,
+      ...(record.delegation
+        ? {
+            delegation: { ...record.delegation, environment: { ...record.delegation.environment } },
+            finalMessage: record.finalMessage,
+            finalMessageTruncated: record.finalMessageTruncated === true,
+          }
+        : {}),
       providerId: record.providerId,
       model: record.model,
       reasoningEffort: record.reasoningEffort,
@@ -2183,6 +2266,8 @@ class DirectNativeAgentPool extends EventEmitter {
 }
 
 module.exports = {
+  DELEGATED_FINAL_MESSAGE_MAX_CHARS,
+  WORKSPACE_MODE_DELEGATED_THREAD,
   DIRECT_NATIVE_AGENT_LAUNCH_SCHEMA,
   DIRECT_NATIVE_AGENT_POOL_SCHEMA,
   DIRECT_NATIVE_AGENT_STATUS_SCHEMA,

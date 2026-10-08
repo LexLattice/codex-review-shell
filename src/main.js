@@ -24,6 +24,7 @@ const {
   workspaceRoot,
   workspaceRootIsAbsolute,
 } = require("./main/workspace-backend");
+const { DirectEnvironmentRegistry } = require("./main/environment-registry");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 const {
   createDirectAuthIpcController,
@@ -85,8 +86,10 @@ const {
   DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
   DirectLiveTextController,
   DirectLiveTextSurfaceSession,
+  TERMINAL_TURN_STATES: DIRECT_TERMINAL_TURN_STATES,
   buildDirectLiveTextCapabilities,
 } = require("./main/direct/controller/live-text-controller");
+const { DirectTestControlServer } = require("./main/direct/test-control/test-control-server");
 const {
   DirectThreadHarnessGrantStore,
 } = require("./main/direct/authority/direct-thread-harness-grant");
@@ -204,7 +207,18 @@ const {
 } = require("./main/direct/readiness/usage-readiness");
 const {
   DirectServerMetadataAdapter,
+  detectCodexClientVersion,
 } = require("./main/direct/provider/metadata-adapter");
+const { createDelegatedThreadRunner } = require("./main/direct/agents/delegated-thread-runner");
+const { DirectTerminalService } = require("./main/direct/terminal/terminal-service");
+const {
+  buildDelegatedProject,
+  canonicalFolderWithinRoot,
+  normalizeProjectDelegation,
+  projectEnvironment: delegationProjectEnvironment,
+  projectRoot: delegationProjectRoot,
+  resolveDelegationTarget,
+} = require("./main/direct/agents/cross-environment-delegation");
 const {
   assertProviderHostedToolsStatusSafe,
   buildProviderHostedToolsStatus,
@@ -284,6 +298,11 @@ const {
 const {
   DirectFullAccessLocalEnvironmentExecutor,
 } = require("./main/direct/tools/full-access-local-environment");
+const {
+  EnvironmentExecutorProcessBackend,
+  createEnvironmentExecBackendResolver,
+} = require("./main/direct/tools/executor-process-backend");
+const { ExecutorFilePort } = require("./main/direct/tools/executor-file-port");
 const {
   assertCodeModeExecutionLaneSafe,
   buildCodeModeExecutionLaneStatus,
@@ -393,6 +412,10 @@ const WORLD_MANAGER_PRODUCTION_MODE =
   WORLD_MANAGER_SURFACE_MODE && APP_EXPERIENCE.variant === "production";
 const DIRECT_WORKBENCH_MODE =
   APP_EXPERIENCE.id === APP_EXPERIENCES.DIRECT_WORKBENCH;
+// Agent-driven testing (scripts/direct-drive.mjs): a local control port into
+// the real Direct runtime, with the window hidden unless asked for.
+const DIRECT_TEST_CONTROL_ENABLED = /^(1|true|yes)$/i.test(String(process.env.DIRECT_TEST_CONTROL || "").trim());
+const DIRECT_TEST_CONTROL_HIDDEN = DIRECT_TEST_CONTROL_ENABLED && process.env.DIRECT_TEST_CONTROL_SHOW !== "1";
 
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = appRoot;
@@ -877,13 +900,19 @@ async function runWorldManagerSemanticRoleThroughDirect(input = {}) {
       error.code = "constitutional_meta_role_runtime_policy_mismatch";
       throw error;
     }
-    const directProviderMetadata =
-      directProviderMetadataStatusForProject(project);
-    const catalog = buildWorldManagerModelCatalog({
+    const catalogFor = () => buildWorldManagerModelCatalog({
       providerMetadataProfile:
-        directProviderMetadata?.profile || null,
+        directProviderMetadataStatusForProject(project)?.profile || null,
       profileDoc: ensureDirectCodexProfileDoc(),
     });
+    let catalog = catalogFor();
+    // A new project has no cached model list yet; without it the router
+    // would fall back to its policy's own candidate, which the account may
+    // not offer (gpt-5.3-codex-spark is refused for ChatGPT accounts).
+    if (!(catalog.models || []).some((entry) => entry?.source === "server_model_list")) {
+      await refreshDirectProviderMetadataForProject(project);
+      catalog = catalogFor();
+    }
     runtimeSelection =
       resolveConstitutionalMetaRoleRuntimeSelection({
         invocation: input.metaRoleInvocation,
@@ -2814,6 +2843,9 @@ function normalizeProject(input, index = 0) {
     },
     handoffs: normalizeHandoffs(raw.handoffs, id, threadIds),
     ignoredWatchedArtifactPaths,
+    // Whether other projects' agents may delegate work here; absent means
+    // they may not.
+    ...(normalizeProjectDelegation(raw.delegation) ? { delegation: normalizeProjectDelegation(raw.delegation) } : {}),
     createdAt: normalizeString(raw.createdAt, now),
     updatedAt: normalizeString(raw.updatedAt, now),
   };
@@ -2885,6 +2917,14 @@ async function saveConfig(nextConfig) {
   return normalized;
 }
 
+// A Direct thread's speed: "priority" (Fast; "fast" is its legacy alias),
+// "flex", or "" for standard.
+function normalizeDirectThreadServiceTier(value) {
+  const tier = normalizeString(value, "").toLowerCase();
+  const canonical = tier === "fast" ? "priority" : tier;
+  return ["priority", "flex"].includes(canonical) ? canonical : "";
+}
+
 function codexRuntimePreferenceLookup(config, payload = {}) {
   const normalizedConfig = config || {};
   const runtimeDefaults = normalizeRuntimeDefaults(normalizedConfig.runtimeDefaults);
@@ -2916,6 +2956,8 @@ function codexRuntimePreferenceLookup(config, payload = {}) {
           sessionFilePath: "",
           model: normalizeString(directSession.model, normalizeString(threadMatch.value?.model, "")),
           reasoningEffort: normalizeReasoningEffort(directSession.reasoningEffort) || normalizeReasoningEffort(threadMatch.value?.reasoningEffort),
+          serviceTier: normalizeDirectThreadServiceTier(directSession.serviceTier),
+          daybreakEnabled: directSession.daybreakEnabled === true,
           updatedAt: normalizeString(directSession.runtimeBindingUpdatedAt || directSession.updatedAt, normalizeString(threadMatch.value?.updatedAt, "")),
         }
       : threadMatch.value,
@@ -2978,7 +3020,7 @@ async function updateCodexRuntimePreferences(payload = {}, options = {}) {
         error.code = "codex_runtime_preference_project_unknown";
         throw error;
       }
-      const effectiveModel = model || normalizeString(project.surfaceBinding?.codex?.model, directSession.model);
+      const effectiveModel = model || ensureDirectLiveTextController().defaultModelForProject(project) || directSession.model;
       const effectiveReasoningEffort = reasoningEffort ||
         normalizeReasoningEffort(project.surfaceBinding?.codex?.reasoningEffort) ||
         normalizeReasoningEffort(directSession.reasoningEffort);
@@ -2988,6 +3030,14 @@ async function updateCodexRuntimePreferences(payload = {}, options = {}) {
         ...directSession,
         model: effectiveModel,
         reasoningEffort: effectiveReasoningEffort,
+        // Fast and Daybreak are per thread. Callers that don't send them
+        // leave the thread's choice as it is.
+        serviceTier: Object.prototype.hasOwnProperty.call(payload, "serviceTier")
+          ? normalizeDirectThreadServiceTier(payload.serviceTier)
+          : normalizeString(directSession.serviceTier, ""),
+        daybreakEnabled: Object.prototype.hasOwnProperty.call(payload, "daybreakEnabled")
+          ? payload.daybreakEnabled === true
+          : directSession.daybreakEnabled === true,
         modelSource: "thread-runtime-binding",
         modelEvidenceState: evidence.modelEvidenceState || "unknown",
         modelEvidenceId: normalizeString(evidence.evidenceId, ""),
@@ -3023,6 +3073,8 @@ async function updateCodexRuntimePreferences(payload = {}, options = {}) {
         threadId: options.directSessionMutation.nextSession.sessionId,
         model: options.directSessionMutation.nextSession.model,
         reasoningEffort: options.directSessionMutation.nextSession.reasoningEffort,
+        serviceTier: normalizeDirectThreadServiceTier(options.directSessionMutation.nextSession.serviceTier),
+        daybreakEnabled: options.directSessionMutation.nextSession.daybreakEnabled === true,
         modelSource: options.directSessionMutation.nextSession.modelSource,
         modelEvidenceState: options.directSessionMutation.nextSession.modelEvidenceState,
         modelEvidenceId: options.directSessionMutation.nextSession.modelEvidenceId,
@@ -3510,7 +3562,15 @@ function ensureDirectAuthLoginCoordinator() {
 
 function ensureDirectConfiguredMcpResolvers() {
   if (directConfiguredMcpResolvers) return directConfiguredMcpResolvers;
-  directConfiguredMcpResolvers = createDirectConfiguredMcpResolvers();
+  directConfiguredMcpResolvers = createDirectConfiguredMcpResolvers({
+    // MCP servers that live in another environment run in its executor.
+    executors: {
+      requestForProject: (project, method, params, timeoutMs) => {
+        if (!workspaceBackends) throw new Error("Workspace backends are not initialized.");
+        return workspaceBackends.requestForProject(project, method, params, timeoutMs);
+      },
+    },
+  });
   return directConfiguredMcpResolvers;
 }
 
@@ -3543,13 +3603,39 @@ function ensureDirectProviderMetadataAdapter() {
     rootDir: directProviderMetadataRootDir(),
     authStoreFactory: () => directRuntimeAuthStore(),
     refreshCredentials: (options) => refreshDirectRuntimeCredentials(options),
+    clientVersion: detectCodexClientVersion().version,
   });
+  startDirectModelCatalogRefreshTimer();
   return directProviderMetadataAdapter;
+}
+
+// Codex refreshes its model catalog in the background every 4.5 minutes so
+// the picker never waits on the network; Direct does the same for the
+// active project.
+const DIRECT_MODEL_CATALOG_REFRESH_MS = 270_000;
+let directModelCatalogRefreshTimer = null;
+const directModelCatalogRefreshes = new Map();
+
+function startDirectModelCatalogRefreshTimer() {
+  if (directModelCatalogRefreshTimer) return;
+  directModelCatalogRefreshTimer = setInterval(() => {
+    const project = currentProject;
+    const runtimeMode = normalizeDirectRuntimeModeForStatus(project?.surfaceBinding?.codex?.runtimeMode);
+    if (project?.id && runtimeMode !== "legacy-app-server") {
+      refreshDirectProviderMetadataForProject(project).catch(() => {});
+    }
+  }, DIRECT_MODEL_CATALOG_REFRESH_MS);
+  directModelCatalogRefreshTimer.unref?.();
 }
 
 function directProviderMetadataStatusForProject(project = {}) {
   try {
-    return ensureDirectProviderMetadataAdapter().cachedStatus(project?.id || "");
+    const status = ensureDirectProviderMetadataAdapter().cachedStatus(project?.id || "");
+    // Another account's catalog is never shown; fetch this account's.
+    if (status?.reason === "provider_metadata_account_changed" && project?.id) {
+      refreshDirectProviderMetadataForProject(project).catch(() => {});
+    }
+    return status;
   } catch (error) {
     return {
       profile: null,
@@ -3575,16 +3661,26 @@ function directProviderMetadataStatusForProject(project = {}) {
   }
 }
 
-async function refreshDirectProviderMetadataForProject(project = {}) {
-  try {
-    return await ensureDirectProviderMetadataAdapter().refreshForProject(project);
-  } catch (error) {
-    return {
-      ...directProviderMetadataStatusForProject(project),
-      cacheState: "failed",
-      error,
-    };
-  }
+// Concurrent refreshes for one project (background timer, account change,
+// a refused model, the picker) share a single request.
+function refreshDirectProviderMetadataForProject(project = {}) {
+  const key = normalizeString(project?.id, "");
+  if (directModelCatalogRefreshes.has(key)) return directModelCatalogRefreshes.get(key);
+  const pending = (async () => {
+    try {
+      return await ensureDirectProviderMetadataAdapter().refreshForProject(project);
+    } catch (error) {
+      return {
+        ...ensureDirectProviderMetadataAdapter().cachedStatus(project?.id || ""),
+        cacheState: "failed",
+        error,
+      };
+    } finally {
+      directModelCatalogRefreshes.delete(key);
+    }
+  })();
+  directModelCatalogRefreshes.set(key, pending);
+  return pending;
 }
 
 function ensureDirectCodexProfileDoc() {
@@ -3763,7 +3859,10 @@ async function coordinateWorkspaceWorkerShutdown(reason = "Direct runtime closed
       blockerCode: "",
       pendingRequests: 0,
     },
-    disposeWorkspaceBackends: () => manager?.disposeAll?.(),
+    disposeWorkspaceBackends: () => {
+      directTerminalService?.dispose();
+      return manager?.disposeAll?.();
+    },
     closeLifecycleRegistry: () => registry?.close?.(),
   }).then((receipt) => {
     workspaceWorkerShutdownReceipt = receipt;
@@ -3800,6 +3899,7 @@ function degradedSynchronousWorkspaceWorkerShutdown(reason = "process_exit") {
   console.warn("[workspace-worker] degraded synchronous shutdown without a quiescence receipt", reason);
   directNativeAgentPool?.stopAccepting?.({ reasonCode: "direct_runtime_degraded_exit" });
   directNativeAgentPool?.requestCancellationForAll?.({ reasonCode: "direct_runtime_degraded_exit" });
+  directTerminalService?.dispose();
   workspaceBackends?.disposeAll?.();
   workspaceWorkerLifecycleRegistry?.close?.();
 }
@@ -4219,6 +4319,8 @@ function projectForWorkspaceWorker(parentProject = {}, worktreePath = "", worker
     name: `${normalizeString(parentProject.name, "Direct project")} · ${workerKey}`,
     repoPath: worktreePath,
     workspace,
+    // Its binding is immutable per executor, so a worker gets its own.
+    executorPlacement: "dedicated",
   };
 }
 
@@ -4494,9 +4596,119 @@ function ensureDirectNativeAgentPool() {
     providerProfiles: directNativeChildProviderProfiles(),
     providerTurnRunner: (input) => runDirectNativeChildProviderByProfile(input),
     workspaceWorkerRunner: (input) => runDirectWorkspaceWorkerTurn(input),
+    // The pool exists before the controller, so the runner is built on
+    // first use.
+    delegatedThreadRunner: (input) => ensureDirectDelegatedThreadRunner()(input),
     workspaceWorkerLifecycleRegistry: ensureWorkspaceWorkerLifecycleRegistry(),
   });
   return directNativeAgentPool;
+}
+
+let directDelegatedThreadRunner = null;
+let directDelegationProjectChain = Promise.resolve();
+
+function ensureDirectDelegatedThreadRunner() {
+  directDelegatedThreadRunner ||= createDelegatedThreadRunner({
+    controller: ensureDirectLiveTextController(),
+    SurfaceSession: DirectLiveTextSurfaceSession,
+    resolveTarget: (delegation) => resolveDirectDelegationTargetProject(delegation),
+  });
+  return directDelegatedThreadRunner;
+}
+
+function delegationCodeError(code, message) {
+  const error = new Error(message || code);
+  error.code = code;
+  return error;
+}
+
+// A subfolder target must exist in its environment before a project is
+// created for it, and must really be inside the accepting project: the
+// environment's own executor resolves both (following symlinks), and the
+// project is created on the resolved folder. A lexical check alone let a
+// symlink inside the project point the child outside it.
+async function resolveDirectDelegationFolder(rootProject, folder) {
+  const environment = delegationProjectEnvironment(rootProject);
+  const environmentId = environment.kind === "wsl" ? `wsl:${environment.distro}` : environment.kind;
+  const registry = ensureDirectEnvironmentRegistry();
+  const list = async (target) => {
+    try {
+      return await registry.listDirectory(environmentId, target, { limit: 1 });
+    } catch (error) {
+      if (normalizeString(error?.code, "") === "direct_fs_list_not_found") {
+        throw delegationCodeError("direct_delegation_folder_not_found", `${target} doesn't exist in ${environment.label}.`);
+      }
+      throw delegationCodeError(
+        normalizeString(error?.code, "direct_delegation_folder_unavailable"),
+        `${target} couldn't be checked in ${environment.label}: ${normalizeString(error?.message, "unavailable")}`,
+      );
+    }
+  };
+  const rootListing = await list(delegationProjectRoot(rootProject));
+  const folderListing = await list(folder);
+  const realRoot = normalizeString(rootListing?.realPath || rootListing?.path, "");
+  const realFolder = normalizeString(folderListing?.realPath || folderListing?.path, "");
+  if (!realRoot || !realFolder || !canonicalFolderWithinRoot(environment.kind, realRoot, realFolder)) {
+    throw delegationCodeError(
+      "direct_delegation_folder_outside_project",
+      `${folder} resolves outside the project that accepts delegated work, so it can't be a delegation target.`,
+    );
+  }
+  return realFolder;
+}
+
+// Resolves where a delegated child runs. A subfolder of an accepting
+// project gets its own project (created once, serialized so concurrent
+// children can't create duplicates).
+function resolveDirectDelegationTargetProject(delegation = {}) {
+  const run = async () => {
+    const config = await loadConfig();
+    const sourceProject = config.projects.find((project) => project.id === delegation.sourceProjectId) || { id: delegation.sourceProjectId };
+    const resolution = resolveDelegationTarget({
+      projects: config.projects,
+      sourceProject,
+      targetProject: delegation.targetProject,
+      targetFolder: delegation.targetFolder,
+    });
+    if (!resolution.ok) throw delegationCodeError(resolution.code, resolution.message);
+    if (!resolution.needsProject) {
+      const project = config.projects.find((entry) => entry.id === resolution.targetProjectId);
+      if (!project) throw delegationCodeError("direct_delegation_target_unknown", "The delegation target project no longer exists.");
+      return { project, folder: resolution.folder, projectCreated: false, accessCeiling: resolution.accessCeiling };
+    }
+    const rootProject = config.projects.find((entry) => entry.id === resolution.rootProjectId);
+    const realFolder = await resolveDirectDelegationFolder(rootProject, resolution.folder);
+    const latest = await loadConfig();
+    const knownIds = new Set(latest.projects.map((project) => project.id));
+    let projectId = newId("project");
+    while (knownIds.has(projectId)) projectId = newId("project");
+    const template = defaultConfig().projects[0];
+    const created = normalizeProject({
+      ...template,
+      ...buildDelegatedProject({
+        rootProject,
+        folder: realFolder,
+        sourceProject,
+        sourceThreadId: delegation.sourceThreadId,
+      }),
+      id: projectId,
+      laneBindings: [],
+      lastActiveBindingId: "",
+      handoffs: [],
+      ignoredWatchedArtifactPaths: [],
+    }, latest.projects.length);
+    const saved = await saveConfig({ ...latest, projects: [...latest.projects, created] });
+    emitShellEvent({ type: "config-updated", reason: "direct-delegation-project-created", config: saved, at: nowIso() });
+    return {
+      project: saved.projects.find((project) => project.id === projectId) || created,
+      folder: realFolder,
+      projectCreated: true,
+      accessCeiling: resolution.accessCeiling,
+    };
+  };
+  const next = directDelegationProjectChain.then(run, run);
+  directDelegationProjectChain = next.catch(() => {});
+  return next;
 }
 
 function ensureDirectActiveSubAgentPolicyService() {
@@ -4574,16 +4786,76 @@ function resolveDirectWorkspaceWorkerDelegationPolicy(input = {}) {
   return ensureDirectWorkspaceWorkerDelegationPolicyRegistry().resolve(input);
 }
 
+let directStatefulExecSessionManager = null;
+let directEnvironmentExecutorBackend = null;
+let directTerminalService = null;
+
+function sendDirectTerminalEvent(payload = {}) {
+  const contents = codexView?.webContents;
+  if (!contents || contents.isDestroyed()) return;
+  contents.send("direct-terminal:event", payload);
+}
+
+// The Terminal panel: the owner's own shells (DirectTerminalService) and,
+// read-only, agents' terminal sessions (exec_command with tty).
+function ensureDirectTerminalService() {
+  if (directTerminalService) return directTerminalService;
+  ensureDirectLiveTextController();
+  directTerminalService = new DirectTerminalService({
+    backendFor: (project, grant) => createEnvironmentExecBackendResolver({
+      localBackend: directStatefulExecSessionManager.localBackend,
+      executorBackend: directEnvironmentExecutorBackend,
+    })({ project }, grant),
+  });
+  directTerminalService.on("data", (event) => sendDirectTerminalEvent({
+    type: "data", kind: "user", terminalId: event.terminalId, projectId: event.projectId, dataBase64: event.data.toString("base64"),
+  }));
+  directTerminalService.on("shell", (event) => sendDirectTerminalEvent({
+    type: "shell", kind: "user", terminalId: event.terminalId, projectId: event.projectId, shell: event.shell,
+  }));
+  directTerminalService.on("exit", (event) => sendDirectTerminalEvent({
+    type: "exit", kind: "user", terminalId: event.terminalId, projectId: event.projectId, exitCode: event.exitCode,
+  }));
+  directStatefulExecSessionManager.on("terminal-data", (event) => sendDirectTerminalEvent({
+    type: "data", kind: "agent", terminalId: event.sessionId, projectId: event.projectId, dataBase64: event.data.toString("base64"),
+  }));
+  directStatefulExecSessionManager.on("completed", (result) => {
+    if (result?.transportMode !== "pty") return;
+    sendDirectTerminalEvent({ type: "exit", kind: "agent", terminalId: result.sessionId, projectId: result.projectId, exitCode: result.exitCode });
+  });
+  return directTerminalService;
+}
+
 function ensureDirectLiveTextController() {
   if (directLiveTextController) return directLiveTextController;
   const directHarnessGrantStore = new DirectThreadHarnessGrantStore({ rootDir: directSessionRootDir() });
+  // Commands and file operations for workspaces that aren't local to this
+  // host (a WSL workspace opened from Windows) run inside that environment's
+  // executor.
+  const environmentExecutors = {
+    ensureForProject: (project) => {
+      if (!workspaceBackends) throw new Error("Workspace backends are not initialized.");
+      return workspaceBackends.ensureForProject(project);
+    },
+  };
+  const environmentExecutorBackend = new EnvironmentExecutorProcessBackend({
+    workspaceBackends: environmentExecutors,
+  });
   const statefulExecSessionManager = new DirectStatefulExecSessionManager({
     grantStore: directHarnessGrantStore,
     workspaceRootResolver: (input) => workspaceRoot(input?.project || input, repoRoot),
+    backendResolver: (input, grant) => createEnvironmentExecBackendResolver({
+      localBackend: statefulExecSessionManager.localBackend,
+      executorBackend: environmentExecutorBackend,
+    })(input, grant),
   });
+  // The Terminal panel's own shells use the same routing.
+  directStatefulExecSessionManager = statefulExecSessionManager;
+  directEnvironmentExecutorBackend = environmentExecutorBackend;
   const fullAccessLocalEnvironmentExecutor = new DirectFullAccessLocalEnvironmentExecutor({
     grantStore: directHarnessGrantStore,
     workspaceRootResolver: (input) => workspaceRoot(input?.project || input, repoRoot),
+    executorFilePort: new ExecutorFilePort({ workspaceBackends: environmentExecutors }),
   });
   directLiveTextController = new DirectLiveTextController({
     sessionStore: ensureDirectSessionStore(),
@@ -4594,6 +4866,10 @@ function ensureDirectLiveTextController() {
     refreshCredentials: () => refreshDirectRuntimeCredentials(),
     modelEvidenceResolver: (context) =>
       resolveDirectLiveModelEvidence(context),
+    providerCatalogRefresher: ({ project }) => refreshDirectProviderMetadataForProject(project),
+    // The owner's projects, for spawn_agent delegation targets (cached so
+    // each turn's tool description can list them synchronously).
+    delegationProjectsResolver: () => configCache?.projects || [],
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     subAgentPool: ensureDirectNativeAgentPool(),
@@ -6024,9 +6300,16 @@ function directMetadataSelectedModel(profile = {}, project = {}, runtimeStatus =
   const codexBinding = project.surfaceBinding?.codex || {};
   const liveText = runtimeStatus.liveTextRuntime || {};
   const modelIds = Array.isArray(runtimeStatus.models?.ids) ? runtimeStatus.models.ids.filter(Boolean) : [];
+  // The project's model is only a default; one the account's list no longer
+  // offers gives way to the list's default (as defaultModelForProject does).
+  const listed = profile?.modelCatalog?.source === "server_model_list" && Array.isArray(profile.modelCatalog.items)
+    ? profile.modelCatalog.items.filter((item) => item && item.hidden !== true)
+    : [];
+  const configuredListed = !listed.length ||
+    listed.some((item) => item.model === codexBinding.model || item.id === codexBinding.model);
   const candidate = normalizeString(
-    codexBinding.model ||
-      profile?.runtimeSettings?.active?.model ||
+    (configuredListed ? codexBinding.model : "") ||
+      (configuredListed ? profile?.runtimeSettings?.active?.model : "") ||
       profile?.modelCatalog?.defaultModel ||
       liveText.liveProbeEvidence?.model ||
       modelIds[0],
@@ -7028,13 +7311,23 @@ async function refreshDirectRuntimeReadiness(payload = {}) {
     };
   }
 
+  // Refreshing readiness is what Codex does: renew sign-in (above) and fetch
+  // the account's model list. "Test model" additionally sends one short
+  // prompt to the model as an optional diagnostic; it gates nothing.
   let probeResult = null;
-  try {
+  let catalog = null;
+  if (payload.testModel !== true) {
+    steps.push(directEmbarkStep("model_catalog_refresh", "started"));
+    catalog = await refreshDirectProviderMetadataForProject(project);
+    steps.push(directEmbarkStep("model_catalog_refresh", catalog?.fetched ? "completed" : "failed", {
+      cacheState: normalizeString(catalog?.cacheState, "unknown"),
+    }));
+  } else try {
     const probe = await recordDirectEmbarkLiveProbe(
       project,
       buildDirectRuntimeStatusForProject(project),
       steps,
-      { model: runtimeScope.model, source: "direct-runtime-readiness-refresh" },
+      { model: runtimeScope.model, source: "direct-runtime-model-test" },
     );
     probeResult = probe.probeResult;
   } catch (error) {
@@ -7075,17 +7368,21 @@ async function refreshDirectRuntimeReadiness(payload = {}) {
     liveTextStatus,
     directProviderMetadata: directProviderMetadataStatusForProject(project),
   });
+  const runnable = liveTextStatus.status === "ready" || liveTextStatus.turnRunnable === true;
   return {
     schema: "direct_runtime_readiness_refresh@1",
-    ok: liveTextStatus.status === "ready" || liveTextStatus.turnRunnable === true,
+    ok: payload.testModel === true ? runnable && probeResult?.evidenceUsable === true : runnable,
     status: liveTextStatus.status,
     reason: liveTextStatus.reason || "",
     projectId,
     threadId: runtimeScope.threadId,
-    model: runtimeScope.model,
+    model: runtimeScope.model || liveTextStatus.model,
     reasoningEffort: runtimeScope.reasoningEffort,
     evidenceId: normalizeString(liveTextStatus.evidenceId, ""),
     evidenceState: liveTextStatus.modelEvidenceState || "unknown",
+    modelListed: liveTextStatus.providerListed === true,
+    catalogState: normalizeString(catalog?.cacheState, liveTextStatus.providerCatalogState || ""),
+    testedModel: payload.testModel === true,
     authStatus: directRuntimeAuthStore().readStatus(),
     probeResult,
     steps,
@@ -7594,14 +7891,29 @@ function projectWithDirectWorkbenchBinding(project = {}, operation = {}, index =
   const runtimePathBinding = directRuntimePathFromBinding(existingCodexBinding) === operation.runtimePath
     ? existingCodexBinding
     : bindingForDirectRuntimePath(existingCodexBinding, operation.runtimePath, { ordinary: true });
-  const codexBinding = alignCodexHostRuntimeWithWorkspace(runtimePathBinding, {
+  const alignedBinding = alignCodexHostRuntimeWithWorkspace(runtimePathBinding, {
     mode: operation.mode,
     currentWorkspace: project.workspace,
     nextWorkspace: operation.workspace,
     platform: process.platform,
   });
+  // The model for new threads: "" means Recommended (the account's list
+  // default). An operation without the field keeps the project's setting.
+  const codexBinding = typeof operation.defaultModel === "string"
+    ? { ...alignedBinding, model: operation.defaultModel }
+    : alignedBinding;
+  // Delegation acceptance is the owner's call per project; a project
+  // created by delegation keeps that record.
+  const delegation = typeof operation.delegationAccess === "string"
+    ? normalizeProjectDelegation({
+        acceptAccess: operation.delegationAccess,
+        includeSubfolders: operation.delegationSubfolders === true,
+        createdBy: project.delegation?.createdBy || null,
+      })
+    : normalizeProjectDelegation(project.delegation);
   return normalizeProject({
     ...project,
+    delegation,
     id: project.id,
     name: operation.displayName,
     repoPath: projectRepoPathFromWorkspace(operation.workspace),
@@ -7659,6 +7971,10 @@ async function performDirectWorkbenchProjectBindingMutation(operation = {}) {
         displayName: operation.displayName,
         workspace: operation.workspace,
         runtimePath: operation.runtimePath,
+        ...(typeof operation.defaultModel === "string" ? { defaultModel: operation.defaultModel } : {}),
+        ...(typeof operation.delegationAccess === "string"
+          ? { delegationAccess: operation.delegationAccess, delegationSubfolders: operation.delegationSubfolders === true }
+          : {}),
       },
     });
 
@@ -11774,7 +12090,7 @@ async function createDirectWorkbenchWindow() {
     minHeight: 620,
     title: APP_EXPERIENCE.label,
     backgroundColor: "#090a0c",
-    show: true,
+    show: !DIRECT_TEST_CONTROL_HIDDEN,
   });
   installOrderedWorkspaceWorkerWindowClose(mainWindow, "Direct Workbench window close requested.");
   codexView = new WebContentsView({
@@ -13162,6 +13478,83 @@ ipcMain.handle("direct-runtime:refresh-readiness", async (event, payload) => {
   });
 });
 
+// Optional diagnostic: one short prompt to the thread's model. Never required
+// before a turn.
+ipcMain.handle("direct-runtime:test-model", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(event.sender, "direct-runtime:test-model");
+  requireDirectWorkbenchExperience("direct-runtime:test-model");
+  const projectId = normalizeString(payload?.projectId, authority.projectId);
+  if (!projectId || (authority.projectId && authority.projectId !== projectId)) {
+    const error = new Error("The Direct model test is bound to the active project.");
+    error.code = "direct_readiness_project_scope_mismatch";
+    throw error;
+  }
+  return refreshDirectRuntimeReadiness({
+    projectId,
+    threadId: normalizeString(payload?.threadId, ""),
+    testModel: true,
+  });
+});
+
+// The Terminal panel. Everything is scoped to the surface's active project:
+// the owner's shells open in its environment, and agents' terminal sessions
+// are listed and replayed read-only.
+function directTerminalAuthority(event, channel) {
+  const authority = requireFullCodexSurfaceBridge(event.sender, channel);
+  requireDirectWorkbenchExperience(channel);
+  const projectId = normalizeString(authority.projectId, "");
+  if (!projectId) {
+    const error = new Error("The Terminal panel is bound to the active project.");
+    error.code = "direct_terminal_project_required";
+    throw error;
+  }
+  return projectId;
+}
+
+ipcMain.handle("direct-terminal:list", async (event) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:list");
+  const service = ensureDirectTerminalService();
+  return {
+    schema: "direct_terminal_list@1",
+    projectId,
+    terminals: service.list({ projectId }),
+    agentSessions: directStatefulExecSessionManager?.terminalSessions({ projectId }) || [],
+  };
+});
+
+ipcMain.handle("direct-terminal:create", async (event, payload) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:create");
+  const project = currentProject?.id === projectId ? currentProject : await getProjectById(projectId);
+  return ensureDirectTerminalService().create({ project, rows: payload?.rows, cols: payload?.cols });
+});
+
+ipcMain.handle("direct-terminal:write", async (event, payload) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:write");
+  return ensureDirectTerminalService().write({ projectId, terminalId: payload?.terminalId, data: payload?.data });
+});
+
+ipcMain.handle("direct-terminal:resize", async (event, payload) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:resize");
+  return ensureDirectTerminalService().resize({ projectId, terminalId: payload?.terminalId, rows: payload?.rows, cols: payload?.cols });
+});
+
+ipcMain.handle("direct-terminal:close", async (event, payload) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:close");
+  return ensureDirectTerminalService().close({ projectId, terminalId: payload?.terminalId });
+});
+
+ipcMain.handle("direct-terminal:replay", async (event, payload) => {
+  const projectId = directTerminalAuthority(event, "direct-terminal:replay");
+  const service = ensureDirectTerminalService();
+  const terminalId = normalizeString(payload?.terminalId, "");
+  if (payload?.kind === "agent") {
+    const session = (directStatefulExecSessionManager?.terminalSessions({ projectId }) || []).find((row) => row.sessionId === terminalId);
+    const bytes = session ? directStatefulExecSessionManager.terminalReplay({ sessionId: terminalId }) : null;
+    return { terminalId, dataBase64: bytes ? bytes.toString("base64") : "" };
+  }
+  return { terminalId, dataBase64: service.replay({ projectId, terminalId }).toString("base64") };
+});
+
 ipcMain.handle("direct-workbench:set-runtime-path", async (event, payload) => {
   const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:set-runtime-path");
   requireDirectWorkbenchExperience("direct-workbench:set-runtime-path");
@@ -13631,6 +14024,63 @@ ipcMain.handle("direct-workbench:project-directory", async (event) => {
   return directWorkbenchProjectDirectoryForSender(event.sender);
 });
 
+let directEnvironmentRegistry = null;
+
+function ensureDirectEnvironmentRegistry() {
+  if (!workspaceBackends) {
+    const error = new Error("Workspace backends are not initialized.");
+    error.code = "direct_environment_registry_backends_unavailable";
+    throw error;
+  }
+  directEnvironmentRegistry ||= new DirectEnvironmentRegistry({ workspaceBackends });
+  return directEnvironmentRegistry;
+}
+
+// The environments this host can create projects in (Windows, each WSL
+// distro), for the project editor's environment picker.
+ipcMain.handle("direct-workbench:environments", async (event) => {
+  requireFullCodexSurfaceBridge(event.sender, "direct-workbench:environments");
+  requireDirectWorkbenchExperience("direct-workbench:environments");
+  const discovered = await ensureDirectEnvironmentRegistry().discover();
+  return {
+    schema: "direct_workbench_environments@1",
+    hostPlatform: discovered.hostPlatform,
+    environments: discovered.environments.map((environment) => ({
+      environmentId: environment.environmentId,
+      kind: environment.kind,
+      distro: environment.distro,
+      label: environment.label,
+      system: environment.system === true,
+      host: environment.host === true,
+      available: environment.launch?.available === true,
+      reason: normalizeString(environment.launch?.reason, ""),
+    })),
+  };
+});
+
+// Lists one folder in an environment through its own executor, so a WSL
+// project's folder is picked as a Linux path and a Windows one as a Windows
+// path, from either host.
+ipcMain.handle("direct-workbench:browse-environment-folder", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "direct-workbench:browse-environment-folder");
+  requireDirectWorkbenchExperience("direct-workbench:browse-environment-folder");
+  const listing = await ensureDirectEnvironmentRegistry().listDirectory(
+    normalizeString(payload?.environmentId, ""),
+    typeof payload?.path === "string" ? payload.path : "",
+  );
+  return {
+    schema: "direct_workbench_environment_folder@1",
+    environmentId: listing.environmentId,
+    kind: listing.kind,
+    path: listing.path,
+    parent: listing.parent,
+    home: listing.home,
+    pathStyle: listing.pathStyle,
+    entries: (listing.entries || []).map((entry) => ({ name: entry.name, path: entry.path, kind: entry.kind, hidden: entry.hidden === true })),
+    truncated: listing.truncated === true,
+  };
+});
+
 ipcMain.handle("direct-workbench:project-binding-draft", async (event, payload) => {
   const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:project-binding-draft");
   requireDirectWorkbenchExperience("direct-workbench:project-binding-draft");
@@ -13982,11 +14432,100 @@ ipcMain.handle("chatgpt:open-settings", async () => {
 
 ipcMain.handle("chatgpt:force-dark", async () => forceChatgptDark());
 
+let directTestControlServer = null;
+
+// A test project's folder is created if missing, from whichever host runs
+// the app (a WSL folder from Windows goes through \\wsl.localhost).
+async function ensureDirectTestProjectFolder(workspace = {}) {
+  let folder = "";
+  if (workspace.kind === "windows") folder = process.platform === "win32" ? workspace.windowsPath : "";
+  else if (workspace.kind === "local") folder = workspace.localPath;
+  else if (workspace.kind === "wsl") {
+    folder = process.platform === "win32"
+      ? `\\\\wsl.localhost\\${workspace.distro || "Ubuntu"}${String(workspace.linuxPath || "").replace(/\//g, "\\")}`
+      : workspace.linuxPath;
+  }
+  if (folder) await fs.mkdir(folder, { recursive: true });
+}
+
+async function createDirectTestProject(spec = {}) {
+  const raw = isPlainObject(spec.workspace) ? spec.workspace : {};
+  const workspace = normalizeWorkspaceConfig(raw, "");
+  await ensureDirectTestProjectFolder(workspace);
+  const config = await loadConfig();
+  const project = normalizeProject({
+    id: newId("project"),
+    name: normalizeString(spec.name, "Test project"),
+    workspace,
+    surfaceBinding: {
+      codex: {
+        mode: "managed",
+        bindingProvider: "direct-chatgpt-codex",
+        runtimeMode: "direct",
+        directTransport: "live-text",
+        directTier: "implementation-lane",
+        model: normalizeString(spec.model, ""),
+        reasoningEffort: normalizeString(spec.reasoningEffort, ""),
+        label: "Direct full access",
+      },
+    },
+    ...(isPlainObject(spec.delegation) ? { delegation: spec.delegation } : {}),
+  }, config.projects.length + 1);
+  const saved = await saveConfig({ ...config, projects: [...config.projects, project] });
+  return saved.projects.find((item) => item.id === project.id) || project;
+}
+
+async function startDirectTestControlServer() {
+  if (!DIRECT_TEST_CONTROL_ENABLED || directTestControlServer) return;
+  if (!activeAppProfile.isolated && process.env.DIRECT_TEST_CONTROL_ALLOW_DEFAULT_PROFILE !== "1") {
+    console.warn("[direct-test-control] refused: test control runs only with an isolated profile (CODEX_REVIEW_SHELL_USER_DATA_DIR).");
+    return;
+  }
+  // A fresh profile's default "Example Project" is the app's own checkout; a
+  // test turn there could edit the code under test. It becomes a scratch
+  // folder in the test profile (a profile always keeps one active project).
+  const config = await loadConfig();
+  const example = config.projects.find((project) => project.id === "project_example");
+  const exampleRoot = example ? path.resolve(workspaceToRepoPath(example.workspace, "")) : "";
+  if (example && (exampleRoot === path.resolve(repoRoot) || example.workspace?.kind === "wsl")) {
+    const scratch = path.join(app.getPath("userData"), "scratch-project");
+    await fs.mkdir(scratch, { recursive: true });
+    await saveConfig({
+      ...config,
+      projects: config.projects.map((project) => project.id === "project_example"
+        ? { ...project, name: "Scratch (test profile)", workspace: { kind: "local", localPath: scratch, label: "Test scratch" }, repoPath: scratch }
+        : project),
+    });
+  }
+  directTestControlServer = new DirectTestControlServer({
+    userDataDir: app.getPath("userData"),
+    controller: () => ensureDirectLiveTextController(),
+    createSurfaceSession: (project) => new DirectLiveTextSurfaceSession(null, {
+      controller: ensureDirectLiveTextController(),
+      project,
+    }),
+    projects: {
+      list: () => (configCache?.projects || []).filter((project) => project.lifecycle?.state !== "archived"),
+      get: async (projectId) => (await loadConfig()).projects.find((project) => project.id === projectId) || null,
+      create: (spec) => createDirectTestProject(spec),
+    },
+    createThread: (project, payload) => ensureDirectThreadWorkbenchController().createWorkThreadDraftSession(project, payload),
+    terminalStates: DIRECT_TERMINAL_TURN_STATES,
+    onShutdown: () => app.quit(),
+    appInfo: { experience: APP_EXPERIENCE.id, appRoot },
+  });
+  const { port } = await directTestControlServer.listen();
+  console.log(`[direct-test-control] listening on 127.0.0.1:${port}`);
+}
+
 app.whenReady().then(async () => {
   nativeTheme.themeSource = "dark";
   ensureWorkspaceBackendManager();
   await loadConfig();
   await createWindow();
+  await startDirectTestControlServer().catch((error) => {
+    console.warn("[direct-test-control] failed to start", error?.message || error);
+  });
   if (Number.isFinite(smokeExitMs) && smokeExitMs > 0) {
     setTimeout(() => {
       app.quit();
@@ -13998,6 +14537,8 @@ app.whenReady().then(async () => {
 });
 
 function closeApplicationRuntimeAfterOrderedWorkspaceShutdown() {
+  directTestControlServer?.close().catch(() => {});
+  directTestControlServer = null;
   threadAnalyticsStore?.close();
   threadAnalyticsStore = null;
   directAuthLoginCoordinator = null;

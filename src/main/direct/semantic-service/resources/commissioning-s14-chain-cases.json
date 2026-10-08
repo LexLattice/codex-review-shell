@@ -1,0 +1,387 @@
+{
+  "schema": "direct_commissioning_chain_snapshots@1",
+  "snapshots": [
+    {
+      "snapshotRef": "coherent-chain",
+      "evidence": {
+        "entityRef": "entity-a",
+        "genesisRef": "occurrence-0",
+        "currentRevision": "semantic-revision-7",
+        "snapshotRevision": "semantic-revision-7",
+        "complete": true,
+        "lineageAvailable": true,
+        "nodes": [
+          {
+            "bindingRef": "binding-0",
+            "entityRef": "entity-a",
+            "predecessorRef": null,
+            "beforeRef": "occurrence-0",
+            "afterRef": "occurrence-1",
+            "ordinal": 0
+          },
+          {
+            "bindingRef": "binding-1",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-0",
+            "beforeRef": "occurrence-1",
+            "afterRef": "occurrence-2",
+            "ordinal": 1
+          },
+          {
+            "bindingRef": "binding-2",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-1",
+            "beforeRef": "occurrence-2",
+            "afterRef": "occurrence-3",
+            "ordinal": 2
+          }
+        ],
+        "alternatives": []
+      }
+    },
+    {
+      "snapshotRef": "broken-occurrence-join",
+      "evidence": {
+        "entityRef": "entity-a",
+        "genesisRef": "occurrence-0",
+        "currentRevision": "semantic-revision-7",
+        "snapshotRevision": "semantic-revision-7",
+        "complete": true,
+        "lineageAvailable": true,
+        "nodes": [
+          {
+            "bindingRef": "binding-0",
+            "entityRef": "entity-a",
+            "predecessorRef": null,
+            "beforeRef": "occurrence-0",
+            "afterRef": "occurrence-1",
+            "ordinal": 0
+          },
+          {
+            "bindingRef": "binding-1",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-0",
+            "beforeRef": "occurrence-foreign",
+            "afterRef": "occurrence-2",
+            "ordinal": 1
+          },
+          {
+            "bindingRef": "binding-2",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-1",
+            "beforeRef": "occurrence-2",
+            "afterRef": "occurrence-3",
+            "ordinal": 2
+          }
+        ],
+        "alternatives": []
+      }
+    },
+    {
+      "snapshotRef": "forked-predecessor",
+      "evidence": {
+        "entityRef": "entity-a",
+        "genesisRef": "occurrence-0",
+        "currentRevision": "semantic-revision-7",
+        "snapshotRevision": "semantic-revision-7",
+        "complete": true,
+        "lineageAvailable": true,
+        "nodes": [
+          {
+            "bindingRef": "binding-0",
+            "entityRef": "entity-a",
+            "predecessorRef": null,
+            "beforeRef": "occurrence-0",
+            "afterRef": "occurrence-1",
+            "ordinal": 0
+          },
+          {
+            "bindingRef": "binding-1",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-0",
+            "beforeRef": "occurrence-1",
+            "afterRef": "occurrence-2",
+            "ordinal": 1
+          },
+          {
+            "bindingRef": "binding-2",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-0",
+            "beforeRef": "occurrence-2",
+            "afterRef": "occurrence-3",
+            "ordinal": 2
+          }
+        ],
+        "alternatives": []
+      }
+    },
+    {
+      "snapshotRef": "repeated-binding",
+      "evidence": {
+        "entityRef": "entity-a",
+        "genesisRef": "occurrence-0",
+        "currentRevision": "semantic-revision-7",
+        "snapshotRevision": "semantic-revision-7",
+        "complete": true,
+        "lineageAvailable": true,
+        "nodes": [
+          {
+            "bindingRef": "binding-0",
+            "entityRef": "entity-a",
+            "predecessorRef": null,
+            "beforeRef": "occurrence-0",
+            "afterRef": "occurrence-1",
+            "ordinal": 0
+          },
+          {
+            "bindingRef": "binding-1",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-0",
+            "beforeRef": "occurrence-1",
+            "afterRef": "occurrence-2",
+            "ordinal": 1
+          },
+          {
+            "bindingRef": "binding-1",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-1",
+            "beforeRef": "occurrence-2",
+            "afterRef": "occurrence-3",
+            "ordinal": 2
+          }
+        ],
+        "alternatives": []
+      }
+    },
+    {
+      "snapshotRef": "cycle-to-genesis",
+      "evidence": {
+        "entityRef": "entity-a",
+        "genesisRef": "occurrence-0",
+        "currentRevision": "semantic-revision-7",
+        "snapshotRevision": "semantic-revision-7",
+        "complete": true,
+        "lineageAvailable": true,
+        "nodes": [
+          {
+            "bindingRef": "binding-0",
+            "entityRef": "entity-a",
+            "predecessorRef": null,
+            "beforeRef": "occurrence-0",
+            "afterRef": "occurrence-1",
+            "ordinal": 0
+          },
+          {
+            "bindingRef": "binding-1",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-0",
+            "beforeRef": "occurrence-1",
+            "afterRef": "occurrence-2",
+            "ordinal": 1
+          },
+          {
+            "bindingRef": "binding-2",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-1",
+            "beforeRef": "occurrence-2",
+            "afterRef": "occurrence-0",
+            "ordinal": 2
+          }
+        ],
+        "alternatives": []
+      }
+    },
+    {
+      "snapshotRef": "foreign-entity",
+      "evidence": {
+        "entityRef": "entity-a",
+        "genesisRef": "occurrence-0",
+        "currentRevision": "semantic-revision-7",
+        "snapshotRevision": "semantic-revision-7",
+        "complete": true,
+        "lineageAvailable": true,
+        "nodes": [
+          {
+            "bindingRef": "binding-0",
+            "entityRef": "entity-a",
+            "predecessorRef": null,
+            "beforeRef": "occurrence-0",
+            "afterRef": "occurrence-1",
+            "ordinal": 0
+          },
+          {
+            "bindingRef": "binding-1",
+            "entityRef": "entity-b",
+            "predecessorRef": "binding-0",
+            "beforeRef": "occurrence-1",
+            "afterRef": "occurrence-2",
+            "ordinal": 1
+          },
+          {
+            "bindingRef": "binding-2",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-1",
+            "beforeRef": "occurrence-2",
+            "afterRef": "occurrence-3",
+            "ordinal": 2
+          }
+        ],
+        "alternatives": []
+      }
+    },
+    {
+      "snapshotRef": "missing-lineage",
+      "evidence": {
+        "entityRef": "entity-a",
+        "genesisRef": "occurrence-0",
+        "currentRevision": "semantic-revision-7",
+        "snapshotRevision": "semantic-revision-7",
+        "complete": true,
+        "lineageAvailable": false,
+        "nodes": [
+          {
+            "bindingRef": "binding-0",
+            "entityRef": "entity-a",
+            "predecessorRef": null,
+            "beforeRef": "occurrence-0",
+            "afterRef": "occurrence-1",
+            "ordinal": 0
+          },
+          {
+            "bindingRef": "binding-1",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-0",
+            "beforeRef": "occurrence-1",
+            "afterRef": "occurrence-2",
+            "ordinal": 1
+          },
+          {
+            "bindingRef": "binding-2",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-1",
+            "beforeRef": "occurrence-2",
+            "afterRef": "occurrence-3",
+            "ordinal": 2
+          }
+        ],
+        "alternatives": []
+      }
+    },
+    {
+      "snapshotRef": "stale-snapshot",
+      "evidence": {
+        "entityRef": "entity-a",
+        "genesisRef": "occurrence-0",
+        "currentRevision": "semantic-revision-7",
+        "snapshotRevision": "semantic-revision-6",
+        "complete": true,
+        "lineageAvailable": true,
+        "nodes": [
+          {
+            "bindingRef": "binding-0",
+            "entityRef": "entity-a",
+            "predecessorRef": null,
+            "beforeRef": "occurrence-0",
+            "afterRef": "occurrence-1",
+            "ordinal": 0
+          },
+          {
+            "bindingRef": "binding-1",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-0",
+            "beforeRef": "occurrence-1",
+            "afterRef": "occurrence-2",
+            "ordinal": 1
+          },
+          {
+            "bindingRef": "binding-2",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-1",
+            "beforeRef": "occurrence-2",
+            "afterRef": "occurrence-3",
+            "ordinal": 2
+          }
+        ],
+        "alternatives": []
+      }
+    },
+    {
+      "snapshotRef": "insufficient-domain",
+      "evidence": {
+        "entityRef": "entity-a",
+        "genesisRef": "occurrence-0",
+        "currentRevision": "semantic-revision-7",
+        "snapshotRevision": "semantic-revision-7",
+        "complete": false,
+        "lineageAvailable": true,
+        "nodes": [
+          {
+            "bindingRef": "binding-0",
+            "entityRef": "entity-a",
+            "predecessorRef": null,
+            "beforeRef": "occurrence-0",
+            "afterRef": "occurrence-1",
+            "ordinal": 0
+          },
+          {
+            "bindingRef": "binding-1",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-0",
+            "beforeRef": "occurrence-1",
+            "afterRef": "occurrence-2",
+            "ordinal": 1
+          },
+          {
+            "bindingRef": "binding-2",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-1",
+            "beforeRef": "occurrence-2",
+            "afterRef": "occurrence-3",
+            "ordinal": 2
+          }
+        ],
+        "alternatives": []
+      }
+    },
+    {
+      "snapshotRef": "open-counterexample",
+      "evidence": {
+        "entityRef": "entity-a",
+        "genesisRef": "occurrence-0",
+        "currentRevision": "semantic-revision-7",
+        "snapshotRevision": "semantic-revision-7",
+        "complete": true,
+        "lineageAvailable": true,
+        "nodes": [
+          {
+            "bindingRef": "binding-0",
+            "entityRef": "entity-a",
+            "predecessorRef": null,
+            "beforeRef": "occurrence-0",
+            "afterRef": "occurrence-1",
+            "ordinal": 0
+          },
+          {
+            "bindingRef": "binding-1",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-0",
+            "beforeRef": "occurrence-1",
+            "afterRef": "occurrence-2",
+            "ordinal": 1
+          },
+          {
+            "bindingRef": "binding-2",
+            "entityRef": "entity-a",
+            "predecessorRef": "binding-1",
+            "beforeRef": "occurrence-2",
+            "afterRef": "occurrence-3",
+            "ordinal": 2
+          }
+        ],
+        "alternatives": [
+          "The observed endpoint may belong to entity-b; identity lineage is unresolved."
+        ]
+      }
+    }
+  ]
+}

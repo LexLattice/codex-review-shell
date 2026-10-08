@@ -370,7 +370,14 @@ const staleCapabilities = buildDirectLiveTextCapabilities({
   ...status,
   providerMetadataCacheState: "stale",
 });
-assert.equal(staleCapabilities.model.canList, false, "stale provider metadata must not advertise model/list");
+// Like Codex, an older list of this account's models stays usable while a
+// refresh is pending; only a missing or failed list hides model/list.
+assert.equal(staleCapabilities.model.canList, true, "stale provider metadata keeps model/list while refreshing");
+const missingCapabilities = buildDirectLiveTextCapabilities({
+  ...status,
+  providerMetadataCacheState: "missing",
+});
+assert.equal(missingCapabilities.model.canList, false, "missing provider metadata must not advertise model/list");
 assert(!staleCapabilities.requests.supportedServerMethods.includes("web_search"));
 const unsupportedCapabilities = buildDirectLiveTextCapabilities({
   ...status,

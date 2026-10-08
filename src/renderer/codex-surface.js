@@ -165,23 +165,29 @@ const state = {
   runtimePreferencesError: "",
   directReadinessRefreshStatus: "idle",
   directReadinessRefreshError: "",
+  directModelTestStatus: "idle",
   runtimePathSelection: "",
   runtimePathTransitionStatus: "idle",
   runtimePathTransitionError: "",
+  // On Direct the project's model is only a default (directDefaultModelId),
+  // so it never starts as an explicit override.
   runtimeOverrides: {
-    model: project?.codex?.model || "",
+    model: DIRECT_TRANSPORTS.has(connection?.transport) ? "" : project?.codex?.model || "",
     reasoningEffort: project?.codex?.reasoningEffort || "",
     approvalPolicy: "",
     sandboxMode: "",
     serviceTier: "",
+    daybreakEnabled: false,
   },
   runtimeConfirmedOverrides: {
-    model: project?.codex?.model || "",
+    model: DIRECT_TRANSPORTS.has(connection?.transport) ? "" : project?.codex?.model || "",
     reasoningEffort: project?.codex?.reasoningEffort || "",
     approvalPolicy: "",
     sandboxMode: "",
     serviceTier: "",
+    daybreakEnabled: false,
   },
+  composerModelView: "effort",
   workspaceStatus: payload.workspaceStatus || null,
   connectionStatus: connectionAvailable() ? "loading" : (payload.runtimeStartupPending ? "starting" : "unavailable"),
   runtimeConstitution: null,
@@ -564,6 +570,7 @@ const els = {
   morphicNewThreadButton: document.getElementById("morphicNewThreadButton"),
   morphicAnalyticsButton: document.getElementById("morphicAnalyticsButton"),
   morphicObservationsButton: document.getElementById("morphicObservationsButton"),
+  composerEnvironmentChip: document.getElementById("composerEnvironmentChip"),
   morphicSettingsButton: document.getElementById("morphicSettingsButton"),
   morphicThreadRail: document.getElementById("morphicThreadRail"),
   morphicThreadRailList: document.getElementById("morphicThreadRailList"),
@@ -626,6 +633,7 @@ const els = {
 function workspaceText() {
   if (!project) return "No project bound";
   if (project.workspace?.kind === "wsl") return `WSL ${project.workspace.distro || "default"}:${project.workspace.linuxPath}`;
+  if (project.workspace?.kind === "windows") return `Windows ${project.workspace.windowsPath || project.repoPath}`;
   return `Local ${project.workspace?.localPath || project.repoPath}`;
 }
 
@@ -710,7 +718,9 @@ function renderMorphicCockpit() {
     els.morphicThreadTitle.title = title;
   }
   if (els.morphicThreadMeta) {
-    els.morphicThreadMeta.textContent = meta;
+    // The Workbench shows where the thread runs; its internal id stays in
+    // the tooltip.
+    els.morphicThreadMeta.textContent = isDirectWorkbenchExperience() ? workspaceText() : meta;
     els.morphicThreadMeta.title = meta;
   }
   if (els.morphicRuntimePathChip) {
@@ -1178,9 +1188,25 @@ function directMetadataModels() {
     .filter(Boolean);
 }
 
+// Direct offers exactly what the account's model list says, like Codex: no
+// fallback to an older list or to hidden models.
 function effectiveModels() {
-  const directModels = isDirectLiveTextSurface() ? directMetadataModels() : [];
-  return directModels.length ? directModels : state.models;
+  return isDirectLiveTextSurface() ? directMetadataModels() : state.models;
+}
+
+function directListedModels() {
+  return directMetadataModels().filter((model) => !model.hidden);
+}
+
+function directModelListed(value) {
+  const id = String(value || "").trim();
+  return Boolean(id) && directListedModels().some((model) => model.id === id || model.model === id);
+}
+
+// Only meaningful once the list has loaded; an empty or missing list says
+// nothing about a model.
+function directModelUnavailable(value) {
+  return isDirectLiveTextSurface() && directListedModels().length > 0 && Boolean(value) && !directModelListed(value);
 }
 
 function applyDirectMetadataModels(projection = directSurfaceProjection()) {
@@ -1190,6 +1216,7 @@ function applyDirectMetadataModels(projection = directSurfaceProjection()) {
     ? directMetadataModels()
     : [];
   if (!models.length) {
+    state.models = [];
     state.modelListStatus = projection.metadataCacheState === "missing" ? "unavailable" : state.modelListStatus;
     return;
   }
@@ -1226,7 +1253,17 @@ function runtimeStateStatusFromConnection(value) {
 }
 
 function activeModelId() {
+  if (isDirectLiveTextSurface()) return state.runtimeOverrides.model || state.activeModel || directDefaultModelId();
   return state.runtimeOverrides.model || state.activeModel || project?.codex?.model || defaultModelId();
+}
+
+// Same rule as main's defaultModelForProject: the project's model is only a
+// default, and once the account's list stops offering it the list's default
+// takes over.
+function directDefaultModelId() {
+  const configured = String(project?.codex?.model || "").trim();
+  if (configured && (!directListedModels().length || directModelListed(configured))) return configured;
+  return defaultModelId() || configured;
 }
 
 function modelLabel() {
@@ -1240,6 +1277,12 @@ function selectedModel() {
 }
 
 function defaultModelId() {
+  if (isDirectLiveTextSurface()) {
+    const declared = String(directProviderMetadataProfile()?.modelCatalog?.defaultModel || "").trim();
+    if (directModelListed(declared)) return declared;
+    const first = directListedModels()[0];
+    return first?.model || first?.id || "";
+  }
   const models = effectiveModels();
   const defaultModel = models.find((model) => model?.isDefault) || null;
   return defaultModel?.model || defaultModel?.id || "";
@@ -1297,6 +1340,9 @@ function defaultReasoningEffort() {
 }
 
 function clearedModelId() {
+  // Clearing a Direct thread's model rebinds it to the project default
+  // (main's defaultModelForProject), not to the model it had.
+  if (isDirectLiveTextSurface()) return directDefaultModelId();
   return state.activeModel || project?.codex?.model || defaultModelId();
 }
 
@@ -3126,6 +3172,10 @@ function composerMenuSection(title, options, selectedValue, onSelect) {
     button.setAttribute("aria-pressed", selected ? "true" : "false");
     button.textContent = label || "Runtime default";
     button.title = `${title}: ${label || "Runtime default"}`;
+    if (typeof option === "object" && option.disabled) {
+      button.disabled = true;
+      button.title = `${title}: ${label} isn't offered to this account right now.`;
+    }
     button.addEventListener("click", () => {
       const nextValue = String(value || "");
       for (const item of section.querySelectorAll(".composer-menu-item")) {
@@ -3160,8 +3210,17 @@ function closeComposerMenus() {
 
 function toggleComposerMenu(menu) {
   state.composerMenu = state.composerMenu === menu ? "" : menu;
+  if (state.composerMenu === "model") state.composerModelView = "effort";
   renderComposerRuntimeBand();
   updateComposerGeometry();
+  // Like Codex, the picker uses the cached list and fetches only when it is
+  // older than the cache window.
+  if (state.composerMenu === "model" && isDirectLiveTextSurface() &&
+    directSurfaceProjection()?.metadataCacheState !== "fresh" && state.modelListStatus !== "loading") {
+    refreshModelList(false).then(() => {
+      if (state.composerMenu === "model") renderComposerRuntimeBand();
+    }).catch(() => {});
+  }
 }
 
 function eventPathContains(event, selector) {
@@ -3245,8 +3304,44 @@ function updateComposerGeometry() {
   els.composerForm.style.setProperty("--composer-control-pad-x", `${controlPadX}px`);
   els.composerForm.style.setProperty("--composer-control-height", `${controlHeight}px`);
   els.composerForm.style.setProperty("--composer-action-width", `${actionWidth}px`);
+  // Fixed chip widths: they depend on the composer's width only, never on
+  // what the chips say, so switching models doesn't resize the bar.
+  els.composerForm.style.setProperty("--composer-model-pill-width", `${Math.round(clampNumber(safeWidth * 0.24, 136, 188))}px`);
+  els.composerForm.style.setProperty("--composer-access-pill-width", `${Math.round(clampNumber(safeWidth * 0.14, 96, 116))}px`);
+  els.composerForm.style.setProperty("--composer-environment-chip-width", `${Math.round(clampNumber(safeWidth * 0.14, 88, 116))}px`);
+  els.composerForm.style.setProperty("--composer-context-chip-width", `${Math.round(clampNumber(safeWidth * 0.16, 122, 140))}px`);
   els.composerForm.dataset.composerSize = safeWidth < 390 ? "narrow" : safeWidth < 760 ? "medium" : "wide";
   document.documentElement.style.setProperty("--composer-shell-height", `${Math.round(shellRect.height || 150)}px`);
+  fitComposerBand();
+}
+
+const COMPOSER_QUOTA_MIN_WIDTH = 96;
+
+// When the band can't hold every chip at its fixed width, hide the least
+// important ones in a fixed order instead of squeezing or clipping them.
+function fitComposerBand() {
+  const band = els.composerForm?.querySelector(".composer-runtime-band");
+  if (!band) return;
+  const squeezable = [els.composerQuotaChip, els.composerContextChip, els.pasteImageButton, els.composerEnvironmentChip].filter(Boolean);
+  for (const element of squeezable) delete element.dataset.squeezed;
+  const items = [...band.querySelectorAll(".composer-quick-controls > *, .composer-runtime-witnesses > *")];
+  const gap = parseFloat(getComputedStyle(band).columnGap) || 6;
+  const needed = () => {
+    let total = gap;
+    let count = 0;
+    for (const item of items) {
+      if (item.hidden || item.dataset.squeezed === "true" || getComputedStyle(item).display === "none") continue;
+      total += item === els.composerQuotaChip ? COMPOSER_QUOTA_MIN_WIDTH : item.getBoundingClientRect().width;
+      count += 1;
+    }
+    return total + Math.max(0, count - 1) * gap;
+  };
+  const available = band.clientWidth;
+  if (!available) return;
+  for (const element of squeezable) {
+    if (needed() <= available) break;
+    if (!element.hidden) element.dataset.squeezed = "true";
+  }
 }
 
 function installComposerGeometryObserver() {
@@ -3261,6 +3356,27 @@ function installComposerGeometryObserver() {
 function renderComposerAccessMenu() {
   if (!els.composerAccessMenu) return;
   els.composerAccessMenu.innerHTML = "";
+  if (isDirectFullAccessSurface()) {
+    const selected = currentDirectAccessProfile() || preferredDirectAccessProfile();
+    els.composerAccessMenu.appendChild(composerMenuSection(
+      "Access",
+      DIRECT_ACCESS_PROFILE_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
+      selected,
+      (value) => { selectDirectAccessProfile(value); },
+    ));
+    const note = document.createElement("p");
+    note.className = "composer-menu-note";
+    note.textContent = `${directAccessProfileDescription(selected)} Applies to this thread and to new threads in this project.`;
+    els.composerAccessMenu.appendChild(note);
+    return;
+  }
+  if (isDirectLiveTextSurface()) {
+    const note = document.createElement("p");
+    note.className = "composer-menu-note";
+    note.textContent = "Text-only Direct threads have no tools, so access settings don't apply.";
+    els.composerAccessMenu.appendChild(note);
+    return;
+  }
   els.composerAccessMenu.appendChild(composerMenuSection("Approval", approvalPolicyOptions(), state.runtimeOverrides.approvalPolicy, (value) => setRuntimeOverride("approvalPolicy", value)));
   els.composerAccessMenu.appendChild(composerMenuSection("Sandbox", sandboxModeOptions(), state.runtimeOverrides.sandboxMode, (value) => setRuntimeOverride("sandboxMode", value)));
   const note = document.createElement("p");
@@ -3276,8 +3392,298 @@ function composerSelectedOverride(name) {
   return value;
 }
 
+const DIRECT_EFFORT_LABELS = Object.freeze({
+  none: "None",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+  ultra: "Ultra",
+});
+
+function directEffortLabel(value) {
+  const effort = String(value || "").trim();
+  return DIRECT_EFFORT_LABELS[effort] || effort || "Default";
+}
+
+// What the picker offers: the account's listed models, minus dedicated
+// Daybreak models ("cyber" specialty), which the Daybreak toggle stands in for.
+function directPickerModels() {
+  return directListedModels().filter((model) => String(model?.modelSpecialty || "") !== "cyber");
+}
+
+function directModelName(model, fallback = "") {
+  return String(model?.displayName || model?.model || fallback || "model").replace(/^GPT-/i, "GPT-");
+}
+
+function directModelSupportsFast(model = selectedModel()) {
+  const tiers = Array.isArray(model?.serviceTiers) ? model.serviceTiers : [];
+  return tiers.some((tier) => ["priority", "fast"].includes(String(tier?.id || tier || "").toLowerCase()));
+}
+
+function directFastTierDescription(model = selectedModel()) {
+  const tiers = Array.isArray(model?.serviceTiers) ? model.serviceTiers : [];
+  const tier = tiers.find((entry) => ["priority", "fast"].includes(String(entry?.id || "").toLowerCase()));
+  return String(tier?.description || "").trim();
+}
+
+// From the account's model list (`available_access_programs.cyber`):
+// "supported", "unsupported", or "unknown" when the list doesn't say.
+function directModelDaybreakSupport(model = selectedModel()) {
+  const programs = model?.accessPrograms?.cyber;
+  if (!Array.isArray(programs)) return "unknown";
+  return programs.includes("daybreak_blue") ? "supported" : "unsupported";
+}
+
+// A thread's choices stay saved when the model can't use them; they apply
+// again after switching back to a model that can.
+function directFastActive() {
+  return state.runtimeOverrides.serviceTier === "priority" && directModelSupportsFast();
+}
+
+function directDaybreakActive() {
+  return state.runtimeOverrides.daybreakEnabled === true && directModelDaybreakSupport() === "supported";
+}
+
+function directCurrentEffort() {
+  return state.runtimeOverrides.reasoningEffort || selectedModel()?.defaultReasoningEffort || "";
+}
+
+function directComposerButtonText() {
+  const model = selectedModel();
+  const id = activeModelId();
+  const name = directModelName(model, id || directModelLabel());
+  const effort = directCurrentEffort();
+  // Compact: the button has a fixed width; details are in its tooltip.
+  return [
+    directModelUnavailable(id) ? "⚠" : "",
+    directFastActive() ? "⚡" : "",
+    name,
+    effort ? directEffortLabel(effort) : "",
+    directDaybreakActive() ? "☀" : "",
+  ].filter(Boolean).join(" ");
+}
+
+// The project editor's "Model for new threads" reads the same list.
+globalThis.DirectModelCatalog = Object.freeze({
+  pickerModels: () => directPickerModels().map((model) => ({ model: model.model, displayName: directModelName(model) })),
+  recommendedModel: () => {
+    const id = defaultModelId();
+    return id ? { model: id, displayName: directModelName(modelById(id), id) } : null;
+  },
+});
+
+const DIRECT_ICON_FAST = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.2 1.5 3.5 9h4l-.9 5.5L12.5 7h-4z" fill="currentColor"/></svg>';
+const DIRECT_ICON_RESET = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 6.2A5 5 0 1 1 3 9.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M2.6 2.8v3.6h3.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function directIconButton(icon, label, onClick, options = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `direct-icon-button${options.className ? ` ${options.className}` : ""}`;
+  button.innerHTML = icon;
+  button.setAttribute("aria-label", label);
+  button.title = options.title || label;
+  if (options.pressed !== undefined) button.setAttribute("aria-pressed", options.pressed ? "true" : "false");
+  button.disabled = Boolean(options.disabled);
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+// Effort view: Fast toggle, effort name, the model (opens the list), a
+// slider over the model's own effort levels, and reset to its default.
+function directEffortView() {
+  const model = selectedModel();
+  const id = activeModelId();
+  const name = directModelName(model, id);
+  const efforts = supportedReasoningOptions();
+  const current = directCurrentEffort();
+  const modelDefault = String(model?.defaultReasoningEffort || "").trim();
+  const view = document.createElement("div");
+  view.className = "direct-effort-view";
+
+  const header = document.createElement("div");
+  header.className = "direct-effort-header";
+  const fastSupported = directModelSupportsFast(model);
+  const fastOn = directFastActive();
+  const fastDescription = directFastTierDescription(model);
+  header.appendChild(directIconButton(DIRECT_ICON_FAST, fastOn ? "Turn Fast off" : "Turn Fast on", () => {
+    setRuntimeOverride("serviceTier", fastOn ? "" : "priority");
+  }, {
+    className: "direct-fast-toggle",
+    pressed: fastOn,
+    disabled: !fastSupported,
+    title: !fastSupported
+      ? `Fast isn't available for ${name}.`
+      : `Fast ${fastOn ? "on" : "off"} for this thread${fastDescription ? ` (${fastDescription})` : ""}.`,
+  }));
+
+  const title = document.createElement("div");
+  title.className = "direct-effort-title";
+  const effortName = document.createElement("strong");
+  effortName.textContent = directEffortLabel(current);
+  const modelLink = document.createElement("button");
+  modelLink.type = "button";
+  modelLink.className = "direct-effort-model-link";
+  modelLink.textContent = `${name}${directModelUnavailable(id) ? " · unavailable" : ""} ›`;
+  modelLink.title = "Choose this thread's model";
+  modelLink.addEventListener("click", () => {
+    state.composerModelView = "models";
+    renderComposerModelMenu();
+  });
+  title.append(effortName, modelLink);
+  header.appendChild(title);
+
+  header.appendChild(directIconButton(DIRECT_ICON_RESET, "Reset effort to the model default", () => {
+    setRuntimeOverride("reasoningEffort", modelDefault);
+  }, {
+    disabled: !modelDefault || current === modelDefault,
+    title: modelDefault ? `Reset to ${directEffortLabel(modelDefault)}, ${name}'s default.` : "This model has no default effort.",
+  }));
+  view.appendChild(header);
+
+  const description = document.createElement("p");
+  description.className = "direct-effort-description";
+  const describe = (effort) => String(
+    (model?.supportedReasoningEfforts || []).find((entry) => entry?.reasoningEffort === effort)?.description || "",
+  ).trim();
+  description.textContent = describe(current);
+
+  if (efforts.length > 1) {
+    const sliderWrap = document.createElement("div");
+    sliderWrap.className = "direct-effort-slider";
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = "0";
+    slider.max = String(efforts.length - 1);
+    slider.step = "1";
+    slider.value = String(Math.max(0, efforts.indexOf(current)));
+    slider.setAttribute("aria-label", "Reasoning effort");
+    const ticks = document.createElement("div");
+    ticks.className = "direct-effort-ticks";
+    ticks.setAttribute("aria-hidden", "true");
+    for (let index = 0; index < efforts.length; index += 1) ticks.appendChild(document.createElement("span"));
+    const paint = () => {
+      const effort = efforts[Number(slider.value)] || current;
+      sliderWrap.style.setProperty("--direct-effort-fill-ratio", String(Number(slider.value) / (efforts.length - 1)));
+      slider.setAttribute("aria-valuetext", directEffortLabel(effort));
+      effortName.textContent = directEffortLabel(effort);
+      description.textContent = describe(effort);
+    };
+    // Dragging only previews; the choice is saved when the slider settles,
+    // because saving re-renders this menu.
+    slider.addEventListener("input", paint);
+    slider.addEventListener("change", () => setRuntimeOverride("reasoningEffort", efforts[Number(slider.value)] || ""));
+    paint();
+    sliderWrap.append(ticks, slider);
+    view.appendChild(sliderWrap);
+  }
+  view.appendChild(description);
+  return view;
+}
+
+// Model view: Daybreak for this thread, then the account's models.
+function directModelListView() {
+  const model = selectedModel();
+  const id = activeModelId();
+  const name = directModelName(model, id);
+  const view = document.createElement("div");
+  view.className = "direct-model-view";
+
+  const daybreakSupport = directModelDaybreakSupport(model);
+  const daybreakOn = directDaybreakActive();
+  const daybreakRow = document.createElement("div");
+  daybreakRow.className = "direct-daybreak-row";
+  const daybreakLabel = document.createElement("span");
+  daybreakLabel.className = "direct-daybreak-label";
+  daybreakLabel.textContent = "Daybreak";
+  const daybreakSwitch = document.createElement("button");
+  daybreakSwitch.type = "button";
+  daybreakSwitch.className = "direct-switch";
+  daybreakSwitch.setAttribute("role", "switch");
+  daybreakSwitch.setAttribute("aria-checked", daybreakOn ? "true" : "false");
+  daybreakSwitch.setAttribute("aria-label", "Daybreak for this thread");
+  daybreakSwitch.disabled = daybreakSupport !== "supported";
+  daybreakSwitch.addEventListener("click", () => setRuntimeOverride("daybreakEnabled", !daybreakOn));
+  daybreakRow.append(daybreakLabel, daybreakSwitch);
+  view.appendChild(daybreakRow);
+  if (daybreakSupport !== "supported") {
+    const note = document.createElement("p");
+    note.className = "direct-menu-note";
+    note.textContent = daybreakSupport === "unsupported"
+      ? `Daybreak isn't available for ${name}.`
+      : `The model list doesn't say whether ${name} supports Daybreak.`;
+    view.appendChild(note);
+  }
+
+  const heading = document.createElement("div");
+  heading.className = "direct-model-heading";
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "direct-model-back";
+  back.textContent = "‹";
+  back.setAttribute("aria-label", "Back to effort");
+  back.addEventListener("click", () => {
+    state.composerModelView = "effort";
+    renderComposerModelMenu();
+  });
+  const headingText = document.createElement("span");
+  headingText.textContent = "Select model";
+  heading.append(back, headingText);
+  view.appendChild(heading);
+
+  const list = document.createElement("div");
+  list.className = "direct-model-list";
+  const rows = directPickerModels();
+  if (id && !rows.some((row) => row.model === id || row.id === id)) {
+    rows.unshift({ model: id, displayName: name, unavailable: directModelUnavailable(id) });
+  }
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "direct-menu-note";
+    empty.textContent = state.modelListStatus === "loading" ? "Loading this account's models…" : "This account's model list isn't loaded yet.";
+    list.appendChild(empty);
+  }
+  for (const row of rows) {
+    const value = row.model || row.id;
+    const selected = value === id;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `direct-model-row${selected ? " selected" : ""}`;
+    button.dataset.value = value;
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+    button.textContent = `${directModelName(row, value)}${row.unavailable ? " · unavailable" : ""}`;
+    if (row.description) button.title = row.description;
+    if (row.unavailable) {
+      button.disabled = true;
+      button.title = `${value} isn't offered to this account right now.`;
+    }
+    button.addEventListener("click", () => {
+      state.composerModelView = "effort";
+      if (!selected) setRuntimeOverride("model", value);
+      else renderComposerModelMenu();
+    });
+    list.appendChild(button);
+  }
+  view.appendChild(list);
+  return view;
+}
+
+function renderDirectComposerMenu() {
+  const menu = els.composerModelMenu;
+  menu.innerHTML = "";
+  menu.classList.add("direct-runtime-popover");
+  menu.appendChild(state.composerModelView === "models" ? directModelListView() : directEffortView());
+}
+
 function renderComposerModelMenu() {
   if (!els.composerModelMenu) return;
+  if (isDirectLiveTextSurface()) {
+    renderDirectComposerMenu();
+    return;
+  }
+  els.composerModelMenu.classList.remove("direct-runtime-popover");
   els.composerModelMenu.innerHTML = "";
   const body = document.createElement("div");
   body.className = "composer-cascade-grid";
@@ -3303,6 +3709,27 @@ function updateComposerStatusTicker(active) {
   }
 }
 
+function directEnvironmentModel() {
+  return globalThis.DirectEnvironmentUxModel || null;
+}
+
+// Every thread in a Workbench project runs in the project's environment, so
+// the chip names it (and its shell) next to the composer.
+function renderComposerEnvironmentChip() {
+  const chip = els.composerEnvironmentChip;
+  if (!chip) return;
+  const model = directEnvironmentModel();
+  const workspace = project?.workspace;
+  const show = Boolean(model) && isDirectWorkbenchExperience() && Boolean(workspace?.kind);
+  chip.hidden = !show;
+  if (!show) return;
+  const badge = model.environmentBadge(workspace);
+  // Short in the chip; the shell is in the tooltip.
+  chip.textContent = badge.text;
+  chip.dataset.environmentKind = badge.kind;
+  chip.title = `${model.composerEnvironmentLabel(workspace)}. ${badge.title} Every thread in this project runs here.`;
+}
+
 function renderComposerRuntimeBand() {
   if (!els.composerAccessButton || !els.composerModelButton || !els.sendButton) return;
   if (els.composerForm) els.composerForm.dataset.composerMenu = state.composerMenu || "";
@@ -3317,24 +3744,39 @@ function renderComposerRuntimeBand() {
   const accessText = state.runtimeOverrides.sandboxMode === "danger-full-access"
     ? "Full access"
     : state.runtimeOverrides.sandboxMode || state.runtimeOverrides.approvalPolicy || "Access";
-  const modelText = `${compactModelLabel()} · ${reasoningLabel()}${state.runtimeOverrides.serviceTier ? ` · ${state.runtimeOverrides.serviceTier}` : ""}`;
+  const modelText = isDirectLiveTextSurface()
+    ? directComposerButtonText()
+    : `${compactModelLabel()} · ${reasoningLabel()}${state.runtimeOverrides.serviceTier ? ` · ${state.runtimeOverrides.serviceTier}` : ""}`;
   const quotaText = composerQuotaLabel();
   const contextProjection = contextUsageProjection();
   const contextText = contextProjection.compactLabel;
 
-  els.composerAccessButton.textContent = accessText;
-  els.composerAccessButton.classList.toggle("danger", state.runtimeOverrides.sandboxMode === "danger-full-access");
-  els.composerAccessButton.title = `Next-turn access override. Approval: ${approvalPolicyLabel()}. Sandbox: ${sandboxModeLabel()}.`;
-  els.composerAccessButton.setAttribute("aria-label", `Access override: approval ${approvalPolicyLabel()}, sandbox ${sandboxModeLabel()}`);
+  if (isDirectFullAccessSurface()) {
+    const profile = currentDirectAccessProfile() || preferredDirectAccessProfile();
+    const option = directAccessProfileOption(profile);
+    els.composerAccessButton.textContent = option?.label || "Access";
+    els.composerAccessButton.classList.toggle("danger", profile === "full_access");
+    els.composerAccessButton.title = `Thread access: ${option?.label || "unknown"}. ${option?.description || ""}`;
+    els.composerAccessButton.setAttribute("aria-label", `Thread access: ${option?.label || "unknown"}`);
+  } else {
+    els.composerAccessButton.textContent = accessText;
+    els.composerAccessButton.classList.toggle("danger", state.runtimeOverrides.sandboxMode === "danger-full-access");
+    els.composerAccessButton.title = `Next-turn access override. Approval: ${approvalPolicyLabel()}. Sandbox: ${sandboxModeLabel()}.`;
+    els.composerAccessButton.setAttribute("aria-label", `Access override: approval ${approvalPolicyLabel()}, sandbox ${sandboxModeLabel()}`);
+  }
 
   els.composerModelButton.textContent = modelText;
-  els.composerModelButton.title = `Next-turn model settings. Model: ${compactModelLabel()}. Reasoning: ${reasoningLabel()}. Speed: ${serviceTierLabel()}.`;
+  els.composerModelButton.title = isDirectLiveTextSurface()
+    ? `This thread's model: ${directModelName(selectedModel(), activeModelId() || directModelLabel())}${directModelUnavailable(activeModelId()) ? " (not offered to this account right now)" : ""}. Effort: ${directCurrentEffort() ? directEffortLabel(directCurrentEffort()) : "default"}. Fast ${directFastActive() ? "on" : "off"}, Daybreak ${directDaybreakActive() ? "on" : "off"}.`
+    : `Next-turn model settings. Model: ${compactModelLabel()}. Reasoning: ${reasoningLabel()}. Speed: ${serviceTierLabel()}.`;
   els.composerModelButton.setAttribute("aria-label", `Model override: ${modelText}`);
 
+  renderComposerEnvironmentChip();
   els.composerQuotaChip.textContent = quotaText;
   els.composerQuotaChip.title = `Provider quota: ${quotaText}. Shown only when exposed by runtime/account evidence.`;
   els.composerContextChip.textContent = contextText;
   els.composerContextChip.title = `Context pressure: ${contextProjection.label}.`;
+  fitComposerBand();
 
   const statusClass = state.turnStopping
     ? "stopping"
@@ -3438,7 +3880,9 @@ function refreshButton(label, onClick, config = {}) {
 function modelOptions() {
   const models = effectiveModels();
   const visible = models.filter((model) => !model?.hidden);
-  const rows = visible.length ? visible : models;
+  // Direct never falls back to hidden models; other runtimes keep their
+  // historical fallback when every model is hidden.
+  const rows = visible.length || isDirectLiveTextSurface() ? visible : models;
   const providerDefaultId = defaultModelId();
   const clearDefaultId = clearedModelId();
   const options = rows
@@ -3451,13 +3895,20 @@ function modelOptions() {
         label: `${label}${value === providerDefaultId ? " · provider default" : ""}`,
       };
     });
+  // A model the account's list no longer offers stays visible so the user
+  // sees why turns fail, but it can't be picked again.
   const current = activeModelId();
   if (current && current !== clearDefaultId && !options.some((option) => option.value === current)) {
-    options.unshift({ value: current, label: current });
+    options.unshift(directModelUnavailable(current)
+      ? { value: current, label: `${current} · unavailable`, disabled: true }
+      : { value: current, label: current });
   }
+  const clearLabel = modelById(clearDefaultId)?.displayName || clearDefaultId;
   options.unshift({
     value: "",
-    label: defaultOptionLabel(modelById(clearDefaultId)?.displayName || clearDefaultId),
+    label: directModelUnavailable(clearDefaultId)
+      ? `${defaultOptionLabel(clearLabel)} · unavailable`
+      : defaultOptionLabel(clearLabel),
   });
   return options;
 }
@@ -3494,8 +3945,11 @@ function sandboxModeOptions() {
 }
 
 function normalizeRuntimeOverrideValue(name, value) {
+  if (name === "daybreakEnabled") return value === true;
   const candidate = String(value || "").trim();
   if (!candidate) return "";
+  // Codex sends Fast as "priority"; "fast" is the legacy alias.
+  if (name === "serviceTier" && isDirectLiveTextSurface() && candidate.toLowerCase() === "fast") return "priority";
   if (name === "approvalPolicy") return APPROVAL_POLICY_OPTIONS.includes(candidate) ? candidate : "";
   if (name === "sandboxMode") return SANDBOX_MODE_OPTIONS.includes(candidate) ? candidate : "";
   if (name === "reasoningEffort") return supportedReasoningOptions().includes(candidate) ? candidate : "";
@@ -3532,6 +3986,14 @@ function applyThreadRuntimePreferences(defaults = {}) {
   }
   state.runtimeConfirmedOverrides.model = state.runtimeOverrides.model;
   state.runtimeConfirmedOverrides.reasoningEffort = state.runtimeOverrides.reasoningEffort;
+  // A Direct thread's Fast and Daybreak choices belong to that thread; a
+  // thread that never set them has both off.
+  if (isDirectLiveTextSurface()) {
+    for (const field of ["serviceTier", "daybreakEnabled"]) {
+      state.runtimeOverrides[field] = normalizeRuntimeOverrideValue(field, defaults[field]);
+      state.runtimeConfirmedOverrides[field] = state.runtimeOverrides[field];
+    }
+  }
 }
 
 async function loadRuntimePreferences(options = {}) {
@@ -3599,6 +4061,12 @@ async function persistRuntimePreferences(scope, overrides = {}) {
       ...request,
       model: overrides.model ?? state.runtimeOverrides.model,
       reasoningEffort: overrides.reasoningEffort ?? state.runtimeOverrides.reasoningEffort,
+      ...(isDirectLiveTextSurface()
+        ? {
+            serviceTier: overrides.serviceTier ?? state.runtimeOverrides.serviceTier,
+            daybreakEnabled: (overrides.daybreakEnabled ?? state.runtimeOverrides.daybreakEnabled) === true,
+          }
+        : {}),
     });
   }
   return null;
@@ -3608,17 +4076,24 @@ const RUNTIME_PREFERENCE_FIELDS_BY_SCOPE = Object.freeze({
   "global-access": Object.freeze(["approvalPolicy", "sandboxMode"]),
   "thread-model": Object.freeze(["model", "reasoningEffort"]),
 });
+// Direct threads also keep their own Fast and Daybreak choice.
+const DIRECT_THREAD_MODEL_PREFERENCE_FIELDS = Object.freeze(["model", "reasoningEffort", "serviceTier", "daybreakEnabled"]);
+
+function runtimePreferenceFields(scope = "") {
+  if (scope === "thread-model" && isDirectLiveTextSurface()) return DIRECT_THREAD_MODEL_PREFERENCE_FIELDS;
+  return RUNTIME_PREFERENCE_FIELDS_BY_SCOPE[scope] || [];
+}
 
 function runtimePreferenceScopeValues(source = {}, scope = "") {
   const values = {};
-  for (const field of RUNTIME_PREFERENCE_FIELDS_BY_SCOPE[scope] || []) {
+  for (const field of runtimePreferenceFields(scope)) {
     values[field] = normalizeRuntimeOverrideValue(field, source?.[field]);
   }
   return values;
 }
 
 function applyRuntimePreferenceScopeValues(target = {}, scope = "", values = {}) {
-  for (const field of RUNTIME_PREFERENCE_FIELDS_BY_SCOPE[scope] || []) {
+  for (const field of runtimePreferenceFields(scope)) {
     target[field] = normalizeRuntimeOverrideValue(field, values?.[field]);
   }
 }
@@ -3714,8 +4189,12 @@ function serviceTierOptions() {
 
 function compactModelLabel() {
   if (isDirectLiveTextSurface()) {
-    const directLabel = directModelLabel();
-    if (directLabel) return directLabel.replace(/^GPT-/i, "GPT-");
+    // The picked model shows at once; main's saved binding (the witness)
+    // only fills in when the renderer has no model of its own.
+    const id = activeModelId();
+    const model = selectedModel();
+    const label = model?.displayName || model?.model || id || directModelLabel() || "default";
+    return `${label}${directModelUnavailable(id) ? " · unavailable" : ""}`;
   }
   const model = selectedModel();
   const label = model?.displayName || model?.model || activeModelId() || "default";
@@ -3732,17 +4211,26 @@ function setRuntimeOverride(name, value) {
   }
   const scope = name === "approvalPolicy" || name === "sandboxMode"
     ? "global-access"
-    : name === "model" || name === "reasoningEffort"
+    : runtimePreferenceFields("thread-model").includes(name)
       ? "thread-model"
       : "";
+  // Show the choice first: saving it must never be able to stop the UI from
+  // reflecting the click.
+  renderRuntimeConstitution();
   if (scope) {
     const requested = {
       ...state.runtimeOverrides,
       __runtimePreferenceRequest: runtimePreferencesRequest(),
     };
-    ensureRuntimePreferenceWriteCoordinator().enqueue(scope, requested);
+    try {
+      ensureRuntimePreferenceWriteCoordinator().enqueue(scope, requested);
+    } catch (error) {
+      state.runtimePreferencesStatus = "failed";
+      state.runtimePreferencesError = String(error?.message || error);
+      console.error("Unable to save the runtime choice", error);
+      renderRuntimeConstitution();
+    }
   }
-  renderRuntimeConstitution();
 }
 
 async function flushRuntimePreferenceWrites() {
@@ -4437,7 +4925,9 @@ function runtimeDrawerSections(c, tab) {
       ["task model", activeModelId() || readiness?.model || "unknown"],
       ...(readiness ? [
         ["readiness", state.directReadinessRefreshStatus === "refreshing" ? "refreshing" : readiness.status || "unknown"],
-        ["evidence", readiness.modelEvidenceState || "unknown"],
+        ["model list", !directListedModels().length
+          ? "unavailable"
+          : directModelListed(activeModelId() || readiness.model) ? "lists this model" : "doesn't list this model"],
         ["blocker", state.directReadinessRefreshError || readiness.reason || "none"],
       ] : []),
     ]);
@@ -4462,17 +4952,16 @@ function runtimeDrawerSections(c, tab) {
         ...(readiness ? [["readiness evidence id", readiness.evidenceId || "—"]] : []),
       ], [...(c.provider?.evidenceRefs || []), ...c.runtime.evidenceRefs, ...c.thread.evidenceRefs]);
     if (readiness) {
-      controlSection.appendChild(refreshButton(
-        "Refresh Direct readiness",
-        () => refreshDirectReadiness().catch((error) => {
-          addSystemMessage(`Direct readiness refresh failed: ${error.message}`);
-        }),
-        {
-          busy: state.directReadinessRefreshStatus === "refreshing",
-          disabled: state.directReadinessRefreshStatus === "refreshing",
-          description: "Refresh Direct OAuth if needed and run the bounded readiness probe for this task's canonical model without changing backend.",
-        },
-      ));
+      controlSection.appendChild(refreshModelsButton("Renew ChatGPT sign-in if needed and reload this account's model list, without changing backend."));
+      if (typeof bridge?.testDirectModel === "function") {
+        const test = refreshButton("Test model", () => testDirectModel(), {
+          busy: state.directModelTestStatus === "testing",
+          disabled: state.directModelTestStatus === "testing" || !directLiveTextReady(),
+          description: "Optional: send one short prompt to this thread's model to check it answers. Turns never wait on this.",
+        });
+        test.classList.add("secondary");
+        controlSection.appendChild(test);
+      }
     }
     if (isDirectWorkbenchExperience() && typeof bridge?.setDirectWorkbenchRuntimePath === "function") {
       controlSection.appendChild(selectField(
@@ -4489,7 +4978,7 @@ function runtimeDrawerSections(c, tab) {
         },
         {
           disabled: ["transitioning", "reloading"].includes(state.runtimePathTransitionStatus),
-          description: "Changes the task backend. This is separate from refreshing Direct readiness.",
+          description: "Changes the task backend. This is separate from refreshing models.",
         },
       ));
       controlSection.appendChild(refreshButton(
@@ -6208,6 +6697,112 @@ function isDirectFullAccessSurface() {
   return isDirectLiveTextSurface() && connection?.directTier === "implementation-lane";
 }
 
+const DIRECT_ACCESS_PROFILE_OPTIONS = Object.freeze([
+  Object.freeze({
+    value: "read_only",
+    label: "Read only",
+    description: "Reads files and runs commands in a sandbox with no network. Cannot change files.",
+  }),
+  Object.freeze({
+    value: "workspace",
+    label: "Workspace",
+    description: "Changes files and runs commands inside the project folder. Network is off.",
+  }),
+  Object.freeze({
+    value: "full_access",
+    label: "Full access",
+    description: "No sandbox. Commands and edits can reach the whole machine and the network.",
+  }),
+]);
+const DEFAULT_DIRECT_ACCESS_PROFILE = "full_access";
+
+function directAccessProfileOption(profile) {
+  return DIRECT_ACCESS_PROFILE_OPTIONS.find((option) => option.value === profile) || null;
+}
+
+// Windows can't block a command's network without admin rights, so the
+// sandboxed profiles say so for Windows projects.
+const DIRECT_WINDOWS_ACCESS_PROFILE_DESCRIPTIONS = Object.freeze({
+  read_only: "Reads files and runs commands that cannot change files. Network isn't blocked on Windows.",
+  workspace: "Changes files and runs commands inside the project folder. Network isn't blocked on Windows.",
+});
+
+function directAccessProfileDescription(profile) {
+  const option = directAccessProfileOption(profile);
+  if (!option) return "";
+  if (project?.workspace?.kind === "windows" && DIRECT_WINDOWS_ACCESS_PROFILE_DESCRIPTIONS[profile]) {
+    return DIRECT_WINDOWS_ACCESS_PROFILE_DESCRIPTIONS[profile];
+  }
+  return option.description;
+}
+
+function directAccessPreferenceKey() {
+  return `codex.directAccessProfile.${project?.id || "default"}`;
+}
+
+function preferredDirectAccessProfile() {
+  const stored = localStorageGet(directAccessPreferenceKey(), DEFAULT_DIRECT_ACCESS_PROFILE);
+  return directAccessProfileOption(stored) ? stored : DEFAULT_DIRECT_ACCESS_PROFILE;
+}
+
+function currentDirectAccessProfile() {
+  const binding = connection?.taskBinding;
+  if (!binding || binding.current !== true) return "";
+  if (String(binding.taskId || "") !== String(state.threadId || "")) return "";
+  return directAccessProfileOption(binding.accessProfile) ? binding.accessProfile : "";
+}
+
+// Main declares this only while Direct is ready (signed in, model and
+// runtime available). Calling it otherwise is refused, so callers check
+// first instead of failing the thread they are opening or creating.
+function canSelectDirectAccessProfile() {
+  return isDirectFullAccessSurface() && hasCapabilityForMutation("threads", "canSelectAccessProfile");
+}
+
+function directReadinessCodeFromError(error) {
+  // Errors crossing IPC can lose their code, so the message counts too.
+  const text = `${error?.code || ""} ${error?.message || error || ""}`;
+  return /\bauth_required\b|isn't signed in/.test(text) ? "auth_required" : "";
+}
+
+// Selecting Access needs a signed-in Direct runtime. If sign-in lapsed
+// between the capability check and the call, the thread still opens: show
+// the refresh prompt instead of failing, and apply Access after a refresh.
+async function selectPreferredAccessForThread(sessionId) {
+  if (!canSelectDirectAccessProfile() || !sessionId) return false;
+  try {
+    await rpc("thread/selectAccessProfile", { sessionId, accessProfile: preferredDirectAccessProfile() });
+    return true;
+  } catch (error) {
+    const code = directReadinessCodeFromError(error);
+    if (!code) throw error;
+    addDirectReadinessActionMessage(`${directReadinessFailureMessage(code)} This thread's Access will be set once you're signed in.`);
+    return false;
+  }
+}
+
+async function selectDirectAccessProfile(profile) {
+  const option = directAccessProfileOption(profile);
+  if (!option) return;
+  if (state.threadId && turnIsActive() && currentDirectAccessProfile() !== profile) {
+    addSystemMessage("Access can't change while a turn is running. Stop the turn or wait for it to finish.");
+    renderRuntimeConstitution();
+    return;
+  }
+  localStorageSet(directAccessPreferenceKey(), profile);
+  if (state.threadId && isDirectFullAccessSurface() && !canSelectDirectAccessProfile()) {
+    addSystemMessage(`${option.label} will apply once Direct is ready; check the runtime status for what it is waiting on.`);
+  } else if (state.threadId && isDirectFullAccessSurface()) {
+    try {
+      await rpc("thread/selectAccessProfile", { sessionId: state.threadId, accessProfile: profile });
+      addSystemMessage(`Access for this thread is now ${option.label}.`);
+    } catch (error) {
+      addSystemMessage(`Access change failed: ${error.message}`);
+    }
+  }
+  renderRuntimeConstitution();
+}
+
 function isDirectRuntimeSurface() {
   return DIRECT_TRANSPORTS.has(connection?.transport);
 }
@@ -6294,18 +6889,26 @@ function directLiveTextBlockedMessage() {
 function directReadinessFailureMessage(value = "") {
   const code = String(value || "").trim();
   const labels = {
-    live_probe_evidence_expired: "Readiness evidence for this task's selected model has expired.",
-    live_probe_evidence_missing: "This task's selected model has not been verified on the Direct path.",
-    live_probe_evidence_scope_mismatch: "The available readiness evidence belongs to a different runtime scope.",
-    profile_required: "The selected model needs a fresh Direct readiness check.",
-    auth_required: "Direct authentication must be refreshed before this task can run.",
+    auth_required: "Direct isn't signed in. Sign in to ChatGPT, then refresh.",
   };
-  return labels[code] || code || "Direct readiness could not be established.";
+  return labels[code] || code || "Direct couldn't refresh sign-in and the model list.";
 }
 
+function directModelListSummary(response = {}) {
+  const count = directListedModels().length;
+  const model = String(response.model || activeModelId() || "").trim();
+  if (!count) return "Signed in, but the model list couldn't be loaded. Turns still run; refresh again later.";
+  const listed = `Model list refreshed: ${count} model${count === 1 ? "" : "s"} available.`;
+  return model && !directModelListed(model)
+    ? `${listed} ${model} isn't in this account's list; pick another model.`
+    : listed;
+}
+
+// Like Codex, refreshing renews sign-in and reloads the account's model
+// list. It never sends a prompt; "Test model" is the optional diagnostic.
 async function refreshDirectReadiness(options = {}) {
   if (!isDirectLiveTextSurface() || typeof bridge?.refreshDirectRuntimeReadiness !== "function" || !project?.id) {
-    throw new Error("Direct readiness refresh is unavailable in this surface.");
+    throw new Error("Refreshing models is unavailable in this surface.");
   }
   await flushRuntimePreferenceWrites();
   state.directReadinessRefreshStatus = "refreshing";
@@ -6314,6 +6917,11 @@ async function refreshDirectReadiness(options = {}) {
   try {
     const response = await bridge.refreshDirectRuntimeReadiness(project.id, state.threadId || "");
     applyDirectSurfaceProjection(response?.projection);
+    // A thread opened while signed out has no Access yet.
+    if (response?.ok && state.threadId && !currentDirectAccessProfile() &&
+      await selectPreferredAccessForThread(state.threadId).catch(() => false)) {
+      addSystemMessage(`Access for this thread is now ${directAccessProfileOption(preferredDirectAccessProfile())?.label || "set"}.`);
+    }
     state.directReadinessRefreshStatus = response?.ok ? "ready" : "failed";
     state.directReadinessRefreshError = response?.ok
       ? ""
@@ -6326,39 +6934,72 @@ async function refreshDirectReadiness(options = {}) {
       );
     }
     renderRuntimeConstitution();
+    renderComposerRuntimeBand();
     if (options.report !== false) {
       addSystemMessage(response?.ok
-        ? `Direct readiness verified for ${response.model || activeModelId() || "the selected model"}.`
-        : `Direct readiness refresh did not complete: ${state.directReadinessRefreshError}`);
+        ? directModelListSummary(response)
+        : `Refresh didn't complete: ${state.directReadinessRefreshError}`);
     }
     return response;
   } catch (error) {
     state.directReadinessRefreshStatus = "failed";
-    state.directReadinessRefreshError = String(error?.message || error || "Direct readiness refresh failed.");
+    state.directReadinessRefreshError = String(error?.message || error || "Refreshing models failed.");
     renderRuntimeConstitution();
     throw error;
   }
 }
 
+// Optional diagnostic: sends one short prompt to the thread's model. Nothing
+// waits on it; turns run whether or not it has been used.
+async function testDirectModel() {
+  if (!isDirectLiveTextSurface() || typeof bridge?.testDirectModel !== "function" || !project?.id) {
+    throw new Error("Testing a model is unavailable in this surface.");
+  }
+  await flushRuntimePreferenceWrites();
+  state.directModelTestStatus = "testing";
+  renderRuntimeConstitution();
+  try {
+    const response = await bridge.testDirectModel(project.id, state.threadId || "");
+    applyDirectSurfaceProjection(response?.projection);
+    const model = response?.model || activeModelId() || "the selected model";
+    const detail = String(response?.probeResult?.error?.message || response?.probeResult?.reason || response?.reason || "").trim();
+    state.directModelTestStatus = response?.ok ? "passed" : "failed";
+    addSystemMessage(response?.ok
+      ? `Test prompt to ${model} succeeded.`
+      : `Test prompt to ${model} failed${detail ? `: ${detail}` : "."}`);
+    return response;
+  } catch (error) {
+    state.directModelTestStatus = "failed";
+    addSystemMessage(`Test prompt failed: ${error?.message || error}`);
+    return null;
+  } finally {
+    renderRuntimeConstitution();
+  }
+}
+
+function refreshModelsButton(description) {
+  return refreshButton(
+    "Refresh models",
+    () => refreshDirectReadiness().catch((error) => {
+      addSystemMessage(`Refreshing models failed: ${error.message}`);
+    }),
+    {
+      busy: state.directReadinessRefreshStatus === "refreshing",
+      disabled: state.directReadinessRefreshStatus === "refreshing",
+      description,
+    },
+  );
+}
+
 function addDirectReadinessActionMessage(text) {
   const id = `system_direct_readiness_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  setMessageText(id, "system", text, "Direct readiness");
+  setMessageText(id, "system", text, "Direct");
   const node = state.itemMap.get(id);
   const bubble = node?.querySelector(".bubble");
   if (!bubble) return;
   const actions = document.createElement("div");
   actions.className = "system-message-actions";
-  actions.appendChild(refreshButton(
-    "Refresh Direct readiness",
-    () => refreshDirectReadiness().catch((error) => {
-      addSystemMessage(`Direct readiness refresh failed: ${error.message}`);
-    }),
-    {
-      busy: state.directReadinessRefreshStatus === "refreshing",
-      disabled: state.directReadinessRefreshStatus === "refreshing",
-      description: "Refresh Direct OAuth if needed, run the bounded probe for this task's selected model, and remain on Direct.",
-    },
-  ));
+  actions.appendChild(refreshModelsButton("Renew ChatGPT sign-in if needed and reload this account's model list."));
   const inspect = refreshButton("Inspect runtime", () => openRuntimeDrawer("runtime"));
   inspect.classList.add("secondary");
   actions.appendChild(inspect);
@@ -6368,12 +7009,11 @@ function addDirectReadinessActionMessage(text) {
 function handleTurnSubmissionFailure(error) {
   const message = String(error?.message || error || "Turn failed.");
   if (isDirectLiveTextSurface() && (
-    message.includes("live_probe_evidence") ||
-    message.includes("profile_required") ||
     message.includes("auth_required") ||
+    message.includes("isn't signed in") ||
     message.includes("Direct runtime is not ready")
   )) {
-    addDirectReadinessActionMessage(`Turn blocked. ${directReadinessFailureMessage(message.replace(/^.*?(live_probe_evidence_[a-z_]+).*$/, "$1"))}`);
+    addDirectReadinessActionMessage(`Turn blocked. ${directReadinessFailureMessage(directReadinessCodeFromError(message) || directLiveTextBlockedMessage())}`);
     return;
   }
   addSystemMessage(`Turn failed: ${message}`);
@@ -6489,6 +7129,36 @@ function renderMorphicThreadRail() {
         ? threadDirectoryBlockerLabel(posture.blockerCodes[0])
         : [row.sourceLabel, row.runtimeLabel, directThreadTimeLabel(row.updatedAt || row.createdAt)].filter(Boolean).join(" · ");
       copy.append(title, evidence);
+      const environmentModel = directEnvironmentModel();
+      if (environmentModel && project?.workspace?.kind) {
+        const badges = document.createElement("span");
+        badges.className = "morphic-thread-tab-badges";
+        const environmentBadge = environmentModel.environmentBadge(project.workspace);
+        const environmentChip = document.createElement("span");
+        environmentChip.className = "direct-environment-badge";
+        environmentChip.dataset.environmentKind = environmentBadge.kind;
+        environmentChip.textContent = environmentBadge.text;
+        environmentChip.title = environmentBadge.title;
+        badges.append(environmentChip);
+        if (row.delegatedFromLabel) {
+          const delegatedChip = document.createElement("span");
+          delegatedChip.className = "direct-delegated-badge";
+          delegatedChip.textContent = "Delegated";
+          delegatedChip.title = `${row.delegatedFromLabel}. Its final message went back to the agent that delegated it.`;
+          badges.append(delegatedChip);
+        }
+        // Access is known for the focused thread only.
+        const accessOption = posture.selected ? directAccessProfileOption(currentDirectAccessProfile()) : null;
+        if (accessOption) {
+          const accessChip = document.createElement("span");
+          accessChip.className = "direct-access-badge";
+          accessChip.dataset.accessProfile = accessOption.value;
+          accessChip.textContent = accessOption.label;
+          accessChip.title = directAccessProfileDescription(accessOption.value);
+          badges.append(accessChip);
+        }
+        copy.append(badges);
+      }
       const stateLabel = document.createElement("span");
       stateLabel.className = "morphic-thread-tab-state";
       stateLabel.textContent = posture.state === "opening"
@@ -6678,11 +7348,7 @@ async function openDirectThread(threadId) {
   const openRequestId = state.directThreadOpenRequestId + 1;
   state.directThreadOpenRequestId = openRequestId;
   let result = await readThreadById(requestedThreadId);
-  if (isDirectFullAccessSurface() && result?.taskBinding?.current !== true) {
-    await rpc("thread/selectAccessProfile", {
-      sessionId: requestedThreadId,
-      accessProfile: "full_access",
-    });
+  if (result?.taskBinding?.current !== true && await selectPreferredAccessForThread(requestedThreadId)) {
     result = await readThreadById(requestedThreadId);
   }
   if (state.directThreadOpenRequestId !== openRequestId) return;
@@ -8505,9 +9171,10 @@ function renderSubagentTurnActivity(turnKey) {
     chip.className = `collab-agent-chip status-${String(agent.status || "unknown").replace(/[^a-z0-9_-]/gi, "-")}`;
     chip.textContent = `${agent.displayLabel} · ${String(agent.status || "unknown").replace(/_/g, " ")}`;
     chip.disabled = !agent.clickable;
+    const delegatedEvent = agent.events?.find?.((event) => event?.kind === "delegated_child");
     chip.title = agent.clickable
       ? `Open ${agent.displayLabel} turn activity in the Sub-agents panel`
-      : `${agent.displayLabel} is only available as an unmapped notification`;
+      : delegatedEvent?.detail || `${agent.displayLabel} is only available as an unmapped notification`;
     chip.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -8520,6 +9187,33 @@ function renderSubagentTurnActivity(turnKey) {
 
   bubble.appendChild(root);
   maybeAutoScrollBottom();
+}
+
+// A child delegated to another project shows in this turn's sub-agent row
+// with where it runs; it is followed from that project's thread list.
+function recordDelegatedChildActivity(params = {}) {
+  const delegation = params?.delegation;
+  if (params?.observationKind !== "native_child_agent_runtime" || !delegation || typeof delegation !== "object") return;
+  if (params.threadId && String(params.threadId) !== String(state.threadId || "")) return;
+  const childAgentId = String(params.childAgentId || "").trim();
+  if (!childAgentId) return;
+  const turnKey = String(params.turnId || "live");
+  const where = [String(delegation.targetProjectName || "another project"), String(delegation.environment?.label || "")]
+    .filter(Boolean).join(" · ");
+  const lifecycle = String(params.lifecycleState || "");
+  const status = ["accepted", "queued"].includes(lifecycle) ? "creating" : lifecycle === "running" ? "running" : lifecycle;
+  recordSubagentTurnEvent(turnKey, {
+    threadId: `delegated:${childAgentId}`,
+    label: `${params.taskName || "Delegated task"} → ${where}`,
+  }, {
+    kind: "delegated_child",
+    clickable: false,
+    status: normalizeAgentWorkingStatus(status || "running"),
+    label: "Delegated",
+    detail: `Runs in ${where}${delegation.accessProfile ? ` with ${directAccessProfileOption(delegation.accessProfile)?.label || delegation.accessProfile}` : ""}${delegation.folder ? `, in ${delegation.folder}` : ""}. Open that project's thread list to follow it.`,
+    observedAt: params.observedAt || new Date().toISOString(),
+  });
+  renderSubagentTurnActivity(turnKey);
 }
 
 function recordCollabTurnActivity(turnKey, item) {
@@ -9300,7 +9994,20 @@ function renderThreadHistory(thread, options = {}) {
   renderRuntimeConstitution();
 }
 
+// A new Direct thread starts from the project's settings, not from the
+// thread that was open: the project's model for new threads (Recommended
+// unless pinned), its effort, and Fast and Daybreak off.
+function resetDirectThreadRuntimeOverrides() {
+  for (const target of [state.runtimeOverrides, state.runtimeConfirmedOverrides]) {
+    target.model = "";
+    target.reasoningEffort = normalizeRuntimeOverrideValue("reasoningEffort", project?.codex?.reasoningEffort);
+    target.serviceTier = "";
+    target.daybreakEnabled = false;
+  }
+}
+
 async function startNewThread() {
+  if (isDirectLiveTextSurface()) resetDirectThreadRuntimeOverrides();
   if (isDirectLiveTextSurface() && typeof bridge?.createDirectWorkThreadDraftSession === "function" && project?.id) {
     state.directThreadOpenRequestId += 1;
     const result = await bridge.createDirectWorkThreadDraftSession(project.id, {
@@ -9316,13 +10023,10 @@ async function startNewThread() {
       state.sourceHome = "";
       state.sessionFilePath = "";
       bindThread(result.thread, result.thread.model || activeModelId() || null);
-      if (isDirectFullAccessSurface()) {
-        await rpc("thread/selectAccessProfile", {
-          sessionId: result.thread.id || result.thread.threadId,
-          accessProfile: "full_access",
-        });
-      }
-      addSystemMessage(`Created WorkThread-backed direct session${result.workThread?.workThreadId ? ` (${result.workThread.workThreadId})` : ""}.`);
+      const accessApplied = await selectPreferredAccessForThread(result.thread.id || result.thread.threadId);
+      addSystemMessage(accessApplied
+        ? `Started a new thread with ${directAccessProfileOption(preferredDirectAccessProfile())?.label || "default"} access.`
+        : "Started a new thread.");
       await persistRuntimePreferences("thread-model");
       await refreshDirectSurfaceProjection({ render: false });
       await refreshDirectThreadList({ showErrors: false });
@@ -9359,7 +10063,7 @@ async function startNewThread() {
   if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
   if (state.runtimeOverrides.sandboxMode) params.sandbox = state.runtimeOverrides.sandboxMode;
   if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
-  if (isDirectFullAccessSurface()) params.accessProfile = "full_access";
+  if (isDirectFullAccessSurface()) params.accessProfile = preferredDirectAccessProfile();
   const result = await rpc("thread/start", params);
   clearRenderedThreadState();
   state.sourceHome = "";
@@ -9401,7 +10105,9 @@ async function startCodexTurn(text, options = {}) {
         "";
       if (selectedWorkThreadId) {
         params.workThreadId = selectedWorkThreadId;
-        params.requireControlledRouting = true;
+        // Workbench threads are ordinary task threads: routing is still
+        // computed and recorded, but it must not block the turn.
+        if (!isDirectWorkbenchExperience()) params.requireControlledRouting = true;
       }
       if (directProjection?.contextPreview?.previewDigest) {
         params.contextPreviewDigest = directProjection.contextPreview.previewDigest;
@@ -9418,6 +10124,7 @@ async function startCodexTurn(text, options = {}) {
   }
   if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
   if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
+  if (isDirectLiveTextSurface()) params.daybreakEnabled = state.runtimeOverrides.daybreakEnabled === true;
   const sandboxPolicy = sandboxPolicyForMode(state.runtimeOverrides.sandboxMode);
   if (sandboxPolicy) params.sandboxPolicy = sandboxPolicy;
   const result = await rpc("turn/start", params);
@@ -9761,6 +10468,11 @@ function handleNotification(method, params) {
       error.additionalDetails || "",
     ].filter(Boolean).join("\n");
     addSystemMessage(message);
+    // Main already refetches the list after a refused model; pick it up so
+    // the picker marks the model unavailable.
+    if (error.code === "model_unavailable" && isDirectLiveTextSurface()) {
+      refreshModelList(false).then(() => renderComposerRuntimeBand()).catch(() => {});
+    }
     return;
   }
   if (method === "warning") {
@@ -9772,6 +10484,7 @@ function handleNotification(method, params) {
   }
   if (method === "direct/runtime-status") {
     recordRuntimeObservation(params);
+    recordDelegatedChildActivity(params);
     return;
   }
   if (method === "serverRequest/resolved") {

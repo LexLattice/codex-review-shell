@@ -15,6 +15,27 @@ const {
 const { createDirectLiveSubAgentToolSurface } = require("../src/main/direct/agents/live-tool-surface");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 
+// Continuations require the turn's admitted initial provider context, which a
+// real turn records when its first request is built.
+function createAdmittedTurn(sessionStore, sessionId, fields) {
+  const turn = sessionStore.createTurn(sessionId, fields);
+  sessionStore.writeTurn({
+    ...turn,
+    admittedProviderContext: DirectLiveTextController.prototype.captureAdmittedProviderContext(turn, {
+      model: turn.model,
+      reasoning: { effort: turn.reasoningEffort || "" },
+      service_tier: turn.serviceTier || "",
+      input: [{ role: "user", content: [{ type: "input_text", text: fields.input?.[0]?.text || "" }] }],
+      instructions: "Sub-agent status routing fixture instructions.",
+    }),
+  });
+  return turn;
+}
+
+function sseResponse(text) {
+  return new Response(text, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
 const continuationSse = [
   "event: response.created",
   "data: {\"response\":{\"id\":\"resp_sub_agent_status_done\",\"model\":\"gpt-5.4\"}}",
@@ -55,7 +76,7 @@ try {
       items: [{ id: "turn_list_user", type: "userMessage", text: "List agents." }],
     }],
   });
-  sessionStore.createTurn("direct_session_sub_agent_status", {
+  createAdmittedTurn(sessionStore, "direct_session_sub_agent_status", {
     turnId: "turn_list",
     state: "tool_waiting",
     model: "gpt-5.4",
@@ -91,12 +112,7 @@ try {
     fetchImpl: async (_url, init) => {
       fetchCalls += 1;
       providerBodies.push(JSON.parse(init.body));
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => "text/event-stream" },
-        text: async () => continuationSse,
-      };
+      return sseResponse(continuationSse);
     },
     activationStatusResolver: () => ({ status: "ready", model: "gpt-5.4" }),
     subAgentStatusSurfaceResolver: () => subAgentSurface,
@@ -132,7 +148,7 @@ try {
   assert.equal(listTurn.unresolvedObligations[0].result.resultKind, "sub_agent_list_status");
   assert.equal(listTurn.unresolvedObligations[0].result.providerOutputText.includes("Carver"), true);
 
-  sessionStore.createTurn("direct_session_sub_agent_status", {
+  createAdmittedTurn(sessionStore, "direct_session_sub_agent_status", {
     turnId: "turn_inspect",
     state: "tool_waiting",
     model: "gpt-5.4",
@@ -161,7 +177,7 @@ try {
   assert.equal(inspectTurn.unresolvedObligations[0].result.resultKind, "sub_agent_inspect_status");
   assert.equal(inspectTurn.unresolvedObligations[0].result.providerOutputText.includes("canInterfere"), true);
 
-  sessionStore.createTurn("direct_session_sub_agent_status", {
+  createAdmittedTurn(sessionStore, "direct_session_sub_agent_status", {
     turnId: "turn_unavailable",
     state: "tool_waiting",
     model: "gpt-5.4",
@@ -179,12 +195,7 @@ try {
     fetchImpl: async (_url, init) => {
       fetchCalls += 1;
       providerBodies.push(JSON.parse(init.body));
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => "text/event-stream" },
-        text: async () => continuationSse,
-      };
+      return sseResponse(continuationSse);
     },
     activationStatusResolver: () => ({ status: "ready", model: "gpt-5.4" }),
   });

@@ -930,6 +930,14 @@ function providerSchemaFor(toolName) {
             enum: ["one_time_exception", "propose_policy_update"],
             description: "How an explicit policy mismatch should be handled. A permanent update is not launch authority and must be admitted through the semantic policy path.",
           },
+          target_project: {
+            type: "string",
+            description: "Delegate to a full agent in another project, usually in another environment (Windows or WSL), by that project's name. Only projects listed as delegation targets in this description are allowed; when none are listed, omit this. workspace_mode and tool_profile don't apply.",
+          },
+          target_folder: {
+            type: "string",
+            description: "Optional absolute folder, in the target environment's own path style, inside a delegation target that accepts subfolders. The agent works in that folder.",
+          },
         },
         required: ["message", "task_name"],
         additionalProperties: false,

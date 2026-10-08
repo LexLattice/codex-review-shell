@@ -149,6 +149,15 @@
       continuationLabel: continuationMode === "provider_resume" ? "Provider resume" : "Project-scoped Direct read",
       focusEligible: focus.focusEligible,
       blockerCodes: focus.blockerCodes,
+      // An agent in another project delegated this thread's task.
+      delegatedFromLabel: entry.delegatedFrom && typeof entry.delegatedFrom === "object"
+        ? boundedText(
+            `Delegated from ${text(entry.delegatedFrom.projectName, "another project")}` +
+              `${text(entry.delegatedFrom.environmentLabel || entry.delegatedFrom.environment?.label, "") ? ` (${text(entry.delegatedFrom.environmentLabel || entry.delegatedFrom.environment?.label, "")})` : ""}`,
+            "",
+            120,
+          )
+        : "",
       rawPathExposed: false,
       rawCursorExposed: false,
     };

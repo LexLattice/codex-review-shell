@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -71,6 +71,31 @@ function readReport(runRoot) {
     `Invalid report: ${reportPath}`,
   );
   return { report, reportPath };
+}
+
+// The stack needs a working Docker, including the credential helper its
+// config names (Docker Desktop's is a Windows .exe that a WSL login shell
+// may not have on PATH). Without one, skip: exit 77, which the sweep
+// reports separately from failures.
+function dockerUnavailableReason() {
+  const docker = spawnSync("docker", ["info", "--format", "{{.ServerVersion}}"], { encoding: "utf8", timeout: 20_000 });
+  if (docker.error || docker.status !== 0) return "Docker isn't available (docker info failed)";
+  const configPath = path.join(process.env.DOCKER_CONFIG || path.join(process.env.HOME || "", ".docker"), "config.json");
+  let credsStore = "";
+  try {
+    credsStore = String(JSON.parse(fs.readFileSync(configPath, "utf8")).credsStore || "");
+  } catch {}
+  if (credsStore) {
+    const helper = `docker-credential-${credsStore}`;
+    const found = spawnSync("sh", ["-c", `command -v "${helper}"`], { encoding: "utf8" });
+    if (found.status !== 0) return `Docker's credential helper ${helper} isn't on PATH`;
+  }
+  return "";
+}
+const dockerSkipReason = dockerUnavailableReason();
+if (dockerSkipReason) {
+  console.log(`SKIPPED: ${dockerSkipReason}.`);
+  process.exit(77);
 }
 
 ensureDirectory(suiteRoot);

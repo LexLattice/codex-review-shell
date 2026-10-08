@@ -248,11 +248,7 @@ try {
     fetchImpl: async (_url, init) => {
       providerRequests.push(JSON.parse(init.body));
       if (providerRequests.length === 2) {
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: () => "text/event-stream" },
-          text: async () => [
+        return new Response([
             "event: response.created",
             'data: {"response":{"id":"resp_self_inspect_call","model":"gpt-5.6-sol"}}',
             "",
@@ -268,14 +264,9 @@ try {
             "event: response.completed",
             'data: {"response":{"id":"resp_self_inspect_call","status":"completed"}}',
             "",
-          ].join("\n"),
-        };
+        ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
       }
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => "text/event-stream" },
-        text: async () => [
+      return new Response([
           "event: response.created",
           `data: {"response":{"id":"resp_self_constitution_${providerRequests.length}","model":"gpt-5.6-sol"}}`,
           "",
@@ -285,8 +276,7 @@ try {
           "event: response.completed",
           'data: {"response":{"id":"resp_self_constitution","status":"completed"}}',
           "",
-        ].join("\n"),
-      };
+      ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
     },
     activationStatusResolver: () => ({ state: "enabled" }),
     subAgentPool: {
@@ -346,7 +336,11 @@ try {
     persistedLiveTurn.selfConstitutionSnapshot.digest,
     persistedLiveTurn.requestShape.selfConstitutionSnapshotDigest,
   );
-  assert(providerRequest.instructions.includes(persistedLiveTurn.selfConstitutionSnapshot.digest));
+  // The per-turn digest is a trailing developer message, never part of the
+  // instructions, which must stay identical across turns for the prompt cache.
+  assert.equal(providerRequest.instructions.includes(persistedLiveTurn.selfConstitutionSnapshot.digest), false);
+  assert.equal(providerRequest.input.at(-1).role, "developer");
+  assert(providerRequest.input.at(-1).content[0].text.includes(persistedLiveTurn.selfConstitutionSnapshot.digest));
   assert.equal(persistedLiveTurn.requestShape.selfConstitutionRawWorkspacePathIncluded, false);
   assert.equal(persistedLiveTurn.requestShape.selfConstitutionRawSecretIncluded, false);
 
@@ -372,8 +366,19 @@ try {
   });
   await controller.activeRuns.get(inspectStart.turn.id).promise;
   assert.equal(providerRequests.length, 3);
-  assert(providerRequests[2].instructions.includes("owner-issued inspect_self_constitution result"));
-  const continuationOutput = providerRequests[2].input?.[0]?.content?.[0]?.text || "";
+  // Continuation guidance is the trailing developer message; the turn's
+  // instructions stay identical so the prompt cache can reuse them.
+  const inspectGuidance = providerRequests[2].input.at(-1);
+  assert.equal(inspectGuidance.role, "developer");
+  assert(inspectGuidance.content[0].text.includes("after an inspect_self_constitution result"));
+  assert(inspectGuidance.content[0].text.includes("inspecting again returns the same account"));
+  assert.equal(providerRequests[2].instructions, providerRequests[1].instructions);
+  // Continuations replay the admitted original input, then the call and its
+  // output.
+  const continuationOutput = (providerRequests[2].input || [])
+    .filter((item) => item?.type === "function_call_output")
+    .map((item) => item.output || "")
+    .join("\n");
   assert(continuationOutput, "self-inspection should continue with typed quoted evidence");
   assert(continuationOutput.includes("direct_self_constitution_snapshot@1"));
   assert(continuationOutput.includes("persistent_project_checkout"));

@@ -100,7 +100,9 @@ try {
   assert.equal(selected.capabilities.threads.canFork, true);
   assert.equal(selected.capabilities.threads.canRollback, true);
   assert.equal(selected.capabilities.turns.canSteer, true);
-  assert.deepEqual(selected.capabilities.serviceTier.availableTiers, ["fast", "flex"]);
+  // Fast is "priority" (Codex's name); "fast" is accepted as its alias but
+  // not advertised.
+  assert.deepEqual(selected.capabilities.serviceTier.availableTiers, ["priority", "flex"]);
   assert.equal(selected.capabilities.authority.fullAccessTaskProfile, true);
 
   appendCompletedTurn(sourceId, "parity_turn_1", "first source message");

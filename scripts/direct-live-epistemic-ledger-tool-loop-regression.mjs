@@ -190,12 +190,31 @@ try {
         ok: true,
         status: 200,
         headers: { get: () => "text/event-stream" },
-        text: async () => continuationSse,
+        body: {
+          async *[Symbol.asyncIterator]() {
+            yield new TextEncoder().encode(continuationSse);
+          },
+        },
       };
     },
     activationStatusResolver: () => ({ status: "ready", model: "gpt-5.4" }),
     epistemicLedgerToolInvoker: (input) => fabric.invokeLedgerTool(input),
   });
+  // This fixture enters after initial request admission; seed that exact boundary.
+  const admitFixtureContext = (sessionId, turnId) => {
+    const turn = sessionStore.readTurn(sessionId, turnId);
+    const body = {
+      model: turn.model,
+      reasoning: { effort: turn.reasoningEffort },
+      service_tier: turn.serviceTier,
+      input: [{ role: "user", content: [{ type: "input_text", text: turn.input[0].text }] }],
+      instructions: "Continue the fixture task using locally authorized tools.",
+    };
+    sessionStore.updateTurnState(sessionId, turnId, turn.state, {
+      admittedProviderContext: controller.captureAdmittedProviderContext(turn, body),
+    });
+  };
+  admitFixtureContext(sessionId, turnId);
   const project = { id: projectId, name: "Native ledger fixture" };
   const surface = new DirectLiveTextSurfaceSession(
     { send: () => {}, isDestroyed: () => false },
@@ -295,6 +314,7 @@ try {
       },
     },
   );
+  admitFixtureContext(headlessSessionId, headlessTurnId);
   const headlessObligations = sessionStore.addToolObligations(
     headlessSessionId,
     headlessTurnId,

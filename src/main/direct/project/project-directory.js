@@ -86,10 +86,14 @@ function substrateProjection(project = {}) {
     unknown: { environmentId: "environment_unknown", displayLabel: "Workspace unavailable" },
   };
   const fallback = defaults[workspaceKind];
+  // A distro name is an environment identity, not a path, so the renderer
+  // may show it on project badges.
+  const distro = workspaceKind === "wsl" ? safeLabel(workspace.distro, "") : "";
   return {
     workspaceKind,
     environmentId: fallback.environmentId,
     displayLabel: safeLabel(workspace.label, fallback.displayLabel),
+    distro,
     configured: workspaceKind !== "unknown",
     rawPathExposed: false,
   };
@@ -227,6 +231,12 @@ function buildDirectWorkbenchProjectBindingDraft(config = {}, options = {}) {
       displayName: normalizeString(project?.name, normalizeString(defaults.displayName, "New project")),
       workspace: workspaceBindingDraft(workspace),
       runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || defaults.codexBinding || {}),
+      // "" is Recommended: new threads follow the account's model list.
+      defaultModel: project ? normalizeString(project.surfaceBinding?.codex?.model, "") : "",
+      // Whether other projects' agents may delegate work here ("" = no).
+      delegationAccess: project ? normalizeString(project.delegation?.acceptAccess, "") : "",
+      delegationSubfolders: project?.delegation?.includeSubfolders === true,
+      createdByDelegation: Boolean(project?.delegation?.createdBy),
     },
     evidence: {
       projectIdentityAssignedByMain: mode === "create",
@@ -313,7 +323,21 @@ function validateDirectWorkbenchProjectBindingMutation(directory = {}, config = 
   if (!["app-server", "direct-text", "direct-implementation"].includes(runtimePath)) {
     throw projectDirectoryError("project_binding_runtime_path_invalid");
   }
+  const hasDefaultModel = typeof request.fields?.defaultModel === "string";
+  const defaultModel = hasDefaultModel ? request.fields.defaultModel.trim() : "";
+  if (defaultModel.length > 120 || !/^[A-Za-z0-9._:-]*$/.test(defaultModel)) {
+    throw projectDirectoryError("project_binding_default_model_invalid");
+  }
+  const hasDelegation = typeof request.fields?.delegationAccess === "string";
+  const delegationAccess = hasDelegation ? request.fields.delegationAccess.trim() : "";
+  if (!["", "read_only", "workspace", "full_access"].includes(delegationAccess)) {
+    throw projectDirectoryError("project_binding_delegation_access_invalid");
+  }
   return {
+    ...(hasDefaultModel ? { defaultModel } : {}),
+    ...(hasDelegation
+      ? { delegationAccess, delegationSubfolders: Boolean(delegationAccess) && request.fields.delegationSubfolders === true }
+      : {}),
     mode,
     clientMutationId,
     sourceProjectId,

@@ -15,6 +15,7 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const ATTACH_TIMEOUT_MS = 30_000;
@@ -31,6 +32,8 @@ const MUTATION_COMMIT_KINDS_BY_METHOD = Object.freeze({
   importFile: new Set(["import_file"]),
 });
 const PUBLIC_BACKEND_CAPABILITY_NAMES = Object.freeze([
+  "environmentDescribe",
+  "processSessions",
   "listTree",
   "readFilePreview",
   "applyPatch",
@@ -355,13 +358,45 @@ function safeBackendPublicValue(value, nativePaths = []) {
   return result;
 }
 
+// One executor per environment serves every project folder in it. A workspace
+// worker keeps a dedicated executor: its binding is immutable per executor.
+function executorPlacement(project) {
+  return project?.executorPlacement === "dedicated" ? "dedicated" : "environment";
+}
+
 function workspaceSessionKey(project, fallbackRoot) {
   const workspace = normalizeWorkspace(project?.workspace, project?.repoPath, fallbackRoot);
+  if (executorPlacement(project) === "environment") {
+    if (workspace.kind === "wsl") return `wsl:${workspace.distro || "default"}`;
+    return workspace.kind === "windows" ? "windows" : "local";
+  }
   if (workspace.kind === "wsl") return `wsl:${workspace.distro || "default"}:${workspace.linuxPath}`;
   if (workspace.kind === "windows") {
     return `windows:${workspace.windowsPath.toLowerCase()}`;
   }
   return `local:${path.resolve(workspace.localPath || fallbackRoot || ".")}`;
+}
+
+function projectRootKey(project, fallbackRoot) {
+  const workspace = normalizeWorkspace(project?.workspace, project?.repoPath, fallbackRoot);
+  const root = workspaceRoot(project, fallbackRoot);
+  return workspace.kind === "windows" ? root.toLowerCase() : root;
+}
+
+// What every project-scoped request carries to an environment executor.
+function executorProjectContext(project, fallbackRoot) {
+  const workspace = normalizeWorkspace(project?.workspace, project?.repoPath, fallbackRoot);
+  const root = workspaceRoot(project, fallbackRoot);
+  return {
+    projectId: normalizeString(project?.id, "unknown-project"),
+    workspaceKind: workspace.kind,
+    root: workspace.kind === "local" ? path.resolve(root || fallbackRoot || ".") : root,
+  };
+}
+
+function withProjectContext(params, context) {
+  const source = isPlainObject(params) ? params : {};
+  return isPlainObject(source.projectContext) ? source : { ...source, projectContext: context };
 }
 
 function cleanEnvForLocalAgent() {
@@ -397,6 +432,48 @@ function launchDescriptor(project, options) {
   const workspace = normalizeWorkspace(project.workspace, project.repoPath, options.fallbackRoot);
   const agentPath = options.agentPath;
   const projectId = project.id || "unknown-project";
+
+  if (executorPlacement(project) === "environment") {
+    if (workspace.kind === "wsl" && process.platform === "win32") {
+      const args = [];
+      if (workspace.distro) args.push("-d", workspace.distro);
+      args.push(
+        "--cd",
+        "~",
+        "--",
+        "bash",
+        "-lc",
+        [
+          "set -e",
+          "if ! command -v node >/dev/null 2>&1; then echo 'Node.js is required inside the selected WSL distro.' >&2; exit 127; fi",
+          `exec node "$(wslpath -a -- ${shellSingleQuote(agentPath)})" --environment --workspace-kind wsl`,
+        ].join("; "),
+      );
+      return { command: "wsl.exe", args, cwd: undefined, env: process.env, transport: "wsl.exe", workspace };
+    }
+    if (workspace.kind === "windows" && process.platform !== "win32") {
+      const nativeNodePath = windowsNodePath(workspace, options);
+      if (!nativeNodePath) {
+        throw new Error("Native Windows Node.js is required for a Windows resident workspace executor.");
+      }
+      return {
+        command: nativeNodePath,
+        args: [windowsUncPathForWslPath(agentPath, options), "--environment", "--workspace-kind", "windows"],
+        cwd: undefined,
+        env: process.env,
+        transport: "windows-native-resident",
+        workspace,
+      };
+    }
+    return {
+      command: process.execPath,
+      args: [agentPath, "--environment", "--workspace-kind", workspace.kind],
+      cwd: os.homedir(),
+      env: cleanEnvForLocalAgent(),
+      transport: workspace.kind === "wsl" ? "direct-linux-dev" : "local-child",
+      workspace,
+    };
+  }
 
   if (workspace.kind === "wsl" && process.platform === "win32") {
     const quotedAgentPath = shellSingleQuote(agentPath);
@@ -972,6 +1049,11 @@ class WorkspaceSession extends EventEmitter {
     this.project = project;
     this.options = options;
     this.key = workspaceSessionKey(project, options.fallbackRoot);
+    this.placement = executorPlacement(project);
+    // Environment executors: the project folders attached to this executor,
+    // by root, each with its own hello (the folder checked by the executor)
+    // and hygiene.
+    this.projects = new Map();
     this.child = null;
     this.transport = null;
     this.status = "idle";
@@ -987,18 +1069,43 @@ class WorkspaceSession extends EventEmitter {
     this.acceptingRequests = true;
   }
 
-  snapshot() {
+  get projectContext() {
+    return executorProjectContext(this.project, this.options.fallbackRoot);
+  }
+
+  // A project's view of this executor: on an environment executor the
+  // project's own hello and hygiene, otherwise the executor's.
+  projectFacts(project = this.project) {
+    if (this.placement !== "environment") {
+      return { project: this.project, hello: this.hello, hygiene: this.hygiene };
+    }
+    const entry = this.projects.get(projectRootKey(project, this.options.fallbackRoot));
+    const live = entry && entry.transport === this.transport;
+    // Before the project is attached, the executor's own hello (no folder;
+    // its capabilities are the environment's).
+    return {
+      project,
+      hello: live && entry.hello ? entry.hello : this.hello,
+      hygiene: live ? entry.hygiene : null,
+    };
+  }
+
+  snapshot(project = this.project) {
+    const facts = this.projectFacts(project);
     return {
       key: this.key,
-      projectId: this.project.id,
-      projectName: this.project.name,
+      placement: this.placement,
+      projectId: facts.project.id,
+      projectName: facts.project.name,
       status: this.status,
       transport: this.descriptor?.transport || "not-started",
-      workspace: this.descriptor?.workspace || normalizeWorkspace(this.project.workspace, this.project.repoPath, this.options.fallbackRoot),
-      hello: this.hello,
+      workspace: this.placement === "environment"
+        ? normalizeWorkspace(facts.project.workspace, facts.project.repoPath, this.options.fallbackRoot)
+        : this.descriptor?.workspace || normalizeWorkspace(this.project.workspace, this.project.repoPath, this.options.fallbackRoot),
+      hello: facts.hello,
       lastError: this.lastError,
       readySeen: this.readySeen,
-      hygiene: this.hygiene,
+      hygiene: facts.hygiene,
       workspaceWorkerBinding: this.workspaceWorkerBinding,
     };
   }
@@ -1016,32 +1123,36 @@ class WorkspaceSession extends EventEmitter {
       this.descriptor?.cwd,
       this.hello?.root,
       this.hello?.cwd,
+      ...[...this.projects.values()].map((entry) => workspaceRoot(entry.project, this.options.fallbackRoot)),
     ].map((entry) => normalizeString(entry, "")).filter(Boolean);
   }
 
-  publicSnapshot() {
+  publicSnapshot(project = this.project) {
+    const facts = this.projectFacts(project);
+    const helloFacts = facts.hello;
     const workspaceKind = normalizeString(
-      this.descriptor?.workspace?.kind || this.project.workspace?.kind,
+      this.descriptor?.workspace?.kind || facts.project.workspace?.kind,
       "local",
     );
     const lastErrorCode = this.lastError
       ? publicBackendErrorCode(this.lastError?.code)
       : "";
-    const hello = this.hello ? {
-      protocolVersion: this.hello.protocolVersion,
-      sessionId: normalizeString(this.hello.sessionId, ""),
-      projectId: normalizeString(this.hello.projectId, this.project.id),
-      workspaceKind: normalizeString(this.hello.workspaceKind, ""),
-      platform: normalizeString(this.hello.platform, "unknown"),
-      node: normalizeString(this.hello.node, ""),
-      capabilities: publicBackendCapabilities(this.hello.capabilities),
+    const hello = helloFacts ? {
+      protocolVersion: helloFacts.protocolVersion,
+      sessionId: normalizeString(helloFacts.sessionId, ""),
+      projectId: normalizeString(helloFacts.projectId, facts.project.id),
+      workspaceKind: normalizeString(helloFacts.workspaceKind, ""),
+      platform: normalizeString(helloFacts.platform, "unknown"),
+      node: normalizeString(helloFacts.node, ""),
+      capabilities: publicBackendCapabilities(helloFacts.capabilities),
       rawWorkspacePathIncluded: false,
     } : null;
     return {
       schema: "workspace_backend_public_session@1",
       sessionKeyDigest: `sha256:${crypto.createHash("sha256").update(this.key).digest("hex")}`,
-      projectId: normalizeString(this.project.id, ""),
-      projectName: normalizeString(this.project.name, ""),
+      projectId: normalizeString(facts.project.id, ""),
+      projectName: normalizeString(facts.project.name, ""),
+      executorPlacement: this.placement,
       status: this.status,
       transport: this.descriptor?.transport || "not-started",
       workspaceKind,
@@ -1049,11 +1160,11 @@ class WorkspaceSession extends EventEmitter {
       lastErrorCode,
       recovery: workspaceBackendRecovery(lastErrorCode, workspaceKind),
       readySeen: this.readySeen,
-      hygiene: isPlainObject(this.hygiene) ? {
-        available: this.hygiene.available === true,
-        changed: this.hygiene.changed === true,
-        skipped: this.hygiene.skipped === true,
-        reason: normalizeString(this.hygiene.reason, ""),
+      hygiene: isPlainObject(facts.hygiene) ? {
+        available: facts.hygiene.available === true,
+        changed: facts.hygiene.changed === true,
+        skipped: facts.hygiene.skipped === true,
+        reason: normalizeString(facts.hygiene.reason, ""),
       } : null,
       workspaceWorkerBinding: safeBackendPublicValue(
         this.workspaceWorkerBinding,
@@ -1106,21 +1217,31 @@ class WorkspaceSession extends EventEmitter {
   }
 
   emitStatus(type, extra = {}) {
-    const payload = {
-      type,
-      session: this.publicSnapshot(),
-      at: new Date().toISOString(),
-      errorCode: extra.error || extra.errorCode
-        ? publicBackendErrorCode(extra.error?.code || extra.errorCode)
-        : "",
-      rawWorkspacePathIncluded: false,
-    };
-    this.emit("status", payload);
+    // An environment executor's status is every attached project's status.
+    const projects = this.placement === "environment" && this.projects.size
+      ? [...this.projects.values()].map((entry) => entry.project)
+      : [this.project];
+    for (const project of projects) {
+      this.emit("status", {
+        type,
+        session: this.publicSnapshot(project),
+        at: new Date().toISOString(),
+        errorCode: extra.error || extra.errorCode
+          ? publicBackendErrorCode(extra.error?.code || extra.errorCode)
+          : "",
+        rawWorkspacePathIncluded: false,
+      });
+    }
   }
 
   async attach(options = {}) {
     if (!this.acceptingRequests && options.allowDuringDrain !== true) {
       throw backendIntakeClosedError();
+    }
+    if (options.workspaceWorkerBinding && this.placement === "environment") {
+      const error = new Error("A workspace worker's binding needs its own dedicated executor.");
+      error.code = "workspace_worker_binding_requires_dedicated_executor";
+      throw error;
     }
     if (this.status === "attached" && this.transport && !this.transport.closed) {
       if (options.workspaceWorkerBinding) {
@@ -1178,6 +1299,12 @@ class WorkspaceSession extends EventEmitter {
     });
     this.transport = new NdjsonTransport(this.child);
     this.transport.on("event", (event) => {
+      // Executor process-session events carry output bytes for the host
+      // router; they stay host-private and skip the sanitized agent-event path.
+      if (typeof event.event === "string" && event.event.startsWith("process/")) {
+        this.emit("executor-process-event", event);
+        return;
+      }
       this.emit("agent-event", {
         session: this.publicSnapshot(),
         event: this.publicAgentEvent(event),
@@ -1202,7 +1329,9 @@ class WorkspaceSession extends EventEmitter {
         this.emitStatus("backend-stderr", { stderr: text.slice(0, 2000) });
       }
     });
+    const attachedTransport = this.transport;
     this.transport.on("closed", (error) => {
+      this.emit("transport-closed", { transport: attachedTransport, error });
       if (this.status !== "failed" && this.status !== "disposed") {
         this.status = "closed";
         this.lastError = error?.message || "Backend closed.";
@@ -1231,7 +1360,10 @@ class WorkspaceSession extends EventEmitter {
       if (options.workspaceWorkerBinding) {
         await this.initializeWorkspaceWorkerBinding(options.workspaceWorkerBinding);
       }
-      if (options.workspaceHygiene !== false) {
+      if (this.placement === "environment") {
+        // Hygiene belongs to each project folder (attachProject).
+        this.hygiene = null;
+      } else if (options.workspaceHygiene !== false) {
         try {
           this.hygiene = await this.transport.request("ensureCodexSandboxArtifactIgnored", {}, DEFAULT_REQUEST_TIMEOUT_MS);
           if (this.hygiene?.changed) {
@@ -1268,6 +1400,67 @@ class WorkspaceSession extends EventEmitter {
       this.dispose({ preserveStatus: true });
       throw publicError;
     }
+  }
+
+  // Attaches one project folder to an environment executor: the executor
+  // checks the folder (a hello naming it), then hygiene runs there unless
+  // skipped. Repeated per executor start, coalesced per folder.
+  async attachProject(project, options = {}) {
+    await this.attach(options);
+    const key = projectRootKey(project, this.options.fallbackRoot);
+    let entry = this.projects.get(key);
+    if (!entry || entry.transport !== this.transport) {
+      entry = { project, transport: this.transport, hello: null, hygiene: null, pending: null };
+      this.projects.set(key, entry);
+    } else {
+      entry.project = project;
+    }
+    const wantHygiene = options.workspaceHygiene !== false;
+    const settled = entry.hello && (!wantHygiene || (entry.hygiene && entry.hygiene.skipped !== true));
+    if (!settled) {
+      if (!entry.pending) {
+        const transport = this.transport;
+        const context = executorProjectContext(project, this.options.fallbackRoot);
+        entry.pending = (async () => {
+          if (!entry.hello) {
+            entry.hello = await transport.request("hello", { projectContext: context }, boundedAttachTimeoutMs(this.options.attachTimeoutMs));
+          }
+          if (wantHygiene && (!entry.hygiene || entry.hygiene.skipped === true)) {
+            try {
+              entry.hygiene = await transport.request("ensureCodexSandboxArtifactIgnored", { projectContext: context }, DEFAULT_REQUEST_TIMEOUT_MS);
+              if (entry.hygiene?.changed) {
+                this.noteDiagnostic("workspace-hygiene", `Added local Git exclude ${entry.hygiene.pattern || ""}`.trim());
+              }
+            } catch (error) {
+              entry.hygiene = { available: false, changed: false, error: error.message };
+              this.noteDiagnostic("workspace-hygiene", error.message);
+            }
+          } else if (!entry.hygiene) {
+            entry.hygiene = { available: true, changed: false, skipped: true, reason: "probe_only_attachment" };
+          }
+        })().finally(() => { entry.pending = null; });
+      }
+      try {
+        await entry.pending;
+      } catch (error) {
+        if (this.projects.get(key) === entry && !entry.hello) this.projects.delete(key);
+        throw error;
+      }
+      this.emit("status", {
+        type: "backend-attached",
+        session: this.publicSnapshot(project),
+        at: new Date().toISOString(),
+        errorCode: "",
+        rawWorkspacePathIncluded: false,
+      });
+    }
+    return new ProjectExecutorView(this, project);
+  }
+
+  // Detaches a project folder; true when nothing else uses the executor.
+  releaseProject(project) {
+    this.projects.delete(projectRootKey(project, this.options.fallbackRoot));
+    return this.projects.size === 0;
   }
 
   async request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, requestOptions = {}) {
@@ -1363,6 +1556,40 @@ class WorkspaceSession extends EventEmitter {
   }
 }
 
+// A project's handle on an environment executor. Requests carry the project
+// (projectContext) so the executor resolves paths, cwd, and sandbox against
+// it; events, the transport, and the process are the executor's.
+class ProjectExecutorView {
+  constructor(session, project) {
+    this.session = session;
+    this.project = project;
+    this.projectContext = executorProjectContext(project, session.options.fallbackRoot);
+  }
+
+  get key() { return this.session.key; }
+  get placement() { return this.session.placement; }
+  get status() { return this.session.status; }
+  get child() { return this.session.child; }
+  get transport() { return this.session.transport; }
+  get descriptor() { return this.session.descriptor; }
+  get hello() { return this.session.projectFacts(this.project).hello; }
+  get hygiene() { return this.session.projectFacts(this.project).hygiene; }
+  get workspaceWorkerBinding() { return null; }
+
+  request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, requestOptions = {}) {
+    return this.session.request(method, withProjectContext(params, this.projectContext), timeoutMs, requestOptions);
+  }
+
+  snapshot() { return this.session.snapshot(this.project); }
+  publicSnapshot() { return this.session.publicSnapshot(this.project); }
+  publicAgentEvent(event) { return { ...this.session.publicAgentEvent(event), projectId: normalizeString(this.project.id, "") }; }
+  nativePathCandidates() { return this.session.nativePathCandidates(); }
+  on(...args) { this.session.on(...args); return this; }
+  once(...args) { this.session.once(...args); return this; }
+  off(...args) { this.session.off(...args); return this; }
+  removeListener(...args) { this.session.removeListener(...args); return this; }
+}
+
 class WorkspaceBackendManager extends EventEmitter {
   constructor(options) {
     super();
@@ -1380,7 +1607,7 @@ class WorkspaceBackendManager extends EventEmitter {
       session.on("status", (payload) => this.emit("status", payload));
       session.on("agent-event", (payload) => this.emit("agent-event", payload));
       this.sessions.set(key, session);
-    } else {
+    } else if (session.placement !== "environment") {
       session.project = project;
     }
     return session;
@@ -1389,6 +1616,7 @@ class WorkspaceBackendManager extends EventEmitter {
   async ensureForProject(project, options = {}) {
     if (this.intakeState !== "accepting") throw backendIntakeClosedError();
     const session = this.sessionForProject(project);
+    if (session.placement === "environment") return session.attachProject(project, options);
     await session.attach(options);
     return session;
   }
@@ -1410,19 +1638,34 @@ class WorkspaceBackendManager extends EventEmitter {
   statusForProject(project) {
     const key = workspaceSessionKey(project, this.options.fallbackRoot);
     const session = this.sessions.get(key);
-    if (session) return session.publicSnapshot();
+    if (session) return session.publicSnapshot(project);
     if (this.intakeState !== "accepting") return null;
-    return this.sessionForProject(project).publicSnapshot();
+    return this.sessionForProject(project).publicSnapshot(project);
   }
 
   privateStatusForProject(project) {
     const key = workspaceSessionKey(project, this.options.fallbackRoot);
     const session = this.sessions.get(key);
-    if (session) return session.snapshot();
+    if (session) return session.snapshot(project);
     if (this.intakeState !== "accepting") return null;
-    return this.sessionForProject(project).snapshot();
+    return this.sessionForProject(project).snapshot(project);
   }
 
+  // Lets go of a project folder without touching the executor's other
+  // users; the executor stops once nothing uses it. A dedicated executor
+  // stops with its project.
+  releaseProject(project) {
+    const key = workspaceSessionKey(project, this.options.fallbackRoot);
+    const session = this.sessions.get(key);
+    if (!session) return false;
+    if (session.placement === "environment" && !session.releaseProject(project)) return false;
+    session.dispose();
+    this.sessions.delete(key);
+    return true;
+  }
+
+  // Stops the executor serving this project, with every process it runs
+  // (on an environment executor, other projects' too).
   disposeForProject(project) {
     const key = workspaceSessionKey(project, this.options.fallbackRoot);
     const session = this.sessions.get(key);
@@ -1457,8 +1700,11 @@ class WorkspaceBackendManager extends EventEmitter {
 
 module.exports = {
   NdjsonTransport,
+  ProjectExecutorView,
   WorkspaceSession,
   WorkspaceBackendManager,
+  executorPlacement,
+  executorProjectContext,
   normalizeWorkspace,
   publicBackendErrorCode,
   workspaceAttachFailureCode,
