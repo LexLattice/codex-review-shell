@@ -1233,12 +1233,21 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   loop: one cancel signal per turn reaches every continuation request and
   is checked before each next call (before, it cancelled only the turn's
   first request). Gate: `npm run direct:tool-loop-guard`.
-- A patch that fails its dry run (for example a context mismatch) still
-  fails the whole turn. Codex returns the error to the model so it can retry.
-  Confirmed live on Windows Full access (luna/low): the model's second
-  `apply_patch` used a bare `@@` hunk, the Full-access patch path refused it
-  as `direct_full_access_patch_invalid`, and the turn failed, followed by a
-  misleading "tool continuation evidence is not enabled" warning.
+- Patches (fixed after a live Windows run, luna/low, where a bare `@@` hunk
+  failed the turn as `direct_full_access_patch_invalid`): the grant-bound
+  patch path (`full-access-local-environment.js`, also run by the WSL
+  executor) takes Codex's format: bare `@@`, `@@ <anchor line>`, a first
+  hunk without `@@`, `*** End of File`, and context matched exactly, then
+  ignoring trailing, then surrounding whitespace (the file's own context
+  lines are kept). A patch that doesn't parse or match goes back to the
+  model as the call's output (`status: failed`, what didn't match, "read the
+  file and retry", `workspaceChanged: false`) and the turn continues;
+  confirmed live (miss → read → retry → done). The misleading "tool
+  continuation evidence is not enabled" warning now appears only for a
+  turn that is actually stuck. Gate: `npm run direct:patch-codex-format`.
+  Remaining: the no-grant path in `wsl-agent.js` still takes only unified
+  diffs; a failed or ambiguous patch *apply* (after a good dry run) still
+  ends the turn.
 - Agent-driven testing: `scripts/direct-drive.mjs` drives the real app
   (hidden, isolated test profile, test control port) on Windows or WSL; see
   `docs/DIRECT_AGENT_DRIVEN_TESTING.md`. First live runs also showed: the

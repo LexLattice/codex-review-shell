@@ -6320,6 +6320,16 @@ class DirectLiveTextController {
           : (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
       });
     } catch (error) {
+      // As in Codex, a patch that doesn't parse or doesn't match the file is
+      // an answer for the model (which can read the file and retry), not the
+      // end of the turn. Nothing was written: planning is a dry run.
+      if (isPlainObject(this.sessionStore.readTurn(sessionId, turnId)?.admittedProviderContext)) {
+        return this.returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation, project, {
+          code: error.code || "patch_plan_failed",
+          message: error.message || "Patch dry-run failed.",
+          workspaceChanged: false,
+        });
+      }
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
         status: "unsupported",
         authorityState: "unsupported",
@@ -6405,6 +6415,36 @@ class DirectLiveTextController {
       params,
       summary: params.files.map((file) => `${file.operation} ${file.path}`).join("; ") || "apply_patch",
     });
+    return 1;
+  }
+
+  // Records a tool call that failed before doing anything as its result, and
+  // continues the turn so the model sees the error.
+  async returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation = {}, project = {}, failure = {}) {
+    const toolName = normalizeString(obligation.name, "tool");
+    const providerOutput = {
+      kind: `${toolName}_result`,
+      status: "failed",
+      error: {
+        code: normalizeString(failure.code, "tool_call_failed"),
+        message: normalizeString(failure.message, "The tool call failed."),
+      },
+      ...(failure.workspaceChanged === false ? { workspaceChanged: false } : {}),
+    };
+    const envelope = {
+      schema: "direct_tool_failure_result_envelope@1",
+      envelopeId: `tool_failure_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${providerOutput.error.code}`).slice(0, 24)}`,
+      toolName,
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: "tool_failure",
+      status: "failed",
+      providerOutput,
+      sideEffectExecuted: false,
+      rawWorkspacePathIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
     return 1;
   }
 
@@ -11220,13 +11260,17 @@ class DirectLiveTextController {
         this.isEpistemicLedgerObligation(sessionId, turnId, obligation));
       const agentRuntimeOnly = obligationResult.obligations.every((obligation) =>
         this.isNativeSubAgentRuntimeObligation(obligation) || this.isReadOnlySubAgentStatusObligation(obligation));
+      // Calls that ran (or failed with their own turn error) move the turn on;
+      // only a turn left waiting with nothing asked of the owner is stuck.
+      const stuck = !createdApprovalRequests &&
+        normalizeString(this.sessionStore.readTurn(sessionId, turnId)?.state, "") === "tool_waiting";
       const message = ledgerOnly
         ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
         : ownerRequests
           ? "Direct live text detected a tool call. Local approval is required before local authority is used."
-          : createdApprovalRequests
-            ? ""
-            : "Direct live text detected a tool call, but the required direct tool continuation evidence is not enabled.";
+          : stuck
+            ? "Direct live text detected a tool call, but the required direct tool continuation evidence is not enabled."
+            : "";
       if (!agentRuntimeOnly && message) {
         this.emitNotification(surfaceSession, "warning", { threadId: sessionId, turnId, message });
       }

@@ -77,16 +77,23 @@ function patchPath(value) {
   return text;
 }
 
+// `@@ -a,b +c,d @@` (unified), or as in Codex's patch format a bare `@@`,
+// optionally followed by an anchor: a line the hunk comes after (for
+// example `@@ def handler():`). Bare hunks are located by their context.
 function parseHunkHeader(line) {
-  const match = /^@@(?: -(\d+)(?:,(\d+))?)?(?: \+(\d+)(?:,(\d+))?)? @@/.exec(line);
-  if (!match) throw localError("direct_full_access_patch_invalid", "Patch hunk header is malformed.");
-  return {
-    oldStart: Number(match[1] || 1),
-    oldCount: Number(match[2] ?? (match[1] ? 1 : 0)),
-    newStart: Number(match[3] || 1),
-    newCount: Number(match[4] ?? (match[3] ? 1 : 0)),
-    lines: [],
-  };
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+  if (match) {
+    return {
+      oldStart: Number(match[1]),
+      oldCount: Number(match[2] ?? 1),
+      newStart: Number(match[3]),
+      newCount: Number(match[4] ?? 1),
+      lines: [],
+    };
+  }
+  if (!line.startsWith("@@")) throw localError("direct_full_access_patch_invalid", "Patch hunk header is malformed.");
+  const anchor = line.slice(2).replace(/^ /, "").replace(/ ?@@$/, "");
+  return { oldStart: null, oldCount: null, newStart: null, newCount: null, anchor, lines: [] };
 }
 
 function parseUnifiedPatch(patchText) {
@@ -115,10 +122,25 @@ function parseUnifiedPatch(patchText) {
       const relPath = patchPath(marker.slice(marker.indexOf(":") + 1));
       index += 1;
       const hunks = [];
-      while (index < lines.length && !lines[index].startsWith("*** ")) {
+      while (index < lines.length && (!lines[index].startsWith("*** ") || lines[index] === "*** End of File")) {
+        if (lines[index] === "*** End of File") {
+          if (hunks.length) hunks[hunks.length - 1].endOfFile = true;
+          index += 1;
+          continue;
+        }
         if (lines[index].startsWith("@@")) {
           const hunk = parseHunkHeader(lines[index]);
           index += 1;
+          while (index < lines.length && !lines[index].startsWith("@@") && !lines[index].startsWith("*** ")) {
+            if (lines[index] !== "\\ No newline at end of file") hunk.lines.push(lines[index]);
+            index += 1;
+          }
+          hunks.push(hunk);
+          continue;
+        }
+        // Codex lets an update's first hunk start without an `@@` line.
+        if (operation === "update" && !hunks.length && /^[ +-]/.test(lines[index])) {
+          const hunk = { oldStart: null, oldCount: null, newStart: null, newCount: null, anchor: "", lines: [] };
           while (index < lines.length && !lines[index].startsWith("@@") && !lines[index].startsWith("*** ")) {
             if (lines[index] !== "\\ No newline at end of file") hunk.lines.push(lines[index]);
             index += 1;
@@ -132,6 +154,11 @@ function parseUnifiedPatch(patchText) {
           hunk.lines.push(lines[index] === "" ? "+" : lines[index]);
         }
         index += 1;
+      }
+      // A blank line closing a hunk is the patch's own layout, not context.
+      for (const hunk of hunks) {
+        if (operation === "create") continue;
+        while (hunk.lines.length && hunk.lines[hunk.lines.length - 1] === "") hunk.lines.pop();
       }
       files.push({ operation, relPath, hunks });
     }
@@ -180,15 +207,42 @@ function parseUnifiedPatch(patchText) {
   return files;
 }
 
+// As Codex does, context matches exactly first, then ignoring trailing
+// whitespace, then ignoring surrounding whitespace.
+const LINE_COMPARISONS = [
+  (a, b) => a === b,
+  (a, b) => a.trimEnd() === b.trimEnd(),
+  (a, b) => a.trim() === b.trim(),
+];
+
+function hunkMismatchMessage(hunk, wanted) {
+  const first = wanted.find((line) => line.trim()) ?? wanted[0] ?? "";
+  return `Patch hunk${hunk.anchor ? ` after "${boundedString(hunk.anchor, 120)}"` : ""} does not match the file: no lines matching "${boundedString(first, 160)}"${wanted.length > 1 ? ` (and the ${wanted.length - 1} lines after it)` : ""} were found. Read the file and retry with its current text.`;
+}
+
 function findHunkStart(before, hunk, preferred, minimumStart = 0) {
   const wanted = hunk.lines.filter((line) => line[0] !== "+").map((line) => line.slice(1));
-  const matches = (start) => wanted.every((line, offset) => before[start + offset] === line);
-  const boundedPreferred = Math.max(minimumStart, preferred);
-  if (matches(boundedPreferred)) return boundedPreferred;
-  for (let start = minimumStart; start <= before.length - wanted.length; start += 1) {
-    if (matches(start)) return start;
+  const lastStart = before.length - wanted.length;
+  for (const same of LINE_COMPARISONS) {
+    const matches = (start) => start >= minimumStart && start <= lastStart &&
+      wanted.every((line, offset) => same(before[start + offset], line));
+    if (hunk.endOfFile && matches(lastStart)) return lastStart;
+    const boundedPreferred = Math.max(minimumStart, preferred);
+    if (matches(boundedPreferred)) return boundedPreferred;
+    for (let start = minimumStart; start <= lastStart; start += 1) {
+      if (matches(start)) return start;
+    }
   }
-  throw localError("direct_full_access_patch_conflict", "Patch hunk does not match the selected local file.");
+  throw localError("direct_full_access_patch_conflict", hunkMismatchMessage(hunk, wanted));
+}
+
+function anchorIndex(lines, anchor, from) {
+  for (const same of LINE_COMPARISONS) {
+    for (let index = from; index < lines.length; index += 1) {
+      if (same(lines[index], anchor)) return index;
+    }
+  }
+  throw localError("direct_full_access_patch_conflict", `Patch anchor "${boundedString(anchor, 160)}" was not found in the file. Read the file and retry with its current text.`);
 }
 
 function applyHunks(before, hunks, operation) {
@@ -201,10 +255,28 @@ function applyHunks(before, hunks, operation) {
   let cursor = 0;
   let changed = 0;
   for (const hunk of hunks) {
-    const preferred = Math.max(0, (hunk.oldStart || 1) - 1);
-    const start = findHunkStart(result, hunk, Math.max(cursor, preferred), cursor);
+    let minimum = cursor;
+    if (hunk.anchor) minimum = anchorIndex(result, hunk.anchor, cursor) + 1;
+    const hasContext = hunk.lines.some((line) => line[0] !== "+");
+    // A bare hunk with no context adds after its anchor, or at the end.
+    const preferred = hunk.oldStart !== null && hunk.oldStart !== undefined
+      ? Math.max(0, (hunk.oldStart || 1) - 1)
+      : hasContext ? minimum : hunk.anchor ? minimum : result.length;
+    const start = hasContext || hunk.oldStart !== null
+      ? findHunkStart(result, hunk, Math.max(minimum, preferred), minimum)
+      : preferred;
     const oldLines = hunk.lines.filter((line) => line[0] !== "+").map((line) => line.slice(1));
-    const newLines = hunk.lines.filter((line) => line[0] !== "-").map((line) => line.slice(1));
+    // Context lines keep the file's own text (they may have matched loosely).
+    const newLines = [];
+    let oldOffset = 0;
+    for (const line of hunk.lines) {
+      if (line[0] === "+") newLines.push(line.slice(1));
+      else if (line[0] === "-") oldOffset += 1;
+      else {
+        newLines.push(result[start + oldOffset]);
+        oldOffset += 1;
+      }
+    }
     result.splice(start, oldLines.length, ...newLines);
     cursor = start + newLines.length;
     changed += hunk.lines.filter((line) => line.startsWith("+") || line.startsWith("-")).length;
@@ -581,6 +653,7 @@ module.exports = {
   LocalFilePort,
   MAX_PATCH_TARGET_BYTES,
   MAX_READ_FILE_BYTES,
+  applyHunks,
   lineEndingFor,
   localError,
   parseUnifiedPatch,
