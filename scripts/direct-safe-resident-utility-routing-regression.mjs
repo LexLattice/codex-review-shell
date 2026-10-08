@@ -19,8 +19,15 @@ const continuationSse = [
   "event: response.created",
   "data: {\"response\":{\"id\":\"resp_safe_utility_done\",\"model\":\"gpt-5.4\"}}",
   "",
+  // Streamed in pieces whose leading spaces and newlines are part of the text.
   "event: response.output_text.delta",
-  "data: {\"item_id\":\"msg_safe_utility_done\",\"delta\":\"Utility result received.\"}",
+  "data: {\"item_id\":\"msg_safe_utility_done\",\"delta\":\"Utility\"}",
+  "",
+  "event: response.output_text.delta",
+  "data: {\"item_id\":\"msg_safe_utility_done\",\"delta\":\" result received:\"}",
+  "",
+  "event: response.output_text.delta",
+  "data: {\"item_id\":\"msg_safe_utility_done\",\"delta\":\"\\n- **OS:** Windows\"}",
   "",
   "event: response.completed",
   "data: {\"response\":{\"id\":\"resp_safe_utility_done\",\"status\":\"completed\"}}",
@@ -129,6 +136,12 @@ try {
   assert.equal(contextTurn.state, "completed", "context utility continuation should complete");
   assert.equal(contextTurn.unresolvedObligations[0].authorityState, "continuation_sent");
   assert.equal(contextTurn.unresolvedObligations[0].result.resultKind, "context_remaining_status");
+  // The saved reply (what the transcript shows after a restart) keeps the
+  // streamed text exactly; trimming each piece once ran the words together.
+  const savedReply = sessionStore.readSession("direct_session_safe_utility").messages
+    .find((message) => message.id === "turn_context").items
+    .find((item) => item.type === "agentMessage");
+  assert.equal(savedReply?.text, "Utility result received:\n- **OS:** Windows");
 
   const recorded = { result: contextTurn.toolResults[0] };
   const collect = (turn, current = recorded) => controller.buildBoundUtilityContinuationContext(

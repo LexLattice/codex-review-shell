@@ -1311,11 +1311,14 @@ function buildSafeResidentUtilitySlice(toolName, projectId = "") {
   });
 }
 
+// Deltas are joined exactly as streamed: their leading and trailing spaces
+// and newlines are the text's own (trimming each one ran words together).
 function assistantTextFromDirectEvents(normalizedEvents = []) {
-  return (Array.isArray(normalizedEvents) ? normalizedEvents : [])
+  const text = (Array.isArray(normalizedEvents) ? normalizedEvents : [])
     .filter((event) => event?.type === "message_delta")
-    .map((event) => normalizeString(event.text, ""))
+    .map((event) => (typeof event.text === "string" ? event.text : ""))
     .join("");
+  return text.trim() ? text : "";
 }
 
 function summarizeSubAgentStatusResult(toolName, result = {}) {
