@@ -47,7 +47,7 @@ function lastCallOutput(body) {
 
 // steps: each entry receives the request bodies so far and returns the next
 // provider call ({ name, args }), null for a final answer, or a promise.
-async function runTurn(root, name, steps) {
+async function runTurn(root, name, steps, { interruptAfterMs = 0 } = {}) {
   const workspace = path.join(root, name);
   await fs.mkdir(workspace, { recursive: true });
   const project = {
@@ -83,9 +83,16 @@ async function runTurn(root, name, steps) {
     const startedTurn = await controller.handleRequest("turn/start", {
       threadId: taskId, clientTurnRequestId: `exec_yield_${name}`, promptText: "Run it.",
     }, context);
+    if (interruptAfterMs) {
+      setTimeout(() => {
+        controller.handleRequest("turn/interrupt", { threadId: taskId, turnId: startedTurn.turn.id }, context).catch(() => {});
+      }, interruptAfterMs);
+    }
     await controller.waitForTurnCompletion({ sessionId: taskId, turnId: startedTurn.turn.id });
+    // Let a stopped turn's tail (the yield returning) finish before reading.
+    if (interruptAfterMs) await new Promise((resolve) => setTimeout(resolve, 300));
     const turn = sessionStore.readTurn(taskId, startedTurn.turn.id);
-    return { turn, bodies, elapsedMs: Date.now() - startedAt, outputs: turn.toolResults.map((r) => JSON.parse(r.providerOutputText)) };
+    return { turn, bodies, workspace, elapsedMs: Date.now() - startedAt, outputs: (turn.toolResults || []).map((r) => JSON.parse(r.providerOutputText)) };
   } finally {
     controller.close("regression cleanup");
     await manager.dispose("regression cleanup");
@@ -135,6 +142,24 @@ try {
   assert.equal(live.outputs[1].status, "completed");
   assert.equal(live.outputs[1].stdinAccepted, true);
   assert(live.outputs[1].stdoutPreview.includes("got hi"));
+
+  // Stop pressed while exec_command is still in its initial wait ends the
+  // process too, although its session isn't on the obligation yet.
+  const stopped = await runTurn(root, "stop_during_wait", [
+    () => ({ name: "exec_command", args: { cmd: `${node} -e ${quote("setInterval(() => require('node:fs').appendFileSync('ticks.txt', 'x\\n'), 100)")}` } }),
+  ], { interruptAfterMs: 800 });
+  assert.equal(stopped.turn.state, "aborted", JSON.stringify(stopped.turn.error));
+  assert.equal(stopped.bodies.length, 1, "no continuation after Stop");
+  // The kill ends the wait at once; before, the process ran out the full
+  // 10 s wait and the turn ended only then.
+  assert(stopped.elapsedMs < 5000, `the turn ended promptly after Stop (${stopped.elapsedMs} ms)`);
+  const ticks = () => {
+    try { return require("node:fs").readFileSync(path.join(stopped.workspace, "ticks.txt"), "utf8").length; } catch { return 0; }
+  };
+  const ticksAtStop = ticks();
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert(ticksAtStop > 0, "the command ran");
+  assert.equal(ticks(), ticksAtStop, "the command stopped with the turn");
 
   // A silent process waiting for input is returned well before its idle
   // timeout would kill it.

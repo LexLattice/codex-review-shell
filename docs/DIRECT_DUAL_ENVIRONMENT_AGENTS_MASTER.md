@@ -1315,6 +1315,16 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
     turn read 2,816 of 3,800 input tokens from the cache. Long threads
     still lose the prefix when the recent-dialogue cap drops the oldest
     messages. Gate: `npm run direct:prompt-cache`.
+  - Live suite: `scripts/direct-live-suite.mjs` runs seven real workflows
+    (edit and run, slow command, patch recovery, Stop, question to the
+    owner, path in a prompt, follow-up turn) through `direct-drive` and
+    checks each outcome; see `docs/DIRECT_AGENT_DRIVEN_TESTING.md`. Its
+    first run caught a Stop regression from the 10 s command wait: Stop
+    found commands only through their obligations, which record the
+    session after the wait, so a command Stop caught inside its wait kept
+    running until the wait ended. The controller now tracks each turn's
+    command sessions from the moment they start. 7/7 on WSL and Windows.
+    Gate for the fix: `npm run direct:exec-yield`.
   - Seen in the same timelines, not caused by Direct: an occasional
     request streams quickly and then pauses 14 to 119 s before a short
     answer (no reasoning tokens), inside the backend's stream.

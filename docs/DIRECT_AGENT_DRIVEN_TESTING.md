@@ -56,6 +56,29 @@ or `--stop-after-calls N`, or `stop-turn --thread last --turn last`.
 
 Anything else the runtime accepts: `request --method thread/read --params '{...}'`.
 
+## Live suite
+
+`node scripts/direct-live-suite.mjs` (or `npm run direct:live-suite`) runs a
+fixed set of real workflows through `direct-drive` on the host it runs on,
+checks each outcome, and stops the app afterwards (`--keep-running` keeps
+it). It starts the app if needed and uses a "Live suite" project whose
+folder (`<test data>/direct-test/suite`) it empties first.
+
+| Scenario | Checks |
+|---|---|
+| `edit_and_run` | edits `hello.py`, runs it, quotes the output, no failed calls |
+| `slow_command_one_call` | a 3 s command finishes in one `exec_command` (no `write_stdin` polling) |
+| `patch_recovery` | a patch written against the wrong line recovers and the file ends correct |
+| `stop_ends_commands` | Stop after 15 s aborts the turn and the running command stops writing |
+| `question_to_owner` | `request_user_input` reaches the owner and the answer comes back |
+| `path_in_prompt` | an absolute path in the prompt is accepted |
+| `follow_up_turn` | a second turn on the edit thread works; prints its cached input |
+
+`--only a,b` runs some; `--json` adds a machine-readable summary; `--model`
+and `--effort` override luna/low. A failure prints the `report` command for
+its turn. Run it on both hosts (Windows Node over the UNC path for the
+Windows app). A full run costs about 25 provider requests.
+
 ## Notes
 
 - The control port listens on 127.0.0.1 only, needs the token in

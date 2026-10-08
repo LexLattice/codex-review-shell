@@ -5967,6 +5967,12 @@ class DirectLiveTextController {
           hardTimeoutMs: args.hardTimeoutMs,
           tty: args.tty === true,
         });
+        // Stop must reach the process during the initial wait below, before
+        // the session ID is recorded on the obligation.
+        if (!this.turnExecSessionIds) this.turnExecSessionIds = new Map();
+        if (!this.turnExecSessionIds.has(turnId)) this.turnExecSessionIds.set(turnId, new Set());
+        this.turnExecSessionIds.get(turnId).add(normalizeString(result.sessionId, ""));
+        if (this.turnAbortSignal(turnId)?.aborted) this.cancelTurnProcesses(sessionId, turnId, project);
       } else {
         try {
           result = this.statefulExecSessionManager.writeStdin({
@@ -8201,6 +8207,12 @@ class DirectLiveTextController {
     return this.turnAbortController(turnId).signal;
   }
 
+  forgetTurnRuntime(turnId) {
+    const key = normalizeString(turnId, "");
+    this.turnAbortControllers.delete(key);
+    this.turnExecSessionIds?.delete(key);
+  }
+
   turnStopRequested(sessionId, turnId) {
     if (this.turnAbortControllers.get(normalizeString(turnId, ""))?.signal.aborted) return true;
     return normalizeString(this.sessionStore.readTurn(sessionId, turnId)?.state, "") === "aborted";
@@ -8454,7 +8466,7 @@ class DirectLiveTextController {
           }, { nextTurnState: "failed", turnPatch: { error } });
         }
         this.toolBatches.delete(toolBatchKey(sessionId, turnId));
-        this.turnAbortControllers.delete(normalizeString(turnId, ""));
+        this.forgetTurnRuntime(turnId);
         this.emitNotification(surfaceSession, "warning", { threadId: sessionId, turnId, message: error.message });
         this.emitNotification(surfaceSession, "turn/completed", {
           threadId: sessionId,
@@ -8520,7 +8532,7 @@ class DirectLiveTextController {
       }
       return true;
     }
-    if (TERMINAL_TURN_STATES.has(continuation.turnState)) this.turnAbortControllers.delete(normalizeString(turnId, ""));
+    if (TERMINAL_TURN_STATES.has(continuation.turnState)) this.forgetTurnRuntime(turnId);
     this.emitNotification(surfaceSession, "turn/completed", {
       threadId: sessionId,
       turnId,
@@ -10813,7 +10825,7 @@ class DirectLiveTextController {
       // A turn waiting on the owner keeps its signal for the continuations
       // that follow the decision.
       const settled = this.sessionStore.readTurn(session.sessionId, turn.turnId);
-      if (!settled || TERMINAL_TURN_STATES.has(settled.state)) this.turnAbortControllers.delete(turn.turnId);
+      if (!settled || TERMINAL_TURN_STATES.has(settled.state)) this.forgetTurnRuntime(turn.turnId);
     });
     this.activeRuns.set(turn.turnId, { abortController, promise: run });
 
@@ -11448,6 +11460,8 @@ class DirectLiveTextController {
       .filter((obligation) => normalizeString(obligation.name, "") === "exec_command")
       .map((obligation) => normalizeString(obligation.statefulExecSessionId || obligation.statefulExecResult?.sessionId, ""))
       .filter(Boolean));
+    // A command still inside its initial wait isn't on its obligation yet.
+    for (const execSessionId of this.turnExecSessionIds?.get(turnId) || []) execSessionIds.add(execSessionId);
     let cancelled = 0;
     for (const execSessionId of execSessionIds) {
       try {
