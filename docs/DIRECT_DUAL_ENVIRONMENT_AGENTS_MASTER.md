@@ -1205,6 +1205,24 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   model's response has paused … still waiting") and another when it
   resumes; the request's longest silence and stall count are recorded and
   shown by `direct-drive`. Gate: `npm run direct:stream-stall`.
+- Added 2026-10-08: Windows commands start in an already-running
+  PowerShell. The local process backend (also used natively by the
+  Windows executor) keeps one idle shell per launch shape (sandbox
+  profile, folder, cwd, environment; at most 4, idle 5 min) inside the job
+  runner. It waits for one base64 line on stdin and dot-sources it with
+  `if(-not $?){exit 1}` appended, which reproduces `pwsh -Command`
+  exactly (output, UTF-8, exit codes for `exit N`, native failures,
+  `Write-Error`, `throw`); later stdin belongs to the command. Measured:
+  pwsh startup is 370–500 ms here; a command in a warm shell finishes in
+  100–200 ms. Live: `exec` 0.2–0.3 s instead of 0.5–1.2 s, and the
+  tools/harness gap per command step dropped from about 0.9 s to 0.5 s.
+  Terminals and the first command of a shape still start cold. Gate:
+  `direct-windows-prewarm-regression` (Windows Node; skips elsewhere);
+  live suite 8/8 on Windows.
+- Found 2026-10-08, not fixed: `direct-native-windows-workspace-executor-regression`
+  fails under Windows Node (expects transport `windows-native-resident`,
+  gets `local-child`); it already failed before these changes, and the
+  Linux sweep doesn't run it.
 - Fixed 2026-10-08: the workspace agent's own patch path (no task grant)
   accepts Codex's patch format (translated to git-style diffs; bare hunks
   located by context); deletes stay deferred there. Gate:

@@ -1300,6 +1300,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
   dispose(reason = "stateful_exec_manager_disposed") {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
+    this.localBackend?.disposePrewarmed?.();
     this.disposePromise = (async () => {
       const records = [...this.sessions.values()].filter((record) => !record.settled);
       let sigkillEscalated = false;

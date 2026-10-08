@@ -33,7 +33,12 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { BubblewrapExecSandbox, workspaceExecutesLocally } = require("./exec-sandbox");
 const { WindowsJobSandbox } = require("./windows-job-runner");
-const { nativeInteractiveShell, nativeShellCommand } = require("../runtime/execution-environment-contract");
+const {
+  nativeInteractiveShell,
+  nativeShellCommand,
+  prewarmedPowerShellCommand,
+  prewarmedPowerShellScriptLine,
+} = require("../runtime/execution-environment-contract");
 const { PTY_HELPER_PATH, PtyChannel, normalizePtySize } = require("./pty-frames");
 const { findExecutableOnPath } = require("../../../shared/executor-protocol");
 
@@ -49,6 +54,18 @@ const BASE_COMMAND_ENVIRONMENT_KEYS = Object.freeze([
   "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432",
   "USERNAME", "USERDOMAIN", "COMPUTERNAME", "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS",
 ]);
+
+const PREWARM_IDLE_MS = 5 * 60_000;
+const PREWARM_MAX_SHAPES = 4;
+
+function setChildRef(child, referenced) {
+  for (const target of [child, child?.stdin, child?.stdout, child?.stderr]) {
+    try {
+      if (referenced) target?.ref?.();
+      else target?.unref?.();
+    } catch {}
+  }
+}
 
 function defaultExecSandbox(platform) {
   return platform === "win32" ? new WindowsJobSandbox({ platform }) : new BubblewrapExecSandbox({ platform });
@@ -184,6 +201,91 @@ class LocalChildProcessBackend {
     this.workspaceLocalityResolver = typeof options.workspaceLocalityResolver === "function"
       ? options.workspaceLocalityResolver
       : (kind, project) => workspaceExecutesLocally(kind, project);
+    // Windows: one idle, already-started PowerShell per launch shape (sandbox
+    // profile, folder, environment), so a command skips PowerShell's startup.
+    this.prewarm = options.prewarm === false ? false : this.platform === "win32";
+    this.prewarmed = new Map();
+    this.prewarmStats = { warm: 0, cold: 0 };
+  }
+
+  prewarmKey(plan, options = {}) {
+    const env = { ...(options.env || {}), ...(plan.env || {}) };
+    delete env.TEMP;
+    delete env.TMP;
+    const args = [];
+    for (let index = 0; index < plan.args.length; index += 1) {
+      // Each process gets its own scratch folder; it doesn't change the shape.
+      if (plan.args[index] === "--scratch") { index += 1; continue; }
+      args.push(plan.args[index]);
+    }
+    return JSON.stringify([plan.command, args, options.cwd || "", Object.entries(env).sort()]);
+  }
+
+  takePrewarmed(key) {
+    const entry = this.prewarmed.get(key);
+    if (!entry) return null;
+    this.prewarmed.delete(key);
+    clearTimeout(entry.timer);
+    const child = entry.child;
+    if (!child || child.exitCode !== null || child.signalCode !== null || child.stdin?.destroyed) return null;
+    setChildRef(child, true);
+    return entry;
+  }
+
+  spawnPlanned(plan, options = {}) {
+    const env = plan.env && Object.keys(plan.env).length ? { ...(options.env || {}), ...plan.env } : options.env;
+    const child = this.spawnImpl(plan.command, plan.args, {
+      cwd: options.cwd,
+      env,
+      shell: plan.shell,
+      detached: process.platform !== "win32",
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    if (plan.scratchDir && typeof child?.once === "function") {
+      child.once("close", () => {
+        fs.rm(plan.scratchDir, { recursive: true, force: true, maxRetries: 3 }, () => {});
+      });
+    }
+    return child;
+  }
+
+  refillPrewarmed(key, plan, options = {}) {
+    if (this.prewarmed.has(key)) return;
+    let fresh;
+    try {
+      // Re-plan for a fresh scratch folder.
+      fresh = { ...plan, ...this.planLaunch(plan.prewarmSpec) };
+      const child = this.spawnPlanned(fresh, options);
+      child.on?.("error", () => this.prewarmed.get(key)?.child === child && this.prewarmed.delete(key));
+      child.once?.("close", () => {
+        if (this.prewarmed.get(key)?.child === child) this.prewarmed.delete(key);
+      });
+      // An idle shell must not keep this process alive.
+      setChildRef(child, false);
+      // An idle shell that isn't used for a while exits (EOF ends its wait).
+      const timer = setTimeout(() => {
+        if (this.prewarmed.get(key)?.child !== child) return;
+        this.prewarmed.delete(key);
+        try { child.stdin.end(); } catch {}
+      }, PREWARM_IDLE_MS);
+      timer.unref?.();
+      this.prewarmed.set(key, { child, plan: fresh, timer });
+      while (this.prewarmed.size > PREWARM_MAX_SHAPES) {
+        const [oldestKey, oldest] = this.prewarmed.entries().next().value;
+        this.prewarmed.delete(oldestKey);
+        clearTimeout(oldest.timer);
+        try { oldest.child.stdin.end(); } catch {}
+      }
+    } catch {}
+  }
+
+  disposePrewarmed() {
+    for (const entry of this.prewarmed.values()) {
+      clearTimeout(entry.timer);
+      try { entry.child.stdin.end(); } catch {}
+    }
+    this.prewarmed.clear();
   }
 
   resolveWorkspace(input = {}, grant = null) {
@@ -248,11 +350,18 @@ class LocalChildProcessBackend {
     // Command strings run in the environment's native shell (bash -c on
     // Linux, PowerShell on Windows), matching what the model is told and what
     // the WSL executor does. A person's terminal gets their interactive shell.
+    const prewarmable = this.prewarm && this.platform === "win32" && !tty && !spec.interactiveShell &&
+      Boolean(spec.shellCommand) && spec.prewarmBootstrap !== false;
     const native = spec.interactiveShell
       ? nativeInteractiveShell({ platform: this.platform, env: this.env })
-      : spec.shellCommand
-        ? nativeShellCommand(spec.shellCommand, { platform: this.platform, env: this.env, terminal: Boolean(tty) })
-        : null;
+      : prewarmable
+        ? prewarmedPowerShellCommand({ platform: this.platform, env: this.env })
+        : spec.shellCommand
+          ? nativeShellCommand(spec.shellCommand, { platform: this.platform, env: this.env, terminal: Boolean(tty) })
+          : null;
+    const prewarmFields = prewarmable
+      ? { prewarmScriptLine: prewarmedPowerShellScriptLine(spec.shellCommand), prewarmSpec: { ...spec, shellCommand: "prewarm" } }
+      : {};
     let command = native ? native.command : spec.command;
     let args = native ? native.args : spec.args;
     const shellName = native ? native.shell : "";
@@ -279,9 +388,11 @@ class LocalChildProcessBackend {
         networkAccess: true,
         tty,
         platform: this.platform,
+        ...prewarmFields,
       };
     }
     return {
+      ...prewarmFields,
       ...this.sandbox.wrap({
         sandboxMode,
         root: spec.workspace?.root,
@@ -299,20 +410,22 @@ class LocalChildProcessBackend {
   }
 
   launch(plan, options = {}) {
-    const env = plan.env && Object.keys(plan.env).length ? { ...(options.env || {}), ...plan.env } : options.env;
-    const child = this.spawnImpl(plan.command, plan.args, {
-      cwd: options.cwd,
-      env,
-      shell: plan.shell,
-      detached: process.platform !== "win32",
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    if (plan.scratchDir && typeof child?.once === "function") {
-      child.once("close", () => {
-        fs.rm(plan.scratchDir, { recursive: true, force: true, maxRetries: 3 }, () => {});
-      });
+    if (plan.prewarmScriptLine) {
+      const key = this.prewarmKey(plan, options);
+      const warm = this.takePrewarmed(key);
+      let child;
+      if (warm) {
+        child = warm.child;
+        this.prewarmStats.warm += 1;
+      } else {
+        child = this.spawnPlanned(plan, options);
+        this.prewarmStats.cold += 1;
+      }
+      child.stdin.write(plan.prewarmScriptLine);
+      setImmediate(() => this.refillPrewarmed(key, plan, options));
+      return new LocalChildProcessHandle(child, warm ? warm.plan : plan);
     }
+    const child = this.spawnPlanned(plan, options);
     return plan.tty ? new LocalPtyProcessHandle(child, plan) : new LocalChildProcessHandle(child, plan);
   }
 }

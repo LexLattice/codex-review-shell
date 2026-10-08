@@ -67,6 +67,22 @@ function nativeShellCommand(shellCommand, options = {}) {
   return { command: "/bin/sh", args: ["-c", shellCommand], shell: "sh", flavor: "sh" };
 }
 
+// A PowerShell started ahead of time that waits for one command on its first
+// stdin line (base64 UTF-8) and runs it as `-Command <script>` would: the
+// script is dot-sourced at the top level and a failing last statement exits 1.
+// Startup (~0.4 s for pwsh) is then paid before the command arrives, and
+// stdin after that line belongs to the command.
+const POWERSHELL_PREWARM_BOOTSTRAP = `${POWERSHELL_UTF8_PRELUDE}$__l=[Console]::In.ReadLine();if($null -eq $__l){exit 0};$__b=[scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($__l)));Remove-Variable __l;. $__b`;
+
+function prewarmedPowerShellCommand(options = {}) {
+  const powershell = windowsPowerShell(options);
+  return { command: powershell.command, args: [...POWERSHELL_ARGS, POWERSHELL_PREWARM_BOOTSTRAP], shell: "powershell", flavor: powershell.flavor };
+}
+
+function prewarmedPowerShellScriptLine(shellCommand = "") {
+  return `${Buffer.from(`${shellCommand}\n;if(-not $?){exit 1}`, "utf8").toString("base64")}\n`;
+}
+
 /**
  * The shell a person gets in a terminal there: PowerShell (pwsh when
  * installed) with their profile on Windows; their login shell ($SHELL, else
@@ -285,6 +301,8 @@ module.exports = {
   applyEnvironmentToToolSchemas,
   nativeInteractiveShell,
   nativeShellCommand,
+  prewarmedPowerShellCommand,
+  prewarmedPowerShellScriptLine,
   renderExecutionEnvironmentInstructions,
   resolveExecutionEnvironmentFacts,
   selfConstitutionEnvironmentProjection,
