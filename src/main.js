@@ -86,8 +86,10 @@ const {
   DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
   DirectLiveTextController,
   DirectLiveTextSurfaceSession,
+  TERMINAL_TURN_STATES: DIRECT_TERMINAL_TURN_STATES,
   buildDirectLiveTextCapabilities,
 } = require("./main/direct/controller/live-text-controller");
+const { DirectTestControlServer } = require("./main/direct/test-control/test-control-server");
 const {
   DirectThreadHarnessGrantStore,
 } = require("./main/direct/authority/direct-thread-harness-grant");
@@ -408,6 +410,10 @@ const WORLD_MANAGER_PRODUCTION_MODE =
   WORLD_MANAGER_SURFACE_MODE && APP_EXPERIENCE.variant === "production";
 const DIRECT_WORKBENCH_MODE =
   APP_EXPERIENCE.id === APP_EXPERIENCES.DIRECT_WORKBENCH;
+// Agent-driven testing (scripts/direct-drive.mjs): a local control port into
+// the real Direct runtime, with the window hidden unless asked for.
+const DIRECT_TEST_CONTROL_ENABLED = /^(1|true|yes)$/i.test(String(process.env.DIRECT_TEST_CONTROL || "").trim());
+const DIRECT_TEST_CONTROL_HIDDEN = DIRECT_TEST_CONTROL_ENABLED && process.env.DIRECT_TEST_CONTROL_SHOW !== "1";
 
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = appRoot;
@@ -12059,7 +12065,7 @@ async function createDirectWorkbenchWindow() {
     minHeight: 620,
     title: APP_EXPERIENCE.label,
     backgroundColor: "#090a0c",
-    show: true,
+    show: !DIRECT_TEST_CONTROL_HIDDEN,
   });
   installOrderedWorkspaceWorkerWindowClose(mainWindow, "Direct Workbench window close requested.");
   codexView = new WebContentsView({
@@ -14401,11 +14407,84 @@ ipcMain.handle("chatgpt:open-settings", async () => {
 
 ipcMain.handle("chatgpt:force-dark", async () => forceChatgptDark());
 
+let directTestControlServer = null;
+
+// A test project's folder is created if missing, from whichever host runs
+// the app (a WSL folder from Windows goes through \\wsl.localhost).
+async function ensureDirectTestProjectFolder(workspace = {}) {
+  let folder = "";
+  if (workspace.kind === "windows") folder = process.platform === "win32" ? workspace.windowsPath : "";
+  else if (workspace.kind === "local") folder = workspace.localPath;
+  else if (workspace.kind === "wsl") {
+    folder = process.platform === "win32"
+      ? `\\\\wsl.localhost\\${workspace.distro || "Ubuntu"}${String(workspace.linuxPath || "").replace(/\//g, "\\")}`
+      : workspace.linuxPath;
+  }
+  if (folder) await fs.mkdir(folder, { recursive: true });
+}
+
+async function createDirectTestProject(spec = {}) {
+  const raw = isPlainObject(spec.workspace) ? spec.workspace : {};
+  const workspace = normalizeWorkspaceConfig(raw, "");
+  await ensureDirectTestProjectFolder(workspace);
+  const config = await loadConfig();
+  const project = normalizeProject({
+    id: newId("project"),
+    name: normalizeString(spec.name, "Test project"),
+    workspace,
+    surfaceBinding: {
+      codex: {
+        mode: "managed",
+        bindingProvider: "direct-chatgpt-codex",
+        runtimeMode: "direct",
+        directTransport: "live-text",
+        directTier: "implementation-lane",
+        model: normalizeString(spec.model, ""),
+        reasoningEffort: normalizeString(spec.reasoningEffort, ""),
+        label: "Direct full access",
+      },
+    },
+    ...(isPlainObject(spec.delegation) ? { delegation: spec.delegation } : {}),
+  }, config.projects.length + 1);
+  const saved = await saveConfig({ ...config, projects: [...config.projects, project] });
+  return saved.projects.find((item) => item.id === project.id) || project;
+}
+
+async function startDirectTestControlServer() {
+  if (!DIRECT_TEST_CONTROL_ENABLED || directTestControlServer) return;
+  if (!activeAppProfile.isolated && process.env.DIRECT_TEST_CONTROL_ALLOW_DEFAULT_PROFILE !== "1") {
+    console.warn("[direct-test-control] refused: test control runs only with an isolated profile (CODEX_REVIEW_SHELL_USER_DATA_DIR).");
+    return;
+  }
+  directTestControlServer = new DirectTestControlServer({
+    userDataDir: app.getPath("userData"),
+    controller: () => ensureDirectLiveTextController(),
+    createSurfaceSession: (project) => new DirectLiveTextSurfaceSession(null, {
+      controller: ensureDirectLiveTextController(),
+      project,
+    }),
+    projects: {
+      list: () => (configCache?.projects || []).filter((project) => project.lifecycle?.state !== "archived"),
+      get: async (projectId) => (await loadConfig()).projects.find((project) => project.id === projectId) || null,
+      create: (spec) => createDirectTestProject(spec),
+    },
+    createThread: (project, payload) => ensureDirectThreadWorkbenchController().createWorkThreadDraftSession(project, payload),
+    terminalStates: DIRECT_TERMINAL_TURN_STATES,
+    onShutdown: () => app.quit(),
+    appInfo: { experience: APP_EXPERIENCE.id, appRoot },
+  });
+  const { port } = await directTestControlServer.listen();
+  console.log(`[direct-test-control] listening on 127.0.0.1:${port}`);
+}
+
 app.whenReady().then(async () => {
   nativeTheme.themeSource = "dark";
   ensureWorkspaceBackendManager();
   await loadConfig();
   await createWindow();
+  await startDirectTestControlServer().catch((error) => {
+    console.warn("[direct-test-control] failed to start", error?.message || error);
+  });
   if (Number.isFinite(smokeExitMs) && smokeExitMs > 0) {
     setTimeout(() => {
       app.quit();
@@ -14417,6 +14496,8 @@ app.whenReady().then(async () => {
 });
 
 function closeApplicationRuntimeAfterOrderedWorkspaceShutdown() {
+  directTestControlServer?.close().catch(() => {});
+  directTestControlServer = null;
   threadAnalyticsStore?.close();
   threadAnalyticsStore = null;
   directAuthLoginCoordinator = null;

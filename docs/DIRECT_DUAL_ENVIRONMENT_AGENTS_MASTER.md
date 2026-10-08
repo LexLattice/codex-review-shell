@@ -1235,6 +1235,18 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   first request). Gate: `npm run direct:tool-loop-guard`.
 - A patch that fails its dry run (for example a context mismatch) still
   fails the whole turn. Codex returns the error to the model so it can retry.
+  Confirmed live on Windows Full access (luna/low): the model's second
+  `apply_patch` used a bare `@@` hunk, the Full-access patch path refused it
+  as `direct_full_access_patch_invalid`, and the turn failed, followed by a
+  misleading "tool continuation evidence is not enabled" warning.
+- Agent-driven testing: `scripts/direct-drive.mjs` drives the real app
+  (hidden, isolated test profile, test control port) on Windows or WSL; see
+  `docs/DIRECT_AGENT_DRIVEN_TESTING.md`. First live runs also showed: the
+  sub-agent policy preflight fails with `http_400` on a thread's first turn
+  (warning shown, turn continues); under Full access the model reports that
+  file edits and commands "have additional gates", which the snapshot
+  apparently suggests but the grant doesn't impose; a process the model left
+  running keeps running after Stop.
 - Patch and command approvals no longer require a scoped implementation
   proof when the thread's grant names the tool. The real app has no proof
   store, so before this any `apply_patch` would have failed the turn as
@@ -1378,6 +1390,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-07 | Model availability follows Codex: the account's `/models` list, signed in is ready, the server rejects | A per-model probe gated every new model behind a manual refresh and expired after 7 days; Codex trusts the list and handles rejection. The probe stays as an optional "Test model". `client_version` is the installed Codex CLI's, so the list matches what Codex itself would offer. |
 | 2026-10-08 | Continuations keep the full tool set, have no step cap, and run several calls per response in order; only per-call limits stay | Owner's call, matching Codex. A self-constitution check had left the model with no tools ("this continuation exposes no executable tool interface"), and per-family rules and step caps stopped real work midway. |
 | 2026-10-08 | "No step cap" covers distinct work only; the same call with the same result repeating is stopped | Owner's call, after a 58-call `inspect_self_constitution` loop. |
+| 2026-10-08 | Agent testing drives the real app through an opt-in local test control port, with an isolated profile, `gpt-6-luna`/low by default, on both hosts | Owner's call. The older headless scripts built their own reduced controller or tool loop, so they didn't test what the owner runs. |
 
 ## Plan changes
 

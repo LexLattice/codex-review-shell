@@ -11675,6 +11675,7 @@ module.exports = {
   DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
   DirectLiveTextController,
   DirectLiveTextSurfaceSession,
+  TERMINAL_TURN_STATES,
   buildDirectLiveTextCapabilities,
   composeImplementationToolBundleForRequest,
   implementationInitialPolicyCandidateToolNames,
