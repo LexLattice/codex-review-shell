@@ -295,13 +295,13 @@ try {
     assert.ok(label.indexOf("activeModelId()") < label.indexOf("directModelLabel()"), "the picked model wins over the saved-binding witness");
   });
 
-  async function runOneTurn({ fetchImpl, refresher, model = "gpt-luna", threadOptions = {}, turnOptions = {} }) {
+  async function runOneTurn({ fetchImpl, refresher, model = "gpt-luna", threadOptions = {}, turnOptions = {}, metadata = metadataStatus }) {
     const sessionStore = new DirectSessionStore({ rootDir: fs.mkdtempSync(path.join(tempRoot, "sessions-")) });
     const controller = new DirectLiveTextController({
       sessionStore,
       profileDoc,
       authStore: signedInStore(),
-      providerMetadataResolver: () => metadataStatus(),
+      providerMetadataResolver: () => metadata(),
       providerCatalogRefresher: refresher,
       fetchImpl,
     });
@@ -358,6 +358,64 @@ try {
 
     const turnOff = await captureTurn("gpt-luna", { daybreakEnabled: true }, { daybreakEnabled: false });
     assert.equal(turnOff.body.access_programs, undefined, "the owner's turn choice wins over the thread's");
+  });
+
+  await check("'ultra' is requested as Codex does: the model's multi-agent effort, else max, else its highest level", async () => {
+    const effortCatalog = () => ({
+      profile: buildDirectProviderMetadataProfile({
+        projectId: "project_catalog",
+        rawModelsResponse: {
+          models: [
+            { slug: "gpt-multi", visibility: "list", priority: 1, supported_reasoning_levels: ["low", "high", "xhigh", "ultra"], multi_agent_reasoning_effort: "xhigh" },
+            { slug: "gpt-max", visibility: "list", priority: 2, supported_reasoning_levels: ["low", "high", "max", "ultra"] },
+            { slug: "gpt-high", visibility: "list", priority: 3, supported_reasoning_levels: ["low", "medium", "high", "ultra"] },
+          ],
+        },
+        modelSource: "server_model_list",
+        credentials: { accessToken: "x", accountId: "account-a" },
+      }),
+      cacheState: "fresh",
+    });
+    const sent = {};
+    for (const model of ["gpt-multi", "gpt-max", "gpt-high", "gpt-unlisted"]) {
+      let body = null;
+      const run = await runOneTurn({
+        model,
+        metadata: effortCatalog,
+        threadOptions: { reasoningEffort: "ultra" },
+        fetchImpl: async (_url, init) => {
+          body = JSON.parse(init.body);
+          return textResponse(sse("ok"), 200, { "content-type": "text/event-stream" });
+        },
+      });
+      sent[model] = body.reasoning?.effort;
+      assert.equal(run.sessionStore.readSession(run.threadId).reasoningEffort, "ultra", "the thread keeps the owner's choice");
+      assert.equal(run.sessionStore.readTurn(run.threadId, run.turnId).reasoningEffort, body.reasoning?.effort, "the turn records what was sent, for its continuations");
+    }
+    assert.deepEqual(sent, { "gpt-multi": "xhigh", "gpt-max": "max", "gpt-high": "high", "gpt-unlisted": "xhigh" });
+    const plain = await runOneTurn({
+      model: "gpt-multi",
+      metadata: effortCatalog,
+      threadOptions: { reasoningEffort: "low" },
+      fetchImpl: async (_url, init) => {
+        assert.equal(JSON.parse(init.body).reasoning.effort, "low", "other efforts pass through unchanged");
+        return textResponse(sse("ok"), 200, { "content-type": "text/event-stream" });
+      },
+    });
+    assert.ok(plain.turnId);
+  });
+
+  await check("fork and import-checkpoint starts carry the thread's effort, Fast, and Daybreak", () => {
+    const controllerSource = fs.readFileSync(path.join(repoRoot, "src/main/direct/controller/live-text-controller.js"), "utf8");
+    for (const [name, choices] of [["async startForkFromPreview(", "forkChoices"], ["async startForkFromDerivedPreview(", "forkChoices"], ["async runImportCheckpointContinuation(", "importChoices"]]) {
+      const start = controllerSource.indexOf(name);
+      const body = controllerSource.slice(start, controllerSource.indexOf("\n  async ", start + name.length));
+      assert.match(body, new RegExp(`const ${choices} = this\\.runtimeChoicesFor\\(`), `${name} resolves runtime choices`);
+      for (const field of ["reasoningEffort", "serviceTier", "cyberAccessProgram"]) {
+        assert.match(body, new RegExp(`${field}: ${choices}\\.${field}`), `${name} sends ${field}`);
+      }
+      assert.match(body, new RegExp(`daybreakEnabled: ${choices}\\.daybreakEnabled`), `${name} records Daybreak on the new thread`);
+    }
   });
 
   await check("every request in a turn carries the turn's effort, Fast, and Daybreak", () => {

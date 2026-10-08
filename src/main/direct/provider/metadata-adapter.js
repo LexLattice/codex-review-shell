@@ -218,6 +218,8 @@ function normalizeModelDescriptor(raw = {}, index = 0, validation = {}) {
     unavailableReason: normalizeString(raw.unavailableReason || raw.unavailable_reason, ""),
     supportedReasoningEfforts,
     defaultReasoningEffort,
+    // What Codex actually requests when the user picks "ultra".
+    multiAgentReasoningEffort: normalizeString(raw.multiAgentReasoningEffort || raw.multi_agent_reasoning_effort, ""),
     serviceTiers,
     defaultServiceTier,
     accessPrograms: normalizeAccessPrograms(raw.availableAccessPrograms ?? raw.available_access_programs),

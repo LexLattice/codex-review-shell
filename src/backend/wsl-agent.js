@@ -47,7 +47,7 @@ const { WINDOWS_JOB_LAUNCHER } = require("../main/direct/tools/windows-job-runne
 const { PtyChannel } = require("../main/direct/tools/pty-frames");
 const { spawnInLinuxPidNamespace } = require("../shared/linux-pid-namespace");
 const { mcpServerEnvironment, requestMcpStdio } = require("../main/direct/external/mcp-stdio-transport");
-const { LocalFilePort } = require("../main/direct/tools/full-access-local-environment");
+const { LocalFilePort, parseUnifiedPatch: parseCodexOrUnifiedPatch } = require("../main/direct/tools/full-access-local-environment");
 
 const PROTOCOL_VERSION = 1;
 // Keep the protocol line bounded while still admitting the largest supported
@@ -879,8 +879,44 @@ function parseHunkHeader(line) {
   };
 }
 
+// Models write Codex's patch format (`*** Begin Patch`, bare `@@` hunks);
+// this path plans unified diffs, so translate it first. Hunks without line
+// numbers start at line 1 and are then located by their context, as the
+// grant-bound path does.
+function codexPatchAsUnifiedDiff(patchText) {
+  const text = String(patchText || "");
+  if (text.replace(/\r\n/g, "\n").split("\n")[0] !== "*** Begin Patch") return text;
+  let files;
+  try {
+    files = parseCodexOrUnifiedPatch(text);
+  } catch (error) {
+    throw new Error(error?.message || "Malformed Codex-format patch.");
+  }
+  const out = [];
+  for (const file of files) {
+    if (file.operation === "delete") {
+      const error = new Error("Patch deletes are deferred in v0.");
+      error.code = "PATCH_DELETE_DEFERRED";
+      throw error;
+    }
+    // git-style headers: this parser separates files only at `diff --git`.
+    out.push(`diff --git a/${file.relPath} b/${file.relPath}`);
+    if (file.operation === "create") out.push("new file mode 100644");
+    out.push(file.operation === "create" ? "--- /dev/null" : `--- a/${file.relPath}`, `+++ b/${file.relPath}`);
+    for (const hunk of file.hunks) {
+      const lines = hunk.lines.map((line) => (line === "" ? " " : line));
+      const oldCount = lines.filter((line) => line[0] !== "+").length;
+      const newCount = lines.filter((line) => line[0] !== "-").length;
+      const oldStart = file.operation === "create" ? 0 : Number(hunk.oldStart) || 1;
+      const newStart = Number(hunk.newStart) || 1;
+      out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`, ...lines);
+    }
+  }
+  return `${out.join("\n")}\n`;
+}
+
 function parseUnifiedPatch(patchText) {
-  const patch = String(patchText || "");
+  const patch = codexPatchAsUnifiedDiff(patchText);
   if (!patch.trim()) throw new Error("Patch text is empty.");
   if (patch.length > MAX_PATCH_TEXT_CHARS) {
     const error = new Error("Patch text exceeds the configured size limit.");

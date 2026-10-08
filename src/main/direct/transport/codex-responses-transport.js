@@ -727,6 +727,8 @@ async function commitNormalizedEvents(callback, events, details = {}) {
   }
 }
 
+const DEFAULT_STREAM_STALL_NOTICE_MS = 10_000;
+
 async function readStreamingSseResponse(response, options = {}, requestBody = {}) {
   const limits = transportLimits(options);
   const rawEvents = [];
@@ -739,8 +741,37 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     rawEventCount: 0,
     normalizedEventCount: 0,
     committedNormalizedEventCount: 0,
+    longestSilenceMs: 0,
+    stallCount: 0,
   };
   const onLifecycle = options.onLifecycle;
+  // The backend sometimes goes quiet mid-stream for tens of seconds. Report
+  // it (once per pause, and when bytes resume) so a waiting turn doesn't
+  // look hung and reports show where the time went.
+  const stallNoticeMs = Number.isFinite(Number(options.streamStallNoticeMs)) && Number(options.streamStallNoticeMs) > 0
+    ? Number(options.streamStallNoticeMs)
+    : DEFAULT_STREAM_STALL_NOTICE_MS;
+  let lastChunkAtMs = Date.now();
+  let stalled = false;
+  const stallWatcher = setInterval(() => {
+    const silentMs = Date.now() - lastChunkAtMs;
+    if (!stalled && silentMs >= stallNoticeMs) {
+      stalled = true;
+      timing.stallCount += 1;
+      notifyLifecycle(onLifecycle, "stream_stalled", { silentMs });
+    }
+  }, Math.min(1000, Math.max(20, Math.floor(stallNoticeMs / 4))));
+  stallWatcher.unref?.();
+  const noteChunk = () => {
+    const now = Date.now();
+    const silentMs = now - lastChunkAtMs;
+    if (silentMs > timing.longestSilenceMs) timing.longestSilenceMs = silentMs;
+    if (stalled) {
+      stalled = false;
+      notifyLifecycle(onLifecycle, "stream_resumed", { silentMs });
+    }
+    lastChunkAtMs = now;
+  };
   const onNormalizedEvents = options.onNormalizedEvents;
   const onNormalizedEventsCommitted = options.onNormalizedEventsCommitted;
   const onTransportTrace = options.onTransportTrace;
@@ -940,6 +971,7 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        noteChunk();
         const chunkBytes = sourceByteLength(value);
         reserveRawBytes(chunkBytes);
         notifyTransportTrace(onTransportTrace, "before_decode", { chunkBytes, rawBytes });
@@ -949,6 +981,7 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     } else if (response?.body && typeof response.body[Symbol.asyncIterator] === "function") {
       const decoder = new TextDecoder();
       for await (const chunk of response.body) {
+        noteChunk();
         const chunkBytes = sourceByteLength(chunk);
         reserveRawBytes(chunkBytes);
         notifyTransportTrace(onTransportTrace, "before_decode", { chunkBytes, rawBytes });
@@ -967,6 +1000,8 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
   } catch (caught) {
     error = caught;
     cancelResponseBody(response, activeReader);
+  } finally {
+    clearInterval(stallWatcher);
   }
   timing.streamCompletedAt = nowIso();
   return {
@@ -1228,6 +1263,8 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
         timing.rawEventCount = streamed.timing.rawEventCount;
         timing.normalizedEventCount = streamed.timing.normalizedEventCount;
         timing.committedNormalizedEventCount = streamed.timing.committedNormalizedEventCount;
+        timing.longestSilenceMs = streamed.timing.longestSilenceMs;
+        timing.stallCount = streamed.timing.stallCount;
         durableCommitFailed = Boolean(streamed.commitError);
         if (streamed.error) {
           const caught = streamed.error;

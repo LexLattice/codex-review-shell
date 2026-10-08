@@ -1191,13 +1191,24 @@ as `SKIPPED`:
 
 Discovered during planning; not in any turn's scope unless a turn adopts them.
 
-- Direct sends the `ultra` effort literally as `reasoning.effort: "ultra"`.
-  Codex never does: it sends the model's `multi_agent_reasoning_effort` (else
-  `max`, else the highest non-Ultra level) and turns on proactive
-  multi-agent delegation. Whether the provider accepts a literal `ultra` is
-  unverified.
-- Fork, derived-fork, and import-checkpoint requests pass neither effort nor
-  speed tier (nor Daybreak).
+- Fixed 2026-10-08: `ultra` is no longer sent literally. As in Codex, the
+  turn requests the model's `multi_agent_reasoning_effort` from the account's
+  list, else `max` if offered, else the model's highest level (`xhigh`
+  without a list); the thread keeps "ultra" and the turn records what was
+  sent. Codex also turns on proactive multi-agent delegation for Ultra;
+  Direct doesn't. Gate: `direct-model-catalog` (19 checks).
+- Fixed 2026-10-08: fork, derived-fork, and import-checkpoint starts carry
+  effort, speed tier, and Daybreak (explicit options, else the source
+  thread's, else the project's default effort) on the new thread, its turn,
+  and its request.
+- Added 2026-10-08: a provider stream silent for 10 s shows a warning ("the
+  model's response has paused … still waiting") and another when it
+  resumes; the request's longest silence and stall count are recorded and
+  shown by `direct-drive`. Gate: `npm run direct:stream-stall`.
+- Fixed 2026-10-08: the workspace agent's own patch path (no task grant)
+  accepts Codex's patch format (translated to git-style diffs; bare hunks
+  located by context); deletes stay deferred there. Gate:
+  `npm run direct:agent-codex-patch` (passes on both hosts).
 
 - The owner's WSL terminal opened from a Windows app runs inside the WSL
   executor's user and PID namespace (as Full-access agent sessions do), so
@@ -1249,8 +1260,8 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   after the dry run) is reported with `workspaceChanged: false`; a failure
   while writing is reported as `patch_execution_ambiguous` with
   `workspaceMayHaveChanged: true` and "read them before retrying". Gate:
-  `npm run direct:patch-apply-failure`. Remaining: the no-grant path in
-  `wsl-agent.js` still takes only unified diffs.
+  `npm run direct:patch-apply-failure`. The no-grant path in `wsl-agent.js`
+  takes Codex's format too (see **Findings**).
 - Agent-driven testing: `scripts/direct-drive.mjs` drives the real app
   (hidden, isolated test profile, test control port) on Windows or WSL; see
   `docs/DIRECT_AGENT_DRIVEN_TESTING.md`. Fixed from its first live runs:

@@ -2149,6 +2149,7 @@ class DirectLiveTextController {
     this.maxPromptChars = Number(options.maxPromptChars || DEFAULT_MAX_PROMPT_CHARS);
     this.maxAssistantChars = Number(options.maxAssistantChars || DEFAULT_MAX_ASSISTANT_CHARS);
     this.maxTransportOutputChars = Number(options.maxTransportOutputChars || Math.max(256 * 1024, this.maxAssistantChars * 8));
+    this.streamStallNoticeMs = Number(options.streamStallNoticeMs) > 0 ? Number(options.streamStallNoticeMs) : undefined;
     this.maxTransportBytes = Number(options.maxTransportBytes || Math.max(2 * 1024 * 1024, this.maxAssistantChars * 8));
     this.maxTransportFrameBytes = Number(options.maxTransportFrameBytes || 512 * 1024);
     this.maxTransportRawEvents = Number(options.maxTransportRawEvents || 10_000);
@@ -2782,6 +2783,49 @@ class DirectLiveTextController {
     if (daybreakEnabled !== true) return "";
     const programs = this.catalogModelDescriptor(project, model)?.accessPrograms?.cyber;
     return Array.isArray(programs) && programs.includes("daybreak_blue") ? "daybreak_blue" : "";
+  }
+
+  // Codex never sends "ultra": it requests the model's multi-agent effort
+  // from the account's list, else "max" if offered, else the highest level
+  // the model offers.
+  providerReasoningEffortFor(project = {}, model = "", effort = "") {
+    const chosen = normalizeString(effort, "");
+    if (chosen !== "ultra") return chosen;
+    const descriptor = this.catalogModelDescriptor(project, model);
+    const multiAgent = normalizeString(descriptor?.multiAgentReasoningEffort, "");
+    if (multiAgent && multiAgent !== "ultra") return multiAgent;
+    const offered = (Array.isArray(descriptor?.supportedReasoningEfforts) ? descriptor.supportedReasoningEfforts : [])
+      .map((entry) => normalizeString(entry?.reasoningEffort || entry, ""))
+      .filter((value) => value && value !== "ultra");
+    if (offered.includes("max")) return "max";
+    const order = ["minimal", "low", "medium", "high", "xhigh", "max"];
+    const best = offered.filter((value) => order.includes(value)).sort((a, b) => order.indexOf(a) - order.indexOf(b)).at(-1);
+    return best || "xhigh";
+  }
+
+  // Effort, speed, and Daybreak for a thread that starts outside turn/start
+  // (fork, derived fork, import continuation): explicit options first, then
+  // the source thread's choices, then the project's default effort.
+  runtimeChoicesFor(project = {}, model = "", options = {}, sourceSessionId = "") {
+    let source = {};
+    try {
+      source = (sourceSessionId && this.sessionStore.readSession(sourceSessionId)) || {};
+    } catch {}
+    const sessionReasoningEffort = normalizeString(options.reasoningEffort || options.reasoning_effort, "")
+      || normalizeString(source.reasoningEffort, "")
+      || normalizeString(project?.surfaceBinding?.codex?.reasoningEffort, "");
+    const selectedTier = canonicalDirectServiceTier(options.serviceTier || options.service_tier)
+      || canonicalDirectServiceTier(source.serviceTier);
+    const daybreakEnabled = typeof options.daybreakEnabled === "boolean"
+      ? options.daybreakEnabled
+      : source.daybreakEnabled === true;
+    return {
+      sessionReasoningEffort,
+      reasoningEffort: this.providerReasoningEffortFor(project, model, sessionReasoningEffort),
+      serviceTier: this.effectiveServiceTier(project, model, selectedTier),
+      daybreakEnabled,
+      cyberAccessProgram: this.cyberAccessProgramFor(project, model, daybreakEnabled),
+    };
   }
 
   // A project's model is only a default. Once the account's list stops
@@ -4770,12 +4814,16 @@ class DirectLiveTextController {
         error.code = error.message;
         throw error;
       }
+      const forkChoices = this.runtimeChoicesFor(project, model, options, normalizeString(seedPreview.items[0]?.threadId, ""));
       session = this.sessionStore.createSession({
         projectId,
         workspace: isPlainObject(project.workspace) ? project.workspace : {},
         workspaceDisplayPath: workspaceDisplayPath(project),
         title: `Fork from ${normalizeString(seedPreview.items[0]?.threadId, "direct thread")}`,
         model,
+        reasoningEffort: forkChoices.sessionReasoningEffort,
+        serviceTier: forkChoices.serviceTier,
+        daybreakEnabled: forkChoices.daybreakEnabled,
         runtimeMode: "direct-experimental",
         directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
         modelSource: status.modelSource,
@@ -4795,6 +4843,9 @@ class DirectLiveTextController {
       turn = this.sessionStore.createTurn(session.sessionId, {
         input: [{ role: "current_user_intent", text: currentUserPrompt }],
         model,
+        reasoningEffort: forkChoices.reasoningEffort,
+        serviceTier: forkChoices.serviceTier || null,
+        cyberAccessProgram: forkChoices.cyberAccessProgram,
         clientTurnRequestId: clientForkStartId,
         requestShape: { schema: DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE, requestShapeHash },
         sourceClass: "forked-direct-native",
@@ -4943,6 +4994,9 @@ class DirectLiveTextController {
           model: requestBody.model,
           prompt: requestBody.input?.[0]?.content?.[0]?.text || contextResult.providerInput.prompt,
           instructions: requestBody.instructions,
+          reasoningEffort: forkChoices.reasoningEffort,
+          serviceTier: forkChoices.serviceTier,
+          cyberAccessProgram: forkChoices.cyberAccessProgram,
           promptCacheKey: session.sessionId,
           fetchImpl: this.fetchImpl || undefined,
           signal: options.signal,
@@ -5220,12 +5274,19 @@ class DirectLiveTextController {
         currentUserPrompt,
       }, options);
       const derivedForkSeed = derivedSeedResult.derivedForkSeed;
+      const forkChoices = this.runtimeChoicesFor(project, model, options, normalizeString(
+        derivedForkSeed.parentLineage?.sourceThreadIds?.[0] || seedPreview.items?.[0]?.threadId,
+        "",
+      ));
       session = this.sessionStore.createSession({
         projectId,
         workspace: isPlainObject(project.workspace) ? project.workspace : {},
         workspaceDisplayPath: workspaceDisplayPath(project),
         title: `Fork from ${sourcePreviewKind.replace("_", " ")}`,
         model,
+        reasoningEffort: forkChoices.sessionReasoningEffort,
+        serviceTier: forkChoices.serviceTier,
+        daybreakEnabled: forkChoices.daybreakEnabled,
         runtimeMode: "direct-experimental",
         directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
         modelSource: status.modelSource,
@@ -5251,6 +5312,9 @@ class DirectLiveTextController {
       turn = this.sessionStore.createTurn(session.sessionId, {
         input: [{ role: "current_user_intent", text: currentUserPrompt }],
         model,
+        reasoningEffort: forkChoices.reasoningEffort,
+        serviceTier: forkChoices.serviceTier || null,
+        cyberAccessProgram: forkChoices.cyberAccessProgram,
         clientTurnRequestId: clientDerivedForkStartId,
         requestShape: { schema: requestShapeClass, requestShapeHash, sourcePreviewKind },
         sourceClass: "forked-direct-native",
@@ -5395,6 +5459,9 @@ class DirectLiveTextController {
           model: requestBody.model,
           prompt: requestBody.input?.[0]?.content?.[0]?.text || contextResult.providerInput.prompt,
           instructions: requestBody.instructions,
+          reasoningEffort: forkChoices.reasoningEffort,
+          serviceTier: forkChoices.serviceTier,
+          cyberAccessProgram: forkChoices.cyberAccessProgram,
           promptCacheKey: session.sessionId,
           fetchImpl: this.fetchImpl || undefined,
           signal: options.signal,
@@ -5555,12 +5622,16 @@ class DirectLiveTextController {
       throw error;
     }
     const model = normalizeString(options.model, "") || status.model;
+    const importChoices = this.runtimeChoicesFor(project, model, options, normalizeString(seed.materializedSessionId, ""));
     const session = this.sessionStore.createSession({
       projectId: normalizeString(project.id || seed.projectId, ""),
       workspace: isPlainObject(project.workspace) ? project.workspace : {},
       workspaceDisplayPath: workspaceDisplayPath(project),
       title: `Checkpoint continuation ${normalizeString(seed.source?.sourceDisplayName, seed.importId)}`,
       model,
+      reasoningEffort: importChoices.sessionReasoningEffort,
+      serviceTier: importChoices.serviceTier,
+      daybreakEnabled: importChoices.daybreakEnabled,
       runtimeMode: "direct-experimental",
       directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       modelSource: status.modelSource,
@@ -5583,6 +5654,9 @@ class DirectLiveTextController {
       model,
       prompt: seed.seedText,
       instructions: "You are Codex running a fresh direct checkpoint continuation from quoted imported transcript evidence. Do not request tools.",
+      reasoningEffort: importChoices.reasoningEffort,
+      serviceTier: importChoices.serviceTier,
+      cyberAccessProgram: importChoices.cyberAccessProgram,
     });
     let requestShape = {
       ...requestShapeForDiagnostic(requestBody),
@@ -5595,6 +5669,9 @@ class DirectLiveTextController {
     const turn = this.sessionStore.createTurn(session.sessionId, {
       input: [{ role: "harness_checkpoint_seed", text: seed.seedText }],
       model: requestBody.model,
+      reasoningEffort: importChoices.reasoningEffort,
+      serviceTier: importChoices.serviceTier || null,
+      cyberAccessProgram: importChoices.cyberAccessProgram,
       clientTurnRequestId: clientCheckpointContinuationId,
       requestShape,
       sourceClass: "direct-import-checkpoint-continuation",
@@ -5663,6 +5740,9 @@ class DirectLiveTextController {
       model: requestBody.model,
       prompt: requestBody.input?.[0]?.content?.[0]?.text || seed.seedText,
       instructions: requestBody.instructions,
+      reasoningEffort: importChoices.reasoningEffort,
+      serviceTier: importChoices.serviceTier,
+      cyberAccessProgram: importChoices.cyberAccessProgram,
       promptCacheKey: session.sessionId,
       fetchImpl: this.fetchImpl || undefined,
       signal: options.signal,
@@ -7207,6 +7287,7 @@ class DirectLiveTextController {
       ),
       continuationTools: continuationToolComposition.tools,
       onLifecycle: (event) => {
+        this.noteStreamStall(surfaceSession, sessionId, turnId, event);
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
             threadId: sessionId,
@@ -8205,6 +8286,17 @@ class DirectLiveTextController {
 
   turnAbortSignal(turnId) {
     return this.turnAbortController(turnId).signal;
+  }
+
+  // A provider stream that pauses mid-response gets a visible note, so a
+  // long wait reads as the backend pausing rather than the app hanging.
+  noteStreamStall(surfaceSession, sessionId, turnId, event = {}) {
+    if (event.phase !== "stream_stalled" && event.phase !== "stream_resumed") return;
+    const seconds = Math.round(Number(event.silentMs || 0) / 1000);
+    const message = event.phase === "stream_stalled"
+      ? `The model's response has paused for ${seconds} s on the provider side; still waiting.`
+      : `The model's response resumed after a ${seconds} s pause.`;
+    this.emitNotification(surfaceSession, "warning", { threadId: sessionId, turnId, message, kind: event.phase });
   }
 
   forgetTurnRuntime(turnId) {
@@ -9267,6 +9359,7 @@ class DirectLiveTextController {
           ?.bundle?.operationNames || [],
       continuationTools,
       onLifecycle: (event) => {
+        this.noteStreamStall(surfaceSession, sessionId, turnId, event);
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
             threadId: sessionId,
@@ -9519,6 +9612,7 @@ class DirectLiveTextController {
           ?.bundle?.operationNames || [],
       continuationTools,
       onLifecycle: (event) => {
+        this.noteStreamStall(surfaceSession, sessionId, turnId, event);
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
             threadId: sessionId,
@@ -9782,6 +9876,7 @@ class DirectLiveTextController {
           ?.bundle?.operationNames || [],
       continuationTools,
       onLifecycle: (event) => {
+        this.noteStreamStall(surfaceSession, sessionId, turnId, event);
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
             threadId: sessionId,
@@ -10148,9 +10243,10 @@ class DirectLiveTextController {
       "",
     );
     const boundSessionReasoningEffort = normalizeString(session.reasoningEffort, "");
-    const reasoningEffort = ownerControlled && requestedTurnReasoningEffort
+    const selectedReasoningEffort = ownerControlled && requestedTurnReasoningEffort
       ? requestedTurnReasoningEffort
       : normalizeString(boundSessionReasoningEffort, requestedTurnReasoningEffort);
+    const reasoningEffort = this.providerReasoningEffortFor(project, model, selectedReasoningEffort);
     if (
       requestedTurnReasoningEffort &&
       requestedTurnReasoningEffort !== boundSessionReasoningEffort && !ownerControlled
@@ -11108,6 +11204,7 @@ class DirectLiveTextController {
     };
     let epistemicContextDeliveryRecorded = false;
     const callerLifecycle = (event) => {
+      this.noteStreamStall(surfaceSession, sessionId, turnId, event);
       if (
         event.phase === "request_attempt" &&
         epistemicContextDeliveryBinding &&
@@ -11177,6 +11274,7 @@ class DirectLiveTextController {
       serviceTier,
       cyberAccessProgram,
       promptCacheKey: sessionId,
+      streamStallNoticeMs: this.streamStallNoticeMs,
       prompt,
       instructions,
       fetchImpl: this.fetchImpl || undefined,

@@ -528,6 +528,8 @@ function requestTimingFor(timing = {}, turnStartedMs = 0) {
     ...(headers ? { waitMs: headers - sent } : {}),
     ...(headers && done ? { modelMs: done - headers } : {}),
     ...(done ? { doneAtMs: done - turnStartedMs } : {}),
+    ...(Number(timing.longestSilenceMs) > 0 ? { longestSilenceMs: Number(timing.longestSilenceMs) } : {}),
+    ...(Number(timing.stallCount) > 0 ? { stalls: Number(timing.stallCount) } : {}),
   };
 }
 

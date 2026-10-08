@@ -300,7 +300,7 @@ function formatReport(report, extra = {}) {
   for (const request of report.requests || []) {
     const shape = request.toolsDeclared === undefined ? "" : ` · tools ${request.toolsDeclared} · input items ${request.inputItems} · call outputs ${request.callOutputs}`;
     const timing = request.timing
-      ? ` · wait ${ms(request.timing.waitMs)} · model ${request.timing.modelMs === undefined ? "?" : ms(request.timing.modelMs)}`
+      ? ` · wait ${ms(request.timing.waitMs)} · model ${request.timing.modelMs === undefined ? "?" : ms(request.timing.modelMs)}${request.timing.stalls ? ` · stalled ${ms(request.timing.longestSilenceMs)}` : ""}`
       : "";
     const cached = request.cachedInputTokens ? ` (cached ${formatNumber(request.cachedInputTokens)})` : "";
     lines.push(`  #${request.n}${shape} · in ${formatNumber(request.inputTokens)}${cached} · out ${formatNumber(request.outputTokens)}${timing}`);
