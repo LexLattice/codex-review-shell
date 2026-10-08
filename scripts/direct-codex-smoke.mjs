@@ -2887,14 +2887,14 @@ try {
   assert(approvedToolRequestManifest.enabledFeatures.previousResponseId === false, "Expected approved live tool manifest to record fresh-context continuity.");
   assert(approvedToolRequestManifest.enabledFeatures.store === false, "Expected approved live tool manifest to record store=false.");
   assert(approvedToolRequestManifest.enabledFeatures.toolDeclarations === (approvedContinuationBody.tools?.length > 0), "Expected approved live tool manifest to record whether the continuation declares tools.");
-  assert(approvedToolRequestManifest.enabledFeatures.toolOutputItem === false, "Expected approved live tool manifest to quote tool evidence rather than send provider-native tool-output items.");
+  assert(approvedToolRequestManifest.enabledFeatures.toolOutputItem === true, "Expected the manifest to record that tool output is sent as output items.");
   assert(approvedToolRequestManifest.continuity.continuityPolicy === "fresh_request_with_quoted_tool_result", "Expected approved live tool manifest to record quoted tool-result continuity.");
   assert(approvedToolRequestManifest.previousResponse.source === "native_direct_initial_stream", "Expected approved live tool manifest to cite native parent response source.");
   assert(approvedToolRequestManifest.contextPolicy.harnessPolicyDigest, "Expected approved live tool manifest to cite continuation harness policy.");
   assert(approvedToolRequestManifest.rawRequestBodyStored === false, "Expected approved live tool manifest not to store raw request body.");
   assert(!("previous_response_id" in approvedContinuationBody), "Expected approved ChatGPT continuation request not to send previous_response_id.");
-  assert(!approvedContinuationBody.input.some((item) => item.type === "function_call_output"), "Expected approved ChatGPT continuation request not to send function_call_output.");
-  assert(approvedContinuationBody.input.at(-1).content[0].text.includes("read_file_result"), "Expected approved ChatGPT continuation request to quote read_file result evidence.");
+  assert(approvedContinuationBody.input.some((item) => item.type === "function_call" && approvedContinuationBody.input.some((output) => output.type === "function_call_output" && output.call_id === item.call_id)), "Expected ChatGPT continuation to replay the call followed by its output, as Codex does.");
+  assert(approvedContinuationBody.input.some((item) => item.type === "function_call_output" && item.output.includes("read_file_result")), "Expected approved ChatGPT continuation request to quote read_file result evidence.");
   assert(approvedContinuationBody.instructions.includes("with any of the declared tools"), "Expected approved live tool continuation request to keep the turn's tools available.");
   assert(!/at most one|Do not request/.test(approvedContinuationBody.instructions), "Expected approved live tool continuation request not to restrict further tool calls.");
   const approvedObligation = approvedTurn.unresolvedObligations[0];
@@ -3038,8 +3038,8 @@ try {
   assert(!("previous_response_id" in patchContinuationBody), "Expected ChatGPT patch continuation not to send unsupported previous_response_id.");
   assert(patchContinuationBody.store === false, "Expected patch continuation to assert store=false.");
   assert(patchContinuationBody.parallel_tool_calls === false, "Expected patch continuation to disable parallel tool calls.");
-  assert(!patchContinuationBody.input.some((item) => item.type === "function_call_output"), "Expected ChatGPT patch continuation not to send function_call_output.");
-  assert(patchContinuationBody.input.at(-1).content[0].text.includes("apply_patch_result"), "Expected ChatGPT patch continuation to quote patch result evidence.");
+  assert(patchContinuationBody.input.some((item) => item.type === "function_call" && patchContinuationBody.input.some((output) => output.type === "function_call_output" && output.call_id === item.call_id)), "Expected ChatGPT continuation to replay the call followed by its output, as Codex does.");
+  assert(patchContinuationBody.input.some((item) => item.type === "function_call_output" && item.output.includes("apply_patch_result")), "Expected ChatGPT patch continuation to quote patch result evidence.");
   assert(
     patchContinuationBody.instructions.includes("with any of the declared tools"),
     `Expected patch continuation to keep the turn's tools available, got: ${patchContinuationBody.instructions}`,
@@ -3053,7 +3053,7 @@ try {
   const patchRequestManifest = patchToolThreadStore.readRequestManifest(patchTurn.requestManifestId);
   assert(patchContextPack.policy.policyId === DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID, "Expected patch continuation to use patch context policy.");
   assert(patchRequestManifest.enabledFeatures.toolDeclarations === (patchContinuationBody.tools?.length > 0), "Expected patch manifest to record whether the continuation declares tools.");
-  assert(patchRequestManifest.enabledFeatures.toolOutputItem === false, "Expected patch manifest to quote result evidence rather than send provider-native tool output.");
+  assert(patchRequestManifest.enabledFeatures.toolOutputItem === true, "Expected the manifest to record that tool output is sent as output items.");
   assert(patchRequestManifest.continuity.continuityPolicy === "fresh_request_with_quoted_tool_result", "Expected patch manifest to record fresh quoted-result continuity.");
   assert(patchRequestManifest.enabledFeatures.parallelToolCalls === false, "Expected patch manifest to disable parallel tool calls.");
   await patchToolSurface.respond(patchApproval.key, {
@@ -3213,8 +3213,8 @@ try {
   assert(!("previous_response_id" in commandContinuationBody), "Expected ChatGPT command continuation not to send unsupported previous_response_id.");
   assert(commandContinuationBody.store === false, "Expected command continuation to assert store=false.");
   assert(commandContinuationBody.parallel_tool_calls === false, "Expected command continuation to disable parallel tool calls.");
-  assert(!commandContinuationBody.input.some((item) => item.type === "function_call_output"), "Expected ChatGPT command continuation not to send function_call_output.");
-  assert(commandContinuationBody.input.at(-1).content[0].text.includes("run_command_result"), "Expected ChatGPT command continuation to quote command result evidence.");
+  assert(commandContinuationBody.input.some((item) => item.type === "function_call" && commandContinuationBody.input.some((output) => output.type === "function_call_output" && output.call_id === item.call_id)), "Expected ChatGPT continuation to replay the call followed by its output, as Codex does.");
+  assert(commandContinuationBody.input.some((item) => item.type === "function_call_output" && item.output.includes("run_command_result")), "Expected ChatGPT command continuation to quote command result evidence.");
   assert(
     commandContinuationBody.instructions.includes("with any of the declared tools"),
     `Expected command continuation to keep the turn's tools available, got: ${commandContinuationBody.instructions}`,
@@ -3230,7 +3230,7 @@ try {
   const commandRequestManifest = commandToolThreadStore.readRequestManifest(commandTurn.requestManifestId);
   assert(commandContextPack.policy.policyId === DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID, "Expected command continuation to use command context policy.");
   assert(commandRequestManifest.enabledFeatures.toolDeclarations === (commandContinuationBody.tools?.length > 0), "Expected command manifest to record whether the continuation declares tools.");
-  assert(commandRequestManifest.enabledFeatures.toolOutputItem === false, "Expected command manifest to quote result evidence rather than send provider-native tool output.");
+  assert(commandRequestManifest.enabledFeatures.toolOutputItem === true, "Expected the manifest to record that tool output is sent as output items.");
   assert(commandRequestManifest.continuity.continuityPolicy === "fresh_request_with_quoted_tool_result", "Expected command manifest to record fresh quoted-result continuity.");
   assert(commandRequestManifest.enabledFeatures.parallelToolCalls === false, "Expected command manifest to disable parallel tool calls.");
   await commandToolSurface.respond(commandApproval.key, {

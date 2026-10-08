@@ -363,12 +363,12 @@ try {
   await controller.activeRuns.get(inspectStart.turn.id).promise;
   assert.equal(providerRequests.length, 3);
   assert(providerRequests[2].instructions.includes("after an inspect_self_constitution result"));
-  assert(providerRequests[2].instructions.includes("carry it out with the declared tools"));
-  // Continuations replay the admitted original input first and append the
-  // quoted tool result after it, so search the whole input.
+  assert(providerRequests[2].instructions.includes("inspecting again returns the same account"));
+  // Continuations replay the admitted original input, then the call and its
+  // output.
   const continuationOutput = (providerRequests[2].input || [])
-    .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
-    .map((part) => part?.text || "")
+    .filter((item) => item?.type === "function_call_output")
+    .map((item) => item.output || "")
     .join("\n");
   assert(continuationOutput, "self-inspection should continue with typed quoted evidence");
   assert(continuationOutput.includes("direct_self_constitution_snapshot@1"));

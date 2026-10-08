@@ -1175,6 +1175,11 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
         credentialRefresh,
       });
       if (!timing.firstAttemptAt) timing.firstAttemptAt = nowIso();
+      if (options.signal?.aborted) {
+        const stopped = new Error("Direct request was stopped.");
+        stopped.name = "AbortError";
+        throw stopped;
+      }
       response = await fetchImpl(endpoint, {
         method: "POST",
         headers: authHeaders(resolvedCredentials || {}),

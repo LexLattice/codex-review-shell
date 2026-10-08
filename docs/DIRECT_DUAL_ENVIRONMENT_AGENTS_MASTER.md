@@ -1218,10 +1218,21 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   self-constitution check, agent tool, or human decision) declares the
   thread's full tool set, there is no step cap (only context limits the
   turn), several calls in one response run one after another in order, and
-  only per-call limits remain. File, patch, and command continuations now
-  resend the turn's original input plus every result so far, as utility
-  continuations already did; before, each one quoted only its own result.
-  Gate: `npm run direct:tool-continuation-full-toolset`.
+  only per-call limits remain. Every continuation resends the turn's
+  original input followed by each call the model made and its output, as
+  `function_call`/`function_call_output` items (checked live against the
+  ChatGPT backend with `store: false`). Results used to be quoted as one
+  user message, so the model couldn't tell it had already made a call: one
+  turn called `inspect_self_constitution` 58 times (about 5.1M input
+  tokens). Gate: `npm run direct:tool-continuation-full-toolset`.
+- The one loop guard: when a response repeats the previous three
+  responses' exact calls (same tools, same arguments) and those all got the
+  same result (ignoring IDs, timestamps, digests, and durations), the turn
+  ends as `repeated_tool_call`. Polling tools (`write_stdin`, `wait_agent`,
+  `list_agents`, `inspect_agent`) are exempt. Stop now ends the whole tool
+  loop: one cancel signal per turn reaches every continuation request and
+  is checked before each next call (before, it cancelled only the turn's
+  first request). Gate: `npm run direct:tool-loop-guard`.
 - A patch that fails its dry run (for example a context mismatch) still
   fails the whole turn. Codex returns the error to the model so it can retry.
 - Patch and command approvals no longer require a scoped implementation
@@ -1366,6 +1377,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-07 | The owner's terminal is unsandboxed but contained, in the project's environment | The owner's choice: it is their own shell, so Full access semantics and their own environment variables, but it still ends with the app. |
 | 2026-10-07 | Model availability follows Codex: the account's `/models` list, signed in is ready, the server rejects | A per-model probe gated every new model behind a manual refresh and expired after 7 days; Codex trusts the list and handles rejection. The probe stays as an optional "Test model". `client_version` is the installed Codex CLI's, so the list matches what Codex itself would offer. |
 | 2026-10-08 | Continuations keep the full tool set, have no step cap, and run several calls per response in order; only per-call limits stay | Owner's call, matching Codex. A self-constitution check had left the model with no tools ("this continuation exposes no executable tool interface"), and per-family rules and step caps stopped real work midway. |
+| 2026-10-08 | "No step cap" covers distinct work only; the same call with the same result repeating is stopped | Owner's call, after a 58-call `inspect_self_constitution` loop. |
 
 ## Plan changes
 

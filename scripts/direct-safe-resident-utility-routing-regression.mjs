@@ -184,7 +184,18 @@ try {
     { role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,fixture", detail: "original" }] },
   ];
   const inputWithEvidence = controller.boundUtilityContinuationInput({ input: attachmentInput }, bound);
-  assert.deepEqual(inputWithEvidence.slice(0, -1), attachmentInput, "admitted content and attachment bytes survive unchanged");
+  assert.deepEqual(inputWithEvidence.slice(0, attachmentInput.length), attachmentInput, "admitted content and attachment bytes survive unchanged");
+  // Then each earlier call and its output, as Codex sends them.
+  const replayed = inputWithEvidence.slice(attachmentInput.length);
+  assert.equal(replayed.length, bound.priorToolResults.length * 2);
+  bound.priorToolResults.forEach((prior, index) => {
+    assert.equal(replayed[index * 2].call_id, prior.callId);
+    assert.equal(replayed[index * 2].name, prior.toolName);
+    assert.deepEqual(
+      { call_id: replayed[index * 2 + 1].call_id, output: replayed[index * 2 + 1].output },
+      { call_id: prior.callId, output: prior.providerOutputText },
+    );
+  });
   for (const mode of ["fresh_context", "previous_response_id"]) {
     const body = buildReadOnlyToolContinuationProbeRequest({
       continuationRequest: contextTurn.unresolvedObligations[0].continuationRequest,

@@ -127,10 +127,18 @@ try {
 
   // The two calls of one response produce one continuation carrying both,
   // and every continuation resends the turn's start and all results so far.
+  // As in Codex, each earlier call is replayed as the call itself followed by
+  // its output, in order.
   const lastInput = JSON.stringify(bodies[3].input);
   assert.match(lastInput, /a \+ b/);
-  for (const { result } of results) assert(lastInput.includes(result.resultId), `${result.resultId} reaches the last continuation`);
+  const replayed = bodies[3].input.filter((item) => item.type === "function_call" || item.type === "function_call_output");
+  assert.deepEqual(
+    replayed.map((item) => [item.type, item.call_id]),
+    results.flatMap(({ obligation }) => [["function_call", obligation.callId], ["function_call_output", obligation.callId]]),
+  );
+  assert.equal(replayed[0].name, "inspect_self_constitution");
   assert.match(lastInput, /step-two-ran/, "the command output from two steps back is still in context");
+  assert.doesNotMatch(lastInput, /PRIOR TOOL EVIDENCE/);
   for (const body of bodies.slice(1)) {
     assert.match(JSON.stringify(body.input), /fix calc\.js/, "each continuation carries the user's request");
   }

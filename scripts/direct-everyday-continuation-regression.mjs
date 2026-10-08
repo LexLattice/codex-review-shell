@@ -141,8 +141,12 @@ async function runRoute(root, threaded, options = {}) {
       assert(body.instructions.startsWith(admitted.instructions));
       const evidence = obligation.continuationRequest.context.priorToolResults;
       assert.deepEqual(evidence.map((r) => r.resultId), turn.toolResults.slice(0, i + 1).map((r) => r.resultId));
-      const quoted = body.input.at(-1).content[0].text;
-      assert(quoted.includes(JSON.stringify(evidence)), "exact cumulative result records reach the request");
+      const outputs = body.input.filter((item) => item.type === "function_call_output");
+      assert.deepEqual(
+        outputs.map((item) => [item.call_id, item.output]),
+        evidence.map((r) => [r.callId, r.providerOutputText]),
+        "exact cumulative results reach the request as call outputs",
+      );
       assert.equal(evidence.at(-1).providerOutputText, result.providerOutputText);
     }
     assert(JSON.parse(turn.toolResults[0].providerOutputText).stdoutPreview.includes("a - b"));

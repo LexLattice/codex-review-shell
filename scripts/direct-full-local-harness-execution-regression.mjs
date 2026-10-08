@@ -700,7 +700,7 @@ async function main() {
   const delayedEvidence = sessionStore.readTurn(controllerSession.sessionId, delayedProviderTurn.turnId)
     .toolResults.find((result) => result.obligationId === delayedProviderObligation.obligationId);
   assert.equal(JSON.parse(delayedEvidence.providerOutputText).exitCode, 0);
-  assert(providerBodies[2].input.at(-1).content[0].text.includes(JSON.stringify(delayedEvidence.providerOutputText)),
+  assert(providerBodies[2].input.some((item) => item.type === "function_call_output" && item.output === delayedEvidence.providerOutputText),
     "the exact successful process result must reach the provider");
   assert.equal(sessionStore.readTurn(controllerSession.sessionId, delayedProviderTurn.turnId).state, "completed");
 
