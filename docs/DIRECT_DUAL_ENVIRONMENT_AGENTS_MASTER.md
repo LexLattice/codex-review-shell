@@ -1253,6 +1253,24 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   an earlier command printed, the model answers from history without a
   tool call (live suite `remembers_tool_output`). Gate:
   `npm run direct:history-items`.
+- Changed 2026-10-09: the model keeps its reasoning across a turn's
+  requests, as in Codex. Every request asks for
+  `include: ["reasoning.encrypted_content"]`; the transport keeps each
+  response's finished `reasoning` items (id, summary, encrypted content,
+  up to 512K characters each) and the store attaches them to the first new
+  call of that response (`precedingReasoningItems`, on the turn record
+  only, never in the session file or transcript). Each continuation sends
+  them back right before that call, so the input reads like Codex's
+  history: reasoning, call, output. Before, requests were stateless
+  (`store: false`) and the model started every step with no memory of why
+  it made its last call. Reasoning from earlier turns isn't replayed (the
+  backend drops it between user turns anyway). The commissioning page
+  request opts out (`includeReasoningContent: false`). Live, luna/high:
+  the backend returned 1.4–1.7K-character encrypted items before calls,
+  accepted them replayed without the calls' `fc_` ids, and the turn
+  completed; at low effort luna rarely emits reasoning before a call.
+  Gate: `npm run direct:reasoning-replay` (Linux and Windows Node); live
+  suite 10/10 on both hosts.
 - Added 2026-10-08: Windows commands start in an already-running
   PowerShell. The local process backend (also used natively by the
   Windows executor) keeps one idle shell per launch shape (sandbox

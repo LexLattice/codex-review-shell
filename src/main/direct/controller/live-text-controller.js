@@ -7336,12 +7336,21 @@ class DirectLiveTextController {
   // As in Codex: the turn's input, then each call the model made this turn
   // followed by its output. Quoting results as user text instead left the
   // model unable to tell it had already made a call, so it repeated it.
-  boundUtilityContinuationInput(admitted = {}, context = {}) {
+  // Each response's encrypted reasoning goes back right before the calls it
+  // led to, so the model keeps its chain of thought across the turn's
+  // requests (store is off, so the backend can't recall it itself).
+  boundUtilityContinuationInput(admitted = {}, context = {}, turn = {}) {
+    const reasoningByObligation = new Map((Array.isArray(turn?.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .filter((obligation) => Array.isArray(obligation?.precedingReasoningItems) && obligation.precedingReasoningItems.length)
+      .map((obligation) => [obligation.obligationId, obligation.precedingReasoningItems]));
     const items = [];
     for (const prior of context.priorToolResults || []) {
       const callId = normalizeString(prior.callId, "");
       const name = normalizeString(prior.toolName, "");
       if (!callId || !name) continue;
+      for (const reasoning of reasoningByObligation.get(prior.obligationId) || []) {
+        if (reasoning?.type === "reasoning" && typeof reasoning.encrypted_content === "string") items.push(reasoning);
+      }
       if (prior.providerCallType === "custom_tool_call") {
         items.push(
           { type: "custom_tool_call", call_id: callId, name, input: prior.argumentsText || "" },
@@ -7445,11 +7454,11 @@ class DirectLiveTextController {
   // guidance as a trailing developer message: the backend's prompt cache
   // matches exact prefixes, and a changed instruction suffix would push the
   // tools and the whole input out of the cached prefix.
-  continuationRequestParts(admitted = {}, context = {}, continuationInstructions = "") {
+  continuationRequestParts(admitted = {}, context = {}, continuationInstructions = "", turn = {}) {
     const guidance = normalizeString(continuationInstructions, "");
     return {
       contextInput: [
-        ...this.boundUtilityContinuationInput(admitted, context),
+        ...this.boundUtilityContinuationInput(admitted, context, turn),
         ...(guidance ? [{ role: "developer", content: [{ type: "input_text", text: guidance }] }] : []),
       ],
       instructions: admitted.instructions,
@@ -7466,7 +7475,7 @@ class DirectLiveTextController {
     const obligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId)?.obligation;
     if (!isPlainObject(obligation?.result)) return null;
     const context = this.buildBoundUtilityContinuationContext(turn, { result: obligation.result }, sessionId, turnId);
-    return this.continuationRequestParts(turn.admittedProviderContext, context, continuationInstructions);
+    return this.continuationRequestParts(turn.admittedProviderContext, context, continuationInstructions, turn);
   }
 
   appendUtilityContinuationMessage(sessionId, turnId, continuationId, normalizedEvents = [], terminal = {}) {
@@ -7597,6 +7606,7 @@ class DirectLiveTextController {
           : selfConstitutionContinuation
             ? SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS
             : DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
+        turn,
       ),
       continuationTools: continuationToolComposition.tools,
       onLifecycle: (event) => {
@@ -7637,6 +7647,7 @@ class DirectLiveTextController {
           stepOrdinal: nextStepOrdinal,
           parentResponseId: normalizeString(result.responseId, ""),
           parentResponseSource: "native_direct_agent_runtime_continuation_stream",
+          reasoningItems: result.reasoningItems,
         },
       );
       nextToolObligations = obligationResult.obligations;
@@ -11706,6 +11717,7 @@ class DirectLiveTextController {
       parentResponseId: result.responseId || "",
       parentResponseSource: "native_direct_initial_stream",
       stepOrdinal: 1,
+      reasoningItems: result.reasoningItems,
     });
     if (textOnlyTier && obligationResult.obligations.length) {
       const unsupported = [];

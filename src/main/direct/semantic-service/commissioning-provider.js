@@ -239,7 +239,7 @@ async function runProviderPage({ attemptRef, page, descriptor, signal } = {}) {
   };
   let result;
   try {
-    result = await runDirectCodexStreamingRequest({ authStore: store, fetchImpl, endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT, signal: deadline.signal, maxPreStreamRetries: 0, maxRawResponseBytes: d.maximumWireBytes, maxProviderOutputChars: d.maximumOutputBytes }, request, { schema: "direct_commissioning_transport_result@1", kind: "closed_page" });
+    result = await runDirectCodexStreamingRequest({ authStore: store, fetchImpl, endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT, signal: deadline.signal, maxPreStreamRetries: 0, includeReasoningContent: false, maxRawResponseBytes: d.maximumWireBytes, maxProviderOutputChars: d.maximumOutputBytes }, request, { schema: "direct_commissioning_transport_result@1", kind: "closed_page" });
   } catch (error) { result = null; out.status = deadline.timedOut() ? "UNAVAILABLE" : (signal?.aborted ? "UNAVAILABLE" : "FAILED"); out.reasonCode = deadline.timedOut() ? "TIMEOUT" : (signal?.aborted ? "ABORTED" : safeReason(error)); }
   const capture = capturePromise ? await capturePromise.catch((error) => ({ bytes: Buffer.alloc(0), exceeded: deadline.timedOut() || signal?.aborted || error?.name === "AbortError" })) : { bytes: Buffer.alloc(0), exceeded: false };
   out.httpStatus = Number(result?.response?.status || out.httpStatus || 0); out.responseRef = String(result?.responseId || "");
