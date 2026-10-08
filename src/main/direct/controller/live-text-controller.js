@@ -257,6 +257,41 @@ const SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS = [
   "The snapshot is current as of this turn; inspecting again returns the same account, so answer from it.",
   "If the user's request needs other work, carry it out with the declared tools; otherwise answer directly.",
 ].join(" ");
+// request_permissions, Direct's form of Codex's tool: the model asks the
+// owner to raise the thread's Access for this turn or for the thread.
+const REQUEST_PERMISSIONS_TOOL_NAME = "request_permissions";
+const ACCESS_PROFILE_RANK = Object.freeze({ read_only: 0, workspace: 1, full_access: 2 });
+function requestPermissionsToolSchema(currentProfile = "") {
+  const currentRank = ACCESS_PROFILE_RANK[currentProfile] ?? ACCESS_PROFILE_RANK.full_access;
+  const higher = Object.keys(ACCESS_PROFILE_RANK).filter((profile) => ACCESS_PROFILE_RANK[profile] > currentRank);
+  if (!higher.length) return null;
+  return {
+    type: "function",
+    name: REQUEST_PERMISSIONS_TOOL_NAME,
+    description: [
+      "Ask the user to raise this thread's access and wait for the answer.",
+      "Workspace: edit files in the project and run commands in a sandbox. Full access: no sandbox, the whole machine and the network.",
+      "The user can allow it for this turn or for the rest of the thread, or decline; with access granted, later tool calls in this turn use it.",
+      "Use it only when the task needs access the thread doesn't have (for example the network, files outside the project, or editing in a Read only thread).",
+    ].join(" "),
+    parameters: {
+      type: "object",
+      properties: {
+        access: { type: "string", enum: higher, description: "The access level to ask for." },
+        scope: { type: "string", enum: ["turn", "thread"], description: "What you suggest; the user decides." },
+        reason: { type: "string", description: "Short reason shown to the user." },
+      },
+      required: ["access", "reason"],
+      additionalProperties: false,
+    },
+  };
+}
+function withPermissionsTool(tools, grant) {
+  if (!Array.isArray(tools) || !isPlainObject(grant)) return tools;
+  if (tools.some((tool) => normalizeString(tool?.name || tool?.function?.name, "") === REQUEST_PERMISSIONS_TOOL_NAME)) return tools;
+  const schema = requestPermissionsToolSchema(grantAccessProfile(grant));
+  return schema ? [...tools, schema] : tools;
+}
 const EXTERNAL_DISCOVERY_TOOL_NAMES = Object.freeze([
   "tool_search",
   "list_mcp_resources",
@@ -2375,28 +2410,7 @@ class DirectLiveTextController {
       error.code = "direct_thread_access_profile_turn_active";
       throw error;
     }
-    const status = this.assertReady(project, { model: session.model });
-    const environment = this.executionEnvironmentForSession(project, session);
-    const issueInput = {
-      taskId: session.sessionId,
-      threadId: session.sessionId,
-      projectId: session.projectId,
-      executionEnvironment: environment,
-      accessProfile: requestedProfile,
-      capabilities: accessProfileCapabilityNames(requestedProfile, [
-        ...implementationInitialPolicyCandidateToolNames(status, ""),
-        ...STATEFUL_EXEC_CAPABILITY_NAMES,
-      ]),
-    };
-    const grant = typeof store.issueAccessProfile === "function"
-      ? store.issueAccessProfile(issueInput)
-      : store.issueFullAccess(issueInput);
-    this.sessionStore.writeSession({
-      ...(this.sessionStore.readSession(session.sessionId) || session),
-      harnessAccessProfile: requestedProfile,
-      harnessGrantId: grant.grantId,
-      executionEnvironmentDigest: grant.executionEnvironmentDigest,
-    });
+    const grant = this.issueThreadAccessGrant(project, session, requestedProfile, { accessRevertAfterTurn: null });
     const projection = this.capabilitiesForTask(project, session.sessionId);
     return {
       profile: requestedProfile,
@@ -2412,6 +2426,192 @@ class DirectLiveTextController {
       capabilities: projection.capabilities,
       taskBinding: projection.taskBinding,
     };
+  }
+
+  issueThreadAccessGrant(project = {}, session = {}, profile = "", sessionPatch = {}) {
+    const store = this.harnessGrantStore;
+    const status = this.assertReady(project, { model: session.model });
+    const issueInput = {
+      taskId: session.sessionId,
+      threadId: session.sessionId,
+      projectId: session.projectId,
+      executionEnvironment: this.executionEnvironmentForSession(project, session),
+      accessProfile: profile,
+      capabilities: accessProfileCapabilityNames(profile, [
+        ...implementationInitialPolicyCandidateToolNames(status, ""),
+        ...STATEFUL_EXEC_CAPABILITY_NAMES,
+      ]),
+    };
+    const grant = typeof store.issueAccessProfile === "function"
+      ? store.issueAccessProfile(issueInput)
+      : store.issueFullAccess(issueInput);
+    this.sessionStore.writeSession({
+      ...(this.sessionStore.readSession(session.sessionId) || session),
+      harnessAccessProfile: profile,
+      harnessGrantId: grant.grantId,
+      executionEnvironmentDigest: grant.executionEnvironmentDigest,
+      ...sessionPatch,
+    });
+    return grant;
+  }
+
+  // request_permissions granted: issue the higher Access now and rebind the
+  // running turn to it, so this turn's later calls use it. A turn-scoped
+  // grant records the Access to return to when the turn ends.
+  raiseAccessForTurn(project = {}, sessionId = "", turnId = "", profile = "", revertToProfile = "") {
+    const session = this.sessionStore.readSession(sessionId) || {};
+    const grant = this.issueThreadAccessGrant(project, session, profile, {
+      accessRevertAfterTurn: revertToProfile ? { turnId, profile: revertToProfile } : null,
+    });
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const requestShape = isPlainObject(turn.requestShape) ? turn.requestShape : {};
+    this.sessionStore.updateTurnState(sessionId, turnId, turn.state, {
+      requestShape: {
+        ...requestShape,
+        directThreadHarnessGrantId: grant.grantId,
+        declaredToolNames: [...new Set([
+          ...(Array.isArray(requestShape.declaredToolNames) ? requestShape.declaredToolNames : []),
+          ...harnessGrantCapabilityNames(grant),
+        ])],
+      },
+    });
+    return grant;
+  }
+
+  // Undoes a turn-scoped request_permissions grant once that turn is over
+  // (or, as a fallback, before the thread's next turn starts).
+  revertTurnScopedAccess(project = {}, sessionId = "", endedTurnId = "") {
+    const session = sessionId ? this.sessionStore.readSession(sessionId) : null;
+    const pending = isPlainObject(session?.accessRevertAfterTurn) ? session.accessRevertAfterTurn : null;
+    if (!pending || !this.harnessGrantStore) return null;
+    if (endedTurnId && pending.turnId !== endedTurnId) return null;
+    const turn = pending.turnId ? this.sessionStore.readTurn(sessionId, pending.turnId) : null;
+    if (turn && !TERMINAL_TURN_STATES.has(normalizeString(turn.state, ""))) return null;
+    const profile = normalizeAccessProfile(normalizeString(pending.profile, ""), "");
+    if (!profile) return null;
+    try {
+      return this.issueThreadAccessGrant(project, session, profile, { accessRevertAfterTurn: null });
+    } catch {
+      return null;
+    }
+  }
+
+  async emitPermissionsRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
+    const args = parseToolArgumentsObject(obligation);
+    const requested = normalizeAccessProfile(normalizeString(args.access || args.accessProfile || args.access_profile, ""), "");
+    const scope = normalizeString(args.scope, "") === "thread" ? "thread" : "turn";
+    const reason = normalizeString(args.reason, "").slice(0, 400);
+    const grant = this.harnessGrantForTurn(sessionId, turnId, project);
+    const current = grant ? grantAccessProfile(grant) : "";
+    const fail = (code, message) => this.returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation, project, { code, message });
+    if (!grant) return fail("request_permissions_no_grant", "This thread has no Access setting to raise.");
+    if (!requested) return fail("request_permissions_access_invalid", "access must be workspace or full_access.");
+    const label = DIRECT_ACCESS_PROFILES[requested]?.label || requested;
+    if ((ACCESS_PROFILE_RANK[requested] ?? -1) <= (ACCESS_PROFILE_RANK[current] ?? ACCESS_PROFILE_RANK.full_access)) {
+      return fail("request_permissions_not_higher", `The thread already has ${DIRECT_ACCESS_PROFILES[current]?.label || current} access, which covers ${label}.`);
+    }
+    if (!surfaceSession || typeof surfaceSession.createUserInputRequest !== "function") {
+      return fail("request_permissions_owner_unavailable", "No one is available to answer the request; continue within the current access.");
+    }
+    this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+      status: "waiting",
+      authorityState: "human_decision_waiting",
+      approvalAvailable: true,
+      continuationAllowed: true,
+      permissionRequest: { requestedProfile: requested, previousProfile: current, scope, reason },
+    }, {
+      nextTurnState: "authority_waiting",
+    });
+    const reach = DIRECT_ACCESS_PROFILES[requested]?.networkAccess ? "no sandbox, network on" : "sandboxed";
+    surfaceSession.createUserInputRequest({
+      params: {
+        sessionId,
+        turnId,
+        obligationId: obligation.obligationId,
+        permissionRequest: true,
+        requestedProfile: requested,
+        currentProfile: current,
+        suggestedScope: scope,
+        questions: [{
+          id: "permission_decision",
+          header: "Codex asks for more access",
+          question: `Raise this thread from ${DIRECT_ACCESS_PROFILES[current]?.label || current} to ${label} (${reach})? Reason: ${reason || "none given"}.`,
+          options: [
+            { id: "allow_turn", label: "Allow for this turn", description: `Back to ${DIRECT_ACCESS_PROFILES[current]?.label || current} when the turn ends.` },
+            { id: "allow_thread", label: "Allow for this thread", description: `The thread keeps ${label}.` },
+            { id: "deny", label: "Deny", description: "Codex continues with the current access." },
+          ],
+        }],
+        rawPromptIncluded: false,
+        authorityGranted: false,
+      },
+      summary: `request_permissions: ${label}`,
+    });
+    return 1;
+  }
+
+  async handlePermissionsResponse(context = {}, sessionId = "", turnId = "", obligation = {}, answers = []) {
+    const project = context.project || {};
+    const text = answers.map((value) => normalizeString(value, "").toLowerCase()).join(" ");
+    const decision = /\b(deny|decline|no|reject)\b/.test(text) && !/allow/.test(text)
+      ? "deny"
+      : /thread|session/.test(text)
+        ? "allow_thread"
+        : /allow|yes|approve|turn/.test(text)
+          ? "allow_turn"
+          : "deny";
+    const request = isPlainObject(obligation.permissionRequest) ? obligation.permissionRequest : {};
+    const previousLabel = DIRECT_ACCESS_PROFILES[request.previousProfile]?.label || request.previousProfile;
+    const label = DIRECT_ACCESS_PROFILES[request.requestedProfile]?.label || request.requestedProfile;
+    let providerOutput;
+    if (decision === "deny") {
+      providerOutput = {
+        kind: "request_permissions_result",
+        status: "denied",
+        accessProfile: request.previousProfile,
+        message: `The user declined. The thread stays at ${previousLabel}; continue within it or explain what couldn't be done.`,
+      };
+    } else {
+      const scope = decision === "allow_thread" ? "thread" : "turn";
+      let grant;
+      try {
+        grant = this.raiseAccessForTurn(project, sessionId, turnId, request.requestedProfile, scope === "turn" ? request.previousProfile : "");
+      } catch (error) {
+        providerOutput = {
+          kind: "request_permissions_result",
+          status: "failed",
+          accessProfile: request.previousProfile,
+          message: `The user allowed it, but the access couldn't be raised: ${normalizeString(error?.message, "unknown error")}`,
+        };
+      }
+      if (grant) {
+        providerOutput = {
+          kind: "request_permissions_result",
+          status: "granted",
+          accessProfile: request.requestedProfile,
+          scope,
+          networkAccess: DIRECT_ACCESS_PROFILES[request.requestedProfile]?.networkAccess === true,
+          tools: harnessGrantCapabilityNames(grant),
+          message: scope === "turn"
+            ? `Granted ${label} for this turn; the thread returns to ${previousLabel} when it ends.`
+            : `Granted ${label} for the rest of this thread.`,
+        };
+      }
+    }
+    const envelope = {
+      schema: "direct_permission_decision_result_envelope@1",
+      envelopeId: `permission_decision_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${decision}`).slice(0, 24)}`,
+      toolName: REQUEST_PERMISSIONS_TOOL_NAME,
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: "permission_decision",
+      status: "ready_for_provider_continuation",
+      providerOutput,
+      sideEffectExecuted: providerOutput.status === "granted",
+      rawWorkspacePathIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    return this.continueAfterSafeResidentUtilityResult(context.surfaceSession, sessionId, turnId, obligation, envelope, project);
   }
 
   statefulExecSessionContext(params = {}, context = {}, options = {}) {
@@ -3066,14 +3266,18 @@ class DirectLiveTextController {
   withEnvironmentTools(composition, project = {}, sessionId = "", harnessGrant = null) {
     if (!isPlainObject(composition) || !Array.isArray(composition.tools) || !composition.tools.length) return composition;
     const session = this.sessionStore.readSession(normalizeString(sessionId, "")) || {};
+    const grant = isPlainObject(harnessGrant) ? harnessGrant : this.resolveHarnessGrant(project || {}, session);
     const facts = resolveExecutionEnvironmentFacts({
-      grant: isPlainObject(harnessGrant) ? harnessGrant : this.resolveHarnessGrant(project || {}, session),
+      grant,
       project: project || {},
       session,
     });
     return {
       ...composition,
-      tools: withDelegationTargets(applyEnvironmentToToolSchemas(composition.tools, facts), this.delegationTargetsFor(project || {}, session)),
+      tools: withPermissionsTool(
+        withDelegationTargets(applyEnvironmentToToolSchemas(composition.tools, facts), this.delegationTargetsFor(project || {}, session)),
+        grant,
+      ),
     };
   }
 
@@ -8299,10 +8503,11 @@ class DirectLiveTextController {
     this.emitNotification(surfaceSession, "warning", { threadId: sessionId, turnId, message, kind: event.phase });
   }
 
-  forgetTurnRuntime(turnId) {
+  forgetTurnRuntime(turnId, sessionId = "", project = null) {
     const key = normalizeString(turnId, "");
     this.turnAbortControllers.delete(key);
     this.turnExecSessionIds?.delete(key);
+    if (sessionId && project) this.revertTurnScopedAccess(project, sessionId, key);
   }
 
   turnStopRequested(sessionId, turnId) {
@@ -8367,6 +8572,10 @@ class DirectLiveTextController {
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
     let createdCount = 0;
     for (const obligation of obligations) {
+      if (normalizeString(obligation.name, "") === REQUEST_PERMISSIONS_TOOL_NAME) {
+        createdCount += await this.emitPermissionsRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
       if (this.isEpistemicLedgerObligation(sessionId, turnId, obligation)) {
         createdCount += await this.emitEpistemicLedgerRequest(
           surfaceSession,
@@ -8558,7 +8767,7 @@ class DirectLiveTextController {
           }, { nextTurnState: "failed", turnPatch: { error } });
         }
         this.toolBatches.delete(toolBatchKey(sessionId, turnId));
-        this.forgetTurnRuntime(turnId);
+        this.forgetTurnRuntime(turnId, sessionId, project);
         this.emitNotification(surfaceSession, "warning", { threadId: sessionId, turnId, message: error.message });
         this.emitNotification(surfaceSession, "turn/completed", {
           threadId: sessionId,
@@ -8624,7 +8833,7 @@ class DirectLiveTextController {
       }
       return true;
     }
-    if (TERMINAL_TURN_STATES.has(continuation.turnState)) this.forgetTurnRuntime(turnId);
+    if (TERMINAL_TURN_STATES.has(continuation.turnState)) this.forgetTurnRuntime(turnId, sessionId, project);
     this.emitNotification(surfaceSession, "turn/completed", {
       threadId: sessionId,
       turnId,
@@ -8983,6 +9192,9 @@ class DirectLiveTextController {
         selectedChoiceIds.push(text);
         if (!freeText) freeText = text;
       }
+    }
+    if (normalizeString(obligation.name, "") === REQUEST_PERMISSIONS_TOOL_NAME) {
+      return this.handlePermissionsResponse(context, sessionId, turnId, obligation, selectedChoiceIds);
     }
     const envelope = buildHumanDecisionAnswerResultEnvelope({
       decisionPacketId: normalizeString(params.decisionPacketId, ""),
@@ -10108,6 +10320,9 @@ class DirectLiveTextController {
     const project = context.project || {};
     const surfaceSession = context.surfaceSession;
     const sessionId = normalizeString(params.sessionId || params.threadId, "");
+    // A turn-scoped Access raise that outlived its turn (it ended without
+    // reaching the normal cleanup) is undone before the next turn.
+    if (this.sessionStore.readSession(sessionId)?.accessRevertAfterTurn) this.revertTurnScopedAccess(project, sessionId, "");
     const session = this.sessionStore.readSession(sessionId);
     if (!session) throw new Error(`Direct live text session not found: ${sessionId}`);
     if (!sessionMatchesProject(session, normalizeString(project.id, ""))) {
@@ -10681,7 +10896,7 @@ class DirectLiveTextController {
               reasoningEffort,
               serviceTier,
               cyberAccessProgram,
-              tools: withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)),
+              tools: withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant),
               toolChoicePolicy: "auto",
             })
           : buildTextOnlyProbeRequest({
@@ -10719,7 +10934,7 @@ class DirectLiveTextController {
           reasoningEffort,
           serviceTier,
           cyberAccessProgram,
-          tools: withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)),
+          tools: withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant),
           toolChoicePolicy: "auto",
         });
       }
@@ -10921,7 +11136,7 @@ class DirectLiveTextController {
       // A turn waiting on the owner keeps its signal for the continuations
       // that follow the decision.
       const settled = this.sessionStore.readTurn(session.sessionId, turn.turnId);
-      if (!settled || TERMINAL_TURN_STATES.has(settled.state)) this.forgetTurnRuntime(turn.turnId);
+      if (!settled || TERMINAL_TURN_STATES.has(settled.state)) this.forgetTurnRuntime(turn.turnId, session.sessionId, project);
     });
     this.activeRuns.set(turn.turnId, { abortController, promise: run });
 

@@ -162,6 +162,22 @@ const scenarios = [
     },
   },
   {
+    name: "permission_request",
+    async run(ctx) {
+      const target = path.join(ctx.folder, "perm.txt");
+      fs.rmSync(target, { force: true });
+      const result = chat("Create a file named perm.txt in the project containing the text ok. This thread is Read only, so use request_permissions to ask for Workspace access for this turn first.", ["--project", ctx.projectId, "--access", "read_only", "--answer", "allow_turn"]);
+      const thread = drive(["report", "--thread", result.report.threadId]);
+      return [
+        [result.report.state === "completed", `turn ${result.report.state}`],
+        [toolNames(result.report).includes("request_permissions"), "asked with request_permissions"],
+        [fs.existsSync(target) && fs.readFileSync(target, "utf8").includes("ok"), "perm.txt was written after the grant"],
+        [thread.thread?.accessProfile === "read_only", `thread back at Read only (${thread.thread?.accessProfile || "?"})`],
+        [true, "", result],
+      ];
+    },
+  },
+  {
     name: "path_in_prompt",
     async run(ctx) {
       const result = chat(`List the files in ${ctx.folder} and tell me whether hello.py is there.`, ["--project", ctx.projectId]);

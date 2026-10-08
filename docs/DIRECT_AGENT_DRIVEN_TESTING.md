@@ -71,6 +71,7 @@ folder (`<test data>/direct-test/suite`) it empties first.
 | `patch_recovery` | a patch written against the wrong line recovers and the file ends correct |
 | `stop_ends_commands` | Stop after 15 s aborts the turn and the running command stops writing |
 | `question_to_owner` | `request_user_input` reaches the owner and the answer comes back |
+| `permission_request` | a Read only thread asks with `request_permissions`, gets Workspace for the turn, writes the file, and is back at Read only |
 | `path_in_prompt` | an absolute path in the prompt is accepted |
 | `follow_up_turn` | a second turn on the edit thread works; prints its cached input |
 

@@ -1341,9 +1341,20 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   proof when the thread's grant names the tool. The real app has no proof
   store, so before this any `apply_patch` would have failed the turn as
   `unsupported_patch_tool_shape`.
-- A blocking `request_permissions` prompt was deferred until continuations
-  keep tools available after human decisions; they now do, so it is
-  unblocked.
+- `request_permissions` (2026-10-08, owner's call: raise the Access
+  profile rather than Codex's per-path permissions). In a Read only or
+  Workspace thread the model gets a `request_permissions` tool (`access`:
+  only the higher levels, `scope`: turn or thread as a suggestion,
+  `reason`). The owner is asked through the user-input prompt: Allow for
+  this turn, Allow for this thread, or Deny. A grant issues the higher
+  Access at once and rebinds the running turn to it, so the next request
+  already declares the new tools; a turn-scoped grant returns the thread to
+  its previous Access when the turn ends (or, if the turn ended elsewhere,
+  before the next turn starts). Full access threads aren't offered the
+  tool. Known edge: a command session started before the raise may refuse
+  `write_stdin` afterwards (its grant is no longer current). Gate:
+  `npm run direct:request-permissions`; live suite scenario
+  `permission_request` passes on both hosts.
 - Since turn 8, configured MCP servers run in their own environment, and
   since turn 11b every server is tree-contained, including ones a Linux host
   runs itself. One gap remains: **one process per request.** Servers are
@@ -1481,6 +1492,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-08 | Continuations keep the full tool set, have no step cap, and run several calls per response in order; only per-call limits stay | Owner's call, matching Codex. A self-constitution check had left the model with no tools ("this continuation exposes no executable tool interface"), and per-family rules and step caps stopped real work midway. |
 | 2026-10-08 | "No step cap" covers distinct work only; the same call with the same result repeating is stopped | Owner's call, after a 58-call `inspect_self_constitution` loop. |
 | 2026-10-08 | Agent testing drives the real app through an opt-in local test control port, with an isolated profile, `gpt-6-luna`/low by default, on both hosts | Owner's call. The older headless scripts built their own reduced controller or tool loop, so they didn't test what the owner runs. |
+| 2026-10-08 | `request_permissions` raises the thread's Access profile for the turn or the thread; it doesn't grant per-path or network-only permissions | Owner's call. It reuses Direct's grants and sandboxes as they are; Codex's path-scoped form would mean widening bubblewrap binds and Windows labels per request. |
 | 2026-10-08 | Every request carries the thread ID as `prompt_cache_key` and `session-id`/`thread-id` headers; continuation guidance is a trailing developer message, not an instructions suffix | Matches the Codex CLI's cache identity. The backend's cache matches exact prefixes, so a turn's instructions and tools must not change between its requests. |
 | 2026-10-08 | `exec_command` waits up to 10 s (`yield_time_ms`, max 30 s, at most half the idle timeout) for the command to finish; `write_stdin` waits 250 ms, or 5 s for an empty poll (supersedes the 100 ms first yield in the 2026-10-06 rows) | Codex's defaults. A 100 ms wait turned every command longer than that into an extra provider round trip, measured live at up to 19 s, and a write to the exited process then failed the turn. |
 

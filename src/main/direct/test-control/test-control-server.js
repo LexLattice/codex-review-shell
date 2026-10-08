@@ -299,6 +299,9 @@ class DirectTestControlServer {
   approvalResult(request = {}, decision = "approve", answer = "") {
     const params = isPlainObject(request.params) ? request.params : {};
     if (request.method === "item/tool/requestUserInput") {
+      // A request_permissions question follows the approvals setting unless
+      // an explicit answer (allow_turn, allow_thread, deny) is given.
+      if (params.permissionRequest === true && !answer) answer = decision === "decline" ? "deny" : "allow_turn";
       const questions = Array.isArray(params.questions) ? params.questions : [];
       const answers = {};
       (questions.length ? questions : [{ id: "answer" }]).forEach((question, index) => {
@@ -410,7 +413,7 @@ class DirectTestControlServer {
         projectId: normalizeString(session.projectId, ""),
         model: normalizeString(session.model, ""),
         reasoningEffort: normalizeString(session.reasoningEffort, ""),
-        accessProfile: normalizeString(session.accessProfile || session.taskAccessProfile, ""),
+        accessProfile: normalizeString(session.harnessAccessProfile || session.accessProfile || session.taskAccessProfile, ""),
         workThreadId: normalizeString(session.workThreadId, ""),
       },
       turns: turnIds.map((turnId) => this.buildTurnReport(threadId, turnId, {
