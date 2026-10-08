@@ -3701,8 +3701,8 @@ class DirectThreadStore {
       enabledFeatures: {
         ...(request.requestManifest.enabledFeatures || {}),
         store: false,
-        tools: false,
-        toolDeclarations: false,
+        tools: requestShape.tools === true,
+        toolDeclarations: requestShape.tools === true,
         toolOutputItem: usesToolOutputItem,
         previousResponseId: usesPreviousResponseId,
         includes: false,

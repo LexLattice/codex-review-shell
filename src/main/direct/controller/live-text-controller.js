@@ -227,47 +227,34 @@ const NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES = Object.freeze([
   "wait_agent",
 ]);
 const NATIVE_SUB_AGENT_RUNTIME_TOOL_SET = new Set(NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES);
-const MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS = 32;
+// Every continuation offers the turn's full, grant-authorized tool set and
+// has no step cap (as in Codex); these only add what the last result means.
 const NATIVE_AGENT_RUNTIME_CONTINUATION_INSTRUCTIONS = [
-  "You are Codex orchestrating a Direct child-agent lifecycle after a resident agent-runtime result.",
+  "You are Codex continuing the user's turn after a child-agent result.",
   "Treat a spawn result in running, queued, or accepted state as launch acknowledgement only, never as evidence that the delegated task completed.",
   "Re-read the current user request and preserve its completion contract.",
-  "If the request requires child output, terminal state, inspection, or aggregated results, request exactly one supported next agent-runtime tool call: use wait_agent for pending children, then inspect_agent only when inspection evidence is requested or necessary.",
-  "If a bounded wait returns while a required child is still nonterminal, request another bounded wait rather than answering final.",
-  "Answer final only after the requested child lifecycle evidence is available, unless the user explicitly requested a background-only launch.",
+  "If the request needs child output, terminal state, inspection, or aggregated results, use wait_agent for pending children, and inspect_agent when inspection evidence is requested or necessary.",
+  "If a bounded wait returns while a required child is still nonterminal, wait again rather than answering final, unless the user asked for a background-only launch.",
   "Never invent child output, terminal state, continuation counts, transport counts, or epistemic-capture status.",
-  "Do not request workspace, shell, patch, browser, network, MCP, or unrelated tools in this continuation lane.",
+  "Any of the declared tools may be used as the task requires.",
 ].join(" ");
-function statefulExecContinuationInstructions(capabilityNames = [], sessionId = "") {
-  const allowed = [...new Set((Array.isArray(capabilityNames) ? capabilityNames : [])
-    .map((name) => normalizeString(name, ""))
-    .filter((name) => STATEFUL_EXEC_CAPABILITY_NAMES.includes(name)))];
-  const declared = allowed.length ? allowed.join(", ") : "no further stateful-exec tool";
+function statefulExecContinuationInstructions(_capabilityNames = [], sessionId = "") {
   const session = normalizeString(sessionId, "");
   return [
-    "You are Codex continuing after an owner-authorized stateful exec result.",
-    `Only the currently declared and granted stateful-exec family is available: ${declared}.`,
+    "You are Codex continuing the user's turn after a command result.",
     session
-      ? `If requesting write_stdin, use exactly the returned live session ID ${session}; never invent, substitute, or omit the session ID.`
-      : "If requesting write_stdin, use exactly the returned live session ID from the quoted stateful result; never invent or substitute a session ID.",
-    "Use the quoted stateful result as evidence and preserve its terminal or live state.",
-    "If no further stateful call is needed, answer final.",
-    allowed.includes("exec_command")
-      ? "exec_command is permitted, including its shell-backed command execution."
-      : "exec_command is not declared and must not be requested.",
-    allowed.includes("write_stdin")
-      ? "write_stdin is permitted only with the exact returned live session ID."
-      : "write_stdin is not declared and must not be requested.",
-    "Do not request read_file, workspace, patch, browser, network, MCP, or any undeclared or unrelated tool.",
-    "Never invent process, session, output, completion, or continuation state.",
+      ? `If you use write_stdin for this command, use exactly its live session ID ${session}; never invent, substitute, or omit the session ID.`
+      : "If you use write_stdin, use exactly the returned live session ID from the quoted result; never invent or substitute a session ID.",
+    "Use the quoted result as evidence and preserve its terminal or live state; never invent process, session, output, or completion state.",
+    "Keep working on the user's request with any of the declared tools, as many calls as it takes, and answer when the task is done.",
   ].join(" ");
 }
 const SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS = [
-  "You are Codex continuing after an owner-issued inspect_self_constitution result.",
+  "You are Codex continuing the user's turn after an inspect_self_constitution result.",
   "Use the returned snapshot as the authoritative account of your current role, project/workspace binding, persistence, declared versus potential capabilities, authority state, provider readiness, context binding, and delegation capacity.",
   "Distinguish potential, selected, authorized, and executed capability states exactly as represented.",
   "Do not use stale generic prompt prose to override the snapshot, and do not invent unavailable runtime facts.",
-  "Answer the user's introspection question directly without requesting another tool.",
+  "If the user's request needs action or verification, carry it out with the declared tools; otherwise answer directly.",
 ].join(" ");
 const EXTERNAL_DISCOVERY_TOOL_NAMES = Object.freeze([
   "tool_search",
@@ -1311,6 +1298,10 @@ function buildSafeResidentUtilitySlice(toolName, projectId = "") {
   });
 }
 
+function toolBatchKey(sessionId, turnId) {
+  return `${normalizeString(sessionId, "")}:${normalizeString(turnId, "")}`;
+}
+
 // Deltas are joined exactly as streamed: their leading and trailing spaces
 // and newlines are the text's own (trimming each one ran words together).
 function assistantTextFromDirectEvents(normalizedEvents = []) {
@@ -2107,6 +2098,9 @@ class DirectLiveTextController {
     this.toolDecisionClaims = new Map();
     this.toolDecisionResults = new Map();
     this.forkStartLocks = new Map();
+    // Calls from one model response still to run, per turn (see
+    // emitToolApprovalRequests).
+    this.toolBatches = new Map();
     this.turnStartAdmissions = new Map();
     this.epistemicLedgerTurnBindings = new Map();
     this.closed = false;
@@ -5756,6 +5750,14 @@ class DirectLiveTextController {
     return APPLY_PATCH_TOOL_NAMES.has(normalizeString(obligation.name, ""));
   }
 
+  // A thread grant that names the tool is the owner's authority to run it, as
+  // in Codex; a missing scoped proof stays a degraded witness, not a gate.
+  toolApprovalEvidenceReady(evidence = {}, obligation = {}, project = {}, toolName = "") {
+    if (scopedProofApprovalReady(evidence)) return true;
+    if (!continuationStatusReady(evidence)) return false;
+    return this.harnessGrantAuthorizationFor(obligation.sessionId, obligation.turnId, project, toolName).authorized === true;
+  }
+
   patchApplyRequestParams(obligation = {}, turn = {}, project = {}) {
     const parentResponseId = parentResponseIdForToolStep(turn, obligation);
     const parentResponseSource = parentResponseSourceForToolStep(obligation);
@@ -5771,7 +5773,7 @@ class DirectLiveTextController {
       hasContinuityHandle &&
       supportedCallType &&
       supportedNamespace &&
-      scopedProofApprovalReady(patchEvidence) &&
+      this.toolApprovalEvidenceReady(patchEvidence, obligation, project, "apply_patch") &&
       patchPlan?.status === "dry_run_passed" &&
       patchPlan?.preview?.truncated !== true;
     const obligationDigest = sha256(stableStringify({
@@ -5914,13 +5916,6 @@ class DirectLiveTextController {
         statefulExecSessionId: normalizeString(result.sessionId, args.sessionId || args.execSessionId),
         statefulExecResult: result,
       }, { nextTurnState: "continuation_ready" });
-      this.emitNotification(surfaceSession, "warning", {
-        threadId: sessionId,
-        turnId,
-        message: toolName === "exec_command"
-          ? "Direct started the exact task-bound stateful exec session without a per-call approval round trip."
-          : "Direct wrote to the exact task-bound stateful exec session without a per-call approval round trip.",
-      });
       const envelope = {
         schema: "direct_stateful_exec_tool_result_envelope@1",
         envelopeId: `stateful_exec_result_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${result.resultDigest}`).slice(0, 24)}`,
@@ -6029,7 +6024,7 @@ class DirectLiveTextController {
       hasContinuityHandle &&
       supportedCallType &&
       supportedNamespace &&
-      scopedProofApprovalReady(commandEvidence) &&
+      this.toolApprovalEvidenceReady(commandEvidence, obligation, project, "run_command") &&
       commandPlan?.status === "planned";
     const obligationDigest = sha256(stableStringify({
       obligationId: normalizeString(obligation.obligationId, ""),
@@ -6156,7 +6151,9 @@ class DirectLiveTextController {
     if (!params.approvalAvailable) {
       const code = !params.hasContinuityHandle
         ? "continuation_missing_context_handle"
-        : (params.commandExecutionEvidence?.status !== "ready" ? "command_tool_evidence_missing" : "unsupported_command_tool_shape");
+        : (!this.toolApprovalEvidenceReady(params.commandExecutionEvidence, planned.obligation, project, "run_command")
+          ? "command_tool_evidence_missing"
+          : "unsupported_command_tool_shape");
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
         status: "unsupported",
         authorityState: "unsupported",
@@ -6275,7 +6272,9 @@ class DirectLiveTextController {
     if (!params.approvalAvailable) {
       const code = !params.hasContinuityHandle
         ? "continuation_missing_context_handle"
-        : (params.patchApplyEvidence?.status !== "ready" ? "patch_tool_evidence_missing" : "unsupported_patch_tool_shape");
+        : (!this.toolApprovalEvidenceReady(params.patchApplyEvidence, planned.obligation, project, "apply_patch")
+          ? "patch_tool_evidence_missing"
+          : "unsupported_patch_tool_shape");
       this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
         status: "unsupported",
         authorityState: "unsupported",
@@ -6667,8 +6666,6 @@ class DirectLiveTextController {
   }
 
   utilityContinuationRequestFromEnvelope(sessionId, turnId, obligation = {}, envelope = {}) {
-    const nativeAgentRuntimeResult = normalizeString(envelope.resultKind, "") === "direct_sub_agent_runtime";
-    const statefulExecResult = normalizeString(envelope.resultKind, "") === "stateful_exec";
     const outputType = normalizeString(obligation.providerCallType || obligation.toolType, "") === "custom_tool_call"
       ? "custom_tool_call_output"
       : "function_call_output";
@@ -6693,9 +6690,7 @@ class DirectLiveTextController {
         toolLoopId: normalizeString(obligation.toolLoopId, `utility_loop_${sha256(`${sessionId}:${turnId}`).slice(0, 20)}`),
         stepId: normalizeString(obligation.stepId, `utility_step_${sha256(`${obligation.obligationId}:${resultId}`).slice(0, 20)}`),
         stepOrdinal: Number(obligation.stepOrdinal || 1) || 1,
-        maxStepCount: nativeAgentRuntimeResult
-          ? MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS
-          : statefulExecResult ? MAX_READONLY_TOOL_LOOP_STEPS : 1,
+        maxStepCount: MAX_READONLY_TOOL_LOOP_STEPS,
         parentResponseId: normalizeString(obligation.parentResponseId, ""),
         parentResponseSource: normalizeString(obligation.parentResponseSource, ""),
         parentResponseDigest: normalizeString(obligation.parentResponseDigest, ""),
@@ -6730,7 +6725,8 @@ class DirectLiveTextController {
       requestControls: {
         store: false,
         parallelToolCalls: false,
-        toolDeclarations: nativeAgentRuntimeResult || statefulExecResult,
+        // Every continuation declares the turn's grant-authorized tools.
+        toolDeclarations: true,
         toolOutputItem: true,
         previousResponseId: false,
       },
@@ -6890,6 +6886,22 @@ class DirectLiveTextController {
     ];
   }
 
+  // A file, patch, or command continuation resends what the turn started with
+  // (dialogue, attachments, instructions) plus every result so far, as the
+  // utility continuations do. Turns without a captured start keep the
+  // single-result context pack.
+  boundToolContinuationOptions(sessionId, turnId, obligationId, continuationInstructions = "") {
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    if (!isPlainObject(turn.admittedProviderContext)) return null;
+    const obligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId)?.obligation;
+    if (!isPlainObject(obligation?.result)) return null;
+    const context = this.buildBoundUtilityContinuationContext(turn, { result: obligation.result }, sessionId, turnId);
+    return {
+      contextInput: this.boundUtilityContinuationInput(turn.admittedProviderContext, context),
+      instructions: [turn.admittedProviderContext.instructions, continuationInstructions].filter(Boolean).join("\n\n"),
+    };
+  }
+
   appendUtilityContinuationMessage(sessionId, turnId, continuationId, normalizedEvents = [], terminal = {}) {
     const text = assistantTextFromDirectEvents(normalizedEvents);
     if (!text) return;
@@ -6917,6 +6929,15 @@ class DirectLiveTextController {
 
   async continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation = {}, envelope = {}, project = {}) {
     const recorded = this.recordSafeResidentUtilityResult(sessionId, turnId, obligation, envelope);
+    if (await this.continueToolBatch(surfaceSession, sessionId, turnId, obligation.obligationId, project)) {
+      return {
+        decision: "utility_result_recorded",
+        deferredToBatch: true,
+        turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
+        obligation: recorded.obligation,
+        envelope,
+      };
+    }
     const continuationRequest = recorded.continuationRequest;
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
     const boundContinuationContext = this.buildBoundUtilityContinuationContext(turn, recorded, sessionId, turnId);
@@ -6933,51 +6954,42 @@ class DirectLiveTextController {
       "sub_agent_inspect_status",
     ].includes(resultKind);
     const statefulExecContinuation = resultKind === "stateful_exec";
-    const residentContinuation = ledgerContinuation || agentRuntimeContinuation || statefulExecContinuation;
     const directStatus = this.statusForProject(project || {});
     const ledgerBinding = this.epistemicLedgerTurnBinding(sessionId, turnId);
-    const harnessGrant = statefulExecContinuation
-      ? this.harnessGrantForTurn(sessionId, turnId, project || {})
-      : null;
-    const continuationToolNames = ledgerContinuation
-      ? implementationContinuationToolNames(
-          directStatus,
-          userPromptTextFromTurn(turn),
-        )
-      : agentRuntimeContinuation
-        ? [
-            ...NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES,
-            ...READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES,
-          ]
-        : statefulExecContinuation
-          ? harnessGrantCapabilityNames(harnessGrant)
-              .filter((name) => STATEFUL_EXEC_CAPABILITY_NAMES.includes(name))
-        : [];
-    const continuationToolComposition = residentContinuation
-      ? this.withEnvironmentTools(composeImplementationToolBundleForRequest({
-          projectId: normalizeString(
-            project?.id || project?.projectId || project?.name,
-            ledgerBinding?.bundle?.scope?.projectId || "",
-          ),
-          sessionId,
-          turnId,
-          toolNames: continuationToolNames,
-          useLaneDefaultTools: false,
-          sourceMessageId: `${turnId}_${obligation.obligationId}_${ledgerContinuation ? "ledger" : "agent_runtime"}_continuation`,
-          normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligation.obligationId}_${Number(obligation.stepOrdinal || 1)}`,
-          workThreadId: normalizeString(
-            ledgerBinding?.bundle?.scope?.workThreadId,
-            directWorkThreadContextCarrier(turn, project, obligation).workThreadId,
-          ),
-          runtimeFactsId:
-            directStatus.evidenceId || "direct_runtime_facts",
-          externalCapabilityProfile: directStatus.externalCapabilityProfile,
-          providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
-          harnessGrant,
-          executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
-          roleLedgerToolBundle: ledgerContinuation ? ledgerBinding?.bundle : null,
-        }), project, sessionId, harnessGrant)
-      : { tools: [], toolNames: [] };
+    // Every continuation offers the turn's full tool set: what the thread's
+    // grant authorizes (or, without a grant, the turn's implementation tools),
+    // plus the turn's bound ledger operations. No step cap.
+    const harnessGrant = this.harnessGrantForTurn(sessionId, turnId, project || {});
+    const continuationToolNames = harnessGrant
+      ? harnessGrantCapabilityNames(harnessGrant)
+      : [
+          ...implementationContinuationToolNames(directStatus, userPromptTextFromTurn(turn)),
+          ...NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES,
+          ...READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES,
+        ];
+    const continuationToolComposition = this.withEnvironmentTools(composeImplementationToolBundleForRequest({
+      projectId: normalizeString(
+        project?.id || project?.projectId || project?.name,
+        ledgerBinding?.bundle?.scope?.projectId || "",
+      ),
+      sessionId,
+      turnId,
+      toolNames: [...new Set(continuationToolNames)],
+      useLaneDefaultTools: false,
+      sourceMessageId: `${turnId}_${obligation.obligationId}_continuation`,
+      normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligation.obligationId}_${Number(obligation.stepOrdinal || 1)}`,
+      workThreadId: normalizeString(
+        ledgerBinding?.bundle?.scope?.workThreadId,
+        directWorkThreadContextCarrier(turn, project, obligation).workThreadId,
+      ),
+      runtimeFactsId:
+        directStatus.evidenceId || "direct_runtime_facts",
+      externalCapabilityProfile: directStatus.externalCapabilityProfile,
+      providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
+      harnessGrant,
+      executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
+      roleLedgerToolBundle: ledgerBinding?.bundle || null,
+    }), project, sessionId, harnessGrant);
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       status: "continuation_sent",
       authorityState: "continuation_sent",
@@ -7033,7 +7045,7 @@ class DirectLiveTextController {
       this.sessionStore.appendNormalizedEvents(sessionId, turnId, result.normalizedEvents, {});
     }
     const streamTerminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents || []);
-    const nestedToolCall = residentContinuation && (result.normalizedEvents || []).some(
+    const nestedToolCall = (result.normalizedEvents || []).some(
       (event) =>
         event?.type === "tool_call_started" ||
         event?.type === "tool_call_delta" ||
@@ -7058,46 +7070,21 @@ class DirectLiveTextController {
         },
       );
       nextToolObligations = obligationResult.obligations;
-      const nextToolName = normalizeString(nextToolObligations[0]?.name, "");
-      const nextToolAllowed =
-        nextToolObligations.length === 1 &&
-        (ledgerContinuation
-          ? continuationToolComposition.toolNames.includes(nextToolName)
-          : statefulExecContinuation
-            ? continuationToolComposition.toolNames.includes(nextToolName) &&
-              this.harnessGrantAuthorizationFor(
-                sessionId,
-                turnId,
-                project,
-                nextToolName,
-              ).authorized
-          : isNativeSubAgentRuntimeToolName(nextToolName) ||
-            isReadOnlySubAgentStatusToolName(nextToolName));
-      const loopCap = agentRuntimeContinuation
-        ? MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS
-        : MAX_READONLY_TOOL_LOOP_STEPS;
-      const loopCapExceeded = nextStepOrdinal > loopCap;
-      if (nextToolAllowed && !loopCapExceeded) {
+      // Any declared tool may follow, several in one response; each one is
+      // then dispatched and authorized like the turn's first call.
+      const declaredNames = new Set(continuationToolComposition.toolNames);
+      const nextToolAllowed = nextToolObligations.length > 0 &&
+        nextToolObligations.every((next) => declaredNames.has(normalizeString(next?.name, "")));
+      if (nextToolAllowed) {
         terminal = { state: "tool_waiting", error: null };
-        continuationOutcome = ledgerContinuation
-          ? "next_epistemic_ledger_step"
-          : statefulExecContinuation
-            ? "next_stateful_exec_step"
-          : "next_native_agent_runtime_step";
+        continuationOutcome = "next_tool_step";
       } else {
-        const transitionKind = ledgerContinuation
-          ? "epistemic_ledger"
-          : statefulExecContinuation ? "stateful_exec" : "agent_runtime";
-        const failureKind = loopCapExceeded
-          ? `${transitionKind}_tool_loop_cap_exceeded`
-          : `unsupported_${transitionKind === "agent_runtime" ? "native_agent_runtime" : transitionKind}_transition`;
+        const failureKind = "undeclared_tool_call";
         terminal = {
           state: "failed",
           error: {
             code: failureKind,
-            message: loopCapExceeded
-              ? `Direct ${transitionKind.replaceAll("_", "-")} tool loop reached its configured step cap.`
-              : `Direct ${transitionKind.replaceAll("_", "-")} continuation emitted an unsupported or ambiguous tool transition.`,
+            message: "The model called a tool that wasn't declared for this continuation.",
           },
         };
         continuationOutcome = failureKind;
@@ -7118,10 +7105,7 @@ class DirectLiveTextController {
     }
     const continuationOk =
       (result.ok === true && terminal.state === "completed") ||
-      (
-        terminal.state === "tool_waiting" &&
-        ["next_epistemic_ledger_step", "next_native_agent_runtime_step", "next_stateful_exec_step"].includes(continuationOutcome)
-      );
+      (terminal.state === "tool_waiting" && continuationOutcome === "next_tool_step");
     const completedTurn = this.sessionStore.updateTurnState(sessionId, turnId, terminal.state, {
       continuationResponseId: normalizeString(result.responseId, ""),
       continuationResult: {
@@ -7148,31 +7132,18 @@ class DirectLiveTextController {
         continuationOutcome,
       },
     }, {});
-    if (residentContinuation) {
-      await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, {
-        turnState: completedTurn.state,
-        nextToolObligations,
-      }, project, {
-        streamPhase: ledgerContinuation
-          ? "ledger-continuation"
-          : statefulExecContinuation
-            ? "stateful-exec-continuation"
-          : "native-agent-runtime-continuation",
-        approvalMessage: `Direct ${ledgerContinuation ? "ledger" : statefulExecContinuation ? "stateful-exec" : "native-agent"} continuation advanced to another governed tool transition.`,
-        unavailableMessage: `Direct ${ledgerContinuation ? "ledger" : statefulExecContinuation ? "stateful-exec" : "native-agent"} continuation requested an unavailable transition.`,
-      });
-    } else {
-      this.emitNotification(surfaceSession, "turn/completed", {
-        threadId: sessionId,
-        turnId,
-        turn: {
-          id: turnId,
-          status: terminalStatusForState(completedTurn.state),
-          completedAt: nowSeconds(),
-          streamPhase: "utility-continuation",
-        },
-      });
-    }
+    await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, {
+      turnState: completedTurn.state,
+      nextToolObligations,
+    }, project, {
+      streamPhase: ledgerContinuation
+        ? "ledger-continuation"
+        : statefulExecContinuation
+          ? "stateful-exec-continuation"
+          : agentRuntimeContinuation
+            ? "native-agent-runtime-continuation"
+            : "utility-continuation",
+    });
     return {
       decision: "utility_continued",
       turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
@@ -8047,28 +8018,41 @@ class DirectLiveTextController {
   }
 
   async emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligations = [], project = {}) {
-    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
-    if (obligations.length !== 1) {
-      for (const obligation of obligations) {
-        this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
-          status: "unsupported",
-          authorityState: "unsupported",
-          approvalAvailable: false,
-          executionAllowed: false,
-          continuationAllowed: false,
-          failureKind: "multiple_tool_calls_unsupported",
-        }, {
-          nextTurnState: "failed",
-          turnPatch: {
-            error: {
-              code: "multiple_tool_calls_unsupported",
-              message: "Direct read-only continuation supports exactly one tool obligation in this bundle.",
-            },
-          },
-        });
-      }
-      return 0;
+    const list = (Array.isArray(obligations) ? obligations : []).filter((obligation) => obligation?.obligationId);
+    if (!list.length) return 0;
+    // Several calls in one response run one after another, in order. Each
+    // one's continuation is held back until the last, whose continuation
+    // carries every result (continuations quote all of the turn's results).
+    if (list.length > 1) {
+      this.toolBatches.set(toolBatchKey(sessionId, turnId), {
+        obligationIds: list.map((obligation) => obligation.obligationId),
+        next: 1,
+      });
     }
+    return this.dispatchToolObligations(surfaceSession, sessionId, turnId, [list[0]], project);
+  }
+
+  // Called where a tool's continuation would be sent. True when that
+  // continuation is held back because more calls from the same response
+  // remain; the next one has then been dispatched.
+  async continueToolBatch(surfaceSession, sessionId, turnId, obligationId, project = {}) {
+    const key = toolBatchKey(sessionId, turnId);
+    const batch = this.toolBatches.get(key);
+    if (!batch || !batch.obligationIds.includes(obligationId)) return false;
+    while (batch.next < batch.obligationIds.length) {
+      const nextId = batch.obligationIds[batch.next];
+      batch.next += 1;
+      const next = this.sessionStore.findToolObligation(sessionId, turnId, nextId)?.obligation;
+      if (!next) continue;
+      await this.dispatchToolObligations(surfaceSession, sessionId, turnId, [next], project);
+      return true;
+    }
+    this.toolBatches.delete(key);
+    return false;
+  }
+
+  async dispatchToolObligations(surfaceSession, sessionId, turnId, obligations = [], project = {}) {
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
     let createdCount = 0;
     for (const obligation of obligations) {
       if (this.isEpistemicLedgerObligation(sessionId, turnId, obligation)) {
@@ -8116,7 +8100,7 @@ class DirectLiveTextController {
           return createdCount;
         }
         const params = this.readOnlyToolRequestParams(obligation, turn, project);
-        const loopCapExceeded = Number(params.stepOrdinal || 1) > MAX_READONLY_TOOL_LOOP_STEPS;
+        const loopCapExceeded = false; // No step cap (as in Codex).
         if (params.approvalAvailable && !loopCapExceeded) {
           const grantAuthorization = this.harnessGrantAuthorizationFor(
             sessionId,
@@ -8165,7 +8149,7 @@ class DirectLiveTextController {
       }
       if (typeof surfaceSession.createReadOnlyToolRequest !== "function") continue;
       const params = this.readOnlyToolRequestParams(obligation, turn, project);
-      const loopCapExceeded = Number(params.stepOrdinal || 1) > MAX_READONLY_TOOL_LOOP_STEPS;
+      const loopCapExceeded = false; // No step cap (as in Codex).
       if (!params.approvalAvailable || loopCapExceeded) {
         this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
           status: "unsupported",
@@ -8269,21 +8253,36 @@ class DirectLiveTextController {
         this.emitNotification(surfaceSession, "item/started", { threadId: sessionId, turnId, item });
         this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
       }
-      const createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, continuation.nextToolObligations, project);
+      // Calls the thread's access covers run without asking; only a request
+      // actually put to the owner (an rpc-request) needs a warning.
+      let ownerRequests = 0;
+      const countOwnerRequests = (event) => {
+        if (event?.type === "rpc-request") ownerRequests += 1;
+      };
+      surfaceSession?.on?.("event", countOwnerRequests);
+      let createdApprovalRequests = 0;
+      try {
+        createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, continuation.nextToolObligations, project);
+      } finally {
+        surfaceSession?.off?.("event", countOwnerRequests);
+      }
       const ledgerOnly = continuation.nextToolObligations.every((obligation) =>
         this.isEpistemicLedgerObligation(sessionId, turnId, obligation));
       const agentRuntimeOnly = continuation.nextToolObligations.every((obligation) =>
         this.isNativeSubAgentRuntimeObligation(obligation) || this.isReadOnlySubAgentStatusObligation(obligation));
-      if (!agentRuntimeOnly) {
-        this.emitNotification(surfaceSession, "warning", {
-          threadId: sessionId,
-          turnId,
-          message: ledgerOnly
-            ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
-            : createdApprovalRequests
-              ? normalizeString(options.approvalMessage, "Direct implementation continuation requested another tool. Local approval is required.")
-              : normalizeString(options.unavailableMessage, "Direct implementation continuation requested another tool call, but it is not available for approval."),
-        });
+      // Calls that ran (or failed with their own turn error) move the turn on;
+      // only a turn left waiting with nothing asked of the owner is stuck.
+      const stuck = !createdApprovalRequests &&
+        normalizeString(this.sessionStore.readTurn(sessionId, turnId)?.state, "") === "tool_waiting";
+      const message = ledgerOnly
+        ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
+        : ownerRequests
+          ? normalizeString(options.approvalMessage, "The next tool call needs your approval.")
+          : stuck
+            ? normalizeString(options.unavailableMessage, "Direct implementation continuation requested another tool call, but it is not available for approval.")
+            : "";
+      if (!agentRuntimeOnly && message) {
+        this.emitNotification(surfaceSession, "warning", { threadId: sessionId, turnId, message });
       }
       return true;
     }
@@ -8832,6 +8831,9 @@ class DirectLiveTextController {
         ? (method, params) => this.fullAccessLocalEnvironmentExecutor.request(fullAccessBinding, method, params)
         : (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
     });
+    if (await this.continueToolBatch(surfaceSession, sessionId, turnId, obligationId, project)) {
+      return { decision: "approved", deferredToBatch: true, turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)), obligation: approved.obligation, result: executed.result };
+    }
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
     const parentResponseId = parentResponseIdForToolStep(turn, currentObligation);
@@ -9001,6 +9003,7 @@ class DirectLiveTextController {
             normalizeString(continuationContext?.providerInput?.prompt, ""),
           ].filter(Boolean).join("\n\n")
         : normalizeString(continuationContext?.providerInput?.prompt, ""),
+      ...this.boundToolContinuationOptions(sessionId, turnId, obligationId, DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS),
       continuationTransportMode: "fresh_context",
       endpoint: this.endpoint || undefined,
       authStore: this.currentAuthStore(),
@@ -9031,8 +9034,6 @@ class DirectLiveTextController {
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
     await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, continuation, project, {
       streamPhase: "continuation",
-      approvalMessage: "Direct read-only continuation requested another file. Local approval is required for the next read.",
-      unavailableMessage: "Direct read-only continuation requested another tool call, but it is not available for approval.",
     });
     return {
       decision: "approved",
@@ -9077,6 +9078,9 @@ class DirectLiveTextController {
         ? (method, params) => this.fullAccessLocalEnvironmentExecutor.request(fullAccessBinding, method, params)
         : (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
     });
+    if (await this.continueToolBatch(surfaceSession, sessionId, turnId, obligationId, project)) {
+      return { decision: "approved", deferredToBatch: true, turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)), result: executed.result };
+    }
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
     const parentResponseId = parentResponseIdForToolStep(turn, currentObligation);
@@ -9233,6 +9237,7 @@ class DirectLiveTextController {
             normalizeString(continuationContext?.providerInput?.prompt, ""),
           ].filter(Boolean).join("\n\n")
         : normalizeString(continuationContext?.providerInput?.prompt, ""),
+      ...this.boundToolContinuationOptions(sessionId, turnId, obligationId, DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS),
       continuationTransportMode: "fresh_context",
       endpoint: this.endpoint || undefined,
       authStore: this.currentAuthStore(),
@@ -9261,8 +9266,6 @@ class DirectLiveTextController {
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
     await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, continuation, project, {
       streamPhase: "patch-continuation",
-      approvalMessage: "Direct patch continuation requested another tool. Local approval is required to continue the repair loop.",
-      unavailableMessage: "Direct patch continuation requested another tool call, but it is not available for approval.",
     });
     return {
       decision: "approved",
@@ -9299,6 +9302,10 @@ class DirectLiveTextController {
       clientCommandDecisionId: normalizeString(options.clientCommandDecisionId, ""),
       workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, Math.max(this.readOnlyWorkspaceTimeoutMs, Number(params?.timeoutMs || 0) + 5000)),
     });
+    if (executed.result?.providerContinuationBlocked !== true &&
+        await this.continueToolBatch(surfaceSession, sessionId, turnId, obligationId, project)) {
+      return { decision: "approved", deferredToBatch: true, turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)), result: executed.result };
+    }
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
     if (executed.result?.providerContinuationBlocked === true) {
@@ -9491,6 +9498,7 @@ class DirectLiveTextController {
             normalizeString(continuationContext?.providerInput?.prompt, ""),
           ].filter(Boolean).join("\n\n")
         : normalizeString(continuationContext?.providerInput?.prompt, ""),
+      ...this.boundToolContinuationOptions(sessionId, turnId, obligationId, DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS),
       continuationTransportMode: "fresh_context",
       endpoint: this.endpoint || undefined,
       authStore: this.currentAuthStore(),
@@ -9519,8 +9527,6 @@ class DirectLiveTextController {
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
     await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, continuation, project, {
       streamPhase: "command-continuation",
-      approvalMessage: "Direct command continuation requested another tool. Local approval is required to continue the repair loop.",
-      unavailableMessage: "Direct command continuation requested another tool call, but it is not available for approval.",
     });
     return {
       decision: "approved",

@@ -63,21 +63,18 @@ const HARNESS_POLICY_TEXT = [
   "Fresh local authority is required before any file read, file write, shell command, network access, or tool continuation.",
 ].join(" ");
 const TOOL_CONTINUATION_HARNESS_POLICY_TEXT = [
-  "For this read-only tool continuation, use the accompanying provider tool-output item as quoted local evidence.",
-  "You may request at most one additional read_file call only if more local file evidence is necessary and the local harness allows another approved read-only step.",
-  "Do not request write, shell, network, browser, patch, MCP, or any other tool.",
+  "For this tool continuation, use the quoted tool result as local evidence.",
+  "Keep working on the user's request with any of the declared tools, as many calls as it takes, and answer when the task is done.",
 ].join(" ");
 const PATCH_CONTINUATION_HARNESS_POLICY_TEXT = [
   "For this patch continuation, use the apply_patch result as quoted local evidence.",
-  "Do not request another tool in this turn.",
-  "If the patch was applied, summarize the change and any user-visible next step.",
-  "If the patch was declined, canceled, or failed safely, explain that no workspace change was committed.",
+  "If the patch was declined, canceled, or failed safely, no workspace change was committed.",
+  "Keep working on the user's request with any of the declared tools if it needs more; when the task is done, summarize the change and any user-visible next step.",
 ].join(" ");
 const COMMAND_CONTINUATION_HARNESS_POLICY_TEXT = [
   "For this command continuation, use the run_command result as quoted local evidence.",
-  "The command was locally approved and may have changed the workspace; do not assume unchanged files unless the result says so.",
-  "Do not request another tool in this turn.",
-  "Summarize the command result, including nonzero exit, timeout, redaction, or workspace-change warnings when present.",
+  "The command may have changed the workspace; do not assume unchanged files unless the result says so.",
+  "Keep working on the user's request with any of the declared tools if it needs more; when the task is done, summarize the result, including nonzero exit, timeout, redaction, or workspace-change warnings when present.",
 ].join(" ");
 const FORK_START_HARNESS_POLICY_TEXT = [
   "This is a fresh direct-native fork.",
@@ -1336,20 +1333,19 @@ function buildContextPack({
     ? [
         "[COMMAND CONTINUATION INTENT]",
         "Continue the parent response using the quoted local run_command result evidence.",
-        "Do not request another tool in this turn.",
+        "Use the declared tools if the task needs more; otherwise answer.",
       ].join("\n")
     : policy.policyId === DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID && !prompt
     ? [
         "[PATCH CONTINUATION INTENT]",
         "Continue the parent response using the quoted local apply_patch result evidence.",
-        "If further local implementation action is strictly necessary, request exactly one allowed implementation tool; otherwise answer.",
+        "Use the declared tools if the task needs more; otherwise answer.",
       ].join("\n")
     : policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt
     ? [
         "[CONTINUATION INTENT]",
-        "Continue the parent response using the quoted local read-only tool result evidence.",
-        "If another file is strictly necessary, request exactly one read_file call; otherwise answer.",
-        "Do not request write, shell, network, browser, patch, MCP, or any other tool.",
+        "Continue the parent response using the quoted local tool result evidence.",
+        "Use the declared tools if the task needs more; otherwise answer.",
       ].join("\n")
     : `[CURRENT USER INTENT]\n${prompt || "Continue from the available direct context under the harness policy."}`;
   messages.push({

@@ -66,8 +66,7 @@ function providerOutputTypeFor(obligation = {}) {
   };
 }
 
-function obligationUnsupportedReason(obligation = {}, context = {}) {
-  if (context.multipleProviderToolCalls) return "multiple_tool_calls_unsupported";
+function obligationUnsupportedReason(obligation = {}) {
   if (normalizeString(obligation.status, "") === "collecting_arguments" || obligation.completedAtSequence == null) {
     return "tool_call_arguments_incomplete";
   }
@@ -151,7 +150,8 @@ function buildDirectObligationsProjection({ session = {}, turn = {}, operationMa
   const projectionId = `direct_obligations_${sha256(`${turn.sessionId}:${turn.turnId}:${sourceDigest}`).slice(0, 24)}`;
   const createdAt = nowIso(nowMs);
   const items = obligations.map((obligation, index) => {
-    const unsupportedReason = obligationUnsupportedReason(obligation, { multipleProviderToolCalls });
+    // Several calls from one response run in order; each stays usable.
+    const unsupportedReason = obligationUnsupportedReason(obligation);
     const { providerCallType, providerOutputType } = providerOutputTypeFor(obligation);
     const text = obligationItemText(obligation, unsupportedReason);
     const findings = scanTextForRawExposure(text).filter((finding) => finding.severity === "block");

@@ -1213,12 +1213,24 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 
 - Every Workbench implementation turn first runs a separate model call for the
   sub-agent policy preflight (latency and quota).
-- Autonomy limits within one turn: exec continuations stop after 8 steps;
-  after a command the model may only run more commands, not read or patch;
-  a patch conflict fails the whole turn; after a human-decision tool the
-  continuation declares no tools.
-- A blocking `request_permissions` prompt is deferred until the continuation
-  loop can keep tools available after human decisions.
+- Continuations work as in Codex since the post-track continuation fix:
+  every continuation (after a file read, patch, command, process session,
+  self-constitution check, agent tool, or human decision) declares the
+  thread's full tool set, there is no step cap (only context limits the
+  turn), several calls in one response run one after another in order, and
+  only per-call limits remain. File, patch, and command continuations now
+  resend the turn's original input plus every result so far, as utility
+  continuations already did; before, each one quoted only its own result.
+  Gate: `npm run direct:tool-continuation-full-toolset`.
+- A patch that fails its dry run (for example a context mismatch) still
+  fails the whole turn. Codex returns the error to the model so it can retry.
+- Patch and command approvals no longer require a scoped implementation
+  proof when the thread's grant names the tool. The real app has no proof
+  store, so before this any `apply_patch` would have failed the turn as
+  `unsupported_patch_tool_shape`.
+- A blocking `request_permissions` prompt was deferred until continuations
+  keep tools available after human decisions; they now do, so it is
+  unblocked.
 - Since turn 8, configured MCP servers run in their own environment, and
   since turn 11b every server is tree-contained, including ones a Linux host
   runs itself. One gap remains: **one process per request.** Servers are
@@ -1353,6 +1365,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-07 | Terminals use the job runner's ConPTY mode on Windows and a small Python pty helper on Linux, with one framed stdin protocol | No native Node module (node-pty would need a build per Electron and per Windows/Linux Node); the runner already contains Windows processes, and `python3` is on every supported distro. Framing carries resize and signals next to typed bytes over the existing stdio. |
 | 2026-10-07 | The owner's terminal is unsandboxed but contained, in the project's environment | The owner's choice: it is their own shell, so Full access semantics and their own environment variables, but it still ends with the app. |
 | 2026-10-07 | Model availability follows Codex: the account's `/models` list, signed in is ready, the server rejects | A per-model probe gated every new model behind a manual refresh and expired after 7 days; Codex trusts the list and handles rejection. The probe stays as an optional "Test model". `client_version` is the installed Codex CLI's, so the list matches what Codex itself would offer. |
+| 2026-10-08 | Continuations keep the full tool set, have no step cap, and run several calls per response in order; only per-call limits stay | Owner's call, matching Codex. A self-constitution check had left the model with no tools ("this continuation exposes no executable tool interface"), and per-family rules and step caps stopped real work midway. |
 
 ## Plan changes
 

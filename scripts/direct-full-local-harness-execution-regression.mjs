@@ -646,15 +646,14 @@ async function main() {
   assert(providerBodies[0].tools.some((tool) => tool.name === "exec_command"));
   assert(providerBodies[0].tools.some((tool) => tool.name === "write_stdin"));
   assert.match(JSON.stringify(providerBodies[1]), /stdinAccepted/);
-  assert.match(providerBodies[1].instructions, /exec_command/);
+  // Continuations keep the turn's tools (as in Codex): the exec guidance
+  // pins the live session ID for write_stdin and restricts nothing else.
   assert.match(providerBodies[1].instructions, /write_stdin/);
   assert.match(providerBodies[1].instructions, new RegExp(providerState.statefulExecSessionId));
-  assert.doesNotMatch(providerBodies[1].instructions, /request only read_file|may request at most one additional read_file/i);
-  assert.match(providerBodies[1].instructions, /final/);
-  assert.match(providerBodies[1].instructions, /exec_command is permitted, including its shell-backed command execution/);
-  assert.match(providerBodies[1].instructions, /write_stdin is permitted only with the exact returned live session ID/);
-  assert.doesNotMatch(providerBodies[1].instructions, /Do not request[^.]*\bshell\b/i);
-  assert.match(providerBodies[1].instructions, /Do not request read_file, workspace, patch, browser, network, MCP/);
+  assert.match(providerBodies[1].instructions, /any of the declared tools/);
+  assert.match(providerBodies[1].instructions, /answer when the task is done/);
+  assert.doesNotMatch(providerBodies[1].instructions, /Do not request|must not be requested|request only read_file|at most one/i);
+  assert(providerBodies[1].tools.some((tool) => tool.name === "exec_command"), "exec_command stays declared after write_stdin");
   assert.equal(sessionStore.readTurn(controllerSession.sessionId, providerTurn.turnId).state, "completed");
   assert.equal(providerState.statefulExecResult.status, "running", "interactive provider exec must remain live after the bounded initial yield");
   assert.equal(providerState.statefulExecResult.sessionState, "running");

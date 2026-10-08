@@ -362,7 +362,8 @@ try {
   });
   await controller.activeRuns.get(inspectStart.turn.id).promise;
   assert.equal(providerRequests.length, 3);
-  assert(providerRequests[2].instructions.includes("owner-issued inspect_self_constitution result"));
+  assert(providerRequests[2].instructions.includes("after an inspect_self_constitution result"));
+  assert(providerRequests[2].instructions.includes("carry it out with the declared tools"));
   // Continuations replay the admitted original input first and append the
   // quoted tool result after it, so search the whole input.
   const continuationOutput = (providerRequests[2].input || [])
