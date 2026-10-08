@@ -1265,9 +1265,15 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
     counter froze when Stop was pressed.
   - Test profiles point the default "Example Project" at a scratch folder
     instead of the app's own checkout.
-  Still open: a prompt mentioning an absolute path (for example `/tmp/x`)
-  is refused before the model runs (`current_user_prompt_redaction_failed`);
-  Codex sends such prompts as written.
+  - Absolute paths (`C:\…`, `/home/…`, `/tmp/…`, `/mnt/…`, `/Users/…`) were
+    a blocking finding of the shared exposure scan: prompts naming a file
+    were refused (`current_user_prompt_redaction_failed`), any reply with a
+    path made the transcript projection "blocked" so the model's own
+    earlier answers silently dropped out of later turns' context (live: it
+    re-ran `pwd` to recall a path it had just printed), and `run_command`
+    output with a path was withheld. Paths are now a warning, not a block;
+    secrets and raw backend frames still block. Gate:
+    `npm run direct:paths-in-dialogue`.
 - Patch and command approvals no longer require a scoped implementation
   proof when the thread's grant names the tool. The real app has no proof
   store, so before this any `apply_patch` would have failed the turn as
