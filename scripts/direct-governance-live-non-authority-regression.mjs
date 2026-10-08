@@ -197,7 +197,11 @@ function rawExposureFindings(value) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const allowLive = optionFlag(options, "allow-live-provider-call") || envFlag(LIVE_ENV) || envFlag("CODEX_DIRECT_REAL_TURN");
-  if (!allowLive) throw new Error(`Live governance non-authority probe requires --allow-live-provider-call, ${LIVE_ENV}=1, or CODEX_DIRECT_REAL_TURN=1.`);
+  if (!allowLive) {
+    // Exit 77 = skipped (the sweep reports it separately from failures).
+    console.log(`SKIPPED: live governance non-authority probe requires --allow-live-provider-call, ${LIVE_ENV}=1, or CODEX_DIRECT_REAL_TURN=1.`);
+    process.exit(77);
+  }
   if (process.env.CI === "true" && !envFlag(LIVE_CI_ENV) && !envFlag("CODEX_DIRECT_REAL_TURN_ALLOW_CI")) {
     throw new Error(`Live governance non-authority probe in CI requires ${LIVE_CI_ENV}=1.`);
   }

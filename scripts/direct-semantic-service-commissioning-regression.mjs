@@ -20,7 +20,11 @@ const entry = path.join(repo, "scripts/direct-semantic-service-commission.mjs");
 const resource = path.join(repo, "src/main/direct/semantic-service/resources");
 const argument = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };
 const compilerRoot = argument("--compiler-root") || process.env.DIRECT_SEMANTIC_COMPILER_ROOT;
-if (!compilerRoot) throw new Error("Provide --compiler-root or DIRECT_SEMANTIC_COMPILER_ROOT for the actual installed compiler.");
+if (!compilerRoot) {
+  // Exit 77 = skipped (the sweep reports it separately from failures).
+  console.log("SKIPPED: provide --compiler-root or DIRECT_SEMANTIC_COMPILER_ROOT for the actual installed compiler.");
+  process.exit(77);
+}
 const providerAuthRoot = argument("--provider-auth-root");
 const providerAuthFile = argument("--provider-auth-file");
 const liveProvider = Boolean(providerAuthRoot || providerAuthFile);

@@ -28,7 +28,9 @@ const runtimeDependencyDigest = digestObject("DirectSemanticService.Dss04.Runtim
 let serviceNow = new Date("2026-08-28T12:00:00.000Z");
 const compilerSourceRoot = process.env.DSS04_COMPILER_ROOT;
 if (!compilerSourceRoot || !path.isAbsolute(compilerSourceRoot) || !fs.existsSync(path.join(compilerSourceRoot, ".git"))) {
-  throw new Error(`DSS04 compiler fixture unavailable; set DSS04_COMPILER_ROOT to the owner-provisioned checkout at ${pin.repository_commit}.`);
+  // Exit 77 = skipped (the sweep reports it separately from failures).
+  console.log(`SKIPPED: DSS04 compiler fixture unavailable; set DSS04_COMPILER_ROOT to the owner-provisioned checkout at ${pin.repository_commit}.`);
+  process.exit(77);
 }
 const relocatedCompilerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dss04-owner-compiler-"));
 execFileSync("git", ["clone", "--quiet", "--no-local", compilerSourceRoot, relocatedCompilerRoot], { stdio: "ignore" });

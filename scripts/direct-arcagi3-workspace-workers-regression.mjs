@@ -134,7 +134,11 @@ function childProject(parentProject, nativeRoot, childAgentId) {
   };
 }
 
-assert.ok(fs.existsSync(path.join(arcagi3Root, "AGENTS.md")), `ArcAGI3 repository is unavailable at ${arcagi3Root}`);
+if (!fs.existsSync(path.join(arcagi3Root, "AGENTS.md"))) {
+  // Exit 77 = skipped (the sweep reports it separately from failures).
+  console.log(`SKIPPED: ArcAGI3 repository is unavailable at ${arcagi3Root}`);
+  process.exit(77);
+}
 const sourceStatusBefore = gitStatus(arcagi3Root);
 const sourceHead = run("git", ["rev-parse", "HEAD"], arcagi3Root).stdout.trim();
 const nativeTempRoot = process.platform === "linux" ? "/tmp" : os.tmpdir();

@@ -86,7 +86,13 @@ await page.locator("#greenlightButton").click();
 await page.waitForSelector("#contractPanel:not([hidden])");
 await page.waitForFunction(() => document.querySelector("#proposalState")?.textContent === "canonical");
 assert.match(await page.locator("#workThreadLabel").innerText(), /contract received/i);
-assert.match(await page.locator("#contractPanel").innerText(), /completion has not been claimed/i);
+assert.equal(
+  await page.locator("#contractExecutionSummary").innerText(),
+  "The canonical contract exists, but no implementation constitution or provider turn has been created.",
+);
+assert.equal(coordinator.snapshot().latestWorkThread.phase, "contract_received");
+assert.equal(coordinator.snapshot().latestWorkThread.progress, 0);
+assert.equal(coordinator.snapshot().truthPosture.activityIsCompletion, false);
 
 const desktopScreenshotPath = path.join(os.tmpdir(), "world-manager-semantic-ui-desktop.png");
 await page.screenshot({ path: desktopScreenshotPath, fullPage: false });

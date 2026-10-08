@@ -177,7 +177,7 @@ function activationRequestFor(toolClassId, state, scopeKind = "project_default")
 const options = parseArgs(process.argv.slice(2));
 
 const restrictedPromotionReport = promotionReportFor("headless_live_smoke_fixture_evidence", 0);
-assert.equal(restrictedPromotionReport.summary.byState.promotable_restricted, 5, "fixture smoke evidence should only be restricted");
+assert.equal(restrictedPromotionReport.summary.byState.promotable_restricted, 6, "fixture smoke evidence should only be restricted");
 
 const defaultRegistry = buildDirectToolActivationRegistry({
   promotionReport: restrictedPromotionReport,
@@ -185,7 +185,7 @@ const defaultRegistry = buildDirectToolActivationRegistry({
   nowMs: 0,
 });
 assert.deepEqual(validateDirectToolActivationRegistry(defaultRegistry), [], "default activation registry should validate");
-assert.equal(defaultRegistry.summary.byState.inactive, 18, "no promotion decision should activate implicitly");
+assert.equal(defaultRegistry.summary.byState.inactive, 19, "no promotion decision should activate implicitly");
 assert.equal(defaultRegistry.providerDeclarationsBuilt, false, "registry must not build provider declarations");
 assert.equal(defaultRegistry.modelVisibleToolsEnabled, false, "registry must not expose model-visible tools");
 assert.equal(defaultRegistry.snapshot.toolDeclarationDigest, "", "PR71 snapshot must not materialize declaration digest");
@@ -205,7 +205,7 @@ assert.equal(restrictedReadRow.providerDeclarationEnabled, false, "shadow-only r
 assert(restrictedReadRow.blockerCodes.includes("restricted_promotion_downgraded_to_shadow_only"), "downgrade blocker should be visible");
 
 const realProviderPromotionReport = promotionReportFor("real_provider_full_loop_evidence", 0);
-assert.equal(realProviderPromotionReport.summary.byState.promotable, 5, "real provider full-loop evidence should be promotable");
+assert.equal(realProviderPromotionReport.summary.byState.promotable, 6, "real provider full-loop evidence should be promotable");
 
 const activeProjectRegistry = buildDirectToolActivationRegistry({
   promotionReport: realProviderPromotionReport,

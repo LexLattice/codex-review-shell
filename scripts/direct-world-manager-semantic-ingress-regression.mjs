@@ -104,6 +104,7 @@ assert.deepEqual(
     toolCount: 8,
     parallelToolCalls: false,
     reasoningEffort: "",
+    serviceTier: "",
   },
 );
 

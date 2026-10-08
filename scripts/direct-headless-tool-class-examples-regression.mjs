@@ -93,18 +93,27 @@ assert.equal(pack.coverage.registryToolCount, registry.rows.length, "coverage re
 assert.equal(pack.coverage.coveredToolCount, registry.rows.length, "all registry tools should be covered by examples");
 assert.equal(pack.coverage.uncoveredToolIds.length, 0, "no registry tools should be uncovered");
 assert.equal(pack.coverage.duplicateCoverageToolIds.length, 0, "no tool should be covered by multiple examples");
+assert.equal(pack.coverage.exampleCount, 19, "example pack should cover all nineteen tool authority classes");
+assert.equal(pack.coverage.headlessFixtureExampleCount, 6, "headless fixture count should include resident self-inspection");
 assert.equal(pack.coverage.headlessFixtureExampleCount >= 4, true, "headless fixture examples should cover executable families");
 assert.equal(pack.coverage.projectionBlockedExampleCount >= 6, true, "projection examples should cover deferred families");
 assert.equal(pack.coverage.unsupportedBlockedExampleCount >= 2, true, "unsupported examples should cover blocked families");
 
-const executableRows = registry.rows.filter((row) => row.implementationState === "restricted_executor");
+const executableRows = registry.rows.filter((row) => ["restricted_executor", "full_executor"].includes(row.implementationState));
 for (const row of executableRows) {
   const example = pack.examples.find((entry) => entry.toolIdsCovered.includes(row.toolId));
   assert(example, `missing example for executable tool: ${row.toolId}`);
   assert.equal(example.testMode, "headless_fixture", `${row.toolId} should have a headless fixture example`);
 }
 
-const projectionOrBlockedRows = registry.rows.filter((row) => row.implementationState !== "restricted_executor");
+const selfConstitutionExample = pack.examples.find((entry) => entry.toolIdsCovered.includes("direct.inspect_self_constitution"));
+assert.equal(selfConstitutionExample.toolClassId, "session_control.self_constitution_read", "self-inspection should have its own resident read-only class");
+assert.equal(selfConstitutionExample.realismTier, "headless_runtime", "self-inspection is implemented in the harness runtime");
+assert.deepEqual(selfConstitutionExample.runnerScripts, ["scripts/direct-self-constitution-regression.mjs"], "self-inspection should link its runtime regression");
+assert(selfConstitutionExample.expectedEvidenceSchemas.includes("direct_self_constitution_snapshot"), "self-inspection should expect snapshot evidence");
+assert(selfConstitutionExample.expectedEvidenceSchemas.includes("direct_self_constitution_result_envelope"), "self-inspection should expect a bounded result envelope");
+
+const projectionOrBlockedRows = registry.rows.filter((row) => !["restricted_executor", "full_executor"].includes(row.implementationState));
 for (const row of projectionOrBlockedRows) {
   const example = pack.examples.find((entry) => entry.toolIdsCovered.includes(row.toolId));
   assert(example, `missing example for projection/blocked tool: ${row.toolId}`);

@@ -1082,7 +1082,9 @@ async function main() {
   }
   const allowLive = options["allow-live-provider-call"] === true || process.env.CODEX_DIRECT_ELECTRON_READ_APPROVAL_LIVE === "1";
   if (!allowLive) {
-    throw new Error("This regression starts one live Direct provider turn. Pass --allow-live-provider-call or set CODEX_DIRECT_ELECTRON_READ_APPROVAL_LIVE=1.");
+    // Exit 77 = skipped (the sweep reports it separately from failures).
+    console.log("SKIPPED: this regression starts one live Direct provider turn. Pass --allow-live-provider-call or set CODEX_DIRECT_ELECTRON_READ_APPROVAL_LIVE=1.");
+    process.exit(77);
   }
   const runId = optionString(options, "run-id", `electron_${scenarioName}_approval_${Date.now()}`);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-electron-read-approval-"));

@@ -128,7 +128,7 @@ const validateOnlyReport = buildDirectHeadlessToolClassRealismReport({
 });
 assert.deepEqual(validateDirectHeadlessToolClassRealismReport(validateOnlyReport), [], "validate-only realism report should validate");
 assert.equal(validateOnlyReport.status, "passed", "validate-only realism report should pass");
-assert.equal(validateOnlyReport.summary.fixtureRowsAvailableNotExecuted, 5, "validate-only report should keep fixture rows unexecuted");
+assert.equal(validateOnlyReport.summary.fixtureRowsAvailableNotExecuted, 6, "validate-only report should keep fixture rows unexecuted");
 assert.equal(validateOnlyReport.summary.fixtureRowsPassed, 0, "validate-only report should not claim fixture rows passed");
 assert.equal(validateOnlyReport.summary.projectionBlockedRows, 10, "projection-blocked row count should match the pack");
 assert.equal(validateOnlyReport.summary.unsupportedBlockedRows, 3, "unsupported-blocked row count should match the pack");
@@ -174,12 +174,12 @@ const report = buildDirectHeadlessToolClassRealismReport({
 assert.deepEqual(validateDirectHeadlessToolClassRealismReport(report), [], "final realism report should validate");
 assert.equal(report.status, "passed", "final realism report should pass");
 if (executeFixtures) {
-  assert.equal(report.summary.fixtureRowsPassed, 5, "executed report should mark all headless fixture rows passed");
+  assert.equal(report.summary.fixtureRowsPassed, 6, "executed report should mark all headless fixture rows passed");
   assert.equal(report.summary.fixtureRowsAvailableNotExecuted, 0, "executed report should not leave fixture rows unexecuted");
-  assert.equal(report.summary.fixtureScriptResultCount, 15, "executed report should include all linked fixture script results");
+  assert.equal(report.summary.fixtureScriptResultCount, 17, "executed report should include all linked fixture script results");
 } else {
   assert.equal(report.summary.fixtureRowsPassed, 0, "default report should not mark fixtures passed");
-  assert.equal(report.summary.fixtureRowsAvailableNotExecuted, 5, "default report should leave fixtures available but unexecuted");
+  assert.equal(report.summary.fixtureRowsAvailableNotExecuted, 6, "default report should leave fixtures available but unexecuted");
 }
 
 const outputPath = writeReportIfRequested(report, options.output);

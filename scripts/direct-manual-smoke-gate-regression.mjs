@@ -14,6 +14,7 @@ const {
   buildDirectSettingsSurfaceProjection,
 } = require("../src/main/direct/ui/settings-surface");
 const {
+  DIRECT_INFORMATION_BRIDGE_ROWS,
   buildDirectInformationBridgeAudit,
 } = require("../src/main/direct/bridge/information-registry");
 
@@ -237,8 +238,9 @@ assert(smokeGateRegistryRow, "manual smoke gate registry row should exist");
 assert.equal(smokeGateRegistryRow.role, "observability_surface");
 assert.equal(smokeGateRegistryRow.implementationState, "partial");
 assert.equal(smokeGateRegistryRow.directPathPosture, "keep_readonly");
-assert.equal(audit.summary.totalRows, 38);
-assert.equal(audit.summary.byImplementationState.partial, 26);
+assert.deepEqual(audit.rows, DIRECT_INFORMATION_BRIDGE_ROWS, "audit must cover every current registry row");
+assert.equal(audit.summary.totalRows, DIRECT_INFORMATION_BRIDGE_ROWS.length);
+assert.equal(audit.summary.byImplementationState.partial, DIRECT_INFORMATION_BRIDGE_ROWS.filter((row) => row.implementationState === "partial").length);
 assert.equal(audit.summary.valid, true);
 
 console.log(JSON.stringify({

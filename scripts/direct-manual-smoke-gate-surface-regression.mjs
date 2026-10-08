@@ -25,7 +25,7 @@ assert(app.includes("Manual smoke gate is not exposed by the current projection.
 assert(app.includes('manualSmoke.blockerCodes.length > 5 ? "…" : ""'), "renderer must mark truncated blocker-code lists");
 assert(app.includes("Display-only: no provider, app-server, module, workspace, approval, recursive worker, or promotion transition is exposed."), "renderer copy must preserve display-only authority boundary");
 
-const passingGate = buildDirectManualSmokeGate({
+const smokeGateInput = {
   projectId: "project_manual_surface",
   workThreadId: "work_thread_manual_surface",
   appServerFallbackAvailable: true,
@@ -61,6 +61,17 @@ const passingGate = buildDirectManualSmokeGate({
         schema: "direct_agent_usage_summary_projection@1",
         rowCount: 1,
       },
+      runtimeWitness: {
+        available: true,
+        schema: "direct_runtime_witness_projection@1",
+        chipCount: 5,
+        modelState: "fresh",
+        reasoningState: "fresh",
+        quotaState: "fresh",
+        usageState: "fresh",
+        driftState: "fresh",
+        projectionDigest: "digest_runtime_witness",
+      },
     },
   },
   implementationLaneUiStatus: {
@@ -82,7 +93,26 @@ const passingGate = buildDirectManualSmokeGate({
     available: true,
   },
   nowMs: 0,
+};
+
+const passingGate = buildDirectManualSmokeGate(smokeGateInput);
+assert.equal(passingGate.gateState, "passed", "complete fixture must satisfy every smoke check");
+assert.deepEqual(passingGate.blockerCodes, []);
+assert.equal(passingGate.counts.passedCount, passingGate.rows.length);
+
+const missingRuntimeWitnessGate = buildDirectManualSmokeGate({
+  ...smokeGateInput,
+  settingsProjection: {
+    ...smokeGateInput.settingsProjection,
+    sections: {
+      ...smokeGateInput.settingsProjection.sections,
+      runtimeWitness: undefined,
+    },
+  },
 });
+assert.equal(missingRuntimeWitnessGate.gateState, "blocked", "missing required runtime witnesses must fail closed");
+assert.deepEqual(missingRuntimeWitnessGate.blockerCodes, ["runtime_witness_projection_not_visible"]);
+assert.equal(missingRuntimeWitnessGate.counts.requiredBlockedCount, 1);
 
 const projection = buildDirectSettingsSurfaceProjection({
   projectId: "project_manual_surface",
@@ -95,6 +125,15 @@ assert.equal(projection.sections.manualSmokeGate.gateState, "passed", "manual sm
 assert(projection.rows.manualSmokeGate.some((row) => row.label === "Gate" && row.value === "passed"), "manual smoke rows must include gate state");
 assert(projection.rows.manualSmokeGate.some((row) => row.label === "Authority" && row.value === "display only"), "manual smoke rows must include display-only authority");
 assert(projection.evidenceRefs.some((ref) => ref.kind === "manual_smoke_gate" && ref.digest), "settings projection must cite manual smoke evidence");
+
+const blockedProjection = buildDirectSettingsSurfaceProjection({
+  projectId: "project_manual_surface",
+  manualSmokeGate: missingRuntimeWitnessGate,
+  nowMs: 0,
+});
+assert.equal(blockedProjection.sections.manualSmokeGate.gateState, "blocked", "settings surface must preserve a blocked gate state");
+assert.deepEqual(blockedProjection.sections.manualSmokeGate.blockerCodes, ["runtime_witness_projection_not_visible"]);
+assert(blockedProjection.rows.manualSmokeGate.some((row) => row.label === "Gate" && row.value === "blocked"), "manual smoke rows must include blocked gate state");
 
 console.log(JSON.stringify({
   ok: true,

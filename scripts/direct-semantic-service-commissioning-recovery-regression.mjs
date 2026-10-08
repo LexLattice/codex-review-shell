@@ -21,7 +21,11 @@ const { createAuthorizationProof } = require("../src/main/direct/semantic-servic
 
 const compilerFlag = process.argv.indexOf("--compiler-root");
 const compilerRoot = (compilerFlag >= 0 ? process.argv[compilerFlag + 1] : undefined) || process.argv[2] || process.env.DIRECT_SEMANTIC_COMPILER_ROOT;
-if (!compilerRoot) throw new Error("Provide the installed compiler root as argv[2] or DIRECT_SEMANTIC_COMPILER_ROOT");
+if (!compilerRoot) {
+  // Exit 77 = skipped (the sweep reports it separately from failures).
+  console.log("SKIPPED: provide the installed compiler root as argv[2] or DIRECT_SEMANTIC_COMPILER_ROOT.");
+  process.exit(77);
+}
 const casesFile = path.resolve(new URL("../src/main/direct/semantic-service/resources/commissioning-s14-chain-cases.json", import.meta.url).pathname);
 
 function readCredential(config) {

@@ -112,8 +112,8 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 - `npm run validate` must pass.
 - `bash -l scripts/direct-regression-sweep.sh` (about 5 minutes; start it in
-  the background). Its `FAILED` lines must match **Known failing checks**
-  exactly. Any new failure is a regression introduced by the turn.
+  the background). It must report no `FAILED` lines; its `SKIPPED` lines
+  must match **Known failing checks**. Any failure is a regression.
 - The turn's own regressions.
 - Executor regressions also run on the Windows host, straight from the WSL
   repo: `& 'C:\Program Files\nodejs\node.exe' \\wsl.localhost\Ubuntu\home\rose\work\LexLattice\codex-review-shell-direct\scripts\<name>.mjs`.
@@ -1155,39 +1155,37 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
 ## Known failing checks
 
-Expected `FAILED` lines from `scripts/direct-regression-sweep.sh` (19 as of turn 9).
-All of these also fail on `8ecf16e`, before this track started. Remove a row
-when a turn fixes it; never add a row for a failure a turn introduced.
+None fail as of 2026-10-08: the sweep expects no `FAILED` lines. The 19
+checks that had failed since before this track (`8ecf16e`) were cleaned up:
+seven now skip when what they need is missing, and twelve had stale
+expectations, now fixed (below). Never add a row for a failure a turn
+introduced.
 
-**Need something this machine doesn't provide (7):**
+**Skipped: need something this machine doesn't provide (7).** Each exits
+with code 77 and a `SKIPPED:` reason when it's missing; the sweep lists them
+as `SKIPPED`:
 
 | Regression | Needs |
 |---|---|
 | `direct-arcagi3-workspace-workers-regression` | ArcAGI3 repo at `/home/rose/work/arcagi3-odeu-local` |
-| `direct-container-ui-test-stack-regression` | Docker image build |
+| `direct-container-ui-test-stack-regression` | Working Docker, including its configured credential helper (here `docker-credential-desktop.exe`, not on the WSL login PATH) |
 | `direct-electron-read-approval-regression` | Live provider opt-in (`--allow-live-provider-call`) |
 | `direct-governance-live-non-authority-regression` | Live provider opt-in |
 | `direct-semantic-service-commissioning-regression` | `DIRECT_SEMANTIC_COMPILER_ROOT` |
 | `direct-semantic-service-commissioning-recovery-regression` | `DIRECT_SEMANTIC_COMPILER_ROOT` |
 | `direct-semantic-service-dss04-regression` | `DSS04_COMPILER_ROOT` at the pinned commit |
 
-**Stale expectations outside this track (12; turn 9 fixed
+**Fixed stale expectations (12; turn 9 had already fixed
 `direct-t3-alternate-gui-regression`):**
 
-| Regression | Failure |
-|---|---|
-| `direct-headless-tool-class-examples-regression` | Example pack doesn't cover `direct.inspect_self_constitution`. |
-| `direct-headless-tool-live-candidate-gate-regression` | Same example-pack validation failure. |
-| `direct-headless-tool-live-smoke-report-regression` | Same. |
-| `direct-headless-tool-realism-report-regression` | Same. |
-| `direct-tool-activation-registry-regression` | Same. |
-| `direct-tool-promotion-decision-report-regression` | Same. |
-| `direct-manual-smoke-gate-regression` | Pins 38 registry rows; there are 111. |
-| `direct-module-context-intake-regression` | Pins 37 registry rows; there are 111. |
-| `direct-manual-smoke-gate-surface-regression` | Gate state `blocked`, expected `passed`. |
-| `direct-external-wave18-usability-gate-regression` | `mcp_resource_read_binary_not_ref_only`. |
-| `direct-world-manager-semantic-ingress-regression` | Tool-output count mismatch. |
-| `direct-world-manager-semantic-ui-regression` | Contract text no longer says "completion has not been claimed". |
+| Regression | Was | Fix |
+|---|---|---|
+| `direct-headless-tool-class-examples-regression` and five that validate the same example pack (`-live-candidate-gate`, `-live-smoke-report`, `-realism-report`, `direct-tool-activation-registry`, `direct-tool-promotion-decision-report`) | Example pack didn't cover `direct.inspect_self_constitution` | New example class `session_control.self_constitution_read` (harness-resident, read-only; runner `direct-self-constitution-regression`); downstream counts re-derived (covered tools 37 → 38, classes 18 → 19, fixture candidates 5 → 6, linked runners 15 → 17, the last also stale before) |
+| `direct-manual-smoke-gate-regression`, `direct-module-context-intake-regression` | Pinned 38 / 37 registry rows; there are 111 | Counts derived from the registry (`DIRECT_INFORMATION_BRIDGE_ROWS`), plus a full-coverage check |
+| `direct-manual-smoke-gate-surface-regression` | Gate `blocked` | Fixture lacked the now-required runtime witness; added, plus a case proving a missing witness blocks |
+| `direct-external-wave18-usability-gate-regression` | `mcp_resource_read_binary_not_ref_only` | The gate's binary fixture declared 2,048 bytes with no payload; it now carries one |
+| `direct-world-manager-semantic-ingress-regression` | Request-shape mismatch | Expected shape lacked `serviceTier` |
+| `direct-world-manager-semantic-ui-regression` | Contract text changed | Asserts the current execution summary and that activity isn't completion |
 
 ## Findings to carry forward
 
