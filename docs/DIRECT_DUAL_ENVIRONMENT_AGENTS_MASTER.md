@@ -1290,9 +1290,25 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
     reports now include a timeline (backend wait and model time per
     request, harness/tool gaps, exec durations). Gate:
     `npm run direct:exec-yield`.
-  - Seen in those timelines, not yet addressed: requests report almost no
-    cached input tokens (0 or 1,792 of 3 to 11k per continuation). Direct
-    sends no `prompt_cache_key`; Codex sends its conversation ID there.
+  - Prompt caching: requests reported almost no cached input (0 or 1,792
+    of 3k to 11k tokens per continuation). Two causes: Direct sent no cache
+    key, and each continuation appended its guidance to the turn's
+    instructions, which shifted the tools and the whole input so no prefix
+    matched. Now every request carries the thread ID as `prompt_cache_key`
+    and as the `session-id` / `thread-id` headers (the ChatGPT backend takes
+    cache affinity from the headers, as the Codex CLI sends them), and
+    continuations keep the instructions and tools byte-identical, adding
+    their guidance as a trailing developer message. Live, luna/low, 3 runs
+    each: 20 to 59% of input tokens cached on WSL and 41 to 52% on Windows
+    (before: 0 to 10%). The backend usually serves the cache from two
+    requests back, not the one just before. Not addressed: a new turn
+    still starts with a cold prompt, because recent dialogue and the
+    self-constitution snapshot are rendered into each turn's instructions
+    rather than sent as stable history items. Gate:
+    `npm run direct:prompt-cache`.
+  - Seen in the same timelines, not caused by Direct: an occasional
+    request streams quickly and then pauses 14 to 119 s before a short
+    answer (no reasoning tokens), inside the backend's stream.
 - Patch and command approvals no longer require a scoped implementation
   proof when the thread's grant names the tool. The real app has no proof
   store, so before this any `apply_patch` would have failed the turn as
@@ -1437,6 +1453,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-08 | Continuations keep the full tool set, have no step cap, and run several calls per response in order; only per-call limits stay | Owner's call, matching Codex. A self-constitution check had left the model with no tools ("this continuation exposes no executable tool interface"), and per-family rules and step caps stopped real work midway. |
 | 2026-10-08 | "No step cap" covers distinct work only; the same call with the same result repeating is stopped | Owner's call, after a 58-call `inspect_self_constitution` loop. |
 | 2026-10-08 | Agent testing drives the real app through an opt-in local test control port, with an isolated profile, `gpt-6-luna`/low by default, on both hosts | Owner's call. The older headless scripts built their own reduced controller or tool loop, so they didn't test what the owner runs. |
+| 2026-10-08 | Every request carries the thread ID as `prompt_cache_key` and `session-id`/`thread-id` headers; continuation guidance is a trailing developer message, not an instructions suffix | Matches the Codex CLI's cache identity. The backend's cache matches exact prefixes, so a turn's instructions and tools must not change between its requests. |
 | 2026-10-08 | `exec_command` waits up to 10 s (`yield_time_ms`, max 30 s, at most half the idle timeout) for the command to finish; `write_stdin` waits 250 ms, or 5 s for an empty poll (supersedes the 100 ms first yield in the 2026-10-06 rows) | Codex's defaults. A 100 ms wait turned every command longer than that into an extra provider round trip, measured live at up to 19 s, and a write to the exited process then failed the turn. |
 
 ## Plan changes

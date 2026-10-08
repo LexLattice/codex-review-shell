@@ -237,13 +237,16 @@ try {
   assert.equal(parentBodies.length, 3, "spawn, nested spawn, and nested wait should remain in one provider turn");
   assert.match(JSON.stringify(parentBodies[0]), /spawn_agent_result/);
   assert.match(JSON.stringify(parentBodies[0]), /bounded_analysis/);
+  // Continuation guidance is the trailing developer message.
+  const spawnGuidance = parentBodies[0].input.at(-1);
+  assert.equal(spawnGuidance.role, "developer");
   assert.match(
-    parentBodies[0].instructions,
+    spawnGuidance.content[0].text,
     /launch acknowledgement only, never as evidence that the delegated task completed/,
     "native-agent continuation must preserve lifecycle closure rather than reuse read-file instructions",
   );
   assert.match(
-    parentBodies[0].instructions,
+    spawnGuidance.content[0].text,
     /use wait_agent for pending children/,
     "required child output must compile a bounded wait obligation into the parent continuation contract",
   );

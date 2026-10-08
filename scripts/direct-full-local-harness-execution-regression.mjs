@@ -647,12 +647,17 @@ async function main() {
   assert(providerBodies[0].tools.some((tool) => tool.name === "write_stdin"));
   assert.match(JSON.stringify(providerBodies[1]), /stdinAccepted/);
   // Continuations keep the turn's tools (as in Codex): the exec guidance
-  // pins the live session ID for write_stdin and restricts nothing else.
-  assert.match(providerBodies[1].instructions, /write_stdin/);
-  assert.match(providerBodies[1].instructions, new RegExp(providerState.statefulExecSessionId));
-  assert.match(providerBodies[1].instructions, /any of the declared tools/);
-  assert.match(providerBodies[1].instructions, /answer when the task is done/);
-  assert.doesNotMatch(providerBodies[1].instructions, /Do not request|must not be requested|request only read_file|at most one/i);
+  // (a trailing developer message, so the instructions stay cacheable) pins
+  // the live session ID for write_stdin and restricts nothing else.
+  const stdinGuidance = providerBodies[1].input.at(-1);
+  assert.equal(stdinGuidance.role, "developer");
+  const stdinGuidanceText = stdinGuidance.content[0].text;
+  assert.match(stdinGuidanceText, /write_stdin/);
+  assert.match(stdinGuidanceText, new RegExp(providerState.statefulExecSessionId));
+  assert.match(stdinGuidanceText, /any of the declared tools/);
+  assert.match(stdinGuidanceText, /answer when the task is done/);
+  assert.doesNotMatch(stdinGuidanceText, /Do not request|must not be requested|request only read_file|at most one/i);
+  assert.equal(providerBodies[1].instructions, providerBodies[0].instructions, "continuations keep the turn's instructions");
   assert(providerBodies[1].tools.some((tool) => tool.name === "exec_command"), "exec_command stays declared after write_stdin");
   assert.equal(sessionStore.readTurn(controllerSession.sessionId, providerTurn.turnId).state, "completed");
   assert.equal(providerState.statefulExecResult.status, "running", "interactive provider exec must remain live after the bounded initial yield");

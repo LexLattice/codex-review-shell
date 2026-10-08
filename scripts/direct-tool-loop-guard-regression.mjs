@@ -121,7 +121,10 @@ let checks = 0;
   assert(calls.every((item) => item.name === "inspect_self_constitution" && item.arguments === "{}"));
   assert.match(outputs[0].output, /direct_self_constitution_snapshot@1/);
   assert.doesNotMatch(JSON.stringify(last), /PRIOR TOOL EVIDENCE/);
-  assert.match(bodies[1].instructions, /inspecting again returns the same account/);
+  assert.equal(bodies[1].input.at(-1).role, "developer");
+  assert.match(bodies[1].input.at(-1).content[0].text, /inspecting again returns the same account/);
+  assert.equal(bodies[1].instructions, bodies[0].instructions);
+  assert.equal(last.filter((item) => item.role === "developer").length, 1, "only the current guidance is sent");
   checks += 1;
 }
 

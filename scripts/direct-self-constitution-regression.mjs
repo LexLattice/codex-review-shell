@@ -362,8 +362,13 @@ try {
   });
   await controller.activeRuns.get(inspectStart.turn.id).promise;
   assert.equal(providerRequests.length, 3);
-  assert(providerRequests[2].instructions.includes("after an inspect_self_constitution result"));
-  assert(providerRequests[2].instructions.includes("inspecting again returns the same account"));
+  // Continuation guidance is the trailing developer message; the turn's
+  // instructions stay identical so the prompt cache can reuse them.
+  const inspectGuidance = providerRequests[2].input.at(-1);
+  assert.equal(inspectGuidance.role, "developer");
+  assert(inspectGuidance.content[0].text.includes("after an inspect_self_constitution result"));
+  assert(inspectGuidance.content[0].text.includes("inspecting again returns the same account"));
+  assert.equal(providerRequests[2].instructions, providerRequests[1].instructions);
   // Continuations replay the admitted original input, then the call and its
   // output.
   const continuationOutput = (providerRequests[2].input || [])

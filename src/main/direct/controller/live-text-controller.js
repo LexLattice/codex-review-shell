@@ -4943,6 +4943,7 @@ class DirectLiveTextController {
           model: requestBody.model,
           prompt: requestBody.input?.[0]?.content?.[0]?.text || contextResult.providerInput.prompt,
           instructions: requestBody.instructions,
+          promptCacheKey: session.sessionId,
           fetchImpl: this.fetchImpl || undefined,
           signal: options.signal,
           onLifecycle: (event) => {
@@ -5394,6 +5395,7 @@ class DirectLiveTextController {
           model: requestBody.model,
           prompt: requestBody.input?.[0]?.content?.[0]?.text || contextResult.providerInput.prompt,
           instructions: requestBody.instructions,
+          promptCacheKey: session.sessionId,
           fetchImpl: this.fetchImpl || undefined,
           signal: options.signal,
           onLifecycle: (event) => {
@@ -5661,6 +5663,7 @@ class DirectLiveTextController {
       model: requestBody.model,
       prompt: requestBody.input?.[0]?.content?.[0]?.text || seed.seedText,
       instructions: requestBody.instructions,
+      promptCacheKey: session.sessionId,
       fetchImpl: this.fetchImpl || undefined,
       signal: options.signal,
       onLifecycle: (event) => {
@@ -7038,6 +7041,21 @@ class DirectLiveTextController {
     return [...JSON.parse(JSON.stringify(admitted.input)), ...items];
   }
 
+  // Continuations keep the turn's instructions byte-identical and add their
+  // guidance as a trailing developer message: the backend's prompt cache
+  // matches exact prefixes, and a changed instruction suffix would push the
+  // tools and the whole input out of the cached prefix.
+  continuationRequestParts(admitted = {}, context = {}, continuationInstructions = "") {
+    const guidance = normalizeString(continuationInstructions, "");
+    return {
+      contextInput: [
+        ...this.boundUtilityContinuationInput(admitted, context),
+        ...(guidance ? [{ role: "developer", content: [{ type: "input_text", text: guidance }] }] : []),
+      ],
+      instructions: admitted.instructions,
+    };
+  }
+
   // A file, patch, or command continuation resends what the turn started with
   // (dialogue, attachments, instructions) plus every result so far, as the
   // utility continuations do. Turns without a captured start keep the
@@ -7048,10 +7066,7 @@ class DirectLiveTextController {
     const obligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId)?.obligation;
     if (!isPlainObject(obligation?.result)) return null;
     const context = this.buildBoundUtilityContinuationContext(turn, { result: obligation.result }, sessionId, turnId);
-    return {
-      contextInput: this.boundUtilityContinuationInput(turn.admittedProviderContext, context),
-      instructions: [turn.admittedProviderContext.instructions, continuationInstructions].filter(Boolean).join("\n\n"),
-    };
+    return this.continuationRequestParts(turn.admittedProviderContext, context, continuationInstructions);
   }
 
   appendUtilityContinuationMessage(sessionId, turnId, continuationId, normalizedEvents = [], terminal = {}) {
@@ -7161,11 +7176,12 @@ class DirectLiveTextController {
       reasoningEffort: normalizeString(turn.reasoningEffort, ""),
       serviceTier: normalizeString(turn.serviceTier || turn.service_tier, ""),
       cyberAccessProgram: normalizeString(turn.cyberAccessProgram, ""),
+      promptCacheKey: sessionId,
       fetchImpl: this.fetchImpl || undefined,
       signal: this.turnAbortSignal(turnId),
-      contextInput: this.boundUtilityContinuationInput(turn.admittedProviderContext, boundContinuationContext),
-      instructions: [
-        turn.admittedProviderContext.instructions,
+      ...this.continuationRequestParts(
+        turn.admittedProviderContext,
+        boundContinuationContext,
         agentRuntimeContinuation
           ? NATIVE_AGENT_RUNTIME_CONTINUATION_INSTRUCTIONS
           : statefulExecContinuation
@@ -7181,7 +7197,7 @@ class DirectLiveTextController {
           : selfConstitutionContinuation
             ? SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS
             : DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
-      ].filter(Boolean).join("\n\n"),
+      ),
       continuationTools: continuationToolComposition.tools,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
@@ -11123,6 +11139,7 @@ class DirectLiveTextController {
       reasoningEffort,
       serviceTier,
       cyberAccessProgram,
+      promptCacheKey: sessionId,
       prompt,
       instructions,
       fetchImpl: this.fetchImpl || undefined,

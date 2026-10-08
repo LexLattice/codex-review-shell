@@ -40,6 +40,12 @@ const {
 } = require("../src/main/direct/auth/auth-ipc");
 const { createDirectAuthLoginCoordinator } = require("../src/main/direct/auth/auth-login");
 const { codexAuthTokensFromCredentials } = require("../src/main/direct/auth/app-server-auth-bridge");
+// A continuation's guidance: its trailing developer message (the turn's
+// instructions stay identical so the prompt cache can reuse them).
+const continuationGuidanceText = (body = {}) => {
+  const last = Array.isArray(body.input) ? body.input.at(-1) : null;
+  return last?.role === "developer" ? String(last.content?.[0]?.text || "") : "";
+};
 const { createCodexCliAuthStore, createDirectAuthCompositeStore } = require("../src/main/direct/auth/codex-cli-auth");
 const { normalizeDirectCodexEvents, parseSseFixtureText } = require("../src/main/direct/normalizer/codex-event-normalizer");
 const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/profile-delta-builder");
@@ -2895,8 +2901,8 @@ try {
   assert(!("previous_response_id" in approvedContinuationBody), "Expected approved ChatGPT continuation request not to send previous_response_id.");
   assert(approvedContinuationBody.input.some((item) => item.type === "function_call" && approvedContinuationBody.input.some((output) => output.type === "function_call_output" && output.call_id === item.call_id)), "Expected ChatGPT continuation to replay the call followed by its output, as Codex does.");
   assert(approvedContinuationBody.input.some((item) => item.type === "function_call_output" && item.output.includes("read_file_result")), "Expected approved ChatGPT continuation request to quote read_file result evidence.");
-  assert(approvedContinuationBody.instructions.includes("with any of the declared tools"), "Expected approved live tool continuation request to keep the turn's tools available.");
-  assert(!/at most one|Do not request/.test(approvedContinuationBody.instructions), "Expected approved live tool continuation request not to restrict further tool calls.");
+  assert(continuationGuidanceText(approvedContinuationBody).includes("with any of the declared tools"), "Expected approved live tool continuation request to keep the turn's tools available.");
+  assert(!/at most one|Do not request/.test(approvedContinuationBody.instructions + continuationGuidanceText(approvedContinuationBody)), "Expected approved live tool continuation request not to restrict further tool calls.");
   const approvedObligation = approvedTurn.unresolvedObligations[0];
   assert(approvedObligation.status === "continuation_sent", "Expected approved obligation to record sent continuation.");
   assert(JSON.parse(approvedObligation.result.providerOutputText).kind === "read_file_result", "Expected approved provider output to use read_file_result envelope.");
@@ -3041,8 +3047,8 @@ try {
   assert(patchContinuationBody.input.some((item) => item.type === "function_call" && patchContinuationBody.input.some((output) => output.type === "function_call_output" && output.call_id === item.call_id)), "Expected ChatGPT continuation to replay the call followed by its output, as Codex does.");
   assert(patchContinuationBody.input.some((item) => item.type === "function_call_output" && item.output.includes("apply_patch_result")), "Expected ChatGPT patch continuation to quote patch result evidence.");
   assert(
-    patchContinuationBody.instructions.includes("with any of the declared tools"),
-    `Expected patch continuation to keep the turn's tools available, got: ${patchContinuationBody.instructions}`,
+    continuationGuidanceText(patchContinuationBody).includes("with any of the declared tools"),
+    `Expected patch continuation to keep the turn's tools available, got: ${continuationGuidanceText(patchContinuationBody)}`,
   );
   const patchTurn = patchToolStore.readTurn(patchThread.thread.id, patchAck.turn.id);
   assert(patchTurn.state === "completed", "Expected approved patch continuation to complete the turn.");
@@ -3216,8 +3222,8 @@ try {
   assert(commandContinuationBody.input.some((item) => item.type === "function_call" && commandContinuationBody.input.some((output) => output.type === "function_call_output" && output.call_id === item.call_id)), "Expected ChatGPT continuation to replay the call followed by its output, as Codex does.");
   assert(commandContinuationBody.input.some((item) => item.type === "function_call_output" && item.output.includes("run_command_result")), "Expected ChatGPT command continuation to quote command result evidence.");
   assert(
-    commandContinuationBody.instructions.includes("with any of the declared tools"),
-    `Expected command continuation to keep the turn's tools available, got: ${commandContinuationBody.instructions}`,
+    continuationGuidanceText(commandContinuationBody).includes("with any of the declared tools"),
+    `Expected command continuation to keep the turn's tools available, got: ${continuationGuidanceText(commandContinuationBody)}`,
   );
   const commandTurn = commandToolStore.readTurn(commandThread.thread.id, commandAck.turn.id);
   assert(commandTurn.state === "completed", "Expected approved command continuation to complete the turn.");

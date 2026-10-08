@@ -302,7 +302,8 @@ function formatReport(report, extra = {}) {
     const timing = request.timing
       ? ` · wait ${ms(request.timing.waitMs)} · model ${request.timing.modelMs === undefined ? "?" : ms(request.timing.modelMs)}`
       : "";
-    lines.push(`  #${request.n}${shape} · in ${formatNumber(request.inputTokens)} · out ${formatNumber(request.outputTokens)}${timing}`);
+    const cached = request.cachedInputTokens ? ` (cached ${formatNumber(request.cachedInputTokens)})` : "";
+    lines.push(`  #${request.n}${shape} · in ${formatNumber(request.inputTokens)}${cached} · out ${formatNumber(request.outputTokens)}${timing}`);
   }
   if ((report.timeline || []).length) {
     lines.push(`timeline: ${report.timeline.map((entry) => `${entry.phase} ${ms(entry.ms)}`).join(" · ")}`);

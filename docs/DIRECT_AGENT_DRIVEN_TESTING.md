@@ -41,7 +41,8 @@ and a readable output summary (`--raw` for exactly what the model saw),
 owner decisions, warnings, the reply, and the end state. `--json` gives the
 same as data.
 
-Each request also shows `wait` (sent to response headers: backend queue)
+Each request also shows its cached input tokens (prompt cache hits),
+`wait` (sent to response headers: backend queue)
 and `model` (headers to stream end: the model producing its answer). The
 `timeline` line splits the turn's wall time into requests and the
 tools/harness gaps between them, and exec calls show how long the process

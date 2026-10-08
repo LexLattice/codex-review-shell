@@ -508,6 +508,7 @@ function requestShapeForDiagnostic(requestBody = {}) {
     reasoningEffort: normalizeString(requestBody.reasoning?.effort || requestBody.reasoning_effort, ""),
     serviceTier: normalizeString(requestBody.service_tier || requestBody.serviceTier, ""),
     ...(requestBody.access_programs?.cyber ? { cyberAccessProgram: normalizeString(requestBody.access_programs.cyber, "") } : {}),
+    ...(requestBody.prompt_cache_key ? { promptCacheKeySent: true } : {}),
     ...(isPlainObject(requestBody.text?.format)
       ? {
           textFormatType: normalizeString(
@@ -1133,6 +1134,13 @@ function terminalStateFromNormalizedEvents(normalizedEvents = []) {
 }
 
 async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, resultOptions = {}) {
+  // Like Codex (its conversation ID), one key per thread, sent as the body's
+  // prompt_cache_key and the session-id/thread-id headers, routes every
+  // request of the thread to the same prompt cache.
+  const promptCacheKey = normalizeString(options.promptCacheKey, "");
+  if (promptCacheKey && isPlainObject(requestBody) && !requestBody.prompt_cache_key) {
+    requestBody = { ...requestBody, prompt_cache_key: promptCacheKey };
+  }
   const limits = transportLimits(options);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("Direct Codex streaming request requires fetch.");
@@ -1184,7 +1192,12 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
       }
       response = await fetchImpl(endpoint, {
         method: "POST",
-        headers: authHeaders(resolvedCredentials || {}),
+        headers: {
+          ...authHeaders(resolvedCredentials || {}),
+          // The ChatGPT backend takes cache affinity from these headers (as
+          // the Codex CLI sends them); the body key alone caches little.
+          ...(promptCacheKey ? { "session-id": promptCacheKey, "thread-id": promptCacheKey } : {}),
+        },
         body: JSON.stringify(requestBody),
         signal: options.signal,
       });
@@ -1535,6 +1548,7 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
     reasoningEffort: options.reasoningEffort ?? normalizeString(existingTurn.reasoningEffort, ""),
     serviceTier: options.serviceTier ?? normalizeString(existingTurn.serviceTier, ""),
     cyberAccessProgram: options.cyberAccessProgram ?? normalizeString(existingTurn.cyberAccessProgram, ""),
+    promptCacheKey: options.promptCacheKey ?? normalizeString(options.sessionId, ""),
   };
   const recorded = recordReadOnlyToolContinuationRequest({
     ...options,
