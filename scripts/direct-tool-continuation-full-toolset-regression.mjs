@@ -121,6 +121,15 @@ try {
   const results = turn.toolResults.map((result) => ({ result, obligation: turn.unresolvedObligations.find((o) => o.obligationId === result.obligationId) }));
   assert.deepEqual(results.map(({ obligation }) => obligation.name), ["inspect_self_constitution", "exec_command", "apply_patch", "read_file"]);
   assert.match(JSON.parse(results[1].result.providerOutputText).stdoutPreview, /step-two-ran/);
+  // The model's own view of its tools reflects the thread's Full access: the
+  // grant authorizes edits and commands, nothing waits on per-action approval.
+  const rows = JSON.parse(results[0].result.providerOutputText).snapshot.capabilities.rows;
+  for (const name of ["apply_patch", "exec_command", "read_file"]) {
+    const row = rows.find((entry) => entry.toolName === name);
+    assert.equal(row?.grantedState, "granted", `${name} reads as granted`);
+    assert.equal(row.authority.requirement, "durable_task_grant", `${name} is authorized by the thread grant`);
+  }
+  assert.equal(rows.some((entry) => entry.authority?.requirement === "per_action_human_approval"), false);
   assert.equal(await fs.readFile(path.join(workspace, "calc.js"), "utf8"), "module.exports = (a, b) => a + b;\n");
   assert.match(results[3].result.providerOutputText, /a \+ b/, "the read in the same response sees the patch");
   checks += 1;

@@ -898,13 +898,19 @@ async function runWorldManagerSemanticRoleThroughDirect(input = {}) {
       error.code = "constitutional_meta_role_runtime_policy_mismatch";
       throw error;
     }
-    const directProviderMetadata =
-      directProviderMetadataStatusForProject(project);
-    const catalog = buildWorldManagerModelCatalog({
+    const catalogFor = () => buildWorldManagerModelCatalog({
       providerMetadataProfile:
-        directProviderMetadata?.profile || null,
+        directProviderMetadataStatusForProject(project)?.profile || null,
       profileDoc: ensureDirectCodexProfileDoc(),
     });
+    let catalog = catalogFor();
+    // A new project has no cached model list yet; without it the router
+    // would fall back to its policy's own candidate, which the account may
+    // not offer (gpt-5.3-codex-spark is refused for ChatGPT accounts).
+    if (!(catalog.models || []).some((entry) => entry?.source === "server_model_list")) {
+      await refreshDirectProviderMetadataForProject(project);
+      catalog = catalogFor();
+    }
     runtimeSelection =
       resolveConstitutionalMetaRoleRuntimeSelection({
         invocation: input.metaRoleInvocation,
@@ -14455,6 +14461,22 @@ async function startDirectTestControlServer() {
   if (!activeAppProfile.isolated && process.env.DIRECT_TEST_CONTROL_ALLOW_DEFAULT_PROFILE !== "1") {
     console.warn("[direct-test-control] refused: test control runs only with an isolated profile (CODEX_REVIEW_SHELL_USER_DATA_DIR).");
     return;
+  }
+  // A fresh profile's default "Example Project" is the app's own checkout; a
+  // test turn there could edit the code under test. It becomes a scratch
+  // folder in the test profile (a profile always keeps one active project).
+  const config = await loadConfig();
+  const example = config.projects.find((project) => project.id === "project_example");
+  const exampleRoot = example ? path.resolve(workspaceToRepoPath(example.workspace, "")) : "";
+  if (example && (exampleRoot === path.resolve(repoRoot) || example.workspace?.kind === "wsl")) {
+    const scratch = path.join(app.getPath("userData"), "scratch-project");
+    await fs.mkdir(scratch, { recursive: true });
+    await saveConfig({
+      ...config,
+      projects: config.projects.map((project) => project.id === "project_example"
+        ? { ...project, name: "Scratch (test profile)", workspace: { kind: "local", localPath: scratch, label: "Test scratch" }, repoPath: scratch }
+        : project),
+    });
   }
   directTestControlServer = new DirectTestControlServer({
     userDataDir: app.getPath("userData"),

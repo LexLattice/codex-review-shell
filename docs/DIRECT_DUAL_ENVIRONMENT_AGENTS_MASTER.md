@@ -1250,12 +1250,24 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   ends the turn.
 - Agent-driven testing: `scripts/direct-drive.mjs` drives the real app
   (hidden, isolated test profile, test control port) on Windows or WSL; see
-  `docs/DIRECT_AGENT_DRIVEN_TESTING.md`. First live runs also showed: the
-  sub-agent policy preflight fails with `http_400` on a thread's first turn
-  (warning shown, turn continues); under Full access the model reports that
-  file edits and commands "have additional gates", which the snapshot
-  apparently suggests but the grant doesn't impose; a process the model left
-  running keeps running after Stop.
+  `docs/DIRECT_AGENT_DRIVEN_TESTING.md`. Fixed from its first live runs:
+  - The sub-agent policy preflight failed with `http_400` on a new
+    project's first turn: with no cached model list it fell back to its
+    policy candidate `gpt-5.3-codex-spark`, which ChatGPT accounts can't
+    use. It now fetches the account's model list first.
+  - `inspect_self_constitution` built its snapshot without the thread's
+    grant, so under Full access every tool read as `not_granted` and edits
+    and commands as needing per-action approval. It now carries the grant
+    (rows read `granted` / `durable_task_grant`); live, the model answers
+    that nothing needs approval.
+  - Stop now also ends the commands the turn started (earlier turns'
+    processes and the owner's terminals are untouched); live, a running
+    counter froze when Stop was pressed.
+  - Test profiles point the default "Example Project" at a scratch folder
+    instead of the app's own checkout.
+  Still open: a prompt mentioning an absolute path (for example `/tmp/x`)
+  is refused before the model runs (`current_user_prompt_redaction_failed`);
+  Codex sends such prompts as written.
 - Patch and command approvals no longer require a scoped implementation
   proof when the thread's grant names the tool. The real app has no proof
   store, so before this any `apply_patch` would have failed the turn as

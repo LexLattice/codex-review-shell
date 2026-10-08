@@ -189,6 +189,9 @@ class DirectTestControlServer {
   async project(projectId) {
     const project = await this.projects.get(normalizeString(projectId, ""));
     if (!project) throw httpError(404, "test_control_project_not_found", `No project ${projectId}.`);
+    if (project.lifecycle?.state === "archived") {
+      throw httpError(409, "test_control_project_archived", `Project ${projectId} is archived; create a test project with project-add.`);
+    }
     return project;
   }
 

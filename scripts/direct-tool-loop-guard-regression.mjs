@@ -87,7 +87,7 @@ async function runTurn(name, next) {
     const turnStart = await controller.handleRequest("turn/start", {
       threadId: taskId, clientTurnRequestId: `${name}_turn`, promptText: "What about now? Any change in tools that you see?",
     }, context);
-    Object.assign(ctx, { controller, taskId, turnId: turnStart.turn.id, context });
+    Object.assign(ctx, { controller, taskId, turnId: turnStart.turn.id, context, workspace });
     await controller.waitForTurnCompletion({ sessionId: taskId, turnId: turnStart.turn.id });
     return { turn: sessionStore.readTurn(taskId, turnStart.turn.id), bodies, notifications };
   } finally {
@@ -164,6 +164,36 @@ let checks = 0;
   assert.equal(turn.state, "aborted", JSON.stringify({ state: turn.state, error: turn.error }));
   assert.equal(bodies.length, 2);
   assert(notifications.some((n) => n.method === "turn/completed" && n.params.turn?.status === "aborted"));
+  checks += 1;
+}
+
+// 5. Stop ends the command the turn left running.
+{
+  let pid = 0;
+  let diedAfterStop = false;
+  const { turn } = await runTurn("stop_kills_process", async (index, _body, ctx) => {
+    if (index === 0) {
+      return { calls: [["exec_command", {
+        cmd: `${node} -e ${quote("require('fs').writeFileSync('pid.txt', String(process.pid)); setInterval(() => console.log('tick'), 200)")}`,
+        yield_time_ms: 500,
+      }]] };
+    }
+    pid = Number(await fs.readFile(path.join(ctx.workspace, "pid.txt"), "utf8"));
+    process.kill(pid, 0);
+    await ctx.controller.handleRequest("turn/interrupt", { threadId: ctx.taskId, turnId: ctx.turnId }, ctx.context);
+    for (let attempt = 0; attempt < 50 && !diedAfterStop; attempt += 1) {
+      try {
+        process.kill(pid, 0);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      } catch {
+        diedAfterStop = true;
+      }
+    }
+    return { text: "unused", honorSignal: true };
+  });
+  assert(pid > 0, "the command started and wrote its pid");
+  assert.equal(diedAfterStop, true, "Stop ended the turn's running command");
+  assert.equal(turn.state, "aborted");
   checks += 1;
 }
 

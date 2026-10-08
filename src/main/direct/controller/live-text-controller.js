@@ -6703,6 +6703,9 @@ class DirectLiveTextController {
         session,
         sessionId,
         turnId,
+        // What the thread's Access authorizes, as in the turn-start snapshot;
+        // without it every tool read as needing per-action approval.
+        harnessGrant: this.harnessGrantForTurn(sessionId, turnId, options.project || {}),
         model: normalizeString(turn.model, session.model),
         reasoningEffort: normalizeString(turn.reasoningEffort, session.reasoningEffort),
         potentialToolNames: previousSnapshot.capabilities?.potentialToolNames,
@@ -11362,6 +11365,36 @@ class DirectLiveTextController {
     };
   }
 
+  // Stop also ends the commands this turn started that are still running
+  // (earlier turns' processes, and the owner's own terminals, are untouched).
+  cancelTurnProcesses(sessionId, turnId, project = {}) {
+    if (!this.statefulExecSessionManager) return 0;
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const grant = this.harnessGrantForTurn(sessionId, turnId, project);
+    if (!grant) return 0;
+    const execSessionIds = new Set((Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .filter((obligation) => normalizeString(obligation.name, "") === "exec_command")
+      .map((obligation) => normalizeString(obligation.statefulExecSessionId || obligation.statefulExecResult?.sessionId, ""))
+      .filter(Boolean));
+    let cancelled = 0;
+    for (const execSessionId of execSessionIds) {
+      try {
+        const result = this.statefulExecSessionManager.cancel({
+          sessionId: execSessionId,
+          taskId: sessionId,
+          threadId: sessionId,
+          projectId: normalizeString(project.id || project.projectId, "") ||
+            normalizeString(this.sessionStore.readSession(sessionId)?.projectId, ""),
+          harnessGrant: grant,
+          grantId: grant.grantId,
+          executionEnvironmentDigest: grant.executionEnvironmentDigest,
+        });
+        if (result?.cancellationRequested && !result.alreadyTerminal) cancelled += 1;
+      } catch {}
+    }
+    return cancelled;
+  }
+
   interruptTurn(params = {}, context = {}) {
     const turnId = normalizeString(params.turnId, "");
     const sessionId = normalizeString(params.sessionId || params.threadId, "");
@@ -11382,6 +11415,7 @@ class DirectLiveTextController {
     // Abort whatever request of the turn is in flight (first or continuation);
     // the tool loop checks the same signal before each next call.
     this.turnAbortController(turn.turnId).abort();
+    this.cancelTurnProcesses(sessionId, turnId, context.project || {});
     const active = this.activeRuns.get(turn.turnId);
     if (active?.abortController) {
       active.abortController.abort();
