@@ -9902,8 +9902,16 @@ class DirectLiveTextController {
     const existingTurnIds = this.sessionStore.listTurnIdsFromDisk(session.sessionId);
     const existingTurnCount = existingTurnIds.length;
     const summaries = Array.isArray(session.turns) ? session.turns : [];
-    const previousSummary = summaries.length ? summaries[summaries.length - 1] : null;
-    const previousTurn = previousSummary?.turnId ? this.sessionStore.readTurn(session.sessionId, previousSummary.turnId) : null;
+    // A turn that failed before provider transport never sent its prompt or
+    // added to the dialogue, so a follow-up builds on the last turn that ran.
+    let previousTurn = null;
+    let ranTurnCount = 0;
+    for (let index = summaries.length - 1; index >= 0; index -= 1) {
+      const candidate = summaries[index]?.turnId ? this.sessionStore.readTurn(session.sessionId, summaries[index].turnId) : null;
+      if (candidate?.preTransportFailed === true) continue;
+      ranTurnCount += 1;
+      if (!previousTurn) previousTurn = candidate;
+    }
     const binding = normalizeCodexBinding(project.surfaceBinding?.codex || {});
     const directLiveTier = (binding.runtimeMode === "direct" || binding.runtimeMode === "direct-experimental") &&
       binding.directTransport === "live-text";
@@ -9954,7 +9962,7 @@ class DirectLiveTextController {
       : [];
     const useRecentDialogue = compiledAgentContext
       ? false
-      : existingTurnCount > 0;
+      : existingTurnCount > 0 && ranTurnCount > 0;
     let frozenContextProjection = null;
     if (useRecentDialogue) {
       if (!previousTurn || !SAFE_TEXT_ONLY_FOLLOWUP_PREVIOUS_STATES.has(previousTurn.state)) {
@@ -11031,21 +11039,32 @@ class DirectLiveTextController {
       } catch {}
     }
     if (obligationResult.obligations.length && !toolBlockedTextOnly) {
-      const createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligationResult.obligations, project);
+      // Tool calls the thread's access covers run without asking; only a
+      // request actually put to the owner (an rpc-request) needs a warning.
+      let ownerRequests = 0;
+      const countOwnerRequests = (event) => {
+        if (event?.type === "rpc-request") ownerRequests += 1;
+      };
+      surfaceSession?.on?.("event", countOwnerRequests);
+      let createdApprovalRequests = 0;
+      try {
+        createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligationResult.obligations, project);
+      } finally {
+        surfaceSession?.off?.("event", countOwnerRequests);
+      }
       const ledgerOnly = obligationResult.obligations.every((obligation) =>
         this.isEpistemicLedgerObligation(sessionId, turnId, obligation));
       const agentRuntimeOnly = obligationResult.obligations.every((obligation) =>
         this.isNativeSubAgentRuntimeObligation(obligation) || this.isReadOnlySubAgentStatusObligation(obligation));
-      if (!agentRuntimeOnly) {
-        this.emitNotification(surfaceSession, "warning", {
-          threadId: sessionId,
-          turnId,
-          message: ledgerOnly
-            ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
-            : createdApprovalRequests
-              ? "Direct live text detected a tool call. Local approval is required before local authority is used."
-              : "Direct live text detected a tool call, but the required direct tool continuation evidence is not enabled.",
-        });
+      const message = ledgerOnly
+        ? "Direct processed a role-compiled epistemic ledger act and continued the provider turn."
+        : ownerRequests
+          ? "Direct live text detected a tool call. Local approval is required before local authority is used."
+          : createdApprovalRequests
+            ? ""
+            : "Direct live text detected a tool call, but the required direct tool continuation evidence is not enabled.";
+      if (!agentRuntimeOnly && message) {
+        this.emitNotification(surfaceSession, "warning", { threadId: sessionId, turnId, message });
       }
     } else if (toolBlockedTextOnly) {
       this.emitNotification(surfaceSession, "warning", {

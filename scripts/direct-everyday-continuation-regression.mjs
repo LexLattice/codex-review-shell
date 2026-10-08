@@ -86,7 +86,11 @@ async function runRoute(root, threaded, options = {}) {
   try {
     const surface = new DirectLiveTextSurfaceSession(null, { controller, project });
     let approvals = 0;
-    surface.on("event", (e) => { if (e.type === "rpc-request") approvals += 1; });
+    const warnings = [];
+    surface.on("event", (e) => {
+      if (e.type === "rpc-request") approvals += 1;
+      if (e.type === "rpc-notification" && e.method === "warning") warnings.push(String(e.params?.message || ""));
+    });
     const context = { project, ownerControlled: true, surfaceSession: surface };
     const started = await controller.handleRequest("thread/start", {
       title: "Read repair test", model: "gpt-5.6-sol", reasoningEffort: "max", serviceTier: "flex", accessProfile: "full_access",
@@ -103,6 +107,9 @@ async function runRoute(root, threaded, options = {}) {
     assert.equal(turn.state, "completed", JSON.stringify(turn.error));
     assert.equal(bodies.length, 4);
     assert.equal(approvals, 0);
+    // Full access ran the commands without asking, so nothing claims an
+    // approval is required.
+    assert.equal(warnings.some((message) => /approval is required/i.test(message)), false, warnings.join(" | "));
     assert.equal(await fs.readFile(path.join(workspace, "calc.js"), "utf8"), expectedSource);
     assert.equal(await fs.readFile(path.join(workspace, "test.js"), "utf8"), testSource);
     assert.equal(spawnSync(process.execPath, ["test.js"], { cwd: workspace, timeout: 5000 }).status, 0);
@@ -158,6 +165,64 @@ async function runRoute(root, threaded, options = {}) {
   }
 }
 
+// A turn that fails before provider transport (its prompt never sent) must
+// not block the thread: the next turn starts as if it were the first.
+async function preTransportRecovery(root) {
+  const workspace = path.join(root, "pre-transport-workspace");
+  await fs.mkdir(workspace, { recursive: true });
+  const project = {
+    id: "pre_transport_recovery", name: "Pre-transport recovery",
+    workspace: { kind: "local", localPath: workspace },
+    surfaceBinding: { codex: { runtimeMode: "direct", directTransport: "live-text", directTier: "implementation-lane" } },
+  };
+  const sessionStore = new DirectSessionStore({ rootDir: path.join(root, "pre-transport-sessions") });
+  const grants = new DirectThreadHarnessGrantStore({ rootDir: path.join(root, "pre-transport-grants") });
+  const threadStore = new DirectThreadStore({ rootDir: path.join(root, "pre-transport-threads"), mode: "index_only" });
+  const bodies = [];
+  let failNext = true;
+  const controller = new DirectLiveTextController({
+    sessionStore, directThreadStore: threadStore, harnessGrantStore: grants,
+    profileDoc: { profile: { ontology: { models: [{ id: "gpt-5.6-sol", status: "accepted" }] } } },
+    endpoint: "https://chatgpt.test/backend-api/codex/responses", authStore,
+    activationStatusResolver: () => ({ status: "ready", model: "gpt-5.6-sol", context: { contextWindow: 100000, usedTokens: 1, remainingTokens: 99999 } }),
+    epistemicContextDeliveryResolver: async () => {
+      if (failNext) {
+        failNext = false;
+        throw Object.assign(new Error("fixture failure before transport"), { code: "fixture_pre_transport_failure" });
+      }
+      return null;
+    },
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return response(`pre_transport_${bodies.length}`, null);
+    },
+  });
+  try {
+    const surface = new DirectLiveTextSurfaceSession(null, { controller, project });
+    const context = { project, ownerControlled: true, surfaceSession: surface };
+    const started = await controller.handleRequest("thread/start", {
+      title: "Recovers after a pre-transport failure", model: "gpt-5.6-sol", accessProfile: "full_access",
+      workThreadId: "work_thread_pre_transport",
+    }, context);
+    const taskId = started.thread.id;
+    await assert.rejects(
+      controller.handleRequest("turn/start", { threadId: taskId, clientTurnRequestId: "pre_transport_first", promptText: "First message" }, context),
+      (error) => error.code === "fixture_pre_transport_failure",
+    );
+    assert.equal(bodies.length, 0, "the failed turn never reached the provider");
+    const second = await controller.handleRequest("turn/start", { threadId: taskId, clientTurnRequestId: "pre_transport_second", promptText: "Second message" }, context);
+    await controller.waitForTurnCompletion({ sessionId: taskId, turnId: second.turn.id });
+    const turn = sessionStore.readTurn(taskId, second.turn.id);
+    assert.equal(turn.state, "completed", JSON.stringify(turn.error));
+    assert.equal(bodies.length, 1);
+    assert(!JSON.stringify(bodies[0].input).includes("First message"), "the unsent prompt isn't replayed as dialogue");
+    return true;
+  } finally {
+    controller.close("regression cleanup");
+    threadStore.close();
+  }
+}
+
 async function pollBoundary(root) {
   const grants = new DirectThreadHarnessGrantStore({ rootDir: path.join(root, "poll-grants") });
   const manager = new DirectStatefulExecSessionManager({ grantStore: grants, workspaceRootResolver: () => root });
@@ -199,7 +264,8 @@ try {
   for (const threaded of [false, true]) routes.push(await runRoute(path.join(root, String(threaded)), threaded));
   routes.push({ ...(await runRoute(path.join(root, "work-thread"), true, { workThread: true })), workThread: true });
   await pollBoundary(root);
-  console.log(JSON.stringify({ ok: true, routes, readRepairTest: true, terminalPollAuthorization: true }));
+  const recoversAfterPreTransportFailure = await preTransportRecovery(root);
+  console.log(JSON.stringify({ ok: true, routes, readRepairTest: true, terminalPollAuthorization: true, recoversAfterPreTransportFailure }));
 } finally {
   await fs.rm(root, { recursive: true, force: true });
 }
