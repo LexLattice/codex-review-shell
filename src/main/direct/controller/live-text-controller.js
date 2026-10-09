@@ -322,6 +322,13 @@ function withPermissionsTool(tools, grant) {
 // the owner confirms each one. This replaces a separate per-turn model call
 // that classified every message for policy changes before the turn ran.
 const SUB_AGENT_POLICY_TOOL_NAME = "update_sub_agent_policy";
+// Codex's multi-agent mode message for the Ultra effort (its other efforts
+// delegate only when asked), naming Direct's agent tools.
+const PROACTIVE_DELEGATION_MESSAGE = [
+  "Proactive multi-agent delegation is active. Any earlier developer instruction requiring an explicit user request before spawning sub-agents no longer applies. This mode remains active until a later multi-agent mode developer message changes it. User requests override this hint.",
+  "",
+  "If at any point you can parallelize work by delegating tasks to another agent (no matter if you are root or subagent), you should do so using spawn_agent (and wait_agent for the results) if it could save time or improve quality.",
+].join("\n");
 function subAgentPolicyToolSchema() {
   return {
     type: "function",
@@ -11244,7 +11251,18 @@ class DirectLiveTextController {
           content: [{ type: "input_text", text: `Self constitution snapshot for this turn: ${selfConstitutionSnapshot.digest}.` }],
         });
       }
+      const proactiveDelegation = implementationTier &&
+        selectedReasoningEffort === "ultra" &&
+        Array.isArray(requestBody.input) &&
+        (requestBody.tools || []).some((tool) => normalizeString(tool?.name, "") === "spawn_agent");
+      if (proactiveDelegation) {
+        requestBody.input.push({
+          role: "developer",
+          content: [{ type: "input_text", text: PROACTIVE_DELEGATION_MESSAGE }],
+        });
+      }
       requestShape = {
+        ...(proactiveDelegation ? { proactiveDelegation: true } : {}),
         ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
         directTurnOwnerControlled: ownerControlled,
         directTurnServiceTier: serviceTier,

@@ -1302,6 +1302,15 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   owner applied it; a new project's first turn spent 4.6 s before its first
   request (6.8 and 9.2 s in two earlier runs with the preflight). Gate:
   `npm run direct:sub-agent-policy-tool`.
+- Changed 2026-10-09: Ultra turns delegate proactively, as in Codex. When
+  the chosen effort is Ultra (sent as the model's multi-agent effort) and
+  the turn can spawn agents, its input ends with Codex's multi-agent mode
+  message ("Proactive multi-agent delegation is active…", naming
+  `spawn_agent` and `wait_agent`); continuations keep it, and
+  `requestShape.proactiveDelegation` records it. Other efforts don't get
+  it. Live, luna Ultra (sent as max): the turn completed and, for a
+  trivial two-part question, answered without spawning. Gate:
+  `npm run direct:proactive-delegation`.
 - Added 2026-10-08: Windows commands start in an already-running
   PowerShell. The local process backend (also used natively by the
   Windows executor) keeps one idle shell per launch shape (sandbox
