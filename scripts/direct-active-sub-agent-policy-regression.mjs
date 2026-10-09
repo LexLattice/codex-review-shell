@@ -542,11 +542,7 @@ const admissionRaceProject = {
     },
   },
 };
-let semanticAdmissionCalls = 0;
-let releaseSemanticAdmission;
-const semanticAdmissionGate = new Promise((resolve) => {
-  releaseSemanticAdmission = resolve;
-});
+let providerFetchCalls = 0;
 let releaseProviderResponse;
 const providerResponseGate = new Promise((resolve) => {
   releaseProviderResponse = resolve;
@@ -601,18 +597,10 @@ const admissionRaceController = new DirectLiveTextController({
     rawWorkspacePathIncluded: false,
     rawAccountIncluded: false,
   }),
-  activeSubAgentPolicySemanticPreflight: async () => {
-    semanticAdmissionCalls += 1;
-    await semanticAdmissionGate;
-    return {
-      settlement: {
-        settlementId: "policy_settlement_admission_race",
-        digest: "sha256:policy-settlement-admission-race",
-        state: "no_change",
-      },
-    };
+  fetchImpl: async () => {
+    providerFetchCalls += 1;
+    return providerResponseGate;
   },
-  fetchImpl: async () => providerResponseGate,
 });
 const firstAdmission = admissionRaceController.startTurn({
   sessionId: admissionRaceThreadId,
@@ -621,10 +609,6 @@ const firstAdmission = admissionRaceController.startTurn({
   model: "gpt-5.4",
   effort: "high",
 }, { project: admissionRaceProject });
-for (let index = 0; index < 20 && semanticAdmissionCalls === 0; index += 1) {
-  await new Promise((resolve) => setImmediate(resolve));
-}
-assert.equal(semanticAdmissionCalls, 1);
 const secondAdmission = admissionRaceController.startTurn({
   sessionId: admissionRaceThreadId,
   clientTurnRequestId: "client_admission_race_second",
@@ -632,23 +616,16 @@ const secondAdmission = admissionRaceController.startTurn({
   model: "gpt-5.4",
   effort: "high",
 }, { project: admissionRaceProject });
-await new Promise((resolve) => setImmediate(resolve));
-assert.equal(
-  semanticAdmissionCalls,
-  1,
-  "a second turn must wait outside semantic preflight until the first admission is committed",
-);
-releaseSemanticAdmission();
 const firstAdmissionResult = await firstAdmission;
 await assert.rejects(
   secondAdmission,
   (error) => error?.code === "active_turn_exists",
-  "serialized admission must recheck the active turn before a second semantic preflight",
+  "a second turn is refused while the first is active",
 );
 assert.equal(
-  semanticAdmissionCalls,
+  providerFetchCalls,
   1,
-  "a rejected concurrent turn must not spend a second semantic-settlement invocation",
+  "a turn makes no separate sub-agent policy model call, and a refused turn makes none at all",
 );
 releaseProviderResponse(new Response([
   "event: response.created",

@@ -349,7 +349,8 @@ async function main() {
     assert.notEqual(sessionStore.readTurn(execSession.sessionId, execTurn.turnId).state, "failed");
     report.checks.push("actionable_exec_error_returned_to_model");
 
-    // 9. A failing sub-agent policy preflight no longer fails the turn.
+    // 9. A turn makes no separate sub-agent policy model call (the model
+    // proposes changes with update_sub_agent_policy instead).
     const preflightSession = sessionStore.createSession({
       sessionId: "preflight_thread",
       projectId,
@@ -367,6 +368,7 @@ async function main() {
       surfaceBinding: { codex: { runtimeMode: "direct-experimental", directTransport: "live-text", directTier: "implementation-lane", model: "gpt-5.4", profileId: "access-profiles-profile" } },
     };
     const notifications = [];
+    let preflightFetchCalls = 0;
     const preflightController = new DirectLiveTextController({
       sessionStore,
       profileDoc: {
@@ -382,12 +384,7 @@ async function main() {
         readStatus: () => ({ status: "authenticated", accountId: "fixture-account", hasAccessToken: true, hasRefreshToken: true, storageMode: "memory" }),
         readCredentials: () => ({ accessToken: "fixture-access-token", accountId: "fixture-account" }),
       },
-      activeSubAgentPolicySemanticPreflight: async () => {
-        const error = new Error("router offline");
-        error.code = "direct_active_sub_agent_policy_semantic_router_unavailable";
-        throw error;
-      },
-      fetchImpl: async () => new Response([
+      fetchImpl: async () => (preflightFetchCalls += 1, new Response([
         "event: response.created",
         "data: {\"response\":{\"id\":\"resp_preflight\",\"model\":\"gpt-5.4\"}}",
         "",
@@ -397,7 +394,7 @@ async function main() {
         "event: response.completed",
         "data: {\"response\":{\"id\":\"resp_preflight\",\"status\":\"completed\"}}",
         "",
-      ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } })),
     });
     const started = await preflightController.startTurn({
       sessionId: preflightSession.sessionId,
@@ -408,11 +405,10 @@ async function main() {
     }, { project: preflightProject, surfaceSession: { sendEvent: (event) => notifications.push(event) } });
     await preflightController.waitForTurnCompletion({ sessionId: preflightSession.sessionId, turnId: started.turn.id });
     const preflightTurn = sessionStore.readTurn(preflightSession.sessionId, started.turn.id);
-    assert.equal(preflightTurn.requestShape.activeSubAgentPolicySemanticSettlementState, "preflight_unavailable");
-    assert.equal(preflightTurn.requestShape.activeSubAgentPolicySemanticFailureCode, "direct_active_sub_agent_policy_semantic_router_unavailable");
-    assert.notEqual(preflightTurn.state, "failed");
-    assert(notifications.some((event) => event.method === "warning" && /sub-agent policy/i.test(event.params?.message || "")));
-    report.checks.push("preflight_fail_open");
+    assert.equal(preflightTurn.state, "completed");
+    assert.equal(preflightFetchCalls, 1, "one provider request: the turn itself");
+    assert.equal(preflightTurn.requestShape.activeSubAgentPolicySemanticSettlementState, undefined);
+    report.checks.push("no_policy_preflight_call");
 
     // 10. Workbench turns do not require controlled routing.
     const rendererSource = await fs.readFile(new URL("../src/renderer/codex-surface.js", import.meta.url), "utf8");

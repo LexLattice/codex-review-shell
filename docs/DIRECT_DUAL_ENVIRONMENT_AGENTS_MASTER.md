@@ -1283,6 +1283,25 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   finished. Request manifests record the flag. Live, luna/low: two
   3-second commands in one response finished in 3.2 s. Gate:
   `npm run direct:parallel-tool-calls` (Linux and Windows Node).
+- Changed 2026-10-09 (owner's call): no per-turn sub-agent policy
+  preflight. Every Workbench turn used to start with a separate model call
+  (`gpt-5.3-codex-spark` by preference) that classified the message for
+  standing sub-agent policy changes. Now the thread's model gets
+  `update_sub_agent_policy` (offered with `spawn_agent`; same fields as the
+  router's update action: role bindings, child cap, one-time authority,
+  thread or project scope) and calls it when the user sets such a rule. The
+  owner confirms each change through the user-input prompt (Apply / Don't
+  apply), with the change described in plain words; only then does
+  `admitConfirmedUpdate` admit it (provenance
+  `operator_confirmed_proposal`), so text in a file or tool output can't
+  change the policy on its own. A project-scoped change may proceed while
+  its own turn runs. The policy editor still uses the semantic router.
+  Also fixed: a continuation refused tools added after composition
+  (`request_permissions`, `update_sub_agent_policy`) as
+  `undeclared_tool_call`. Live, luna/low: the model called the tool, the
+  owner applied it; a new project's first turn spent 4.6 s before its first
+  request (6.8 and 9.2 s in two earlier runs with the preflight). Gate:
+  `npm run direct:sub-agent-policy-tool`.
 - Added 2026-10-08: Windows commands start in an already-running
   PowerShell. The local process backend (also used natively by the
   Windows executor) keeps one idle shell per launch shape (sandbox
@@ -1316,8 +1335,9 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   owner's login environment there, `fullEnvironment`); agents' executor
   sessions still get the minimal one.
 
-- Every Workbench implementation turn first runs a separate model call for the
-  sub-agent policy preflight (latency and quota).
+- Since 2026-10-09 Workbench turns no longer run a separate sub-agent
+  policy model call first (see `update_sub_agent_policy` under Findings).
+  The sub-agent policy editor still uses the semantic router.
 - Continuations work as in Codex since the post-track continuation fix:
   every continuation (after a file read, patch, command, process session,
   self-constitution check, agent tool, or human decision) declares the
