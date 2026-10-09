@@ -332,6 +332,32 @@ class McpStdioSession {
     return this.pending.size > 0 || this.holds > 0;
   }
 
+  // A server's form request names no call, so at most one call that can
+  // answer forms runs on a session at a time: a form then belongs to that
+  // call (other form-capable calls queue here). Resolves with a release.
+  async acquireFormSlot(signal) {
+    const previous = this.formSlot || Promise.resolve();
+    let release;
+    const mine = new Promise((resolve) => { release = resolve; });
+    this.formSlot = previous.then(() => mine);
+    let onAbort = null;
+    try {
+      await new Promise((resolve, reject) => {
+        onAbort = () => reject(mcpError("direct_mcp_request_aborted", "Configured MCP request was cancelled."));
+        if (signal?.aborted) return onAbort();
+        signal?.addEventListener?.("abort", onAbort, { once: true });
+        previous.then(resolve);
+      });
+    } catch (error) {
+      // Give up this place in line; later callers wait only for earlier ones.
+      release();
+      throw error;
+    } finally {
+      if (onAbort) signal?.removeEventListener?.("abort", onAbort);
+    }
+    return release;
+  }
+
   // Waits for the handshake within this request's own timeout and signal.
   // If it gives up and no other request is waiting, the half-started server
   // is stopped (as the one-shot exchange did); otherwise it keeps starting.
@@ -447,9 +473,9 @@ class McpStdioSession {
     this.write({ jsonrpc: "2.0", id, ...payload });
   }
 
-  // elicitation/create goes to the request in flight that asked to handle
-  // forms (the most recent one, when several share this server); with none,
-  // it is declined, as Codex declines a form it can't deliver.
+  // elicitation/create goes to the request in flight that can answer forms
+  // (there is at most one per session; see acquireFormSlot); with none, it
+  // is declined, as Codex declines a form it can't deliver.
   async answerElicitation(message) {
     const params = isPlainObject(message.params) ? message.params : {};
     const owner = [...this.pending.values()].reverse().find((entry) => entry.onElicitation);
@@ -590,19 +616,28 @@ class McpSessionPool {
     // One deadline for handshake and call together, as in the one-shot
     // exchange.
     const timeoutMs = boundedInteger(options.timeoutMs, DEFAULT_MCP_TIMEOUT_MS, 100, MAX_MCP_TIMEOUT_MS);
-    const deadline = Date.now() + timeoutMs;
+    let deadline = Date.now() + timeoutMs;
     const session = this.sessionFor(server, { ...options, timeoutMs, spawnProcess, env });
     session.holds += 1;
+    let releaseFormSlot = null;
     try {
       await session.waitReady(options.signal, timeoutMs);
+      if (typeof options.onElicitation === "function") {
+        // Waiting behind another call's open form doesn't use up this
+        // call's time.
+        const waitStarted = Date.now();
+        releaseFormSlot = await session.acquireFormSlot(options.signal);
+        deadline += Date.now() - waitStarted;
+      }
       // call() registers the request before returning, so the session stays
       // busy without a gap.
-      return session.call(method, params, {
+      return await session.call(method, params, {
         timeoutMs: Math.max(100, deadline - Date.now()),
         signal: options.signal,
         onElicitation: options.onElicitation,
       });
     } finally {
+      releaseFormSlot?.();
       session.holds -= 1;
     }
   }

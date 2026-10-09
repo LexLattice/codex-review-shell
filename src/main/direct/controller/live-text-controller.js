@@ -7044,7 +7044,9 @@ class DirectLiveTextController {
     if (evaluateCommandRules(segments, rules, shell).allAllowed) return { escalation: { approvedBy: "rule" } };
     if (args.sandbox_permissions !== "require_escalated") return { escalation: null };
     const commandText = cmd || [directCommand, ...argv].join(" ");
-    const threadKey = `${environmentKind}\u0000${commandText}`;
+    // The exact invocation: a shell string, or the program and its argument
+    // list (joined text would make ["a b"] and ["a", "b"] the same).
+    const threadKey = JSON.stringify([environmentKind, cmd ? ["cmd", cmd] : ["argv", directCommand, ...argv]]);
     if (this.commandThreadAllows?.get(sessionId)?.has(threadKey)) return { escalation: { approvedBy: "owner" } };
     if (!surfaceSession || typeof surfaceSession.createCommandApprovalRequest !== "function") {
       return { declined: true, message: "Nobody is available to approve running this command outside the sandbox; it was not run." };

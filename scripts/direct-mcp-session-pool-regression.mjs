@@ -116,6 +116,43 @@ try {
   assert.equal(seenForms[0]?.message, "Pick one");
   assert.deepEqual(answered.reply, { action: "accept", content: { color: "blue" } });
 
+  // A form names no call, so calls that can answer forms take turns on a
+  // server: each form reaches the call that caused it, even when another
+  // call finishes meanwhile. Requests that can't answer forms don't wait.
+  const order = [];
+  const formCall = (label, delayMs, color) => pool.request(server(), "ask_owner", {}, {
+    ...options,
+    onElicitation: async () => {
+      order.push(`${label}:form`);
+      await sleep(delayMs);
+      return { action: "accept", content: { color } };
+    },
+  }).then((result) => {
+    order.push(`${label}:done`);
+    return result;
+  });
+  const firstForm = formCall("first", 600, "red");
+  const secondForm = formCall("second", 0, "blue");
+  await sleep(150);
+  const sideStarted = Date.now();
+  assert.equal((await pool.request(server(), "whoami", {}, options)).pid, first.pid);
+  assert(Date.now() - sideStarted < 400, "a request without forms runs while a form is open");
+  assert.deepEqual((await firstForm).reply, { action: "accept", content: { color: "red" } });
+  assert.deepEqual((await secondForm).reply, { action: "accept", content: { color: "blue" } });
+  assert.deepEqual(order, ["first:form", "first:done", "second:form", "second:done"]);
+
+  // A queued call that is cancelled gives up its place without blocking
+  // later ones.
+  const queuedCancel = new AbortController();
+  const holder = formCall("holder", 400, "red");
+  await sleep(50);
+  const queued = pool.request(server(), "ask_owner", {}, { ...options, signal: queuedCancel.signal, onElicitation: async () => ({ action: "accept", content: { color: "blue" } }) });
+  const behind = formCall("behind", 0, "blue");
+  queuedCancel.abort();
+  await assert.rejects(queued, (error) => error.code === "direct_mcp_request_aborted");
+  assert.equal((await holder).reply.content.color, "red");
+  assert.equal((await behind).reply.content.color, "blue");
+
   // Cancelling the request while the form is open cancels the form.
   const cancelForm = new AbortController();
   let formSignal = null;

@@ -15,7 +15,7 @@ const BANNED_PREFIXES = [
   ["bash"], ["sh"], ["zsh"], ["dash"], ["fish"], ["env"], ["sudo"], ["su"], ["doas"], ["rm"], ["git"],
   ["python"], ["python3"], ["node"], ["perl"], ["ruby"], ["php"], ["deno"], ["bun"], ["npx"],
   ["npm", "run"], ["npm", "exec"], ["yarn", "run"], ["pnpm", "run"], ["pnpm", "exec"],
-  ["pwsh"], ["powershell"], ["powershell.exe"], ["pwsh.exe"], ["cmd"], ["cmd.exe"], ["wsl"], ["wsl.exe"],
+  ["pwsh"], ["powershell"], ["cmd"], ["wsl"],
   ["Invoke-Expression"], ["iex"], ["Start-Process"], ["xargs"], ["find"], ["eval"], ["exec"], ["nohup"], ["timeout"],
 ].map((pattern) => pattern.map((token) => token.toLowerCase()));
 
@@ -192,8 +192,16 @@ function evaluateCommandRules(segments, rules = [], shell = "bash") {
   return { parsed: true, allAllowed: unmatched.length === 0, unmatched };
 }
 
+// A program named by path or with a Windows suffix is the same program:
+// `/bin/bash`, `C:\Windows\System32\cmd.exe`, and `bash` are all `bash`
+// (rules match programs by path too, so a path prefix is just as broad).
+function programName(token) {
+  const base = path.win32.basename(path.posix.basename(String(token)));
+  return base.replace(/\.(exe|cmd|bat|com|ps1)$/i, "").toLowerCase();
+}
+
 function bannedPrefix(pattern = []) {
-  const lowered = pattern.map((token) => String(token).toLowerCase());
+  const lowered = pattern.map((token, index) => (index === 0 ? programName(token) : String(token).toLowerCase()));
   return BANNED_PREFIXES.some((banned) => banned.length === lowered.length && banned.every((token, index) => token === lowered[index]));
 }
 

@@ -1560,7 +1560,8 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   `sandbox_permissions` (`require_escalated`), `justification`, and
   `prefix_rule`. A command that asks goes to the owner as Codex's
   `item/commandExecution/requestApproval` card: Approve once, Approve for
-  this thread (that exact command), Always allow "<prefix>" in this project,
+  this thread (that exact invocation: the shell string, or the program and
+  its exact argument list), Always allow "<prefix>" in this project,
   Always allow "<prefix>" everywhere, Decline (the model is told it was
   declined; nothing runs), Cancel. Approved commands run in the same folder
   with the sandbox off (`danger-full-access`), still contained.
@@ -1576,7 +1577,9 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
     naming a program also matches it by path (`/usr/bin/git` for `git`).
   - The prefix offered is the model's `prefix_rule` when it covers every
     unallowed part and isn't a bare shell, interpreter, `git`, `rm`,
-    `sudo`, or `npm run` (Codex's banned list, extended for PowerShell),
+    `sudo`, or `npm run` (Codex's banned list, extended for PowerShell;
+    a program named by path or with a Windows suffix counts as itself, so
+    `/bin/bash` or `cmd.exe` is banned too),
     otherwise the whole command when it is the only unallowed part; none
     when no single rule would cover the line. The answer must name exactly
     the offered prefix.
@@ -1642,7 +1645,10 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
     the turn cancels an open form. In Full access an empty confirmation form
     is accepted without asking (Codex does this); a form with fields still
     asks. A form during a resource read, or with no owner to ask, is
-    declined, as Codex declines a form it can't deliver.
+    declined, as Codex declines a form it can't deliver. A server's form
+    names no call, so calls that can answer forms take turns on a server
+    (others, such as resource reads and listings, don't wait); time spent
+    waiting for a turn doesn't count against a call's timeout.
   - Gate: `npm run direct:mcp-tool-calls` (both hosts);
     `direct-mcp-session-pool`, `direct-mcp-per-environment` (a form from a
     server in the other executor, with the clock stopped), and

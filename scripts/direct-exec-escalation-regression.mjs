@@ -42,6 +42,12 @@ assert.deepEqual(rules.proposeCommandRule([["git", "pull", "origin"]], [], ["git
 assert.deepEqual(rules.proposeCommandRule([["git", "pull"]], [], ["git"]), ["git", "pull"], "a banned prefix falls back to the whole command");
 assert.equal(rules.proposeCommandRule([["python3", "-c", "x"], ["curl", "y"]], [], null), null, "one rule can't cover two different commands");
 assert.equal(rules.proposeCommandRule([["bash"]], [], null), null);
+// A program by path or with a Windows suffix is the same program.
+for (const broad of [["/bin/bash"], ["/usr/bin/env"], ["C:\\Windows\\System32\\cmd.exe"], ["pwsh.exe"], ["/usr/bin/git"], ["/bin/rm"], ["/usr/bin/python3"]]) {
+  assert.equal(rules.bannedPrefix(broad), true, broad.join(" "));
+}
+assert.deepEqual(rules.proposeCommandRule([["/usr/bin/env", "make"]], [], ["/usr/bin/env"]), ["/usr/bin/env", "make"], "a path to a banned program is not offered; the whole command is");
+assert.equal(rules.proposeCommandRule([["/bin/bash"]], [], ["/bin/bash"]), null);
 
 // The store: global rules apply everywhere, project rules to one project
 // and environment.
@@ -194,6 +200,21 @@ try {
   assert.equal(prompts.filter((prompt) => prompt.params).length, 3);
   const saved = controller.approvalRuleStore.commandRulesFor(project.id, process.platform === "win32" ? "windows" : "linux");
   assert.deepEqual(saved.map((rule) => rule.pattern), [[process.execPath, "-e"]]);
+
+  // "For this thread" approves that exact invocation: the same program with
+  // differently split arguments (one "g h.txt" vs "g" and "h.txt") asks
+  // again. (--eval: not covered by the saved [node, -e] rule.)
+  prompts.length = 0;
+  const splitWriter = { name: "exec_command", args: { command: process.execPath, args: ["--eval", WRITER, "g", "h.txt"], yield_time_ms: 10_000, sandbox_permissions: "require_escalated" } };
+  await runTurn("read_only", [
+    write("g h.txt", { sandbox_permissions: "require_escalated" }, "--eval"),
+    write("g h.txt", { sandbox_permissions: "require_escalated" }, "--eval"),
+    splitWriter,
+    null,
+  ], [{ decision: "acceptForSession" }, { decision: "decline" }]);
+  assert.equal(prompts.filter((prompt) => prompt.params).length, 2, "the repeat ran without asking; the split one asked");
+  assert.equal(exists("g h.txt"), true);
+  assert.equal(exists("g"), false, "the differently split command was declined");
 
   // Full access has no sandbox to leave: no escalation parameters.
   prompts.length = 0;
