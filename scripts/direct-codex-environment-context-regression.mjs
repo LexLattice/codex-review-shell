@@ -142,6 +142,25 @@ try {
   assert(!untrusted.hooks.some((hook) => hook.command === "untrusted.sh"));
   const plain = readCodexEnvironmentContext({ projectRoot: project, cwd: project, env: { CODEX_HOME: path.join(root, "nowhere") }, homedir: path.join(root, "nobody") });
   assert.deepEqual([plain.userConfigFound, plain.mcpServers.length, plain.projectTrust], [false, 0, "unknown"]);
+  // The deepest listed directory decides trust, in either listing order: an
+  // untrusted nested project stays untrusted under a trusted repository.
+  const tomlPath = (dir) => dir.replace(/\\/g, "\\\\");
+  for (const [label, entries] of [
+    ["nested first", [[project, "untrusted"], [repo, "trusted"]]],
+    ["repo first", [[repo, "trusted"], [project, "untrusted"]]],
+  ]) {
+    const nestedHome = path.join(root, `nested-${label.replace(/ /g, "-")}`, ".codex");
+    write(path.join(nestedHome, "config.toml"), [
+      "[mcp_servers.docs]",
+      "url = \"https://docs.example/mcp\"",
+      ...entries.flatMap(([dir, level]) => [`[projects."${tomlPath(dir)}"]`, `trust_level = "${level}"`]),
+    ].join("\n"));
+    const nested = readCodexEnvironmentContext({ projectRoot: project, cwd: project, env: { ...env, CODEX_HOME: nestedHome }, homedir: path.dirname(nestedHome) });
+    assert.equal(nested.projectTrust, "untrusted", label);
+    const nestedDocs = nested.mcpServers.find((server) => server.name === "docs");
+    assert.equal(nestedDocs.url, "https://docs.example/mcp", `${label}: the repository's project layer isn't loaded`);
+    assert(!nested.hooks.some((hook) => hook.command === "stop.sh"), `${label}: project hooks aren't loaded`);
+  }
   const httpHeaders = readCodexEnvironmentContext({ projectRoot: path.join(root, "elsewhere"), env: { ...env, CODEX_HOME: codexHome }, homedir: home })
     .mcpServers.find((server) => server.name === "docs").headers;
   assert.deepEqual(httpHeaders, { "X-Client": "direct", "X-Org": "org1", Authorization: "Bearer tok" });

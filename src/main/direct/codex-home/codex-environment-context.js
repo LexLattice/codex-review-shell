@@ -109,11 +109,16 @@ function projectDirectories(cwd) {
 function trustLevel(userConfig, dirs, platform) {
   const projects = isPlainObject(userConfig?.projects) ? userConfig.projects : {};
   let level = "";
+  let depth = -1;
   for (const [projectPath, entry] of Object.entries(projects)) {
-    if (!isPlainObject(entry)) continue;
-    // The deepest configured ancestor decides.
+    if (!isPlainObject(entry) || typeof entry.trust_level !== "string") continue;
+    // The deepest configured ancestor decides (dirs run from the root down),
+    // whatever order the entries are listed in.
     const matched = dirs.findIndex((dir) => samePath(dir, projectPath, platform));
-    if (matched >= 0 && typeof entry.trust_level === "string") level = entry.trust_level;
+    if (matched > depth) {
+      depth = matched;
+      level = entry.trust_level;
+    }
   }
   return level;
 }
