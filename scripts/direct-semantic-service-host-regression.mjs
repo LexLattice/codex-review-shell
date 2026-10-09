@@ -6,6 +6,13 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+// The host's custody checks are POSIX owner-only modes and uids, which
+// Windows doesn't have; there the host refuses to provision (fails closed).
+// Windows ACL custody would be a separate design.
+if (process.platform === "win32") {
+  console.log("SKIPPED: the semantic service host's custody model is POSIX-only (it refuses to start on Windows).");
+  process.exit(77);
+}
 const hostScript = fileURLToPath(new URL("./direct-semantic-service-host.mjs", import.meta.url));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "direct-host-regression-"));
 const installationRoot = path.join(root, "installation");

@@ -69,7 +69,12 @@ try {
     "",
   ].join("\n"), "utf8");
   fs.writeFileSync(path.join(tempRoot, "src", "unicode.txt"), "A€B\n", "utf8");
-  fs.writeFileSync(path.join(tempRoot, "dir\\payload"), "tracked literal backslash\n", "utf8");
+  // Backslash is a legal POSIX filename character but a Windows separator.
+  // Keep the real aliasing regression on POSIX; Windows still tests denial of
+  // the ignored dir/payload path and the leading-whitespace identity collision.
+  if (process.platform !== "win32") {
+    fs.writeFileSync(path.join(tempRoot, "dir\\payload"), "tracked literal backslash\n", "utf8");
+  }
   fs.writeFileSync(path.join(tempRoot, " leading.txt"), "tracked leading whitespace\n", "utf8");
   fs.mkdirSync(path.join(tempRoot, "dir"), { recursive: true });
   fs.writeFileSync(path.join(tempRoot, "dir", "payload"), "ignored alias must not be admitted\n", "utf8");
@@ -89,9 +94,12 @@ try {
     Buffer.from("oversized-search-target\n", "utf8"),
   ]));
   fs.symlinkSync(path.join(tempRoot, "src", "alpha.js"), path.join(tempRoot, "linked-alpha.js"));
-  run("git", ["add", ".gitignore", "package.json", "src/alpha.js", "src/unicode.txt", "binary.dat", "late-binary.dat", "invalid-utf8.txt", "oversized.log", "linked-alpha.js", "dir\\payload", " leading.txt"], tempRoot);
+  // Explicit fixture paths must not depend on the host's global ignore rules.
+  run("git", ["add", "-f", ".gitignore", "package.json", "src/alpha.js", "src/unicode.txt", "binary.dat", "late-binary.dat", "invalid-utf8.txt", "oversized.log", "linked-alpha.js", ...(process.platform === "win32" ? [] : ["dir\\payload"]), " leading.txt"], tempRoot);
   run("git", ["add", "-f", ".env"], tempRoot);
-  run("git", ["-c", "user.name=Direct Test", "-c", "user.email=direct@invalid.example", "commit", "-qm", "fixture"], tempRoot);
+  run("git", ["diff", "--cached", "--stat"], tempRoot);
+  run("git", ["status", "--short"], tempRoot);
+  run("git", ["commit", "-qm", "fixture", "-m", "Co-authored-by: factory-droid[bot] <138933559+factory-droid[bot]@users.noreply.github.com>"], tempRoot);
   run("git", ["checkout", "-qb", "codex/worker/worker-policy-fixture"], tempRoot);
   fs.writeFileSync(path.join(tempRoot, "notes.txt"), "untracked literal evidence\n", "utf8");
 
@@ -143,7 +151,18 @@ try {
     manager.ensureForProject(project, { workspaceWorkerBinding: binding }),
     manager.ensureForProject(project, { workspaceWorkerBinding: conflictingBinding }),
   ]);
-  assert.equal(bindingRace[0].status, "fulfilled");
+  if (process.platform === "win32" &&
+      bindingRace[0].reason?.code === "workspace_windows_job_object_containment_unavailable") {
+    // This backend deliberately denies all native subprocesses until its own
+    // production Job Object broker exists. Its Git-backed canonical manifest
+    // cannot be exercised here; a fake binding would bypass the tested boundary.
+    assert.equal(bindingRace[1].status, "rejected");
+    assert.equal(bindingRace[1].reason?.code, "workspace_worker_binding_already_initialized");
+    assert.equal(session.workspaceWorkerBinding, null, "failed validation must not expose an admitted binding");
+    console.log("SKIPPED: native workspace repository backend has no Windows Job Object containment broker (fail-closed verified)");
+    process.exitCode = 77;
+  } else {
+  assert.equal(bindingRace[0].status, "fulfilled", `${bindingRace[0].reason?.code}: ${bindingRace[0].reason?.message}`);
   assert.equal(bindingRace[1].status, "rejected");
   assert.equal(bindingRace[1].reason?.code, "workspace_worker_binding_already_initialized");
   assert.equal(session.workspaceWorkerBinding.bindingDigest, bindingDigest);
@@ -160,7 +179,9 @@ try {
   run("git", ["init", "-q"], backendRaceRoot);
   fs.writeFileSync(path.join(backendRaceRoot, "race.txt"), "binding race\n", "utf8");
   run("git", ["add", "race.txt"], backendRaceRoot);
-  run("git", ["-c", "user.name=Direct Test", "-c", "user.email=direct@invalid.example", "commit", "-qm", "fixture"], backendRaceRoot);
+  run("git", ["diff", "--cached"], backendRaceRoot);
+  run("git", ["status", "--short"], backendRaceRoot);
+  run("git", ["commit", "-qm", "fixture", "-m", "Co-authored-by: factory-droid[bot] <138933559+factory-droid[bot]@users.noreply.github.com>"], backendRaceRoot);
   run("git", ["checkout", "-qb", "codex/worker/backend-binding-race"], backendRaceRoot);
   const backendRaceParentId = "project_backend_binding_race_fixture";
   const backendRaceProject = {
@@ -233,7 +254,7 @@ try {
     "lossy Git whitespace normalization must not alias an ignored path into the manifest");
   assert.equal(listedPaths.includes("dir\\payload"), false);
   assert.equal(listedPaths.includes(" leading.txt"), false);
-  assert.equal(inspect.excludedEntryCount >= 4, true,
+  assert.equal(inspect.excludedEntryCount >= (process.platform === "win32" ? 3 : 4), true,
     "the manifest must disclose paths excluded for sensitivity, symlinks, or lossy identity");
   assert.equal(JSON.stringify(listed).includes(tempRoot), false);
 
@@ -737,9 +758,10 @@ try {
     forgedPinnedPolicyRejected: true,
     bottomUpMessagingAllowed: false,
   }, null, 2));
+  }
 } finally {
   manager?.disposeAll();
   backendRaceManager?.disposeAll();
-  fs.rmSync(tempRoot, { recursive: true, force: true });
-  fs.rmSync(backendRaceRoot, { recursive: true, force: true });
+  await fs.promises.rm(tempRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  await fs.promises.rm(backendRaceRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

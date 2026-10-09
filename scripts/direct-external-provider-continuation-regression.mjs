@@ -670,6 +670,8 @@ const safeOpenCodeEnv = safeOpenCodeRuntimeEnv({
     UNRELATED_HOST_SETTING: "must-be-removed",
   },
   openCodeRuntimeDirectory: isolatedRuntimeDirectory,
+  // POSIX paths whatever the host (a Windows host gets Windows paths).
+  platform: "linux",
 });
 assert.equal(safeOpenCodeEnv.PATH, "/fixture/bin");
 assert.equal(safeOpenCodeEnv.LANG, "en_US.UTF-8");

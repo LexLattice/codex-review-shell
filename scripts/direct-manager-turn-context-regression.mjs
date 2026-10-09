@@ -157,9 +157,10 @@ headlessAdmissionAvailable = false;
 expectThrows(() => buildContextPack({ projectId: "project_fixture", threadId: "runtime_thread", turnId: "runtime_turn", policyId: "direct_text_turn_empty_context@1", currentUserPrompt: "Current request.", managerGraphContextRuntime: { enabled: true, providerId: HEADLESS_CURRENT_GRAPH_PROVIDER_ID } }), "direct_manager_runtime_headless_provider_readback_invalid");
 headlessAdmissionAvailable = true;
 const threadStoreRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wave26-h08-thread-store-"));
+let threadStore;
 try {
   const sessionStore = new DirectSessionStore({ rootDir: path.join(threadStoreRoot, "sessions") });
-  const threadStore = new DirectThreadStore({ rootDir: path.join(threadStoreRoot, "threads"), mode: "index_only" });
+  threadStore = new DirectThreadStore({ rootDir: path.join(threadStoreRoot, "threads"), mode: "index_only" });
   const session = sessionStore.createSession({ sessionId: "runtime_thread", projectId: "project_fixture", title: "H08 headless graph runtime", model: "gpt-5" }, { nowMs: now() });
   const turn = sessionStore.createTurn(session.sessionId, { turnId: "runtime_turn", input: [{ role: "user", text: "Current request." }], model: "gpt-5" }, { nowMs: now() });
   threadStore.indexSessionArtifacts(sessionStore, sessionStore.readSession(session.sessionId), [sessionStore.readTurn(session.sessionId, turn.turnId)], { nowMs: now() });
@@ -169,7 +170,8 @@ try {
   assert.equal(readback.managerGraphContextReadback.compilationRef.digest, persisted.contextPack.managerGraphContextReadback.compilationRef.digest, "stored context retains its exact compilation ref");
   assert(persisted.providerInput.prompt.includes("[GOVERNED MANAGER GRAPH CONTEXT]"), "the persisted manager path consumes materialized graph O/E/D/U semantics");
 } finally {
-  fs.rmSync(threadStoreRoot, { recursive: true, force: true });
+  threadStore?.close();
+  fs.rmSync(threadStoreRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }
 expectThrows(() => buildContextPack({ projectId: "project_fixture", threadId: "runtime_thread", turnId: "runtime_turn", policyId: "direct_text_turn_empty_context@1", currentUserPrompt: "Current request.", managerGraphContextRuntime: { enabled: true, providerId: "caller_provider" } }), "direct_manager_runtime_provider_substitution_forbidden");
 const refreshedPmStoreAdmission = admitWorldmodelGovernanceRequest(trustStore, { admissionId: "pm_context_read_after_restart", graph, context: { registryRef: registryRef(pmRegistry), expectedRegistryRevision: pmRegistry.revision, ...pmBinding, requiredArtifacts: [{ kind: "project_manager_profile", id: pmProfile.projectManagerProfileId, digest: pmProfile.profileDigest }, { kind: "projection_policy", id: pmPolicy.policyId, digest: pmPolicy.policyDigest }, { kind: "authority_decision", id: pmAuthorityDecision.authorityDecisionId, digest: pmAuthorityDecision.digest, oneShot: true }] } });

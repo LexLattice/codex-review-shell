@@ -37,8 +37,13 @@ const { WorkspaceBackendManager, workspaceRoot } = require("../src/main/workspac
 
 const normalizeDistro = (value) => (typeof value === "string" && value.trim() ? value.trim() : "Ubuntu");
 let checks = 0;
+let skipped = 0;
 async function check(name, fn) {
-  await fn();
+  if (await fn() === "skipped") {
+    skipped += 1;
+    process.exitCode = 77;
+    return;
+  }
   checks += 1;
   console.log(`ok - ${name}`);
 }
@@ -421,16 +426,28 @@ try {
       assert.equal(output.exitCode, 0, JSON.stringify(output));
       return output.stdoutPreview;
     } finally {
+      controller.close("regression cleanup");
+      await manager.dispose("regression cleanup");
       await workspaceBackends.disposeAll?.();
-      fs.rmSync(hostFolder, { recursive: true, force: true });
+      await fs.promises.rm(hostFolder, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     }
   }
 
   await check("a WSL agent's delegated child really runs PowerShell in a Windows folder", async () => {
     const onWindows = process.platform === "win32";
+    // Bare Linux, or WSL with unavailable Windows interop, cannot run this
+    // real cross-host fixture. Do not pretend a mocked Windows result covers it.
+    const windowsTempProbe = onWindows ? null : spawnSync(
+      "/mnt/c/Windows/System32/cmd.exe", ["/d", "/c", "echo %TEMP%"],
+      { cwd: "/mnt/c", encoding: "utf8", timeout: 20_000 },
+    );
+    if (windowsTempProbe && windowsTempProbe.status !== 0) {
+      console.log("SKIPPED: real Windows delegation requires working WSL-to-Windows executable interop");
+      return "skipped";
+    }
     const winTemp = onWindows
       ? os.tmpdir()
-      : String(spawnSync("/mnt/c/Windows/System32/cmd.exe", ["/d", "/c", "echo %TEMP%"], { cwd: "/mnt/c", encoding: "utf8", timeout: 20_000 }).stdout || "").trim();
+      : String(windowsTempProbe.stdout || "").trim();
     assert.match(winTemp, /^[A-Za-z]:\\/, "the Windows %TEMP% is readable");
     const winFolder = path.win32.join(winTemp, `direct-delegation-${process.pid}-${Date.now()}`);
     const hostFolder = onWindows ? winFolder : String(spawnSync("wslpath", ["-u", winFolder], { encoding: "utf8" }).stdout || "").trim();
@@ -495,7 +512,7 @@ try {
     assert.match(directoryModel, /delegatedFromLabel:/);
   });
 
-  console.log(`direct-cross-environment-delegation-regression: ${checks} checks passed`);
+  console.log(`direct-cross-environment-delegation-regression: ${checks} checks passed, ${skipped} skipped`);
 } finally {
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

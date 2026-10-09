@@ -177,6 +177,9 @@ assert(missingPrimaryAgentRoute.route.blockerCodes.includes("missing_primary_age
 assert(!missingPrimaryAgentRoute.route.evidenceRefs.some((ref) => ref.rendererSafeLabel === "Agent class spec"));
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-controlled-route-"));
+let directThreadStore;
+let controller;
+let unsupportedController;
 try {
   const encoder = new TextEncoder();
   let liveDeltaSeenBeforeResolve = false;
@@ -268,7 +271,7 @@ try {
   assert.equal(interruptedProbeResult.terminal.state, "failed");
 
   const sessionStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "sessions") });
-  const directThreadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
+  directThreadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
   const workThreadStore = new DirectWorkThreadRegistryStore({ rootDir: path.join(tempRoot, "work-threads") });
   workThreadStore.upsertWorkThread(workThread);
   workThreadStore.upsertWorkThread({
@@ -286,7 +289,7 @@ try {
   const events = [];
   let providerRequestCount = 0;
   let capturedProviderBody = null;
-  const controller = new DirectLiveTextController({
+  controller = new DirectLiveTextController({
     sessionStore,
     directThreadStore,
     workThreadStore,
@@ -365,7 +368,7 @@ try {
   assert.equal(providerRequestCount, 2);
 
   const unsupportedStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "unsupported-sessions") });
-  const unsupportedController = new DirectLiveTextController({
+  unsupportedController = new DirectLiveTextController({
     sessionStore: unsupportedStore,
     profileDoc,
     authStore: {
@@ -552,5 +555,8 @@ try {
     providerRequestCount,
   }, null, 2));
 } finally {
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+  controller?.close("regression cleanup");
+  unsupportedController?.close("regression cleanup");
+  directThreadStore?.close();
+  fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

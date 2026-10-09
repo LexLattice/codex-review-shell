@@ -26,6 +26,7 @@ const { DirectSessionStore } = require("../src/main/direct/session/session-store
 const { DirectLiveTextController } = require("../src/main/direct/controller/live-text-controller");
 
 const node = process.execPath;
+const nodeCommand = (script) => `${process.platform === "win32" ? "& " : ""}'${node}' -e '${script}'`;
 const continuationSse = [
   "event: response.created",
   "data: {\"response\":{\"id\":\"resp_stateful_exec_done\",\"model\":\"gpt-5.6-sol\"}}",
@@ -94,6 +95,14 @@ async function expectCodeAsync(fn, code) {
 
 async function main() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "direct-full-local-harness-"));
+  const managers = [];
+  let controller;
+  function makeManager(options) {
+    const manager = new DirectStatefulExecSessionManager(options);
+    managers.push(manager);
+    return manager;
+  }
+  try {
   const workspace = path.join(root, "workspace");
   const outside = path.join(root, "outside");
   await fs.mkdir(workspace);
@@ -114,7 +123,7 @@ async function main() {
     executionEnvironment: environment,
     capabilities: ["read_file", "apply_patch", "exec_command", "write_stdin"],
   });
-  const manager = new DirectStatefulExecSessionManager({
+  const manager = makeManager({
     grantStore: store,
     workspaceRootResolver: () => workspace,
     idleTimeoutMs: 2_000,
@@ -386,7 +395,7 @@ async function main() {
   }
 
   const deferredStdinChild = new DeferredStdinChild();
-  const deferredStdinManager = new DirectStatefulExecSessionManager({
+  const deferredStdinManager = makeManager({
     grantStore: store,
     workspaceRootResolver: () => workspace,
     spawnImpl: () => deferredStdinChild,
@@ -439,7 +448,7 @@ async function main() {
   ];
   for (const failureCase of processFailureCases) {
     const failureChild = new DeferredStdinChild();
-    const failureManager = new DirectStatefulExecSessionManager({
+    const failureManager = makeManager({
       grantStore: store,
       workspaceRootResolver: () => workspace,
       spawnImpl: () => failureChild,
@@ -503,7 +512,7 @@ async function main() {
     executionEnvironmentDigest: grant.executionEnvironmentDigest,
   });
   const providerBodies = [];
-  const controller = new DirectLiveTextController({
+  controller = new DirectLiveTextController({
     sessionStore,
     harnessGrantStore: store,
     statefulExecSessionManager: manager,
@@ -589,7 +598,7 @@ async function main() {
 
   const compound = manager.start({
     ...binding,
-    cmd: `${node} -e "process.stdout.write(process.cwd())"; ${node} -e "process.stdout.write(':compound')"`,
+    cmd: `${nodeCommand("process.stdout.write(process.cwd())")}; ${nodeCommand("process.stdout.write(`:compound`)")}`,
     cwd: outside,
     stdinPolicy: "disabled",
   });
@@ -744,8 +753,10 @@ async function main() {
   const idleTimeoutResult = await manager.wait({ ...binding, sessionId: idleTimedOut.sessionId });
   const idleElapsedMs = Date.now() - idleStartedAt;
   assert.equal(idleTimeoutResult.status, "timeout");
-  assert.equal(idleTimeoutResult.signal, "SIGKILL", "idle timeout must escalate a SIGTERM-ignoring child");
-  assert.ok(idleElapsedMs >= 200 && idleElapsedMs < 2_000, `idle timeout escalation should settle in a bounded interval: ${idleElapsedMs}ms`);
+  // Windows TerminateProcess cannot be intercepted by a JS SIGTERM handler.
+  // POSIX still must exercise and prove the original SIGKILL/grace escalation.
+  assert.equal(idleTimeoutResult.signal, process.platform === "win32" ? "SIGTERM" : "SIGKILL", "idle timeout must terminate the child");
+  assert.ok(idleElapsedMs >= (process.platform === "win32" ? 0 : 200) && idleElapsedMs < 2_000, `idle timeout should settle in a bounded interval: ${idleElapsedMs}ms`);
 
   const cancelled = manager.start({
     ...binding,
@@ -762,10 +773,10 @@ async function main() {
   const cancelledResult = await manager.wait({ ...binding, sessionId: cancelled.sessionId });
   const cancellationElapsedMs = Date.now() - cancellationStartedAt;
   assert.equal(cancelledResult.status, "cancelled");
-  assert.equal(cancelledResult.signal, "SIGKILL", "SIGTERM-ignoring cancellation must escalate to SIGKILL");
-  assert.ok(cancellationElapsedMs >= 150 && cancellationElapsedMs < 2_000, `cancellation escalation should settle within its bounded interval: ${cancellationElapsedMs}ms`);
+  assert.equal(cancelledResult.signal, process.platform === "win32" ? "SIGTERM" : "SIGKILL", "cancellation must terminate the child");
+  assert.ok(cancellationElapsedMs >= (process.platform === "win32" ? 0 : 150) && cancellationElapsedMs < 2_000, `cancellation should settle within its bounded interval: ${cancellationElapsedMs}ms`);
 
-  const disposalManager = new DirectStatefulExecSessionManager({
+  const disposalManager = makeManager({
     grantStore: store,
     workspaceRootResolver: () => workspace,
     idleTimeoutMs: 5_000,
@@ -788,8 +799,8 @@ async function main() {
   assert.equal(disposalReceipt.status, "completed");
   assert.equal(disposalReceipt.activeSessionCount, 0);
   assert.equal(disposalReceipt.sigtermRequested, true);
-  assert.equal(disposalReceipt.sigkillEscalated, true, "a SIGTERM-ignoring process must require SIGKILL escalation");
-  assert.ok(disposalElapsedMs >= 150, `disposal should honor the bounded termination grace: ${disposalElapsedMs}ms`);
+  assert.equal(disposalReceipt.sigkillEscalated, process.platform !== "win32", "disposal escalates only on hosts with catchable SIGTERM");
+  assert.ok(disposalElapsedMs >= (process.platform === "win32" ? 0 : 150) && disposalElapsedMs < 2_000, `disposal should settle within its bounded interval: ${disposalElapsedMs}ms`);
   assert.equal((await disposalManager.dispose("after-completion")), disposalReceipt, "completed disposal must remain idempotent");
   expectCode(() => disposalManager.start({
     ...binding,
@@ -812,7 +823,7 @@ async function main() {
   await expectCodeAsync(() => restrictedExecutor.request({ ...binding, projectId: "foreign_project" }, "readFile", {
     relPath: outsideFile,
   }), "direct_full_access_grant_not_current");
-  const restrictedManager = new DirectStatefulExecSessionManager({ workspaceRootResolver: () => workspace });
+  const restrictedManager = makeManager({ workspaceRootResolver: () => workspace });
   expectCode(() => restrictedManager.start({
     ...binding,
     harnessGrant: null,
@@ -827,7 +838,7 @@ async function main() {
     args: ["-e", "process.exit(0)"],
   }), "direct_stateful_exec_grant_not_current");
 
-  const recovery = new DirectStatefulExecSessionManager({ grantStore: store, workspaceRootResolver: () => workspace });
+  const recovery = makeManager({ grantStore: store, workspaceRootResolver: () => workspace });
   const recoveryRows = recovery.restart({ sessions: [{
     ...successResult,
     sessionState: "running",
@@ -836,13 +847,17 @@ async function main() {
   assert.equal(recoveryRows[0].sessionState, "recovery_required");
   assert.equal(recoveryRows[0].recoveryClassification.replayAllowed, false);
 
-  await fs.rm(root, { recursive: true, force: true });
   console.log(JSON.stringify({
     ok: true,
     sessionsCovered: 12,
     capabilities: ["read_file", "apply_patch", "exec_command", "write_stdin"],
     restrictedMode: "grant_required",
   }));
+  } finally {
+    controller?.close("regression cleanup");
+    for (const manager of managers) await manager.dispose("regression cleanup");
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }
 }
 
 main().catch(async (error) => {

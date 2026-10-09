@@ -137,9 +137,10 @@ function main() {
   );
 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-workthread-context-authority-"));
+  let threadStore;
   try {
     const sessionStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "sessions") });
-    const threadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
+    threadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
     const session = sessionStore.createSession({
       sessionId: "thread_context_authority",
       projectId: workThread.projectId,
@@ -174,7 +175,8 @@ function main() {
     assert(persisted.requestManifest.capabilityEvidence.workThreadBindingDigest === binding.bindingDigest, "persisted request manifest must retain WorkThread binding digest");
     assert(persisted.rendererSafeSummary.workThreadBindingPresent === true, "persisted renderer summary must witness WorkThread binding");
   } finally {
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    threadStore?.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 
   const readObligation = {

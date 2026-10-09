@@ -311,6 +311,8 @@
     "direct:context-compaction": "node ./scripts/direct-context-compaction-regression.mjs",
     "direct:stdin-after-raise": "node ./scripts/direct-stdin-after-raise-regression.mjs",
     "direct:context-remaining": "node ./scripts/direct-context-remaining-regression.mjs",
+    "direct:scratch-sweep": "node ./scripts/direct-scratch-sweep-regression.mjs",
+    "direct:regression-sweep": "node ./scripts/direct-regression-sweep.mjs",
     "direct:review-findings": "node ./scripts/direct-review-findings-regression.mjs",
     "direct:agent-codex-patch": "node ./scripts/direct-agent-codex-patch-regression.mjs",
     "direct:drive": "node ./scripts/direct-drive.mjs",

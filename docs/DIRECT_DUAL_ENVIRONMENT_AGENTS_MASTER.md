@@ -1381,10 +1381,10 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 - Fixed 2026-10-09: a question to the owner (`request_user_input`,
   `request_permissions`, `update_sub_agent_policy`) no longer also shows
   the "Local approval is required" warning; only approvals do.
-- Found 2026-10-08, not fixed: `direct-native-windows-workspace-executor-regression`
-  fails under Windows Node (expects transport `windows-native-resident`,
-  gets `local-child`); it already failed before these changes, and the
-  Linux sweep doesn't run it.
+- `direct-native-windows-workspace-executor-regression` covers a WSL/Linux
+  host reaching Windows; under Windows Node it now skips (a Windows
+  workspace runs in-process there, by design). See "Windows regression
+  sweep" under Findings for the rest of the Windows Node results.
 - Fixed 2026-10-08: the workspace agent's own patch path (no task grant)
   accepts Codex's patch format (translated to git-style diffs; bare hunks
   located by context); deletes stay deferred there. Gate:
@@ -1566,10 +1566,11 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   task grant, and workspace-worker test profiles. Moving them to the runner
   means giving its process groups and quiescence receipts a Windows
   counterpart.
-- Scratch `TEMP` folders are removed when a command closes. If the host or
-  executor dies abruptly, leftovers stay under
-  `%LOCALAPPDATA%\codex-review-shell\direct-job-runner\scratch`; nothing
-  sweeps them yet.
+- Scratch `TEMP` folders are removed when a command closes. Leftovers from
+  a host or executor that died abruptly (under
+  `%LOCALAPPDATA%\codex-review-shell\direct-job-runner\scratch`) are swept
+  when the Windows sandbox first starts in a process, if older than a day
+  (since 2026-10-09; `npm run direct:scratch-sweep`).
 - The patch parser rejects a bare `@@` hunk header (vanilla Codex accepts
   it); hunks need `@@ -a,b +c,d @@`.
 - The Workbench Electron smoke is not part of the sweep. It runs headless in
@@ -1581,10 +1582,33 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   machine", so projects created there are `wsl` projects (run locally, same
   distro) rather than `local` ones.
 - The Windows launcher syncs the mirror from WSL, launchers included, while
-  `cmd.exe` is executing them. `cmd` reads batch files from disk as it goes,
-  so the first launch after a launcher change runs garbled lines (`'an' is
-  not recognized…`, `robocopy failed … 9009`) before it recovers. A fix would
-  copy the launcher to a temp file and run that copy.
+  `cmd.exe` is executing them, and `cmd` reads batch files as it goes, so
+  the first launch after a launcher change used to run garbled lines. Since
+  2026-10-09 `start-codex-review-shell.cmd` and `sync-from-wsl.cmd` run from
+  a copy in `%TEMP%`, and the per-experience wrappers call the launcher and
+  exit on one line. Checked with a batch file that rewrites itself mid-run
+  (the unprotected form stopped after the rewrite and returned 0; the copied
+  form ran to the end and kept its exit code) and by running the new sync in
+  the Windows test mirror while it rewrote itself. Not checked end to end
+  with the full launcher, which stops the owner's running app.
+- Windows regression sweep (2026-10-09). `npm run direct:regression-sweep`
+  (`scripts/direct-regression-sweep.mjs`) runs every `direct-*` regression
+  under the current host's Node, on Windows or Linux, and treats exit 77 as
+  a skip. Run from the Windows test mirror (`--jobs 2`) it found two real
+  bugs, both scripts a sandbox in WSL couldn't see when the app runs on
+  Windows (the WSL executor's copy of the app sits under `/mnt/c`, which
+  bubblewrap doesn't mount): the sandboxed file writer (now `node -e
+  <source>` on Linux) and the terminal helper `pty-helper.py` (now
+  `python3 -c <source>`). Other fixes were in the tests (stores closed
+  before folders are removed, PowerShell quoting, `npm` run through `node`,
+  host-aware expectations), plus OpenCode WSL paths built with
+  `path.posix` on a Windows host. Tests that need Linux-only machinery
+  (semantic-service host and commissioning process, headless provider
+  workspace worker, ARO reconstruction runtime) or that target Windows from
+  a Linux host (native Windows workspace executor) skip under Windows
+  Node. The headless workspace worker's positive containment cases skip on
+  Windows: its backend still lacks a Job Object broker (see above). Result:
+  Linux all pass; Windows all pass or skip.
 - UI turns must be checked through `start-direct-workbench.cmd` on Windows
   too, not only in WSL's Electron: the Windows launch path (mirror sync,
   Windows npm, Windows Electron) differs.

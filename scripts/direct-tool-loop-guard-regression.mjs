@@ -18,8 +18,8 @@ const { DirectStatefulExecSessionManager } = require("../src/main/direct/tools/s
 const { DirectFullAccessLocalEnvironmentExecutor } = require("../src/main/direct/tools/full-access-local-environment.js");
 const { DirectLiveTextController, DirectLiveTextSurfaceSession } = require("../src/main/direct/controller/live-text-controller.js");
 
-const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
-const node = quote(process.execPath);
+const quote = (s) => `'${s.replaceAll("'", process.platform === "win32" ? "''" : "'\\''")}'`;
+const node = `${process.platform === "win32" ? "& " : ""}${quote(process.execPath)}`;
 const event = (type, data) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 
 function response(id, { calls = [], text = "" } = {}) {
@@ -94,7 +94,7 @@ async function runTurn(name, next) {
     controller.close("regression cleanup");
     await manager.dispose("regression cleanup");
     threadStore.close();
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }
 
@@ -182,7 +182,13 @@ let checks = 0;
         yield_time_ms: 500,
       }]] };
     }
-    pid = Number(await fs.readFile(path.join(ctx.workspace, "pid.txt"), "utf8"));
+    // A short initial yield may return before the Windows shell launches Node.
+    const deadline = Date.now() + 5000;
+    while (!pid) {
+      try { pid = Number(await fs.readFile(path.join(ctx.workspace, "pid.txt"), "utf8")); } catch {}
+      assert(Date.now() < deadline, "the running fixture wrote its PID");
+      if (!pid) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     process.kill(pid, 0);
     await ctx.controller.handleRequest("turn/interrupt", { threadId: ctx.taskId, turnId: ctx.turnId }, ctx.context);
     for (let attempt = 0; attempt < 50 && !diedAfterStop; attempt += 1) {

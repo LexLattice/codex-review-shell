@@ -23,8 +23,8 @@ const {
 } = require("../src/main/direct/controller/live-text-controller.js");
 const { DirectTestControlServer, CONTROL_FILE_NAME } = require("../src/main/direct/test-control/test-control-server.js");
 
-const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
-const node = quote(process.execPath);
+const quote = (s) => `'${s.replaceAll("'", process.platform === "win32" ? "''" : "'\\''")}'`;
+const node = `${process.platform === "win32" ? "& " : ""}${quote(process.execPath)}`;
 const event = (type, data) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 
 function response(id, { calls = [], text = "" } = {}) {
@@ -186,5 +186,5 @@ try {
   controller.close("regression cleanup");
   await manager.dispose("regression cleanup");
   threadStore.close();
-  await fs.rm(root, { recursive: true, force: true });
+  await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

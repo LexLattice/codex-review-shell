@@ -1,7 +1,18 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "SYNC_ROOT=%~dp0"
+rem This script mirrors itself from WSL while running; cmd.exe reads batch
+rem files as it goes, so run from a copy in %TEMP% (see the launcher).
+if not defined CODEX_REVIEW_SHELL_SYNC_ROOT_DIR (
+  set "CODEX_REVIEW_SHELL_SYNC_ROOT_DIR=%~dp0"
+  set "SYNC_COPY=%TEMP%\codex-review-shell-sync-%RANDOM%%RANDOM%.cmd"
+  copy /y "%~f0" "!SYNC_COPY!" >nul || exit /b 1
+  call "!SYNC_COPY!" %*
+  set "SYNC_COPY_RC=!ERRORLEVEL!"
+  del "!SYNC_COPY!" >nul 2>nul
+  exit /b !SYNC_COPY_RC!
+)
+set "SYNC_ROOT=%CODEX_REVIEW_SHELL_SYNC_ROOT_DIR%"
 if "%SYNC_ROOT:~-1%"=="\" set "SYNC_ROOT=%SYNC_ROOT:~0,-1%"
 if "%SYNC_ROOT:~0,2%"=="\\" (
   >&2 echo Refusing to sync into %SYNC_ROOT%: the sync target must be a Windows folder, not the WSL checkout.

@@ -9,6 +9,14 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 
+// Workspace workers (git-worktree children) run on the Linux workspace
+// agent; they aren't available on Windows (see the dual-environment master
+// doc, "A delegated child is a full Direct thread...").
+if (process.platform === "win32") {
+  console.log("SKIPPED: workspace workers run on the Linux workspace agent.");
+  process.exit(77);
+}
+
 const require = createRequire(import.meta.url);
 const { WorkspaceBackendManager } = require("../src/main/workspace-backend");
 const { DirectNativeAgentPool } = require("../src/main/direct/agents/native-agent-pool");

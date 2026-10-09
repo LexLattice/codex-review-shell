@@ -6,6 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 
+// This covers a WSL/Linux host reaching Windows through the Windows Node
+// executor and WSL in-process. On a Windows host a Windows workspace runs
+// in-process instead (local-child, by design), which the Windows live suite
+// covers.
+if (process.platform === "win32") {
+  console.log("SKIPPED: covers a WSL/Linux host (run with WSL Node).");
+  process.exit(77);
+}
 const require = createRequire(import.meta.url);
 const {
   WorkspaceBackendManager,

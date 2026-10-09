@@ -21,18 +21,27 @@ const SANDBOXED_WRITER_ENV_KEYS = [
   "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS",
 ];
 
+let cachedWriterSource = "";
+function sandboxedWriterSource() {
+  if (!cachedWriterSource) cachedWriterSource = fs.readFileSync(SANDBOXED_WRITER_PATH, "utf8");
+  return cachedWriterSource;
+}
+
 // Runs sandboxed-file-writer.js inside the Workspace sandbox of this host
 // (bubblewrap on Linux, the Low-integrity job runner on Windows) with this
 // process's own runtime (node, or Electron as node).
 function runSandboxedWrites({ root, files }) {
   const platform = process.platform;
   const sandbox = platform === "win32" ? new WindowsJobSandbox({ platform }) : new BubblewrapExecSandbox({ platform });
+  // On Linux the script goes in as source: run from a Windows app, this file
+  // lives under /mnt/<drive>, which the sandbox doesn't mount. (It needs only
+  // node builtins.) Windows keeps the path; its command line is size-limited.
   const plan = sandbox.wrap({
     sandboxMode: "workspace-write",
     root,
     cwd: root,
     command: process.execPath,
-    args: [SANDBOXED_WRITER_PATH],
+    args: platform === "win32" ? [SANDBOXED_WRITER_PATH] : ["-e", sandboxedWriterSource()],
   });
   const env = { ELECTRON_RUN_AS_NODE: "1" };
   for (const key of SANDBOXED_WRITER_ENV_KEYS) if (process.env[key] !== undefined) env[key] = process.env[key];

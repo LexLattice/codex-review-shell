@@ -19,8 +19,9 @@ const { DirectThreadHarnessGrantStore } = require("../src/main/direct/authority/
 const { DirectStatefulExecSessionManager } = require("../src/main/direct/tools/stateful-exec-session.js");
 const { DirectLiveTextController, DirectLiveTextSurfaceSession } = require("../src/main/direct/controller/live-text-controller.js");
 
-const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
-const node = quote(process.execPath);
+// Works in bash and PowerShell: no quotes inside the script (backticks for
+// JS strings), and PowerShell needs & to run a quoted program path.
+const nodeCommand = (script) => `${process.platform === "win32" ? "& " : ""}'${process.execPath}' -e '${script}'`;
 const event = (type, data) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 function response(id, step) {
   let text = event("response.created", { response: { id, model: "gpt-5.6-sol" } });
@@ -84,7 +85,7 @@ try {
   };
 
   await runTurn("Show me hello.txt.", [
-    { call: { name: "exec_command", args: { cmd: `${node} -e ${quote("process.stdout.write(require('node:fs').readFileSync('hello.txt', 'utf8'))")}` } } },
+    { call: { name: "exec_command", args: { cmd: nodeCommand("process.stdout.write(require(`node:fs`).readFileSync(`hello.txt`, `utf8`))") } } },
     { text: "It says hello from the file." },
   ]);
   const second = await runTurn("What did the command print?", [{ text: "hello from the file" }]);

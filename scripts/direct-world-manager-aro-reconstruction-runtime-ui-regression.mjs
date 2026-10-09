@@ -52,6 +52,10 @@ const fixture = spawnSync(
     encoding: "utf8",
   },
 );
+if (fixture.status === 77) {
+  console.log(`SKIPPED: the runtime fixture skipped (${String(fixture.stdout || "").trim()})`);
+  process.exit(77);
+}
 assert.equal(
   fixture.status,
   0,
