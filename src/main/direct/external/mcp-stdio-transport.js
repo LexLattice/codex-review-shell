@@ -281,6 +281,158 @@ function setChildReferenced(child, referenced) {
   }
 }
 
+// Streamable HTTP, as Codex's client speaks it: POST each JSON-RPC message
+// with `Accept: application/json, text/event-stream`; keep the
+// `Mcp-Session-Id` the initialize reply sets and send it (and
+// `MCP-Protocol-Version`) on later requests; a reply is JSON or an SSE
+// stream, which may also carry the server's own requests (forms, ping);
+// answers to those are POSTed back. DELETE ends the session. A 404 for a
+// known session means it expired: this session closes and the next request
+// starts a new one.
+class McpHttpChannel {
+  constructor(session, server, options = {}) {
+    this.session = session;
+    this.url = server.url;
+    this.headers = isPlainObject(server.headers) ? server.headers : {};
+    this.fetch = typeof options.fetchImpl === "function" ? options.fetchImpl : globalThis.fetch;
+    this.sessionId = "";
+    this.protocolVersion = "";
+    this.controllers = new Set();
+    if (typeof this.fetch !== "function") throw mcpError("direct_mcp_transport_unavailable", "HTTP MCP servers need fetch, which this runtime lacks.");
+  }
+
+  requestHeaders(extra = {}) {
+    return {
+      ...this.headers,
+      ...(this.sessionId ? { "Mcp-Session-Id": this.sessionId } : {}),
+      ...(this.protocolVersion ? { "MCP-Protocol-Version": this.protocolVersion } : {}),
+      ...extra,
+    };
+  }
+
+  send(message) {
+    const controller = new AbortController();
+    this.controllers.add(controller);
+    const isRequest = message.method && message.id !== undefined;
+    this.post(message, controller.signal).catch((error) => {
+      if (controller.signal.aborted) return;
+      if (isRequest) this.session.failRequest(message.id, error?.code ? error : mcpError("direct_mcp_http_failed", `The MCP server couldn't be reached: ${boundedString(error?.message, 240)}`));
+    }).finally(() => this.controllers.delete(controller));
+    return true;
+  }
+
+  // Sends a notification and waits until the server has taken it.
+  async deliver(message) {
+    const controller = new AbortController();
+    this.controllers.add(controller);
+    try {
+      await this.post(message, controller.signal);
+    } finally {
+      this.controllers.delete(controller);
+    }
+  }
+
+  async post(message, signal) {
+    const response = await this.fetch(this.url, {
+      method: "POST",
+      headers: this.requestHeaders({ "Content-Type": "application/json", Accept: "application/json, text/event-stream" }),
+      body: JSON.stringify(message),
+      signal,
+    });
+    const sessionId = response.headers?.get?.("mcp-session-id");
+    if (sessionId && message.method === "initialize") this.sessionId = sessionId;
+    if (response.status === 202 || response.status === 204) return;
+    if (response.status === 404 && this.sessionId) {
+      this.session.close(mcpError("direct_mcp_session_expired", "The MCP server ended the session; the next request starts a new one."));
+      return;
+    }
+    if (!response.ok) {
+      throw mcpError(response.status === 401 || response.status === 403 ? "direct_mcp_http_unauthorized" : "direct_mcp_http_error",
+        `The MCP server answered HTTP ${response.status}${response.status === 401 ? " (check its bearer token or headers)" : ""}.`);
+    }
+    const type = String(response.headers?.get?.("content-type") || "");
+    if (type.includes("text/event-stream")) return this.readSse(response);
+    const text = await readBounded(response);
+    if (!text.trim()) return;
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw mcpError("direct_mcp_http_invalid", "The MCP server's reply wasn't JSON.");
+    }
+    for (const entry of Array.isArray(parsed) ? parsed : [parsed]) this.session.onMessage(entry);
+  }
+
+  async readSse(response) {
+    let buffer = "";
+    let data = [];
+    let total = 0;
+    const dispatch = () => {
+      if (!data.length) return;
+      const payload = data.join("\n");
+      data = [];
+      try {
+        const parsed = JSON.parse(payload);
+        for (const entry of Array.isArray(parsed) ? parsed : [parsed]) this.session.onMessage(entry);
+      } catch {}
+    };
+    for await (const chunk of streamChunks(response)) {
+      total += chunk.length;
+      if (total > MAX_MCP_RESULT_BYTES) throw mcpError("direct_mcp_result_too_large", "The MCP server's reply exceeded the bounded output limit.");
+      buffer += chunk;
+      let newline;
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, "");
+        buffer = buffer.slice(newline + 1);
+        if (!line) dispatch();
+        else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+      }
+    }
+    if (buffer.startsWith("data:")) data.push(buffer.slice(5).replace(/^ /, ""));
+    dispatch();
+  }
+
+  async close() {
+    for (const controller of this.controllers) controller.abort();
+    this.controllers.clear();
+    if (!this.sessionId) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2_000);
+    timer.unref?.();
+    try {
+      await this.fetch(this.url, { method: "DELETE", headers: this.requestHeaders(), signal: controller.signal });
+    } catch {} finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function* streamChunks(response) {
+  const decoder = new TextDecoder();
+  const body = response.body;
+  if (body && typeof body.getReader === "function") {
+    const reader = body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      yield decoder.decode(value, { stream: true });
+    }
+  } else if (body && typeof body[Symbol.asyncIterator] === "function") {
+    for await (const chunk of body) yield typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
+  } else if (typeof response.text === "function") {
+    yield await response.text();
+  }
+}
+
+async function readBounded(response) {
+  let text = "";
+  for await (const chunk of streamChunks(response)) {
+    text += chunk;
+    if (text.length > MAX_MCP_RESULT_BYTES) throw mcpError("direct_mcp_result_too_large", "The MCP server's reply exceeded the bounded output limit.");
+  }
+  return text;
+}
+
 class McpStdioSession {
   constructor(pool, key, identityKey, server, options) {
     this.pool = pool;
@@ -295,28 +447,43 @@ class McpStdioSession {
     // Requests between choosing this session and registering their call
     // (waiting for the handshake, or about to send).
     this.holds = 0;
-    this.child = options.spawnProcess(server.command, server.args || [], { cwd: server.cwd || undefined, env: options.env });
     this.exited = new Promise((resolve) => { this.resolveExited = resolve; });
-    const parser = lineOrContentLengthParser((message) => this.onMessage(message), (error) => this.close(error));
-    this.child.stdout?.on("data", parser);
-    this.child.stderr?.on("data", (chunk) => {
-      if (String(chunk).length > MAX_MCP_RESULT_BYTES) this.close(mcpError("direct_mcp_result_too_large", "Configured MCP stderr exceeded the bounded output limit."));
-    });
-    this.child.once("error", (error) => this.close(error));
-    this.child.once("exit", (code, signalName) => {
-      this.resolveExited();
-      this.close(mcpError("direct_mcp_transport_exited", `Configured MCP exited (${code ?? signalName ?? "unknown"}).`));
-    });
-    this.child.once("close", () => this.resolveExited());
+    if (server.transportKind === "streamable_http") {
+      // Codex's streamable HTTP: each message is a POST; replies (and the
+      // server's own requests) come back as JSON or an SSE stream.
+      this.child = null;
+      this.http = new McpHttpChannel(this, server, options);
+    } else {
+      this.child = options.spawnProcess(server.command, server.args || [], { cwd: server.cwd || undefined, env: options.env });
+      const parser = lineOrContentLengthParser((message) => this.onMessage(message), (error) => this.close(error));
+      this.child.stdout?.on("data", parser);
+      this.child.stderr?.on("data", (chunk) => {
+        if (String(chunk).length > MAX_MCP_RESULT_BYTES) this.close(mcpError("direct_mcp_result_too_large", "Configured MCP stderr exceeded the bounded output limit."));
+      });
+      this.child.once("error", (error) => this.close(error));
+      this.child.once("exit", (code, signalName) => {
+        this.resolveExited();
+        this.close(mcpError("direct_mcp_transport_exited", `Configured MCP exited (${code ?? signalName ?? "unknown"}).`));
+      });
+      this.child.once("close", () => this.resolveExited());
+    }
     this.openElicitations = 0;
     this.ready = this.call("initialize", {
       protocolVersion: "2025-06-18",
       // As Codex: forms the server asks for go to the owner.
       capabilities: { elicitation: {} },
       clientInfo: { name: "codex-direct", version: "1" },
-    }, { timeoutMs: options.timeoutMs }).then((result) => {
+    }, { timeoutMs: options.timeoutMs }).then(async (result) => {
+      const initialized = { jsonrpc: "2.0", method: "notifications/initialized", params: {} };
+      if (this.http) {
+        // Over HTTP each message is its own request: the notification is
+        // delivered before any other request can race it.
+        this.http.protocolVersion = typeof result?.protocolVersion === "string" ? result.protocolVersion : "2025-06-18";
+        await this.http.deliver(initialized);
+      } else {
+        this.write(initialized);
+      }
       this.initialized = true;
-      this.write({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
       return result;
     });
     // A failed start is reported by the request that waits on it; the next
@@ -385,9 +552,16 @@ class McpStdioSession {
   }
 
   write(message) {
-    if (this.closed || !this.child?.stdin?.writable) return false;
+    if (this.closed) return false;
+    if (this.http) return this.http.send(message);
+    if (!this.child?.stdin?.writable) return false;
     this.child.stdin.write(`${JSON.stringify(message)}\n`);
     return true;
+  }
+
+  // A request the transport itself couldn't deliver or read the reply of.
+  failRequest(id, error) {
+    this.pending.get(Number(id))?.reject(error);
   }
 
   call(method, params = {}, options = {}) {
@@ -521,7 +695,7 @@ class McpStdioSession {
 
   idle() {
     // An idle server neither keeps this process alive nor runs forever.
-    setChildReferenced(this.child, false);
+    if (this.child) setChildReferenced(this.child, false);
     clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => this.close(null), this.pool.idleMs);
     this.idleTimer.unref?.();
@@ -534,6 +708,10 @@ class McpStdioSession {
     this.pool.forget(this);
     const failure = error || mcpError("direct_mcp_transport_closed", "Configured MCP session closed.");
     for (const entry of [...this.pending.values()]) entry.reject(failure);
+    if (this.http) {
+      this.http.close().finally(() => this.resolveExited());
+      return this.exited;
+    }
     try { this.child.stdin?.destroy?.(); } catch {}
     const child = this.child;
     const live = () => child && child.exitCode === null && child.signalCode === null;
@@ -561,6 +739,10 @@ class McpSessionPool {
 
   static keyFor(server, options = {}) {
     const env = isPlainObject(options.env) ? Object.entries(options.env).sort(([a], [b]) => a.localeCompare(b)) : [];
+    if (server.transportKind === "streamable_http") {
+      const headers = isPlainObject(server.headers) ? Object.entries(server.headers).sort(([a], [b]) => a.localeCompare(b)) : [];
+      return JSON.stringify([String(options.placementKey || ""), "http", server.url, headers]);
+    }
     return JSON.stringify([
       String(options.placementKey || ""),
       server.command,
@@ -606,8 +788,9 @@ class McpSessionPool {
   }
 
   async request(server, method, params = {}, options = {}) {
-    if (!server.command) throw mcpError("direct_mcp_transport_unavailable", "The configured MCP server has no local transport command.");
-    if (server.transportKind !== "stdio") throw mcpError("direct_mcp_transport_unsupported", "The configured MCP transport is not supported by Direct.");
+    const http = server.transportKind === "streamable_http";
+    if (!http && server.transportKind !== "stdio") throw mcpError("direct_mcp_transport_unsupported", "The configured MCP transport is not supported by Direct.");
+    if (http ? !server.url : !server.command) throw mcpError("direct_mcp_transport_unavailable", "The configured MCP server has no command or URL.");
     if (options.signal?.aborted) throw mcpError("direct_mcp_request_aborted", "Configured MCP request was cancelled.");
     const spawnProcess = typeof options.spawnProcess === "function"
       ? options.spawnProcess
@@ -616,12 +799,16 @@ class McpSessionPool {
     // One deadline for handshake and call together, as in the one-shot
     // exchange.
     const timeoutMs = boundedInteger(options.timeoutMs, DEFAULT_MCP_TIMEOUT_MS, 100, MAX_MCP_TIMEOUT_MS);
+    // Codex gives the handshake its own (startup) timeout.
+    const startupMs = boundedInteger(options.startupTimeoutMs, timeoutMs, 100, MAX_MCP_TIMEOUT_MS);
     let deadline = Date.now() + timeoutMs;
-    const session = this.sessionFor(server, { ...options, timeoutMs, spawnProcess, env });
+    const session = this.sessionFor(server, { ...options, timeoutMs: startupMs, spawnProcess, env });
     session.holds += 1;
     let releaseFormSlot = null;
     try {
-      await session.waitReady(options.signal, timeoutMs);
+      const handshakeStarted = Date.now();
+      await session.waitReady(options.signal, startupMs);
+      if (options.startupTimeoutMs) deadline += Date.now() - handshakeStarted;
       if (typeof options.onElicitation === "function") {
         // Waiting behind another call's open form doesn't use up this
         // call's time.

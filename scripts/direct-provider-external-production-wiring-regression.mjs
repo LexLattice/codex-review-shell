@@ -253,7 +253,8 @@ try {
 
   const unsupportedProject = {
     ...project,
-    mcpServers: [{ ...configuredServer, transportKind: "http", command: "" }],
+    // Streamable HTTP is supported; the legacy SSE transport isn't.
+    mcpServers: [{ ...configuredServer, transportKind: "sse", command: "" }],
   };
   const unsupportedController = new DirectLiveTextController({
     sessionStore,

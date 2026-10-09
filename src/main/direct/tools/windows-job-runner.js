@@ -268,7 +268,7 @@ class WindowsJobSandbox {
         if (!root || !path.win32.isAbsolute(root)) {
           throw runnerError("direct_exec_sandbox_root_invalid", "Workspace exec on Windows requires an absolute project folder.");
         }
-        args.push("--label-low", root);
+        args.push("--label-low", root, "--project-sid", projectSidFor(root));
       }
       for (const file of this.credentialStoreFiles()) args.push("--hide", file);
       scratchDir = path.win32.join(this.scratchRoot, crypto.randomBytes(8).toString("hex"));
@@ -280,6 +280,14 @@ class WindowsJobSandbox {
     // stdin becomes the frame channel (pty-frames.js).
     const tty = normalizePtySize(spec.tty);
     if (tty) args.push("--conpty", String(tty.rows), String(tty.cols));
+    // A receipt channel (cancel, then proof that the whole job is gone), for
+    // callers that must prove quiescence (the workspace backend).
+    let controlPath = "";
+    if (spec.control === true && !tty) {
+      controlPath = path.win32.join(this.scratchRoot, `control-${crypto.randomBytes(8).toString("hex")}`);
+      fs.mkdirSync(this.scratchRoot, { recursive: true });
+      args.push("--control", controlPath);
+    }
     const commandLine = windowsCommandLine(command, Array.isArray(spec.args) ? spec.args.map(String) : []);
     args.push("--cmdline-b64", Buffer.from(commandLine, "utf8").toString("base64"));
     return {
@@ -293,13 +301,62 @@ class WindowsJobSandbox {
       networkEnforced: false,
       env,
       scratchDir,
+      controlPath,
       writableRoots: sandboxMode === "workspace-write" ? ["workspace", "scratch_tmp"] : sandboxMode === "read-only" ? ["scratch_tmp"] : ["anywhere"],
     };
   }
 }
 
+// The runner's receipt for a job started with `control: true`: with
+// `cancel`, the job is stopped first. Resolves with
+// { quiesced, containmentKind: "windows_job_object", jobClosed, ... }; a
+// missing receipt (the runner died first, or no answer in time) is not
+// proof and reports quiesced: false.
+async function windowsJobReceipt(controlPath, options = {}) {
+  const receiptPath = `${controlPath}.receipt`;
+  const cancelPath = `${controlPath}.cancel`;
+  if (!controlPath) return { quiesced: false, blockerCode: "workspace_windows_job_control_missing" };
+  if (options.cancel === true && !fs.existsSync(receiptPath)) {
+    try { fs.writeFileSync(cancelPath, ""); } catch {}
+  }
+  const deadline = Date.now() + Math.max(100, Number(options.timeoutMs) || 5_000);
+  while (Date.now() < deadline) {
+    if (fs.existsSync(receiptPath)) {
+      try {
+        const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
+        for (const file of [receiptPath, cancelPath]) {
+          try { fs.rmSync(file, { force: true }); } catch {}
+        }
+        return {
+          quiesced: receipt.quiesced === true,
+          containmentKind: WINDOWS_JOB_LAUNCHER,
+          jobClosed: receipt.jobClosed === true,
+          activeProcesses: Number(receipt.activeProcesses),
+          exitCode: Number(receipt.exitCode),
+          blockerCode: receipt.quiesced === true ? "" : "workspace_windows_job_processes_remain",
+        };
+      } catch {}
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return { quiesced: false, containmentKind: WINDOWS_JOB_LAUNCHER, jobClosed: false, blockerCode: "workspace_windows_job_receipt_missing" };
+}
+
+// A project folder's own SID (domain-style, from a 128-bit hash of the
+// folder, so it is the same each time): Workspace commands there are
+// write-restricted to it.
+function projectSidFor(root) {
+  const normalized = path.win32.resolve(String(root)).replace(/[\\/]+$/, "").toLowerCase();
+  const digest = crypto.createHash("sha256").update(`direct-project:${normalized}`).digest();
+  const parts = [];
+  for (let offset = 0; offset < 16; offset += 4) parts.push(digest.readUInt32LE(offset));
+  return `S-1-5-21-${parts.join("-")}`;
+}
+
 module.exports = {
   STALE_SCRATCH_MS,
+  projectSidFor,
+  windowsJobReceipt,
   sweepStaleScratch,
   WINDOWS_JOB_LAUNCHER,
   WINDOWS_JOB_RUNNER_SOURCE,

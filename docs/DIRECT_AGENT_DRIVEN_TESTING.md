@@ -82,7 +82,16 @@ folder (`<test data>/direct-test/suite`) it empties first.
 | `path_in_prompt` | an absolute path in the prompt is accepted |
 | `remembers_tool_output` | a follow-up turn answers what an earlier command printed from history, without a tool call |
 | `auto_compaction` | with a lowered limit, the next turn compacts its history first and still answers a number found only in a compacted command output |
+| `mcp_tool_call` | in the "Live suite MCP" project (a stdio MCP server in Direct's settings), the model calls `mcp__suite__get_secret_word` and quotes the word |
+| `mcp_form` | the server's form (`elicitation/create`) reaches the owner and the model reports the picked color |
+| `mcp_approval` | in Workspace access an unannotated MCP tool is put to the owner first, and the approved call runs |
+| `exec_escalation` | in Read only, `exec_command` with `require_escalated` is put to the owner and the approved command writes outside the sandbox |
 | `follow_up_turn` | a second turn on the edit thread works; prints its cached input |
+
+The test app reads the owner's real `~/.codex/config.toml` (in WSL, or on
+Windows), so its MCP servers join these projects too, as they would in the
+owner's app. `project-add --mcp-servers FILE.json` gives a test project
+Direct MCP servers (the settings panel's shape).
 
 `--only a,b` runs some; `--json` adds a machine-readable summary; `--model`
 and `--effort` override luna/low. A failure prints the `report` command for

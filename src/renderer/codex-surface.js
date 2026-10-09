@@ -7968,6 +7968,10 @@ function renderMcpElicitationForm(request, details, actions) {
     readers.push([name, read]);
     form.appendChild(wrapper);
   }
+  // An answered form is only a record: its answer is in the response line.
+  if (request.status && request.status !== "pending") {
+    for (const control of form.querySelectorAll("input, select, textarea")) control.disabled = true;
+  }
   details.appendChild(form);
   const submit = createRequestButton("Submit", "", null);
   submit.addEventListener("click", (event) => {
@@ -7991,15 +7995,13 @@ function renderMcpRequestDetails(request, details, actions) {
   appendRequestLine(details, "server", params.serverName || "");
   appendRequestLine(details, "message", params.message || "");
   if (params.mode !== "url") return renderMcpElicitationForm(request, details, actions);
-  if (params.mode === "url") {
-    appendRequestLine(details, "url", params.url || "", { mono: true });
-    actions.appendChild(createRequestButton("Open URL", "secondary", () => {
-      openTypedUrl(String(params.url || ""));
-    }));
-  } else {
-    appendRequestLine(details, "schema", params.requestedSchema || "", { mono: true, pre: true });
-  }
-  actions.appendChild(createRequestButton("Accept", "", (event) => submitRequestResponse(request, { action: "accept", content: params.mode === "form" ? {} : null, _meta: null }, event.currentTarget)));
+  // Codex's URL form: open the link, then say when you're done ("I
+  // finished" accepts; opening alone doesn't).
+  appendRequestLine(details, "url", params.url || "", { mono: true });
+  actions.appendChild(createRequestButton("Open link", "secondary", () => {
+    openTypedUrl(String(params.url || ""));
+  }));
+  actions.appendChild(createRequestButton("I finished", "", (event) => submitRequestResponse(request, { action: "accept", content: null, _meta: null }, event.currentTarget)));
   actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, { action: "decline", content: null, _meta: null }, event.currentTarget)));
   actions.appendChild(createRequestButton("Cancel", "secondary", (event) => submitRequestResponse(request, { action: "cancel", content: null, _meta: null }, event.currentTarget)));
 }

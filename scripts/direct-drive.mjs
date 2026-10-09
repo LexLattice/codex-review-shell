@@ -266,7 +266,10 @@ async function projectAdd() {
     : env === "windows"
       ? { kind: "windows", windowsPath: folder }
       : { kind: "local", localPath: folder };
-  const result = await post("/v1/projects", { name: options.name || path.basename(folder), workspace });
+  // --mcp-servers FILE: a JSON array of Direct MCP server definitions for
+  // the project (as the settings panel saves them).
+  const mcpServers = options["mcp-servers"] ? JSON.parse(fs.readFileSync(String(options["mcp-servers"]), "utf8")) : undefined;
+  const result = await post("/v1/projects", { name: options.name || path.basename(folder), workspace, ...(Array.isArray(mcpServers) ? { mcpServers } : {}) });
   writeState({ lastProjectId: result.project.id });
   print(result.project);
 }
@@ -384,7 +387,7 @@ const usage = `usage: node scripts/direct-drive.mjs <command> [options]
   start [--show] [--fresh] [--restart]     launch the app hidden with the test profile
   stop | status
   projects                                 list test projects
-  project-add --path P [--env windows|wsl|local] [--distro Ubuntu] [--name N]
+  project-add --path P [--env windows|wsl|local] [--distro Ubuntu] [--name N] [--mcp-servers FILE.json]
   thread --project ID [--model M] [--effort E] [--access full_access|workspace|read_only]
   chat --project ID [--thread ID|last] "prompt" | --prompt-file FILE
        [--model ${DEFAULT_MODEL}] [--effort ${DEFAULT_EFFORT}] [--access ${DEFAULT_ACCESS}]

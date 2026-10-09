@@ -66,6 +66,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     { name: "pick-color", description: "Ask the user for a color.", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
     { name: "snap", description: "Take a picture.", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
     { name: "confirm", description: "Ask the user to confirm.", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
+    { name: "open-link", description: "Send the user to a page.", inputSchema: { type: "object", properties: { secure: { type: "boolean" } } }, annotations: { readOnlyHint: true } },
   ] } });
   if (q.method !== "tools/call") return send({ jsonrpc: "2.0", id: q.id, result: {} });
   const args = q.params.arguments || {};
@@ -75,6 +76,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     (id, answer) => text(id, answer.action === "accept" ? "picked " + answer.content.color : "no pick: " + answer.action));
   if (q.params.name === "confirm") return ask(q.id, { mode: "form", message: "Go ahead?", requestedSchema: { type: "object", properties: {} } },
     (id, answer) => text(id, "confirmed: " + answer.action));
+  if (q.params.name === "open-link") return ask(q.id, { mode: "url", message: "Sign in", url: args.secure ? "https://example.com/auth?x=1" : "http://example.com/auth", elicitationId: "e1" },
+    (id, answer) => text(id, "url: " + answer.action));
   if (q.params.name === "snap") return send({ jsonrpc: "2.0", id: q.id, result: { content: [{ type: "text", text: "a dot" }, { type: "image", mimeType: "image/png", data: ${JSON.stringify(PNG)} }] } });
   send({ jsonrpc: "2.0", id: q.id, error: { code: -32602, message: "unknown tool" } });
 });
@@ -211,7 +214,7 @@ try {
   ]);
   const declared = a.bodies[0].tools.filter((tool) => tool.name?.startsWith("mcp__"));
   assert.deepEqual(declared.map((tool) => tool.name).sort(), [
-    "mcp__fixture__confirm", "mcp__fixture__lookup", "mcp__fixture__pick_color", "mcp__fixture__snap", "mcp__fixture__write_note",
+    "mcp__fixture__confirm", "mcp__fixture__lookup", "mcp__fixture__open_link", "mcp__fixture__pick_color", "mcp__fixture__snap", "mcp__fixture__write_note",
   ]);
   assert.deepEqual(declared.find((tool) => tool.name === "mcp__fixture__lookup").parameters, { type: "object", properties: { q: { type: "string" } }, required: ["q"] });
   assert(a.bodies.every((body) => body.tools.some((tool) => tool.name === "mcp__fixture__snap")), "every request of the turn declares them");
@@ -255,14 +258,23 @@ try {
   // Thread D, Full access: an empty confirmation form is accepted without
   // asking; a form with fields still goes to the owner, and cancelling it
   // reaches the server.
+  // URL forms (Codex's "Open link" / "I finished"): an https link goes to
+  // the owner and isn't accepted until they say so; an http one is declined
+  // without asking.
   const d = await runTurn("full_access", [
     { name: "mcp__fixture__confirm", args: {} },
     { name: "mcp__fixture__pick_color", args: {} },
+    { name: "mcp__fixture__open_link", args: { secure: true } },
+    { name: "mcp__fixture__open_link", args: { secure: false } },
     null,
-  ], [{ action: "cancel" }]);
+  ], [{ action: "cancel" }, { action: "accept", content: null, _meta: null }]);
   assert.match(lastOutput(d.bodies[1]), /confirmed: accept$/);
   assert.match(lastOutput(d.bodies[2]), /no pick: cancel$/);
-  assert.equal(prompts.length, 1);
+  assert.match(lastOutput(d.bodies[3]), /url: accept$/);
+  assert.match(lastOutput(d.bodies[4]), /url: decline$/);
+  assert.equal(prompts.length, 2);
+  const urlPrompt = prompts[1];
+  assert.deepEqual([urlPrompt.params.mode, urlPrompt.params.url, urlPrompt.params.elicitationId], ["url", "https://example.com/auth?x=1", "e1"]);
 
   console.log(JSON.stringify({ ok: true, requests: bodies.length, prompts: prompts.length }));
 } finally {

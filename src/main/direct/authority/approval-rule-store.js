@@ -24,7 +24,7 @@ function normalizeString(value, fallback = "") {
 }
 
 function emptyRules() {
-  return { schema: RULES_SCHEMA, mcpToolAllows: [], commandRules: [] };
+  return { schema: RULES_SCHEMA, mcpToolAllows: [], commandRules: [], trustedHooks: [] };
 }
 
 function normalizePattern(pattern) {
@@ -49,6 +49,7 @@ class DirectApprovalRuleStore {
         schema: RULES_SCHEMA,
         mcpToolAllows: Array.isArray(parsed.mcpToolAllows) ? parsed.mcpToolAllows.filter(isPlainObject) : [],
         commandRules: Array.isArray(parsed.commandRules) ? parsed.commandRules.filter(isPlainObject) : [],
+        trustedHooks: Array.isArray(parsed.trustedHooks) ? parsed.trustedHooks.filter((id) => typeof id === "string") : [],
       };
     } catch {
       return emptyRules();
@@ -75,6 +76,22 @@ class DirectApprovalRuleStore {
     rules.mcpToolAllows = [...rules.mcpToolAllows, { projectId: ids[0], serverIdentityId: ids[1], toolName: ids[2], addedAt: new Date().toISOString() }].slice(-MAX_RULES);
     this.write(rules);
     return true;
+  }
+
+  // Hooks run only once the owner trusts them. A hook's id covers its event,
+  // matcher, command, and source file, so an edited hook needs a new
+  // approval (Codex's trusted_hash, kept by Direct).
+  isHookTrusted(hookId) {
+    return this.read().trustedHooks.includes(hookId);
+  }
+
+  setHookTrusted(hookId, trusted) {
+    if (!/^hook_[0-9a-f]{24}$/.test(String(hookId))) throw new Error("Unknown hook id.");
+    const rules = this.read();
+    const others = rules.trustedHooks.filter((id) => id !== hookId);
+    rules.trustedHooks = trusted ? [...others, hookId].slice(-MAX_RULES) : others;
+    this.write(rules);
+    return trusted === true;
   }
 
   // Global rules plus the project's rules for this environment.

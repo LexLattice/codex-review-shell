@@ -30,6 +30,7 @@ const {
   normalizeConfiguredMcpServer,
 } = require("../src/main/direct/external/configured-mcp-adapter");
 const { WorkspaceBackendManager } = require("../src/main/workspace-backend");
+const { EXECUTOR_METHODS } = require("../src/shared/executor-protocol");
 
 const onWindows = process.platform === "win32";
 const distro = onWindows ? (process.env.DIRECT_WSL_DISTRO || "Ubuntu") : process.env.WSL_DISTRO_NAME;
@@ -279,6 +280,23 @@ try {
   assert.equal(forms[0]?.message, "Which name?");
   assert.deepEqual(JSON.parse(answeredRemote.payload), { name: "Ada" });
   report.checks.push("remote_server_form_reaches_owner");
+
+  // The other environment's Codex context and hooks come from its executor
+  // (codex/context, hook/run): read there, run there.
+  const remoteContext = await workspaceBackends.requestForProject(otherProject, EXECUTOR_METHODS.codexContext, {}, 20_000);
+  assert.equal(remoteContext.schema, "direct_codex_environment_context@1");
+  assert.equal(remoteContext.platform, otherSide.platform);
+  const hookCommand = otherSide.platform === "win32"
+    ? "$in = [Console]::In.ReadToEnd(); Write-Output (\"hook:\" + ($in | ConvertFrom-Json).probe + \":\" + (Get-Location).Path)"
+    : "read -r line; echo \"hook:$(printf '%s' \"$line\" | sed 's/.*\"probe\":\"\\([^\"]*\\)\".*/\\1/'):$(pwd)\"";
+  const hookResult = await workspaceBackends.requestForProject(otherProject, EXECUTOR_METHODS.hookRun, {
+    hook: { command: hookCommand, commandWindows: hookCommand },
+    stdin: JSON.stringify({ probe: "p1" }),
+    timeoutMs: 20_000,
+  }, 30_000);
+  assert.equal(hookResult.exitCode, 0, JSON.stringify(hookResult));
+  assert.equal(hookResult.stdout.trim().toLowerCase(), `hook:p1:${otherSide.dir}`.toLowerCase(), "the hook ran in the other environment, in the project folder");
+  report.checks.push("remote_codex_context_and_hooks");
   const listed = await resolvers.externalDiscoveryResolver({
     project: otherProject,
     profile: profileFor(otherProject.mcpServers),

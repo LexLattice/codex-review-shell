@@ -7,6 +7,7 @@ const {
   MAX_MCP_TIMEOUT_MS,
   MCP_TOOL_CALL_TIMEOUT_MS,
   McpSessionPool,
+  mcpServerEnvironment,
   requestMcpStdio,
 } = require("./mcp-stdio-transport");
 
@@ -235,11 +236,35 @@ function normalizeConfiguredMcpServer(input = {}) {
       };
     })
     .filter((entry) => entry.uri);
+  const approvalModes = new Set(["auto", "prompt", "writes", "approve"]);
+  const stringMapOf = (value, keyPattern) => Object.freeze(Object.fromEntries(
+    Object.entries(isPlainObject(value) ? value : {})
+      .filter(([key, entry]) => keyPattern.test(key) && typeof entry === "string" && entry.length <= 16_000)
+      .slice(0, 64),
+  ));
+  const toolList = (value) => (Array.isArray(value) ? Object.freeze(value.map((entry) => boundedString(entry, 180)).filter(Boolean)) : null);
   return Object.freeze({
     serverIdentityId,
     displayName: boundedString(source.displayName || source.serverName || source.name, 180),
     selectorKey: boundedString(source.selectorKey || serverIdentityId, 180),
-    transportKind,
+    transportKind: transportKind === "http" || transportKind === "streamable-http" ? "streamable_http" : transportKind,
+    // Where the definition came from: Direct's project settings, or Codex's
+    // config.toml in the project's environment (read live, never saved).
+    source: boundedString(source.source, 40) || "direct",
+    // Literal variables for a stdio server (Codex's `env`), and the URL and
+    // headers of a streamable HTTP server. Kept in memory and passed to the
+    // server only; never shown to the renderer or the model.
+    envValues: stringMapOf(source.envValues || source.envLiteral, /^[A-Za-z_][A-Za-z0-9_]*$/),
+    url: boundedString(source.url, 2_000),
+    headers: stringMapOf(source.headers, /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/),
+    startupTimeoutMs: Number.isFinite(source.startupTimeoutMs) && source.startupTimeoutMs > 0 ? Math.min(source.startupTimeoutMs, 300_000) : 0,
+    toolTimeoutMs: Number.isFinite(source.toolTimeoutMs) && source.toolTimeoutMs > 0 ? Math.min(source.toolTimeoutMs, 300_000) : 0,
+    enabledTools: toolList(source.enabledTools),
+    disabledTools: toolList(source.disabledTools) || Object.freeze([]),
+    defaultToolsApprovalMode: approvalModes.has(source.defaultToolsApprovalMode) ? source.defaultToolsApprovalMode : "auto",
+    toolApprovalModes: Object.freeze(Object.fromEntries(Object.entries(isPlainObject(source.toolApprovalModes) ? source.toolApprovalModes : {})
+      .filter(([, mode]) => approvalModes.has(mode)))),
+    supportsParallelToolCalls: source.supportsParallelToolCalls === true,
     command: boundedString(source.command || source.binary || source.executable, 640),
     args,
     cwd: boundedString(source.cwd || source.workingDirectory, 2_000),
@@ -280,18 +305,69 @@ function normalizeRunsIn(input) {
   return Object.freeze({ kind, distro: kind === "wsl" ? boundedString(source.distro, 120) : "" });
 }
 
+// Servers from Codex's config.toml in each project's environment, as last
+// read (see codex-context-service.js), by project id.
+const codexConfigServers = new Map();
+
+function codexServerIdentityId(name) {
+  return `codex_${String(name).replace(/[^A-Za-z0-9_-]/g, "_")}`.slice(0, 180);
+}
+
+// A Codex [mcp_servers.<name>] entry as a Direct server: it runs where the
+// project runs (Codex runs servers where the agent runs).
+function configuredFromCodexServer(server = {}) {
+  return {
+    serverIdentityId: codexServerIdentityId(server.name),
+    displayName: server.name,
+    source: "codex_config",
+    transport: server.transport === "streamable_http" ? "streamable_http" : "stdio",
+    command: server.command || "",
+    args: server.args || [],
+    cwd: server.cwd || "",
+    processEnv: server.envVars || [],
+    envValues: server.env || {},
+    url: server.url || "",
+    headers: server.headers || {},
+    enabled: server.enabled !== false && !server.unavailable,
+    trustState: "configured",
+    freshness: "fresh",
+    authPosture: "local_config",
+    startupTimeoutMs: server.startupTimeoutMs,
+    toolTimeoutMs: server.toolTimeoutMs,
+    enabledTools: server.enabledTools,
+    disabledTools: server.disabledTools,
+    defaultToolsApprovalMode: server.defaultToolsApprovalMode,
+    toolApprovalModes: server.toolApprovalModes,
+    supportsParallelToolCalls: server.supportsParallelToolCalls,
+    runsIn: { kind: "project" },
+  };
+}
+
+function setCodexMcpServersForProject(projectId, servers = []) {
+  const id = normalizeString(projectId, "");
+  if (!id) return;
+  codexConfigServers.set(id, Object.freeze(arrayOrEmpty(servers).map(configuredFromCodexServer)));
+}
+
 function configuredMcpServersForProject(project = {}) {
   const sources = [
     project.mcpServers,
     project.mcp?.servers,
     project.codex?.mcpServers,
     project.surfaceBinding?.codex?.mcpServers,
+    codexConfigServers.get(normalizeString(project.id || project.projectId, "")),
   ];
+  // The owner's per-project switch, for Direct's servers and Codex's alike.
+  const settings = isPlainObject(project.mcpServerSettings) ? project.mcpServerSettings : {};
   const result = [];
   const seen = new Set();
   for (const source of sources) {
     for (const entry of arrayOrEmpty(source)) {
-      const normalized = normalizeConfiguredMcpServer(entry);
+      const id = normalizeString(entry?.serverIdentityId || entry?.id || entry?.name, "");
+      const override = isPlainObject(settings[id]) ? settings[id] : null;
+      const normalized = normalizeConfiguredMcpServer(override && typeof override.enabled === "boolean" && override.enabled === false
+        ? { ...entry, enabledState: "disabled" }
+        : entry);
       if (!normalized || seen.has(normalized.serverIdentityId)) continue;
       seen.add(normalized.serverIdentityId);
       result.push(normalized);
@@ -448,8 +524,22 @@ function externalResultPayload(result = {}) {
 }
 
 async function queryConfiguredServer(server, method, params, options = {}) {
-  if (server.transportKind !== "stdio" && server.transportKind !== "fixture") {
+  if (!["stdio", "fixture", "streamable_http"].includes(server.transportKind)) {
     throw scopeError("direct_mcp_transport_unsupported", "The configured MCP transport is not supported by Direct.");
+  }
+  // An HTTP server is reached over the network from the host, wherever its
+  // definition came from.
+  if (server.transportKind === "streamable_http") {
+    if (!server.url) throw scopeError("direct_mcp_transport_unavailable", "The configured MCP server has no URL.");
+    return (options.mcpSessionPool || hostMcpSessions).request(server, method, params, {
+      timeoutMs: options.timeoutMs,
+      startupTimeoutMs: server.startupTimeoutMs || undefined,
+      signal: options.signal,
+      onElicitation: options.onElicitation,
+      fetchImpl: options.fetchImpl,
+      placementKey: "host",
+      identityKey: server.serverIdentityId,
+    });
   }
   if (!server.command) {
     if (method === "resources/list") return { resources: server.resources };
@@ -465,7 +555,15 @@ async function queryConfiguredServer(server, method, params, options = {}) {
   }
   const placement = mcpPlacementFor(server, options.project || {}, options);
   if (placement.local) {
-    const transportOptions = { timeoutMs: options.timeoutMs, signal: options.signal, spawnProcess: spawnOnHost, onElicitation: options.onElicitation };
+    const transportOptions = {
+      timeoutMs: options.timeoutMs,
+      startupTimeoutMs: server.startupTimeoutMs || undefined,
+      signal: options.signal,
+      spawnProcess: spawnOnHost,
+      onElicitation: options.onElicitation,
+      // Allowlisted names read from this host, plus literal values (Codex's env).
+      env: { ...mcpServerEnvironment(server.processEnv || []), ...(server.envValues || {}) },
+    };
     if (options.mcpSessions === false) return requestMcpStdio(server, method, params, transportOptions);
     return (options.mcpSessionPool || hostMcpSessions).request(server, method, params, {
       ...transportOptions,
@@ -626,6 +724,9 @@ async function requestViaExecutor(placement, server, method, params, options = {
           args: [...server.args],
           cwd: server.cwd,
           processEnv: [...server.processEnv],
+          // Literal values (Codex's env); in memory only, for the server.
+          envValues: { ...(server.envValues || {}) },
+          startupTimeoutMs: server.startupTimeoutMs || undefined,
           // Lets the executor replace this server's session on a config change.
           serverIdentityId: server.serverIdentityId,
         },
@@ -648,24 +749,57 @@ async function requestViaExecutor(placement, server, method, params, options = {
 // model (Codex lists them when a session starts; here each turn asks the
 // long-lived servers, which answer quickly). A server that fails to answer
 // is left out of this turn rather than failing it.
+// Tool lists by server definition: servers are asked together, and a
+// listing is reused for a while (a failure for a shorter while), so a slow
+// or broken server doesn't hold up every turn.
+const toolListCache = new Map();
+const TOOL_LIST_TTL_MS = 2 * 60_000;
+const TOOL_LIST_FAILURE_TTL_MS = 60_000;
+
+function toolListKey(server, input = {}) {
+  const projectKind = normalizeString(input.project?.workspace?.kind, "local");
+  return sha256(JSON.stringify([projectKind, normalizeString(input.project?.id, ""), server.serverIdentityId, server.transportKind, server.command, server.args, server.cwd, server.url, Object.keys(server.envValues || {}), Object.keys(server.headers || {})]));
+}
+
+async function listedTools(server, input) {
+  if (!server.command && !server.url) return { tools: server.tools };
+  const key = toolListKey(server, input);
+  const cached = toolListCache.get(key);
+  if (cached && Date.now() - cached.at < (cached.error ? TOOL_LIST_FAILURE_TTL_MS : TOOL_LIST_TTL_MS)) {
+    if (cached.error) throw cached.error;
+    return cached.result;
+  }
+  try {
+    const result = await queryConfiguredServer(server, "tools/list", {}, { ...input, timeoutMs: input.listTimeoutMs || 10_000 });
+    toolListCache.set(key, { at: Date.now(), result });
+    return result;
+  } catch (error) {
+    toolListCache.set(key, { at: Date.now(), error });
+    throw error;
+  }
+}
+
 async function listConfiguredMcpTools(input = {}) {
   const profile = input.profile || {};
   const scope = assertExactScope(input, profile);
   const servers = [];
   const errors = [];
-  for (const candidate of configuredMcpServersForProject(input.project || {})) {
-    let server;
+  const candidates = configuredMcpServersForProject(input.project || {}).map((candidate) => {
     try {
-      server = serverFor(input, profile, candidate.serverIdentityId).configured;
+      return serverFor(input, profile, candidate.serverIdentityId).configured;
     } catch {
-      continue;
+      return null;
     }
+  }).filter(Boolean);
+  const listings = await Promise.allSettled(candidates.map((server) => listedTools(server, input)));
+  for (const [index, server] of candidates.entries()) {
     try {
-      const result = server.command
-        ? await queryConfiguredServer(server, "tools/list", {}, { ...input, timeoutMs: input.listTimeoutMs || 10_000 })
-        : { tools: server.tools };
+      if (listings[index].status === "rejected") throw listings[index].reason;
+      const result = listings[index].value;
+      // Codex's enabled_tools allow-list, then its disabled_tools deny-list.
+      const offered = (name) => (!server.enabledTools || server.enabledTools.includes(name)) && !server.disabledTools.includes(name);
       const tools = arrayOrEmpty(result.tools).slice(0, MAX_DISCOVERY_RESULTS).map((tool) => {
-        if (!isPlainObject(tool) || !normalizeString(tool.name, "")) return null;
+        if (!isPlainObject(tool) || !normalizeString(tool.name, "") || !offered(tool.name)) return null;
         let inputSchema;
         try {
           inputSchema = Object.hasOwn(tool, "inputSchema") ? sanitizeInputSchema(tool.inputSchema) : undefined;
@@ -679,7 +813,14 @@ async function listConfiguredMcpTools(input = {}) {
           annotations: toolAnnotations(tool.annotations) || {},
         };
       }).filter(Boolean);
-      servers.push({ serverIdentityId: server.serverIdentityId, serverName: server.displayName || server.serverIdentityId, tools });
+      servers.push({
+        serverIdentityId: server.serverIdentityId,
+        serverName: server.displayName || server.serverIdentityId,
+        tools,
+        defaultToolsApprovalMode: server.defaultToolsApprovalMode,
+        toolApprovalModes: server.toolApprovalModes,
+        supportsParallelToolCalls: server.supportsParallelToolCalls,
+      });
     } catch (error) {
       errors.push({ serverIdentityId: server.serverIdentityId, code: normalizeString(error?.code, "direct_mcp_tools_list_failed") });
     }
@@ -697,13 +838,13 @@ async function callConfiguredMcpTool(input = {}) {
   const toolName = normalizeString(input.toolName, "");
   if (!serverIdentityId || !toolName) throw scopeError("direct_mcp_tool_selector_missing", "MCP tool calls require an exact server identity and tool name.");
   const server = serverFor(input, profile, serverIdentityId).configured;
-  if (!server.command) throw scopeError("direct_mcp_transport_unavailable", "The configured MCP server has no local transport command.");
+  if (!server.command && !server.url) throw scopeError("direct_mcp_transport_unavailable", "The configured MCP server has no command or URL.");
   const params = { name: toolName };
   if (isPlainObject(input.arguments) && Object.keys(input.arguments).length) params.arguments = input.arguments;
   if (isPlainObject(input.meta)) params._meta = input.meta;
   const result = await queryConfiguredServer(server, "tools/call", params, {
     ...input,
-    timeoutMs: input.timeoutMs || MCP_TOOL_CALL_TIMEOUT_MS,
+    timeoutMs: input.timeoutMs || server.toolTimeoutMs || MCP_TOOL_CALL_TIMEOUT_MS,
   });
   return { ...scope, profileDigest: normalizeString(profile.profileDigest, ""), serverIdentityId, toolName, result: isPlainObject(result) ? result : {} };
 }
@@ -809,6 +950,8 @@ function disposeHostMcpSessions() {
 
 module.exports = {
   callConfiguredMcpTool,
+  codexServerIdentityId,
+  setCodexMcpServersForProject,
   listConfiguredMcpTools,
   configuredMcpServersForProject,
   disposeHostMcpSessions,

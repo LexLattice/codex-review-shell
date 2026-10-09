@@ -300,6 +300,149 @@
         </section>
 
         <section class="middle-tab-panel" id="projectTabPanel" data-tab-panel="project" hidden>
+          <section class="control-card project-context-card" id="projectContextSettings">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Project settings</p>
+                <h3>MCP servers, skills, and hooks</h3>
+              </div>
+              <button class="ghost small" id="codexContextRefreshButton" type="button">Refresh</button>
+            </div>
+            <p id="codexContextStatus" class="muted" role="status" aria-live="polite">Open this tab to load Codex context.</p>
+            <div id="codexContextWarnings" class="project-context-list" role="status"></div>
+
+            <section class="project-context-section">
+              <h4>From Codex config</h4>
+              <p id="codexContextSummary" class="muted project-context-detail"></p>
+              <p class="muted">Definitions are read-only. Switches apply only to this project.</p>
+              <div id="codexContextServerList" class="project-context-list"></div>
+            </section>
+
+            <section class="project-context-section">
+              <div class="section-heading">
+                <h4>Direct servers</h4>
+                <button class="ghost small" id="directMcpAddButton" type="button">Add server</button>
+              </div>
+              <div id="directMcpServerList" class="project-context-list"></div>
+              <form id="directMcpServerForm" class="project-context-form" hidden>
+                <h4 id="directMcpFormTitle">Add server</h4>
+                <label>
+                  Name
+                  <input id="directMcpNameInput" required maxlength="180" pattern="[A-Za-z0-9_:@\/.\-]{1,180}" autocomplete="off" />
+                </label>
+                <label>
+                  Transport
+                  <select id="directMcpTransportSelect">
+                    <option value="stdio">Command</option>
+                    <option value="streamable_http">HTTP URL</option>
+                  </select>
+                </label>
+                <div id="directMcpCommandFields" class="project-context-fields">
+                  <label>
+                    Command
+                    <input id="directMcpCommandInput" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label>
+                    Arguments (one per line)
+                    <textarea id="directMcpArgsInput" rows="3" spellcheck="false"></textarea>
+                  </label>
+                  <label>
+                    Working folder
+                    <input id="directMcpCwdInput" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label>
+                    Environment values (KEY=VALUE per line)
+                    <textarea id="directMcpEnvInput" rows="3" spellcheck="false" autocomplete="off"></textarea>
+                  </label>
+                  <label>
+                    Pass-through variable names (comma or newline separated)
+                    <textarea id="directMcpProcessEnvInput" rows="2" spellcheck="false"></textarea>
+                  </label>
+                  <label>
+                    Runs in
+                    <select id="directMcpRunsInSelect">
+                      <option value="project">Project's environment</option>
+                      <option value="host">This app's host</option>
+                      <option value="wsl">WSL distro</option>
+                      <option value="windows">Windows</option>
+                    </select>
+                  </label>
+                  <label id="directMcpDistroField" hidden>
+                    WSL distro
+                    <input id="directMcpDistroInput" autocomplete="off" />
+                  </label>
+                </div>
+                <div id="directMcpHttpFields" class="project-context-fields" hidden>
+                  <label>
+                    URL (http or https)
+                    <input id="directMcpUrlInput" type="url" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label>
+                    Headers (Name: value per line)
+                    <textarea id="directMcpHeadersInput" rows="3" spellcheck="false" autocomplete="off"></textarea>
+                  </label>
+                </div>
+                <label>
+                  Only these tools (comma separated; empty means all)
+                  <input id="directMcpEnabledToolsInput" autocomplete="off" spellcheck="false" />
+                </label>
+                <label>
+                  Never these tools (comma separated)
+                  <input id="directMcpDisabledToolsInput" autocomplete="off" spellcheck="false" />
+                </label>
+                <label>
+                  Approval
+                  <select id="directMcpApprovalSelect">
+                    <option value="auto">Auto</option>
+                    <option value="prompt">Always ask</option>
+                    <option value="writes">Ask unless read-only</option>
+                    <option value="approve">Never ask</option>
+                  </select>
+                </label>
+                <label>
+                  Tool timeout (seconds)
+                  <input id="directMcpTimeoutInput" type="number" min="0.001" step="any" value="60" required />
+                </label>
+                <p class="muted">Environment and header values are stored in the project config. Lists show names only.</p>
+                <p id="directMcpFormError" class="project-context-warning" role="alert" hidden></p>
+                <div class="heading-actions">
+                  <button class="primary small" id="directMcpSaveButton" type="submit">Save server</button>
+                  <button class="ghost small" id="directMcpCancelButton" type="button">Cancel</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="project-context-section">
+              <h4>AGENTS.md</h4>
+              <label>
+                Include instructions for
+                <select id="projectAgentsMdScopeSelect">
+                  <option value="off">Off</option>
+                  <option value="workbench">Workbench threads</option>
+                  <option value="workbench_and_children">Workbench threads and their delegated threads (default)</option>
+                  <option value="all">Everyone, including workspace workers</option>
+                </select>
+              </label>
+              <div id="codexContextAgentsList" class="project-context-list"></div>
+            </section>
+
+            <section class="project-context-section">
+              <h4>Skills</h4>
+              <label class="checkbox-row">
+                <input id="projectSkillsEnabledInput" type="checkbox" checked />
+                <span>Tell the model about skills</span>
+              </label>
+              <div id="codexContextSkillsList" class="project-context-list"></div>
+            </section>
+
+            <section class="project-context-section">
+              <h4>Hooks</h4>
+              <p class="muted">Untrusted hooks don't run. Editing a hook requires trusting it again.</p>
+              <div id="codexContextHooksList" class="project-context-list"></div>
+              <div id="codexContextNotify" class="muted project-context-detail" hidden></div>
+            </section>
+          </section>
+
           <section class="control-card direct-bridge-settings-card">
             <div class="section-heading">
               <div>

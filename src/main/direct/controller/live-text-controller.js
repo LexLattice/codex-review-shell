@@ -57,6 +57,8 @@ const {
 } = require("../external/mcp-tool-calls");
 const { DirectApprovalRuleStore } = require("../authority/approval-rule-store");
 const { configuredMcpServersForProject } = require("../external/configured-mcp-adapter");
+const { agentsMdItem, mentionedSkills, skillBodyItem, skillsCatalogItem } = require("../codex-home/codex-context-items");
+const { runHooksForEvent } = require("../codex-home/hook-engine");
 const { commandSegments, evaluateCommandRules, proposeCommandRule } = require("../tools/command-rules");
 const {
   APPLY_PATCH_TOOL_NAMES,
@@ -2350,6 +2352,14 @@ class DirectLiveTextController {
     this.mcpResourceReadResolver = typeof options.mcpResourceReadResolver === "function" ? options.mcpResourceReadResolver : null;
     this.mcpToolCatalogResolver = typeof options.mcpToolCatalogResolver === "function" ? options.mcpToolCatalogResolver : null;
     this.mcpToolCallResolver = typeof options.mcpToolCallResolver === "function" ? options.mcpToolCallResolver : null;
+    // Codex's config.toml, AGENTS.md, skills, and hooks in the project's
+    // environment (see codex-context-service.js).
+    this.codexContextResolver = typeof options.codexContextResolver === "function" ? options.codexContextResolver : null;
+    this.codexSkillResolver = typeof options.codexSkillResolver === "function" ? options.codexSkillResolver : null;
+    this.hookRunner = typeof options.hookRunner === "function" ? options.hookRunner : null;
+    this.turnHookContexts = new Map();
+    this.stopHookContinuations = new Map();
+    this.turnCodexContexts = new Map();
     // "Allow for this thread" answers (Codex's "for this session").
     this.mcpThreadToolAllows = new Map();
     this.approvalRuleStore = options.approvalRuleStore ||
@@ -2974,6 +2984,9 @@ class DirectLiveTextController {
     if (this.approvalRuleStore?.isMcpToolAllowed(context.projectId, entry.serverIdentityId, entry.toolName)) {
       return { allowed: true, reason: "always_allowed" };
     }
+    const hookAnswer = await this.permissionRequestHooks(sessionId, turnId, project, normalizeString(obligation.name, ""), context.args || {});
+    if (hookAnswer?.decision === "deny") return { allowed: false, reason: "hook_denied" };
+    if (hookAnswer?.decision === "allow") return { allowed: true, reason: "hook_allowed" };
     if (!surfaceSession || typeof surfaceSession.createMcpElicitationRequest !== "function") return { allowed: false, reason: "no_owner" };
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       authorityState: "approval_waiting",
@@ -3018,8 +3031,9 @@ class DirectLiveTextController {
     if (options.accessProfile === "full_access" && !elicitationHasFields(requestedSchema) && normalizeString(params.mode, "form") === "form") {
       return { action: "accept", content: {} };
     }
-    if (normalizeString(params.mode, "form") !== "form") return { action: "decline" };
     if (!surfaceSession || typeof surfaceSession.createMcpElicitationRequest !== "function") return { action: "decline" };
+    if (normalizeString(params.mode, "form") === "url") return this.askOwnerMcpUrl(surfaceSession, sessionId, turnId, entry, params, options);
+    if (normalizeString(params.mode, "form") !== "form") return { action: "decline" };
     return surfaceSession.createMcpElicitationRequest({
       summary: `${entry.serverName}: ${normalizeString(params.message, "request")}`.slice(0, 200),
       signal: options.signal,
@@ -3031,6 +3045,33 @@ class DirectLiveTextController {
         mode: "form",
         message: normalizeString(params.message, "").slice(0, 4_000),
         requestedSchema,
+        _meta: isPlainObject(params._meta) ? params._meta : null,
+      },
+    });
+  }
+
+  // Codex's URL form: the owner opens the link, does what it asks, and says
+  // when they're done ("I finished" accepts; opening alone doesn't). Only
+  // https links with a host and no embedded credentials are shown.
+  askOwnerMcpUrl(surfaceSession, sessionId, turnId, entry = {}, params = {}, options = {}) {
+    let url;
+    try {
+      url = new URL(normalizeString(params.url, ""));
+    } catch {
+      return { action: "decline" };
+    }
+    if (url.protocol !== "https:" || !url.hostname || url.username || url.password) return { action: "decline" };
+    return surfaceSession.createMcpElicitationRequest({
+      summary: `${entry.serverName}: ${normalizeString(params.message, "open a link")}`.slice(0, 200),
+      signal: options.signal,
+      params: {
+        threadId: sessionId,
+        turnId,
+        serverName: entry.serverName,
+        mode: "url",
+        message: normalizeString(params.message, "").slice(0, 4_000),
+        url: url.toString(),
+        elicitationId: normalizeString(params.elicitationId, "").slice(0, 200),
         _meta: isPlainObject(params._meta) ? params._meta : null,
       },
     });
@@ -3846,6 +3887,231 @@ class DirectLiveTextController {
       }
     }
     return { projectId, workThreadId, profile: valid ? profile : null };
+  }
+
+  // The project's Codex context for this turn (its MCP servers join the
+  // project's own; AGENTS.md, skills, and hooks apply to the turn). A
+  // failure leaves the turn without them rather than failing it.
+  async loadCodexContext(project = {}, sessionId = "", turnId = "") {
+    if (!this.codexContextResolver || !turnId) return null;
+    let context = null;
+    try {
+      context = await this.codexContextResolver(project);
+    } catch {
+      context = null;
+    }
+    if (context) this.turnCodexContexts.set(`${sessionId}\u0000${turnId}`, context);
+    return context;
+  }
+
+  codexContextForTurn(sessionId = "", turnId = "") {
+    return this.turnCodexContexts.get(`${sessionId}\u0000${turnId}`) || null;
+  }
+
+  // The owner-trusted hooks of the turn's Codex context for one event (see
+  // hook-engine.js); null when none ran.
+  async runCodexHooks(event, project = {}, sessionId = "", turnId = "", extra = {}, matchValue = "") {
+    const context = this.codexContextForTurn(sessionId, turnId);
+    if (!Array.isArray(context?.hooks) || !context.hooks.length || !this.hookRunner || !this.approvalRuleStore) return null;
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const result = await runHooksForEvent({
+      hooks: context.hooks,
+      event,
+      matchValue,
+      payload: {
+        session_id: sessionId,
+        transcript_path: "",
+        cwd: normalizeString(context.cwd || context.projectRoot, ""),
+        hook_event_name: event,
+        model: normalizeString(turn.model, ""),
+        permission_mode: grantAccessProfile(this.harnessGrantForTurn(sessionId, turnId, project)) || "",
+        turn_id: turnId,
+        ...extra,
+      },
+      isTrusted: (id) => this.approvalRuleStore.isHookTrusted(id),
+      runner: (hook, stdin) => this.hookRunner(project, hook, stdin),
+    });
+    if (!result.ran) return null;
+    // Counts only: hook commands and their output can hold private paths.
+    try {
+      this.sessionStore.writeDiagnostic?.(sessionId, "direct_codex_hook_run", {
+        event,
+        turnId,
+        ran: result.ran,
+        blocked: result.block,
+        errorCount: result.errors.length,
+      }, {});
+    } catch {}
+    return result;
+  }
+
+  // SessionStart (a thread's first turn) and UserPromptSubmit. A block ends
+  // the turn before any request; context goes to the model after the prompt.
+  async runPromptHooks(project = {}, session = {}, turnId = "", promptText = "") {
+    const contexts = [];
+    const priorTurns = (this.sessionStore.readSession(session.sessionId)?.turns || []).filter((entry) => entry?.turnId && entry.turnId !== turnId);
+    if (!priorTurns.length) {
+      const start = await this.runCodexHooks("SessionStart", project, session.sessionId, turnId, { source: "startup" }, "startup");
+      if (start) contexts.push(...start.contexts);
+    }
+    const submit = await this.runCodexHooks("UserPromptSubmit", project, session.sessionId, turnId, { prompt: promptText });
+    if (submit?.block || submit?.stop) {
+      const error = new Error(`A hook blocked this prompt: ${submit.reason || submit.stopReason || "no reason given"}`);
+      error.code = "hook_blocked_prompt";
+      throw error;
+    }
+    if (submit) contexts.push(...submit.contexts);
+    if (contexts.length) this.turnHookContexts.set(`${session.sessionId}\u0000${turnId}`, contexts);
+  }
+
+  async preToolUseHooks(sessionId, turnId, obligation = {}, project = {}) {
+    const name = normalizeString(obligation.name, "");
+    let input;
+    try {
+      input = JSON.parse(normalizeString(obligation.argumentsText, "{}"));
+    } catch {
+      input = String(obligation.argumentsText || "");
+    }
+    const result = await this.runCodexHooks("PreToolUse", project, sessionId, turnId, {
+      tool_name: name,
+      tool_input: input,
+      tool_use_id: normalizeString(obligation.callId, ""),
+    }, name);
+    if (!result) return null;
+    if (result.block) return { blocked: true, reason: result.reason || "no reason given" };
+    if (result.allow && isPlainObject(result.updatedInput)) {
+      return {
+        obligation: this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+          argumentsText: JSON.stringify(result.updatedInput),
+          hookRewroteInput: true,
+        }).obligation,
+      };
+    }
+    return null;
+  }
+
+  // Codex's PostToolUse: can't undo the call, but a block or added context
+  // goes to the model with the result.
+  async postToolUseHooks(sessionId, turnId, obligation = {}, envelope = {}, project = {}) {
+    if (normalizeString(envelope.resultKind, "") === "tool_failure") return envelope;
+    const name = normalizeString(obligation.name, "");
+    const responseText = typeof envelope.providerOutputText === "string"
+      ? envelope.providerOutputText
+      : JSON.stringify(envelope.providerOutput || {});
+    let input;
+    try {
+      input = JSON.parse(normalizeString(obligation.argumentsText, "{}"));
+    } catch {
+      input = String(obligation.argumentsText || "");
+    }
+    const result = await this.runCodexHooks("PostToolUse", project, sessionId, turnId, {
+      tool_name: name,
+      tool_input: input,
+      tool_use_id: normalizeString(obligation.callId, ""),
+      tool_response: responseText.slice(0, 64_000),
+    }, name);
+    if (!result || (!result.block && !result.contexts.length)) return envelope;
+    const notes = [
+      ...(result.block ? [`Hook feedback: ${result.reason}`] : []),
+      ...result.contexts.map((text) => `Hook context: ${text}`),
+    ];
+    const next = { ...envelope, providerOutputText: `${responseText}\n\n${notes.join("\n\n")}` };
+    next.envelopeDigest = sha256(stableStringify({ ...next, envelopeDigest: undefined }));
+    return next;
+  }
+
+  // Codex's PermissionRequest hooks answer an owner prompt before it's shown.
+  async permissionRequestHooks(sessionId, turnId, project = {}, toolName = "", toolInput = {}) {
+    const result = await this.runCodexHooks("PermissionRequest", project, sessionId, turnId, { tool_name: toolName, tool_input: toolInput }, toolName);
+    if (result?.block) return { decision: "deny", reason: result.reason || "no reason given" };
+    if (result?.allow) return { decision: "allow" };
+    return null;
+  }
+
+  // After a turn ends: Codex's Stop hooks (a block continues the work with
+  // the hook's reason as the next message, at most three times in a row),
+  // then the legacy notify program with its agent-turn-complete JSON.
+  async afterTurnFinished(surfaceSession, params = {}) {
+    const sessionId = normalizeString(params.threadId, "");
+    const turnId = normalizeString(params.turnId || params.turn?.id, "");
+    const key = `${sessionId}\u0000${turnId}`;
+    const project = surfaceSession?.project || {};
+    const status = normalizeString(params.turn?.status, "");
+    if (!["completed", "failed", "aborted", "interrupted"].includes(status)) return;
+    try {
+      const context = this.codexContextForTurn(sessionId, turnId);
+      if (!context || normalizeString(params.turn?.status, "") !== "completed") return;
+      const session = this.sessionStore.readSession(sessionId) || {};
+      const message = (Array.isArray(session.messages) ? session.messages : []).find((entry) => entry?.id === turnId) || {};
+      const lastAssistantMessage = normalizeString(message.text, "") ||
+        (Array.isArray(message.items) ? message.items : []).filter((item) => item?.type === "agentMessage").map((item) => String(item.text || "")).join("\n");
+      const chain = this.stopHookContinuations.get(turnId) || 0;
+      const stop = await this.runCodexHooks("Stop", project, sessionId, turnId, {
+        stop_hook_active: chain > 0,
+        last_assistant_message: lastAssistantMessage.slice(0, 64_000),
+      });
+      if (stop?.block && !stop.stop && chain < 3 && surfaceSession) {
+        const next = await this.handleRequest("turn/start", {
+          threadId: sessionId,
+          clientTurnRequestId: `hook_stop_${turnId}`,
+          promptText: `Stop hook feedback: ${stop.reason}`,
+        }, { project, surfaceSession, ownerControlled: true });
+        const nextTurnId = normalizeString(next?.turn?.id, "");
+        if (nextTurnId) this.stopHookContinuations.set(nextTurnId, chain + 1);
+      }
+      for (const hook of context.hooks.filter((entry) => entry.event === "Notify" && Array.isArray(entry.argv))) {
+        if (!this.approvalRuleStore?.isHookTrusted(hook.id) || !this.hookRunner) continue;
+        const payload = {
+          type: "agent-turn-complete",
+          "thread-id": sessionId,
+          "turn-id": turnId,
+          cwd: normalizeString(context.cwd || context.projectRoot, ""),
+          "input-messages": (Array.isArray(this.sessionStore.readTurn(sessionId, turnId)?.input) ? this.sessionStore.readTurn(sessionId, turnId).input : [])
+            .map((entry) => String(entry?.text || "")).filter(Boolean),
+          "last-assistant-message": lastAssistantMessage.slice(0, 16_000),
+        };
+        Promise.resolve().then(() => this.hookRunner(project, { ...hook, argv: [...hook.argv, JSON.stringify(payload)] }, "")).catch(() => {});
+      }
+    } finally {
+      this.turnCodexContexts.delete(key);
+      this.turnHookContexts.delete(key);
+      this.stopHookContinuations.delete(turnId);
+    }
+  }
+
+  // Workbench thread, a thread delegated from one, or a worker thread.
+  threadKind(session = {}) {
+    if (normalizeString(session.agentKind, "") === "direct_worker") return "worker";
+    if (isPlainObject(session.delegatedFrom) || normalizeString(session.parentThreadId, "")) return "child";
+    return "workbench";
+  }
+
+  // AGENTS.md (when the project's scope covers this thread), the skills
+  // catalog (unless turned off here or in Codex's config), and the bodies of
+  // skills the prompt mentions with `$name`.
+  async codexContextInputItems(project = {}, session = {}, turnId = "", promptText = "") {
+    const context = this.codexContextForTurn(session.sessionId, turnId);
+    const items = { prefix: [], mentions: [] };
+    if (!context) return items;
+    const scope = normalizeString(project.agentsMdScope, "workbench_and_children");
+    const kind = this.threadKind(session);
+    const agentsAllowed = scope === "all" || (scope === "workbench_and_children" && kind !== "worker") || (scope === "workbench" && kind === "workbench");
+    const agents = agentsAllowed ? agentsMdItem(context.agentsMd, normalizeString(context.cwd || context.projectRoot, "")) : null;
+    if (agents) items.prefix.push(agents);
+    const skillsOn = project.skillsEnabled !== false && context.skillsIncludeInstructions !== false;
+    const catalog = skillsOn ? skillsCatalogItem(context.skills) : null;
+    if (catalog) items.prefix.push(catalog);
+    if (skillsOn && this.codexSkillResolver) {
+      for (const skill of mentionedSkills(promptText, context.skills).slice(0, 8)) {
+        const body = await Promise.resolve().then(() => this.codexSkillResolver(project, skill.path)).catch(() => null);
+        if (body?.text) items.mentions.push(skillBodyItem(skill, body));
+      }
+    }
+    // Hook context (SessionStart, UserPromptSubmit) as developer messages.
+    for (const text of this.turnHookContexts.get(`${session.sessionId}\u0000${turnId}`) || []) {
+      items.mentions.push({ role: "developer", content: [{ type: "input_text", text }] });
+    }
+    return items;
   }
 
   // Lists the project's MCP tools for this turn and keeps the catalog on
@@ -5424,6 +5690,7 @@ class DirectLiveTextController {
       method,
       params,
     });
+    if (method === "turn/completed") setImmediate(() => this.afterTurnFinished(surfaceSession, params).catch(() => {}));
   }
 
   findTurnByClientRequestId(session, clientTurnRequestId) {
@@ -7048,6 +7315,11 @@ class DirectLiveTextController {
     // list (joined text would make ["a b"] and ["a", "b"] the same).
     const threadKey = JSON.stringify([environmentKind, cmd ? ["cmd", cmd] : ["argv", directCommand, ...argv]]);
     if (this.commandThreadAllows?.get(sessionId)?.has(threadKey)) return { escalation: { approvedBy: "owner" } };
+    const hookAnswer = await this.permissionRequestHooks(sessionId, turnId, project, "exec_command", args);
+    if (hookAnswer?.decision === "deny") {
+      return { declined: true, message: `A hook denied running this command outside the sandbox: ${hookAnswer.reason}` };
+    }
+    if (hookAnswer?.decision === "allow") return { escalation: { approvedBy: "owner" } };
     if (!surfaceSession || typeof surfaceSession.createCommandApprovalRequest !== "function") {
       return { declined: true, message: "Nobody is available to approve running this command outside the sandbox; it was not run." };
     }
@@ -8534,6 +8806,7 @@ class DirectLiveTextController {
   }
 
   async continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation = {}, envelope = {}, project = {}) {
+    envelope = await this.postToolUseHooks(sessionId, turnId, obligation, envelope, project);
     const recorded = this.recordSafeResidentUtilityResult(sessionId, turnId, obligation, envelope);
     if (await this.continueToolBatch(surfaceSession, sessionId, turnId, obligation.obligationId, project)) {
       return {
@@ -9735,7 +10008,8 @@ class DirectLiveTextController {
   parallelSafeObligation(sessionId, turnId, obligation = {}, project = {}) {
     const name = normalizeString(obligation.name, "");
     // As in Codex, an MCP tool runs alongside others when it is read-only.
-    if (this.mcpToolEntry(sessionId, turnId, name)?.readOnly === true) return true;
+    const mcpEntry = this.mcpToolEntry(sessionId, turnId, name);
+    if (mcpEntry) return mcpEntry.parallel === true || mcpEntry.readOnly === true;
     if (!PARALLEL_SAFE_TOOL_NAMES.has(name)) return false;
     // A command asking to leave the sandbox waits for the owner; one at a time.
     if (name === "exec_command" && parseToolArgumentsObject(obligation).sandbox_permissions === "require_escalated") return false;
@@ -9830,7 +10104,17 @@ class DirectLiveTextController {
   async dispatchToolObligations(surfaceSession, sessionId, turnId, obligations = [], project = {}) {
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
     let createdCount = 0;
-    for (const obligation of obligations) {
+    for (let obligation of obligations) {
+      // Codex's PreToolUse hooks may block the call or rewrite its input.
+      const gate = await this.preToolUseHooks(sessionId, turnId, obligation, project);
+      if (gate?.blocked) {
+        createdCount += await this.returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation, project, {
+          code: "hook_blocked",
+          message: `Blocked by a hook: ${gate.reason}`,
+        });
+        continue;
+      }
+      if (gate?.obligation) obligation = gate.obligation;
       if (normalizeString(obligation.name, "") === REQUEST_PERMISSIONS_TOOL_NAME) {
         createdCount += await this.emitPermissionsRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
@@ -11940,13 +12224,17 @@ class DirectLiveTextController {
       },
     });
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
-    if (implementationTier) await this.loadMcpToolCatalog(project, session.sessionId, turn.turnId);
+    if (implementationTier) {
+      await this.loadCodexContext(project, session.sessionId, turn.turnId);
+      await this.loadMcpToolCatalog(project, session.sessionId, turn.turnId);
+    }
     let contextResult = null;
     let controlledRoutingResult = null;
     let requestShape = null;
     let epistemicContextDeliveryBinding = null;
     let selfConstitutionSnapshot = null;
     try {
+      if (implementationTier) await this.runPromptHooks(project, session, turn.turnId, prompt);
       if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForTextTurn === "function") {
         this.indexDirectThreadStoreSession(session.sessionId);
         const hasControlledRoutingInput = controlledRoutingRequested;
@@ -12231,6 +12519,14 @@ class DirectLiveTextController {
       // parallel-safe ones then run at the same time (emitToolApprovalRequests).
       if (implementationTier) requestBody.parallel_tool_calls = true;
       this.applyDirectAttachmentPayloads(requestBody, providerAttachmentPayloads);
+      if (implementationTier && Array.isArray(requestBody.input)) {
+        // AGENTS.md and the skills catalog lead the input (stable across
+        // turns, so they stay in the cached prefix); a mentioned skill's
+        // SKILL.md follows the user's message, as in Codex.
+        const codexItems = await this.codexContextInputItems(project, session, turn.turnId, prompt);
+        if (codexItems.prefix.length) requestBody.input.unshift(...codexItems.prefix);
+        if (codexItems.mentions.length) requestBody.input.push(...codexItems.mentions);
+      }
       if (normalizeString(selfConstitutionSnapshot?.digest, "") && Array.isArray(requestBody.input)) {
         // Per-turn facts go after the dialogue so the instructions, tools,
         // and earlier history stay a cacheable prefix across turns.

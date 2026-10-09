@@ -117,7 +117,11 @@ function annotationsOf(tool = {}) {
 // Codex's "auto" approval mode for an MCP tool: a destructive tool always
 // asks, a read-only one never does, and a tool that says nothing is treated
 // as destructive and open-world.
-function mcpToolNeedsApproval(annotations = {}) {
+function mcpToolNeedsApproval(annotations = {}, mode = "auto") {
+  // Codex's per-tool approval_mode (default_tools_approval_mode otherwise).
+  if (mode === "prompt") return true;
+  if (mode === "approve") return false;
+  if (mode === "writes") return annotations.readOnlyHint !== true;
   if (annotations.destructiveHint === true) return true;
   if (annotations.readOnlyHint === true) return false;
   return (annotations.destructiveHint ?? true) || (annotations.openWorldHint ?? true);
@@ -140,6 +144,7 @@ function buildMcpToolCatalog(servers = []) {
       seenRaw.add(raw);
       const parameters = sanitizeMcpToolSchema(tool.inputSchema);
       if (!parameters) continue;
+      const modes = isPlainObject(server.toolApprovalModes) ? server.toolApprovalModes : {};
       candidates.push({
         raw,
         base: `${MCP_TOOL_PREFIX}${sanitizeNamePart(serverName)}${MCP_TOOL_DELIMITER}${sanitizeNamePart(toolName)}`,
@@ -149,6 +154,8 @@ function buildMcpToolCatalog(servers = []) {
         description: normalizeString(tool.description, "").slice(0, MAX_TOOL_DESCRIPTION_CHARS),
         parameters,
         annotations: annotationsOf(tool),
+        approvalMode: normalizeString(modes[toolName], normalizeString(server.defaultToolsApprovalMode, "auto")),
+        serverParallel: server.supportsParallelToolCalls === true,
       });
     }
   }
@@ -165,12 +172,15 @@ function buildMcpToolCatalog(servers = []) {
     }
     if (used.has(name)) continue;
     used.add(name);
-    const { raw, base, ...entry } = candidate;
+    const { raw, base, serverParallel, ...entry } = candidate;
     entries.push({
       functionName: name,
       ...entry,
       readOnly: entry.annotations.readOnlyHint === true,
-      needsApproval: mcpToolNeedsApproval(entry.annotations),
+      // As in Codex: read-only tools, or every tool of a server that says
+      // it handles parallel calls.
+      parallel: entry.annotations.readOnlyHint === true || serverParallel,
+      needsApproval: mcpToolNeedsApproval(entry.annotations, entry.approvalMode),
       schemaDigest: sha256(JSON.stringify(entry.parameters)).slice(0, 32),
     });
   }

@@ -71,8 +71,10 @@ function nativeShellCommand(shellCommand, options = {}) {
 // stdin line (base64 UTF-8) and runs it as `-Command <script>` would: the
 // script is dot-sourced at the top level and a failing last statement exits 1.
 // Startup (~0.4 s for pwsh) is then paid before the command arrives, and
-// stdin after that line belongs to the command.
-const POWERSHELL_PREWARM_BOOTSTRAP = `${POWERSHELL_UTF8_PRELUDE}$__l=[Console]::In.ReadLine();if($null -eq $__l){exit 0};$__b=[scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($__l)));Remove-Variable __l;. $__b`;
+// stdin after that line belongs to the command. The line is read a byte at a
+// time from the raw stream: [Console]::In buffers, and would swallow input
+// sent right after it that a program the command starts should get.
+const POWERSHELL_PREWARM_BOOTSTRAP = `${POWERSHELL_UTF8_PRELUDE}$__s=[Console]::OpenStandardInput();$__m=New-Object IO.MemoryStream;while($true){$__c=$__s.ReadByte();if($__c -lt 0){exit 0};if($__c -eq 10){break};$__m.WriteByte([byte]$__c)};$__l=[Text.Encoding]::ASCII.GetString($__m.ToArray()).Trim();Remove-Variable __s,__m,__c;$__b=[scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($__l)));Remove-Variable __l;. $__b`;
 
 function prewarmedPowerShellCommand(options = {}) {
   const powershell = windowsPowerShell(options);
