@@ -18,6 +18,8 @@ const {
 } = require("../src/main/direct/external/external-capability-profile");
 const {
   createDirectConfiguredMcpResolvers,
+  disposeHostMcpSessions,
+  hostMcpSessions,
   normalizeConfiguredMcpServer,
 } = require("../src/main/direct/external/configured-mcp-adapter");
 
@@ -183,24 +185,29 @@ try {
   assert.equal(ownerRequired.status, "blocked");
   assert(ownerRequired.blockerCodes.includes("mcp_elicitation_owner_required"));
 
-  const reapingStartedAt = Date.now();
+  // Servers are long-lived: every request above went to one initialized
+  // server, which stays up until its session ends.
+  assert.equal(hostMcpSessions.sessions.size, 1, "one long-lived session for the configured server");
   const reaped = await envelope("read_mcp_resource", { serverIdentityId, resourceUri: reapedResourceUri }, "reaped");
-  const reapingElapsedMs = Date.now() - reapingStartedAt;
   assert.equal(reaped.providerOutput.status, "completed");
   const childPid = Number(reaped.providerOutput.excerpt.match(/fixture-child-pid:(\d+)/)?.[1]);
   assert(Number.isInteger(childPid) && childPid > 0, "the reaping fixture must expose its child pid only in bounded test output");
   assert.match(reaped.providerOutput.excerpt, new RegExp(`fixture-child-pid:${childPid}`));
-  // The fixture ignores SIGTERM, so on POSIX completion waits for the SIGKILL
-  // escalation; on Windows every kill terminates at once.
+  // Ending the session reaps the server and what it started. The fixture
+  // ignores SIGTERM, so on POSIX that waits for the SIGKILL escalation; on
+  // Windows every kill terminates at once.
+  const reapingStartedAt = Date.now();
+  await disposeHostMcpSessions();
+  const reapingElapsedMs = Date.now() - reapingStartedAt;
   const minimumReapMs = process.platform === "win32" ? 0 : 150;
-  assert.ok(reapingElapsedMs >= minimumReapMs && reapingElapsedMs < 2_000, `MCP completion must await bounded SIGKILL cleanup: ${reapingElapsedMs}ms`);
+  assert.ok(reapingElapsedMs >= minimumReapMs && reapingElapsedMs < 2_500, `ending an MCP session must await bounded SIGKILL cleanup: ${reapingElapsedMs}ms`);
   if (process.platform === "linux") {
     // The server runs in its own PID namespace (turn 11b), so the pid it
     // reports isn't a host pid; look for the server by its command line.
     const survivors = spawnSync("pgrep", ["-f", "fixture-child-pid:"], { encoding: "utf8" });
-    assert.equal(survivors.status, 1, `the MCP child must be reaped before request completion: ${survivors.stdout}`);
+    assert.equal(survivors.status, 1, `the MCP child must be reaped with its session: ${survivors.stdout}`);
   } else {
-    assert.throws(() => process.kill(childPid, 0), (error) => error?.code === "ESRCH", "the MCP child must be reaped before request completion");
+    assert.throws(() => process.kill(childPid, 0), (error) => error?.code === "ESRCH", "the MCP child must be reaped with its session");
   }
 
   const callsBeforeDynamic = discoveryCalls + readCalls;
@@ -394,6 +401,7 @@ try {
     ownerRequiredBlocker: ownerRequired.blockerCodes[0],
   }));
 } finally {
+  await disposeHostMcpSessions().catch(() => {});
   if (previousAllowedEnvironment === undefined) delete process.env[allowedEnvironmentKey];
   else process.env[allowedEnvironmentKey] = previousAllowedEnvironment;
   if (previousForbiddenEnvironment === undefined) delete process.env[forbiddenEnvironmentKey];

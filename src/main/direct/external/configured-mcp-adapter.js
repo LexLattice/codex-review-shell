@@ -5,8 +5,12 @@ const { spawn } = require("node:child_process");
 const {
   DEFAULT_MCP_TIMEOUT_MS,
   MAX_MCP_TIMEOUT_MS,
+  McpSessionPool,
   requestMcpStdio,
 } = require("./mcp-stdio-transport");
+
+// This host's own long-lived MCP servers (see McpSessionPool).
+const hostMcpSessions = new McpSessionPool();
 const { EXECUTOR_METHODS } = require("../../../shared/executor-protocol");
 const { LocalChildProcessBackend } = require("../tools/exec-process-backends");
 const { workspaceExecutesLocally } = require("../tools/exec-sandbox");
@@ -445,7 +449,13 @@ async function queryConfiguredServer(server, method, params, options = {}) {
   }
   const placement = mcpPlacementFor(server, options.project || {}, options);
   if (placement.local) {
-    return requestMcpStdio(server, method, params, { timeoutMs: options.timeoutMs, signal: options.signal, spawnProcess: spawnOnHost });
+    const transportOptions = { timeoutMs: options.timeoutMs, signal: options.signal, spawnProcess: spawnOnHost };
+    if (options.mcpSessions === false) return requestMcpStdio(server, method, params, transportOptions);
+    return (options.mcpSessionPool || hostMcpSessions).request(server, method, params, {
+      ...transportOptions,
+      placementKey: "host",
+      identityKey: server.serverIdentityId,
+    });
   }
   return requestViaExecutor(placement, server, method, params, options);
 }
@@ -551,6 +561,8 @@ async function requestViaExecutor(placement, server, method, params, options = {
           args: [...server.args],
           cwd: server.cwd,
           processEnv: [...server.processEnv],
+          // Lets the executor replace this server's session on a config change.
+          serverIdentityId: server.serverIdentityId,
         },
         method,
         params,
@@ -645,15 +657,26 @@ async function readConfiguredMcpResource(input = {}) {
  * workspace backend manager provides.
  */
 function createDirectConfiguredMcpResolvers(options = {}) {
-  const withExecutors = (input) => (options.executors ? { ...input, mcpExecutors: options.executors } : input);
+  const withExecutors = (input) => ({
+    ...input,
+    ...(options.executors ? { mcpExecutors: options.executors } : {}),
+    ...(options.mcpSessionPool ? { mcpSessionPool: options.mcpSessionPool } : {}),
+    ...(options.mcpSessions === false ? { mcpSessions: false } : {}),
+  });
   return Object.freeze({
     externalDiscoveryResolver: (input) => discoverConfiguredMcp(withExecutors(input)),
     mcpResourceReadResolver: (input) => readConfiguredMcpResource(withExecutors(input)),
   });
 }
 
+function disposeHostMcpSessions() {
+  return hostMcpSessions.dispose();
+}
+
 module.exports = {
   configuredMcpServersForProject,
+  disposeHostMcpSessions,
+  hostMcpSessions,
   configuredMcpServerIdentityInput,
   createDirectConfiguredMcpResolvers,
   discoverConfiguredMcp,

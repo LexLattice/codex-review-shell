@@ -532,14 +532,18 @@ try {
   );
   assert.equal(providerRequestCount, providerRequestsBeforeImplementationLane + 1);
   assert.equal(capturedProviderBody.parallel_tool_calls, true, "implementation turns allow parallel calls, as Codex");
+  // view_image rides along with read_file (Codex's tool), after the bundle.
+  const declaredWithExtras = upstreamPolicyToolNames.includes("read_file")
+    ? [...upstreamPolicyToolNames, "view_image"]
+    : upstreamPolicyToolNames;
   assert.deepEqual(
     capturedProviderBody.tools.map((tool) => tool.name),
-    upstreamPolicyToolNames,
+    declaredWithExtras,
   );
   const implementationLaneTurn = sessionStore.readTurn(implementationLaneThread.thread.id, implementationLaneAck.turn.id);
   assert.deepEqual(
     implementationLaneTurn.requestShape.declaredToolNames,
-    upstreamPolicyToolNames,
+    declaredWithExtras,
   );
   assert.equal(implementationLaneTurn.controlledRoutingGateState, "ready_for_direct_implementation_turn");
   assert.equal(implementationLaneTurn.requestShape.controlledRoutingProviderScope, "direct_implementation_tool_initial_turn_start");

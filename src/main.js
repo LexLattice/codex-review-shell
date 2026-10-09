@@ -321,6 +321,7 @@ const {
   configuredMcpServerIdentityInput,
   configuredMcpServersForProject,
   createDirectConfiguredMcpResolvers,
+  disposeHostMcpSessions,
   normalizeConfiguredMcpServer,
 } = require("./main/direct/external/configured-mcp-adapter");
 const {
@@ -14579,6 +14580,9 @@ app.on("before-quit", (event) => {
       console.warn("[direct-live-text] ordered shutdown blocked", statefulReceipt.cleanupFailure || "stateful_exec_cleanup_incomplete");
       return;
     }
+    // Long-lived MCP servers this host runs (contained, so they'd also end
+    // with the app; this stops them cleanly first).
+    await disposeHostMcpSessions().catch(() => {});
     closeApplicationRuntimeAfterOrderedWorkspaceShutdown();
     applicationQuitAfterOrderedShutdown = true;
     app.quit();

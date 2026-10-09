@@ -566,10 +566,11 @@ try {
     "update_plan",
     "wait_agent",
   ];
-  assert.deepEqual(capturedProviderBodies[0].tools.map((tool) => tool.name), expectedInitialToolNames);
+  // view_image rides along with read_file (Codex's tool), after the bundle.
+  assert.deepEqual(capturedProviderBodies[0].tools.map((tool) => tool.name), [...expectedInitialToolNames, "view_image"]);
   assert.equal(capturedProviderBodies[0].parallel_tool_calls, true);
   assert.equal(capturedProviderBodies[0].tool_choice, "auto");
-  assert.equal(persistedTurn.requestShape.declaredToolNames.join(","), expectedInitialToolNames.join(","));
+  assert.equal(persistedTurn.requestShape.declaredToolNames.join(","), [...expectedInitialToolNames, "view_image"].join(","));
   assert.equal(persistedTurn.requestShape.toolBundleCompositionWitnessAttached, true);
   assert(persistedTurn.requestShape.directToolBundleCompositionId, "missing direct tool bundle composition id");
   assert(persistedTurn.requestShape.providerDeclaredToolBundleDigest, "missing provider tool bundle digest");

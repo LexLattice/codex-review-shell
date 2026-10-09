@@ -682,6 +682,27 @@ class DirectSessionStore {
     return record;
   }
 
+  // Images view_image loaded, one file per call, outside the turn record
+  // (which is rewritten on every state change).
+  toolImagePath(sessionId, obligationId) {
+    return path.join(this.rootDir, "sessions", requireSafeId(sessionId, "session"), "images", `${requireSafeId(obligationId, "tool image")}.json`);
+  }
+
+  writeToolImage(sessionId, obligationId, image = {}) {
+    writeJsonAtomic(this.toolImagePath(sessionId, obligationId), {
+      mimeType: String(image.mimeType || ""),
+      dataBase64: String(image.dataBase64 || ""),
+    });
+  }
+
+  readToolImage(sessionId, obligationId) {
+    try {
+      return readJsonFile(this.toolImagePath(sessionId, obligationId));
+    } catch {
+      return null;
+    }
+  }
+
   turnPath(sessionId, turnId) {
     return path.join(this.rootDir, "turns", requireSafeId(sessionId, "session"), `${requireSafeId(turnId, "turn")}.json`);
   }

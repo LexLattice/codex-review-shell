@@ -24,6 +24,8 @@ const {
 } = require("../src/main/direct/external/external-capability-profile");
 const {
   createDirectConfiguredMcpResolvers,
+  disposeHostMcpSessions,
+  hostMcpSessions,
   mcpPlacementFor,
   normalizeConfiguredMcpServer,
 } = require("../src/main/direct/external/configured-mcp-adapter");
@@ -266,16 +268,27 @@ try {
   assert.deepEqual(listed.resourceDescriptors.map((row) => row.uri), ["mcp://env/where"]);
   report.checks.push("host_keeps_envelope_for_remote_servers");
 
-  // 6. Containment: whatever a server starts dies with it (job runner on
-  // Windows, PID namespace on Linux), in the other environment's executor and
-  // for servers the host runs itself.
-  const contained = [[otherSide, otherProject, inProject], [hostSide, localProject, local]];
-  for (const [side, project, server] of contained) {
+  // 6. Containment: servers are long-lived (one per environment and config,
+  // reused), and whatever a server starts dies with its session (job runner
+  // on Windows, PID namespace on Linux): for the host's own servers when the
+  // host's sessions end, and for an executor's servers when the executor
+  // stops.
+  const hostStarted = hostMcpSessions.started;
+  await read(localProject, local, "mcp://env/where");
+  await read(localProject, local, "mcp://env/where");
+  assert(hostMcpSessions.started - hostStarted <= 1, "repeated requests reuse one host server");
+  const contained = [
+    [otherSide, otherProject, inProject, () => workspaceBackends.disposeForProject(otherProject)],
+    [hostSide, localProject, local, () => disposeHostMcpSessions()],
+  ];
+  for (const [side, project, server, endSessions] of contained) {
     const result = await read(project, server, "mcp://env/grandchild");
     assert.equal(result.payload, "started");
-    assert.equal(await heartbeatStopped(side, server.serverIdentityId), true, `${side.platform}: the server's child is reaped`);
+    assert.equal(await heartbeatStopped(side, server.serverIdentityId), false, `${side.platform}: the server and its child stay up between requests`);
+    await endSessions();
+    assert.equal(await heartbeatStopped(side, server.serverIdentityId), true, `${side.platform}: the server's child is reaped with its session`);
   }
-  report.checks.push("server_children_reaped");
+  report.checks.push("long_lived_servers_children_reaped_with_session");
 
   // 7. Cancelling a remote request returns promptly.
   const controller = new AbortController();
@@ -289,6 +302,7 @@ try {
   report.status = "passed";
   console.log(JSON.stringify(report));
 } finally {
+  await disposeHostMcpSessions().catch(() => {});
   workspaceBackends.disposeAll();
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[key];

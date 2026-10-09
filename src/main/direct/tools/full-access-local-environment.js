@@ -84,6 +84,17 @@ function runSandboxedWrites({ root, files }) {
 const LOCAL_EXECUTOR_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 
 const MAX_READ_FILE_BYTES = 384 * 1024;
+// view_image: base64 of this fits the executor's 2 MiB message frame.
+const MAX_IMAGE_BYTES = 1_400_000;
+const IMAGE_SIGNATURES = [
+  { mimeType: "image/png", test: (b) => b.length > 8 && b[0] === 0x89 && b.toString("ascii", 1, 4) === "PNG" },
+  { mimeType: "image/jpeg", test: (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
+  { mimeType: "image/gif", test: (b) => b.length > 6 && b.toString("ascii", 0, 4) === "GIF8" },
+  { mimeType: "image/webp", test: (b) => b.length > 12 && b.toString("ascii", 0, 4) === "RIFF" && b.toString("ascii", 8, 12) === "WEBP" },
+];
+function imageMimeType(bytes) {
+  return IMAGE_SIGNATURES.find((entry) => entry.test(bytes))?.mimeType || "";
+}
 const MAX_PATCH_TARGET_BYTES = 384 * 1024;
 const MAX_PATCH_TEXT_CHARS = 256 * 1024;
 const MAX_PATCH_FILES = 16;
@@ -472,7 +483,9 @@ class LocalFilePort {
     }
   }
 
-  async readFile(resolved, maxBytesInput, _input = {}, grant = null) {
+  // capBytes raises the ceiling for view_image (images are bigger than the
+  // text read_file returns).
+  async readFile(resolved, maxBytesInput, _input = {}, grant = null, capBytes = MAX_READ_FILE_BYTES) {
     let handle;
     try {
       handle = await fsp.open(resolved.target, "r");
@@ -484,9 +497,10 @@ class LocalFilePort {
       const initialStat = await handle.stat();
       if (!initialStat.isFile()) throw localError("direct_full_access_file_invalid", "The selected local path is not a regular file.");
       const requestedBytes = Number(maxBytesInput);
+      const ceiling = Math.min(Math.max(Number(capBytes) || MAX_READ_FILE_BYTES, MAX_READ_FILE_BYTES), MAX_IMAGE_BYTES);
       const maxBytes = Math.min(
-        Number.isFinite(requestedBytes) && requestedBytes > 0 ? Math.floor(requestedBytes) : MAX_READ_FILE_BYTES,
-        MAX_READ_FILE_BYTES,
+        Number.isFinite(requestedBytes) && requestedBytes > 0 ? Math.floor(requestedBytes) : ceiling,
+        ceiling,
       );
       const buffer = Buffer.alloc(maxBytes);
       let bytesRead = 0;
@@ -656,10 +670,11 @@ class DirectFullAccessLocalEnvironmentExecutor {
   }
 
   async request(input = {}, method, params = {}) {
-    const capability = method === "readFile" ? "read_file" : "apply_patch";
+    const capability = method === "readFile" || method === "readImage" ? "read_file" : "apply_patch";
     const { grant, expected, authorization } = this.resolveGrant(input, capability);
     const port = this.portFor(grant, input.project || {});
     if (method === "readFile") return this.readFile(port, input, params, grant, expected, authorization);
+    if (method === "readImage") return this.readImage(port, input, params, grant, expected);
     if (method === "applyPatch") return this.applyPatch(port, input, params, grant, expected, authorization);
     throw localError("direct_full_access_method_invalid", `Unsupported full-access local method: ${method}`);
   }
@@ -682,6 +697,29 @@ class DirectFullAccessLocalEnvironmentExecutor {
       grantRevision: Number(grant.grantRevision),
       executionEnvironmentDigest: expected.executionEnvironmentDigest,
       authorizationMode: authorization.authorityMode || "full_access_task_grant",
+      rawPathIncluded: false,
+    };
+  }
+
+  // Codex's view_image: an image file under the same read rules as
+  // read_file, returned whole as base64 with its type.
+  async readImage(port, input, params, grant, expected) {
+    const resolved = port.resolveTarget(input, grant, params.relPath || params.path, "view_image path");
+    await port.assertReadable(grant, resolved, input);
+    const { size, bytes } = await port.readFile(resolved, MAX_IMAGE_BYTES + 1, input, grant, MAX_IMAGE_BYTES);
+    if (size > MAX_IMAGE_BYTES || bytes.length < size) {
+      throw localError("direct_view_image_too_large", `The image is ${size} bytes; view_image takes images up to ${MAX_IMAGE_BYTES} bytes.`);
+    }
+    const mimeType = imageMimeType(bytes);
+    if (!mimeType) throw localError("direct_view_image_unsupported", "The file isn't a PNG, JPEG, GIF, or WebP image.");
+    return {
+      schema: "direct_view_image_result@1",
+      pathEvidenceKey: resolved.pathEvidenceKey,
+      mimeType,
+      size,
+      dataBase64: bytes.toString("base64"),
+      grantId: grant.grantId,
+      executionEnvironmentDigest: expected.executionEnvironmentDigest,
       rawPathIncluded: false,
     };
   }
@@ -798,6 +836,7 @@ class DirectFullAccessLocalEnvironmentExecutor {
 module.exports = {
   DirectFullAccessLocalEnvironmentExecutor,
   LocalFilePort,
+  MAX_IMAGE_BYTES,
   MAX_PATCH_TARGET_BYTES,
   MAX_READ_FILE_BYTES,
   applyHunks,

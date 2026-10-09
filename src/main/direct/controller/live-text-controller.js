@@ -320,6 +320,10 @@ function historyToolOutput(toolName = "", outputText) {
   if (toolName === DIRECT_SELF_CONSTITUTION_TOOL_NAME) {
     return JSON.stringify({ kind: "inspect_self_constitution_result", status: "completed", note: "Snapshot omitted from history; call inspect_self_constitution for the current one." });
   }
+  if (toolName === "view_image") {
+    // Earlier turns keep the text record; the image itself isn't resent.
+    return historyText(`${outputText}\n[image not repeated in history; call view_image again to see it]`, HISTORY_TOOL_OUTPUT_CHARS);
+  }
   return historyText(outputText, HISTORY_TOOL_OUTPUT_CHARS);
 }
 
@@ -411,11 +415,32 @@ function describeSubAgentPolicyUpdate(args = {}, scope = "thread") {
   const summary = normalizeString(args.summary, "").slice(0, 300);
   return `${scope === "project" ? "For this project" : "For this thread"}: ${parts.join("; ") || "no settings"}.${summary ? ` (${summary})` : ""}`;
 }
-function withSubAgentPolicyTool(tools, enabled) {
-  if (!enabled || !Array.isArray(tools)) return tools;
+// Codex's view_image, offered wherever read_file is (same read rules).
+const VIEW_IMAGE_TOOL_NAME = "view_image";
+function viewImageToolSchema() {
+  return {
+    type: "function",
+    name: VIEW_IMAGE_TOOL_NAME,
+    description: "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Local filesystem path to an image file." },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  };
+}
+// Tools a turn gets beyond its composed bundle: view_image with read_file,
+// and update_sub_agent_policy with spawn_agent (when a policy service exists).
+function withExtraTurnTools(tools, policyEnabled) {
+  if (!Array.isArray(tools)) return tools;
   const names = new Set(tools.map((tool) => normalizeString(tool?.name || tool?.function?.name, "")));
-  if (!names.has("spawn_agent") || names.has(SUB_AGENT_POLICY_TOOL_NAME)) return tools;
-  return [...tools, subAgentPolicyToolSchema()];
+  const extra = [];
+  if (names.has("read_file") && !names.has(VIEW_IMAGE_TOOL_NAME)) extra.push(viewImageToolSchema());
+  if (policyEnabled && names.has("spawn_agent") && !names.has(SUB_AGENT_POLICY_TOOL_NAME)) extra.push(subAgentPolicyToolSchema());
+  return extra.length ? [...tools, ...extra] : tools;
 }
 const EXTERNAL_DISCOVERY_TOOL_NAMES = Object.freeze([
   "tool_search",
@@ -1463,7 +1488,7 @@ function buildSafeResidentUtilitySlice(toolName, projectId = "") {
 // Calls that may run at the same time as each other (Codex marks
 // exec_command, write_stdin, and read-only tools parallel; apply_patch and
 // anything needing the owner run alone).
-const PARALLEL_SAFE_TOOL_NAMES = new Set(["exec_command", "write_stdin", "read_file", "list_agents", "inspect_agent"]);
+const PARALLEL_SAFE_TOOL_NAMES = new Set(["exec_command", "write_stdin", "read_file", "view_image", "list_agents", "inspect_agent"]);
 
 function toolBatchKey(sessionId, turnId) {
   return `${normalizeString(sessionId, "")}:${normalizeString(turnId, "")}`;
@@ -2749,6 +2774,45 @@ class DirectLiveTextController {
     return this.continueAfterSafeResidentUtilityResult(context.surfaceSession, sessionId, turnId, obligation, envelope, project);
   }
 
+  // view_image: the image goes back to the model as an input_image (Codex's
+  // output shape); the turn keeps it in a side file, not in its record.
+  async emitViewImageRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
+    const args = parseToolArgumentsObject(obligation);
+    const imagePath = normalizeString(args.path, "");
+    const fail = (code, message) => this.returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation, project, { code, message });
+    if (!imagePath) return fail("view_image_path_required", "view_image needs a path.");
+    const binding = this.fullAccessLocalBinding(sessionId, turnId, project, "read_file");
+    if (!binding) return fail("view_image_unavailable", "This thread can't read files, so it can't view images either.");
+    let image;
+    try {
+      image = await this.fullAccessLocalEnvironmentExecutor.request(binding, "readImage", { path: imagePath });
+    } catch (error) {
+      return fail(normalizeString(error?.code, "view_image_failed"), normalizeString(error?.message, "The image couldn't be read."));
+    }
+    this.sessionStore.writeToolImage(sessionId, obligation.obligationId, { mimeType: image.mimeType, dataBase64: image.dataBase64 });
+    const envelope = {
+      schema: "direct_view_image_result_envelope@1",
+      envelopeId: `view_image_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}`).slice(0, 24)}`,
+      toolName: VIEW_IMAGE_TOOL_NAME,
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: "view_image",
+      status: "ready_for_provider_continuation",
+      providerOutput: {
+        kind: "view_image_result",
+        status: "loaded",
+        path: image.pathEvidenceKey,
+        mimeType: image.mimeType,
+        bytes: image.size,
+      },
+      sideEffectExecuted: false,
+      rawWorkspacePathIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
+    return 1;
+  }
+
   async emitSubAgentPolicyRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
     const args = parseToolArgumentsObject(obligation);
     const fail = (code, message) => this.returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation, project, { code, message });
@@ -3512,7 +3576,7 @@ class DirectLiveTextController {
     });
     return {
       ...composition,
-      tools: withSubAgentPolicyTool(withPermissionsTool(
+      tools: withExtraTurnTools(withPermissionsTool(
         withDelegationTargets(applyEnvironmentToToolSchemas(composition.tools, facts), this.delegationTargetsFor(project || {}, session)),
         grant,
       ), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
@@ -5105,9 +5169,9 @@ class DirectLiveTextController {
   appendSessionTurn(sessionId, turnId, items, model, status) {
     const session = this.sessionStore.readSession(sessionId);
     if (!session) return;
-    // Compaction markers recorded during the turn go after the user's
-    // message (the turn's own items replace the rest).
-    const markers = (this.sessionStore.readTurn(sessionId, turnId)?.compactionTranscriptItems || [])
+    // Harness items recorded during the turn (compaction markers, the plan)
+    // go after the user's message (the turn's own items replace the rest).
+    const markers = (this.sessionStore.readTurn(sessionId, turnId)?.transcriptExtraItems || [])
       .filter((marker) => isPlainObject(marker) && !(items || []).some((item) => item?.id === marker.id));
     const ownItems = Array.isArray(items) ? items : [];
     const userIndex = ownItems.findIndex((item) => item?.type === "userMessage");
@@ -7646,12 +7710,21 @@ class DirectLiveTextController {
       } else {
         items.push(
           { type: "function_call", call_id: callId, name, arguments: prior.argumentsText || "{}" },
-          { type: "function_call_output", call_id: callId, output: prior.providerOutputText },
+          { type: "function_call_output", call_id: callId, output: this.viewImageOutput(turn, prior) || prior.providerOutputText },
         );
       }
     }
     const base = turnCompaction ? turnCompaction.replacementItems : admitted.input;
     return [...JSON.parse(JSON.stringify(base)), ...items];
+  }
+
+  // A loaded view_image result goes back as the image (Codex sends a
+  // content-item output with one input_image).
+  viewImageOutput(turn = {}, prior = {}) {
+    if (normalizeString(prior.toolName, "") !== VIEW_IMAGE_TOOL_NAME || typeof this.sessionStore.readToolImage !== "function") return null;
+    const image = this.sessionStore.readToolImage(normalizeString(turn.sessionId, ""), prior.obligationId);
+    if (!image?.dataBase64 || !image.mimeType) return null;
+    return [{ type: "input_image", image_url: `data:${image.mimeType};base64,${image.dataBase64}`, detail: "high" }];
   }
 
   // Earlier turns of the thread as Codex sends them: each user message, the
@@ -7912,18 +7985,24 @@ class DirectLiveTextController {
   // happened in (a manual compaction: the last turn it covers), so it shows
   // again after a reload.
   recordCompactionTranscriptItem(sessionId, turnId, compactionId, mode = "") {
-    if (!turnId) return;
-    const marker = { id: compactionId, type: "contextCompaction", turnId, status: "completed", ...(mode ? { mode } : {}) };
+    this.recordTranscriptItem(sessionId, turnId, { id: compactionId, type: "contextCompaction", turnId, status: "completed", ...(mode ? { mode } : {}) });
+  }
+
+  // A harness-made transcript item (compaction marker, plan) for a turn,
+  // replacing any earlier item with the same id.
+  recordTranscriptItem(sessionId, turnId, marker = {}) {
+    if (!turnId || !marker.id) return;
     // On the turn, for when its message is (re)written at the end...
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     if (turn) {
       this.sessionStore.updateTurnState(sessionId, turnId, turn.state, {
-        compactionTranscriptItems: [
-          ...(Array.isArray(turn.compactionTranscriptItems) ? turn.compactionTranscriptItems : []).filter((item) => item?.id !== compactionId),
+        transcriptExtraItems: [
+          ...(Array.isArray(turn.transcriptExtraItems) ? turn.transcriptExtraItems : []).filter((item) => item?.id !== marker.id),
           marker,
         ],
       });
     }
+    const compactionId = marker.id;
     // ...and in its message now, if it has one (a finished turn).
     const session = this.sessionStore.readSession(sessionId);
     if (!session || !Array.isArray(session.messages) || !session.messages.some((message) => message?.id === turnId)) return;
@@ -8346,8 +8425,32 @@ class DirectLiveTextController {
       });
       return recorded ? 1 : 0;
     }
+    if (obligation.name === "update_plan" && envelope.status !== "blocked") this.showPlan(surfaceSession, sessionId, turnId, obligation, envelope);
     await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
     return 1;
+  }
+
+  // Codex shows the model's update_plan as a checklist in the turn; one
+  // item per turn, replaced by each update.
+  showPlan(surfaceSession, sessionId, turnId, obligation = {}, envelope = {}) {
+    const args = parseToolArgumentsObject(obligation);
+    // The plan as the projection now holds it, else as the call sent it
+    // (Direct's steps[].text or Codex's plan[].step).
+    const candidates = [envelope.planStore?.currentPlan?.steps, args.steps, args.plan];
+    const source = candidates.find((entry) => Array.isArray(entry) && entry.length) || [];
+    const steps = source
+      .filter((entry) => isPlainObject(entry) && normalizeString(entry.text || entry.step, ""))
+      .slice(0, 50);
+    if (!steps.length) return;
+    const mark = { completed: "[x]", completed_in_plan: "[x]", in_progress: "[~]", blocked: "[!]", deferred: "[-]" };
+    const explanation = normalizeString(args.explanation || args.summary, "");
+    const text = [
+      ...(explanation ? [explanation.slice(0, 600), ""] : []),
+      ...steps.map((entry) => `${mark[normalizeString(entry.status, "")] || "[ ]"} ${normalizeString(entry.text || entry.step, "").slice(0, 300)}`),
+    ].join("\n");
+    const item = { id: `${turnId}_plan`, type: "plan", turnId, text };
+    this.recordTranscriptItem(sessionId, turnId, item);
+    this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
   }
 
   isReadOnlySubAgentStatusObligation(obligation = {}) {
@@ -9343,6 +9446,10 @@ class DirectLiveTextController {
       }
       if (normalizeString(obligation.name, "") === SUB_AGENT_POLICY_TOOL_NAME) {
         createdCount += await this.emitSubAgentPolicyRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
+      if (normalizeString(obligation.name, "") === VIEW_IMAGE_TOOL_NAME) {
+        createdCount += await this.emitViewImageRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
       }
       if (this.isEpistemicLedgerObligation(sessionId, turnId, obligation)) {
@@ -11643,7 +11750,7 @@ class DirectLiveTextController {
               reasoningEffort,
               serviceTier,
               cyberAccessProgram,
-              tools: withSubAgentPolicyTool(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
+              tools: withExtraTurnTools(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
               toolChoicePolicy: "auto",
             })
           : buildTextOnlyProbeRequest({
@@ -11681,7 +11788,7 @@ class DirectLiveTextController {
           reasoningEffort,
           serviceTier,
           cyberAccessProgram,
-          tools: withSubAgentPolicyTool(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
+          tools: withExtraTurnTools(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
           toolChoicePolicy: "auto",
         });
       }
