@@ -243,6 +243,59 @@ const scenarios = [
     },
   },
   {
+    name: "mcp_tool_call",
+    async run(ctx) {
+      const result = chat("Use the get_secret_word tool and tell me the word it returns.", ["--project", ctx.mcpProjectId]);
+      return [
+        [result.report.state === "completed", `turn ${result.report.state}`],
+        [toolNames(result.report).includes("mcp__suite__get_secret_word"), "called the MCP tool"],
+        [(result.report.assistant || "").includes(ctx.secretWord), "reply has the secret word"],
+        [true, "", result],
+      ];
+    },
+  },
+  {
+    name: "mcp_form",
+    async run(ctx) {
+      const result = chat("Call the ask_color tool, then tell me which color the user picked.", ["--project", ctx.mcpProjectId, "--answer", "{\"color\":\"teal\"}"]);
+      return [
+        [result.report.state === "completed", `turn ${result.report.state}`],
+        [(result.ownerDecisions || []).some((decision) => decision.method === "mcpServer/elicitation/request"), "the server's form reached the owner"],
+        [/teal/i.test(result.report.assistant || ""), "reply has the picked color"],
+        [true, "", result],
+      ];
+    },
+  },
+  {
+    name: "mcp_approval",
+    async run(ctx) {
+      const notes = path.join(ctx.mcpFolder, "notes.log");
+      fs.rmSync(notes, { force: true });
+      const result = chat("Use the record_note tool to record the note \"suite-note\".", ["--project", ctx.mcpProjectId, "--access", "workspace"]);
+      return [
+        [result.report.state === "completed", `turn ${result.report.state}`],
+        [(result.ownerDecisions || []).some((decision) => decision.method === "mcpServer/elicitation/request"), "the tool call was put to the owner"],
+        [fs.existsSync(notes) && fs.readFileSync(notes, "utf8").includes("suite-note"), "the approved call ran"],
+        [true, "", result],
+      ];
+    },
+  },
+  {
+    name: "exec_escalation",
+    async run(ctx) {
+      const target = path.join(ctx.folder, "esc.txt");
+      fs.rmSync(target, { force: true });
+      const command = isWindows ? "Set-Content -Path esc.txt -Value ok" : "echo ok > esc.txt";
+      const result = chat(`This thread is Read only. Run exactly this command with exec_command, asking to run it outside the sandbox (sandbox_permissions "require_escalated", with a short justification): ${command}`, ["--project", ctx.projectId, "--access", "read_only"]);
+      return [
+        [result.report.state === "completed", `turn ${result.report.state}`],
+        [(result.ownerDecisions || []).some((decision) => decision.method === "item/commandExecution/requestApproval"), "the escalation was put to the owner"],
+        [fs.existsSync(target) && fs.readFileSync(target, "utf8").includes("ok"), "esc.txt was written outside the sandbox"],
+        [true, "", result],
+      ];
+    },
+  },
+  {
     name: "follow_up_turn",
     async run(ctx) {
       if (!ctx.editThreadId) return [[false, "needs edit_and_run first"]];
@@ -257,6 +310,64 @@ const scenarios = [
     },
   },
 ];
+
+// A project with one MCP server (stdio, Direct's own settings): a read-only
+// tool, an unannotated one (asks for approval outside Full access), and one
+// that asks the owner a form question.
+const MCP_PROJECT_NAME = "Live suite MCP";
+function mcpSuiteProject(projects) {
+  const folder = `${suiteFolder()}-mcp`;
+  fs.rmSync(folder, { recursive: true, force: true });
+  fs.mkdirSync(folder, { recursive: true });
+  const secretWord = `word-${Math.random().toString(36).slice(2, 8)}`;
+  const script = path.join(folder, "server.js");
+  fs.writeFileSync(script, `
+const fs = require("node:fs");
+const path = require("node:path");
+const readline = require("node:readline");
+const send = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
+const waiting = new Map();
+const text = (id, value) => send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: value }] } });
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const q = JSON.parse(line);
+  if (!q.method && waiting.has(q.id)) { const done = waiting.get(q.id); waiting.delete(q.id); return done(q.result || {}); }
+  if (q.id === undefined) return;
+  if (q.method === "initialize") return send({ jsonrpc: "2.0", id: q.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} } } });
+  if (q.method === "tools/list") return send({ jsonrpc: "2.0", id: q.id, result: { tools: [
+    { name: "get_secret_word", description: "Returns today's secret word.", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } },
+    { name: "record_note", description: "Records a note in the project's notes.log.", inputSchema: { type: "object", properties: { note: { type: "string" } }, required: ["note"] } },
+    { name: "ask_color", description: "Asks the user to pick a color and returns it.", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } },
+  ] } });
+  if (q.method !== "tools/call") return send({ jsonrpc: "2.0", id: q.id, result: {} });
+  const args = q.params.arguments || {};
+  if (q.params.name === "get_secret_word") return text(q.id, ${JSON.stringify(secretWord)});
+  if (q.params.name === "record_note") { fs.appendFileSync(path.join(${JSON.stringify(folder)}, "notes.log"), String(args.note) + "\\n"); return text(q.id, "recorded"); }
+  if (q.params.name === "ask_color") {
+    waiting.set("form-" + q.id, (answer) => text(q.id, answer.action === "accept" ? "picked " + answer.content.color : "no color: " + answer.action));
+    return send({ jsonrpc: "2.0", id: "form-" + q.id, method: "elicitation/create", params: { mode: "form", message: "Pick a color", requestedSchema: { type: "object", properties: { color: { type: "string" } }, required: ["color"] } } });
+  }
+  send({ jsonrpc: "2.0", id: q.id, error: { code: -32602, message: "unknown tool" } });
+});
+`);
+  const servers = path.join(promptDir, "mcp-servers.json");
+  fs.writeFileSync(servers, JSON.stringify([{
+    serverIdentityId: "suite",
+    displayName: "suite",
+    transport: "stdio",
+    command: process.execPath,
+    args: [script],
+    cwd: folder,
+    runsIn: { kind: "project" },
+    trustState: "configured",
+    enabledState: "enabled",
+    freshness: "fresh",
+    authPosture: "local_config",
+  }]));
+  // The definition is the same each run (the script it runs is rewritten).
+  const existing = (Array.isArray(projects) ? projects : []).find((candidate) => candidate.name === MCP_PROJECT_NAME && candidate.state !== "archived");
+  const project = existing || drive(["project-add", "--name", MCP_PROJECT_NAME, "--path", folder, "--mcp-servers", servers]);
+  return { mcpProjectId: project.id, mcpFolder: folder, secretWord };
+}
 
 async function main() {
   const only = options.only ? new Set(String(options.only).split(",").map((name) => name.trim())) : null;
@@ -274,6 +385,7 @@ async function main() {
   let project = (Array.isArray(projects) ? projects : []).find((entry) => entry.name === SUITE_PROJECT_NAME && entry.state !== "archived");
   if (!project) project = drive(["project-add", "--name", SUITE_PROJECT_NAME, "--path", folder]);
   const ctx = { projectId: project.id, folder };
+  if (selected.some((scenario) => scenario.name.startsWith("mcp_"))) Object.assign(ctx, mcpSuiteProject(projects));
 
   const results = [];
   for (const scenario of selected) {

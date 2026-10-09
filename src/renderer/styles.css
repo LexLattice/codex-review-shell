@@ -2875,6 +2875,79 @@ body.dragging {
   margin-bottom: 8px;
 }
 
+.project-context-card,
+.project-context-section,
+.project-context-list,
+.project-context-form,
+.project-context-fields {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.project-context-card [hidden] {
+  display: none;
+}
+
+.project-context-section {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.project-context-section h4,
+.project-context-form h4 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.project-context-card p,
+.project-context-detail {
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.project-context-item,
+.project-context-form {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(5, 7, 11, 0.42);
+}
+
+.project-context-item {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-context-item .section-heading {
+  margin-bottom: 0;
+}
+
+.project-context-item strong {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.project-context-card .checkbox-row {
+  margin: 0;
+  font-size: 11px;
+}
+
+.project-context-warning {
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.project-context-form textarea {
+  font-family: var(--mono);
+}
+
 .checkbox-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

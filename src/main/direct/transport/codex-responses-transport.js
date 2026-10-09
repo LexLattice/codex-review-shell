@@ -629,7 +629,9 @@ async function responseText(response, options = {}) {
   // A text-only response API has already materialized the complete body
   // before this boundary can inspect it. Fail closed without invoking it;
   // callers retain only the typed bounded-transport terminal outcome.
-  throw outputLimitError("Direct provider response body is not incrementally readable.");
+  const unreadable = new Error("Direct provider response body is not incrementally readable.");
+  unreadable.code = "provider_body_not_streamable";
+  throw unreadable;
 }
 
 function sseNewlineLengthAt(value, index) {
@@ -999,8 +1001,11 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
       await consumeText(decoder.decode());
     } else {
       // Calling response.text() here would allow an unbounded body to escape
-      // before the transport budget can constrain materialization.
-      throw outputLimitError("Direct provider response body is not incrementally readable.");
+      // before the transport budget can constrain materialization. Its own
+      // code: this isn't the model running out of output.
+      const unreadable = new Error("Direct provider response body is not incrementally readable.");
+      unreadable.code = "provider_body_not_streamable";
+      throw unreadable;
     }
     if (buffer.trim()) {
       await consumeFrame(buffer);
@@ -1144,6 +1149,7 @@ function isAbortError(error) {
 function errorCodeFromCaught(error, streamStarted = false) {
   if (isAbortError(error)) return "aborted";
   if (error?.code === "max_output") return "max_output";
+  if (error?.code === "provider_body_not_streamable") return "provider_body_not_streamable";
   if (error?.code === "direct_auth_expired") return "direct_auth_expired";
   if (error?.code === "direct_auth_refresh_failed" || error?.code === "direct_auth_refresh_unavailable") return "auth_error";
   if (

@@ -191,6 +191,16 @@ const state = {
   directBridgeSettingsStatus: null,
   directBridgeSettingsLoading: false,
   directBridgeSettingsError: "",
+  projectContextSettings: {
+    projectId: "",
+    status: "idle",
+    context: null,
+    readError: "",
+    operationError: "",
+    busy: false,
+    requestGeneration: 0,
+    editorId: null,
+  },
   selectedCodexThreadId: "",
   openedCodexProjectId: "",
   openedCodexThreadId: "",
@@ -241,6 +251,43 @@ const els = {
   webTabButton: document.getElementById("webTabButton"),
   overviewTabPanel: document.getElementById("overviewTabPanel"),
   projectTabPanel: document.getElementById("projectTabPanel"),
+  projectContextSettings: document.getElementById("projectContextSettings"),
+  codexContextRefreshButton: document.getElementById("codexContextRefreshButton"),
+  codexContextStatus: document.getElementById("codexContextStatus"),
+  codexContextWarnings: document.getElementById("codexContextWarnings"),
+  codexContextSummary: document.getElementById("codexContextSummary"),
+  codexContextServerList: document.getElementById("codexContextServerList"),
+  directMcpServerList: document.getElementById("directMcpServerList"),
+  directMcpAddButton: document.getElementById("directMcpAddButton"),
+  directMcpServerForm: document.getElementById("directMcpServerForm"),
+  directMcpFormTitle: document.getElementById("directMcpFormTitle"),
+  directMcpNameInput: document.getElementById("directMcpNameInput"),
+  directMcpTransportSelect: document.getElementById("directMcpTransportSelect"),
+  directMcpCommandFields: document.getElementById("directMcpCommandFields"),
+  directMcpCommandInput: document.getElementById("directMcpCommandInput"),
+  directMcpArgsInput: document.getElementById("directMcpArgsInput"),
+  directMcpCwdInput: document.getElementById("directMcpCwdInput"),
+  directMcpEnvInput: document.getElementById("directMcpEnvInput"),
+  directMcpProcessEnvInput: document.getElementById("directMcpProcessEnvInput"),
+  directMcpRunsInSelect: document.getElementById("directMcpRunsInSelect"),
+  directMcpDistroField: document.getElementById("directMcpDistroField"),
+  directMcpDistroInput: document.getElementById("directMcpDistroInput"),
+  directMcpHttpFields: document.getElementById("directMcpHttpFields"),
+  directMcpUrlInput: document.getElementById("directMcpUrlInput"),
+  directMcpHeadersInput: document.getElementById("directMcpHeadersInput"),
+  directMcpEnabledToolsInput: document.getElementById("directMcpEnabledToolsInput"),
+  directMcpDisabledToolsInput: document.getElementById("directMcpDisabledToolsInput"),
+  directMcpApprovalSelect: document.getElementById("directMcpApprovalSelect"),
+  directMcpTimeoutInput: document.getElementById("directMcpTimeoutInput"),
+  directMcpFormError: document.getElementById("directMcpFormError"),
+  directMcpSaveButton: document.getElementById("directMcpSaveButton"),
+  directMcpCancelButton: document.getElementById("directMcpCancelButton"),
+  projectAgentsMdScopeSelect: document.getElementById("projectAgentsMdScopeSelect"),
+  codexContextAgentsList: document.getElementById("codexContextAgentsList"),
+  projectSkillsEnabledInput: document.getElementById("projectSkillsEnabledInput"),
+  codexContextSkillsList: document.getElementById("codexContextSkillsList"),
+  codexContextHooksList: document.getElementById("codexContextHooksList"),
+  codexContextNotify: document.getElementById("codexContextNotify"),
   threadsTabPanel: document.getElementById("threadsTabPanel"),
   importsTabPanel: document.getElementById("importsTabPanel"),
   analyticsTabPanel: document.getElementById("analyticsTabPanel"),
@@ -4431,6 +4478,434 @@ async function pruneAllMiddleWebHistory() {
   }
 }
 
+function projectContextNode(tag, text = "", className = "") {
+  const node = document.createElement(tag);
+  node.textContent = String(text ?? "");
+  if (className) node.className = className;
+  return node;
+}
+
+function ensureProjectContextSettings(project = activeProject()) {
+  if (state.projectContextSettings.projectId !== (project?.id || "")) {
+    state.projectContextSettings = {
+      projectId: project?.id || "",
+      status: "idle",
+      context: null,
+      readError: "",
+      operationError: "",
+      busy: false,
+      requestGeneration: 0,
+      editorId: null,
+    };
+    if (els.directMcpServerForm) {
+      els.directMcpServerForm.reset();
+      els.directMcpServerForm.hidden = true;
+    }
+  }
+  return state.projectContextSettings;
+}
+
+async function refreshProjectCodexContext({ force = false } = {}) {
+  const project = activeProject();
+  if (!project) return;
+  const settings = ensureProjectContextSettings(project);
+  if (settings.status === "loading" && !force) return;
+  const generation = ++settings.requestGeneration;
+  settings.status = "loading";
+  settings.readError = "";
+  renderProjectContextSettings();
+  try {
+    if (!bridge?.readCodexContext) throw new Error("Codex context is unavailable in this app version.");
+    const context = await bridge.readCodexContext(project.id, { force });
+    if (settings !== state.projectContextSettings || generation !== settings.requestGeneration || activeProject()?.id !== project.id) return;
+    if (!context || typeof context !== "object") throw new Error("Codex context returned no data.");
+    settings.context = context;
+    settings.status = context.unavailable ? "unavailable" : "loaded";
+  } catch (error) {
+    if (settings !== state.projectContextSettings || generation !== settings.requestGeneration || activeProject()?.id !== project.id) return;
+    settings.status = "error";
+    settings.readError = error.message || "Could not read Codex context.";
+  }
+  renderProjectContextSettings();
+}
+
+async function saveProjectContextChange(projectId, update, message, { closeEditor = false } = {}) {
+  const settings = ensureProjectContextSettings();
+  if (settings.busy || activeProject()?.id !== projectId || !state.config) return false;
+  const project = state.config.projects.find((item) => item.id === projectId);
+  if (!project) return false;
+  settings.busy = true;
+  settings.operationError = "";
+  renderProjectContextSettings();
+  try {
+    const updatedProject = { ...update(project), updatedAt: nowIso() };
+    await saveConfig({
+      ...state.config,
+      projects: state.config.projects.map((item) => item.id === projectId ? updatedProject : item),
+    });
+    if (settings === state.projectContextSettings && closeEditor) closeDirectMcpEditor();
+    setLastEvent(message);
+    return true;
+  } catch (error) {
+    settings.operationError = error.message || "Could not save project settings.";
+    if (settings === state.projectContextSettings && closeEditor) {
+      els.directMcpFormError.textContent = settings.operationError;
+      els.directMcpFormError.hidden = false;
+    }
+    return false;
+  } finally {
+    settings.busy = false;
+    if (settings === state.projectContextSettings) renderProjectContextSettings();
+  }
+}
+
+function projectContextToggle(text, checked, disabled, onChange) {
+  const label = projectContextNode("label", "", "checkbox-row");
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = checked;
+  input.disabled = disabled;
+  input.addEventListener("change", () => onChange(input.checked));
+  label.append(input, projectContextNode("span", text));
+  return label;
+}
+
+function projectMcpEnabled(project, server, fromCodex) {
+  const override = project.mcpServerSettings?.[server.serverIdentityId];
+  if (typeof override?.enabled === "boolean") return override.enabled;
+  return fromCodex ? server.enabledForProject !== false : server.enabledState !== "disabled";
+}
+
+function projectMcpTransport(server) {
+  // Saved definitions may use the backend's canonical transportKind field.
+  const transport = server?.transportKind || server?.transport || "stdio";
+  return ["http", "streamable-http", "streamable_http"].includes(transport) ? "streamable_http" : "stdio";
+}
+
+function renderProjectMcpServer(project, server, fromCodex, settings) {
+  const row = projectContextNode("article", "", "project-context-item");
+  const heading = projectContextNode("div", "", "section-heading");
+  heading.append(projectContextNode("strong", fromCodex ? server.name : (server.displayName || server.serverIdentityId)));
+  heading.append(projectContextToggle("On for this project", projectMcpEnabled(project, server, fromCodex),
+    settings.busy || !server.serverIdentityId || (fromCodex && settings.status === "loading"), (enabled) => {
+      saveProjectContextChange(project.id, (current) => ({
+        ...current,
+        mcpServerSettings: {
+          ...current.mcpServerSettings,
+          [server.serverIdentityId]: { ...current.mcpServerSettings?.[server.serverIdentityId], enabled },
+        },
+      }), `${server.name || server.displayName || server.serverIdentityId}: ${enabled ? "on" : "off"} for this project.`);
+    }));
+  row.append(heading);
+  const command = [server.command, ...(Array.isArray(server.args) ? server.args : [])].filter(Boolean).join(" ");
+  const transport = projectMcpTransport(server);
+  row.append(projectContextNode("p", `${transport === "streamable_http" ? "HTTP" : "Command"} · ${transport === "streamable_http" ? server.url || "No URL" : command || "No command"}`, "mono project-context-detail"));
+  if (fromCodex) row.append(projectContextNode("p", `Source: ${server.source || "Codex config"}`, "muted project-context-detail"));
+  else {
+    const runsInLabels = { project: "Project's environment", host: "This app's host", wsl: "WSL", windows: "Windows" };
+    row.append(projectContextNode("p", `Runs in: ${runsInLabels[server.runsIn?.kind] || runsInLabels.project}${server.runsIn?.kind === "wsl" && server.runsIn.distro ? ` (${server.runsIn.distro})` : ""}`, "muted"));
+  }
+  if (server.cwd) row.append(projectContextNode("p", `Working folder: ${server.cwd}`, "muted project-context-detail"));
+  const envNames = [...new Set(fromCodex
+    ? [...(server.envKeys || []), ...(server.envVarNames || [])]
+    : [...Object.keys(server.envValues || {}), ...(server.processEnv || [])])];
+  const headerNames = fromCodex ? server.headerNames || [] : Object.keys(server.headers || {});
+  if (envNames.length) row.append(projectContextNode("p", `Environment names: ${envNames.join(", ")}`, "muted"));
+  if (headerNames.length) row.append(projectContextNode("p", `Header names: ${headerNames.join(", ")}`, "muted"));
+  const status = [];
+  if (server.unavailable) status.push(`Unavailable: ${server.unavailable}`);
+  if (fromCodex && server.enabledInConfig === false) status.push("Disabled in config.toml");
+  if (!fromCodex && server.enabledState === "disabled") status.push("Disabled in server definition");
+  if (!projectMcpEnabled(project, server, fromCodex)) status.push("Off for this project");
+  if (!status.length) status.push("On for this project");
+  row.append(projectContextNode("p", status.join(" · "), server.unavailable ? "project-context-warning" : "muted"));
+  if (!fromCodex) {
+    const actions = projectContextNode("div", "", "heading-actions");
+    const edit = projectContextNode("button", "Edit", "ghost small");
+    edit.type = "button";
+    edit.disabled = settings.busy;
+    edit.addEventListener("click", () => openDirectMcpEditor(server.serverIdentityId));
+    const remove = projectContextNode("button", "Remove", "danger small");
+    remove.type = "button";
+    remove.disabled = settings.busy;
+    remove.addEventListener("click", () => {
+      if (!confirm(`Remove Direct server "${server.displayName || server.serverIdentityId}"?`)) return;
+      saveProjectContextChange(project.id, (current) => {
+        const mcpServerSettings = { ...current.mcpServerSettings };
+        delete mcpServerSettings[server.serverIdentityId];
+        return {
+          ...current,
+          mcpServers: (current.mcpServers || []).filter((item) => item.serverIdentityId !== server.serverIdentityId),
+          mcpServerSettings,
+        };
+      }, "Removed Direct server.", { closeEditor: settings.editorId === server.serverIdentityId });
+    });
+    actions.append(edit, remove);
+    row.append(actions);
+  }
+  return row;
+}
+
+function renderProjectContextSettings() {
+  if (!els.projectContextSettings) return;
+  const project = activeProject();
+  const settings = ensureProjectContextSettings(project);
+  const context = settings.context;
+  const busy = settings.busy || !project;
+  els.codexContextRefreshButton.disabled = busy || settings.status === "loading";
+  els.directMcpAddButton.disabled = busy;
+  els.projectAgentsMdScopeSelect.disabled = busy;
+  els.projectSkillsEnabledInput.disabled = busy;
+  els.projectAgentsMdScopeSelect.value = project?.agentsMdScope || "workbench_and_children";
+  els.projectSkillsEnabledInput.checked = project?.skillsEnabled !== false;
+  for (const control of els.directMcpServerForm.elements) control.disabled = busy;
+  syncDirectMcpFormFields();
+  els.codexContextStatus.textContent = !project ? "Select a project."
+    : settings.busy ? "Saving settings…"
+      : settings.status === "loading" ? "Loading Codex context…"
+        : settings.status === "error" ? "Could not load Codex context. You can still edit Direct servers."
+          : settings.status === "unavailable" ? "Codex context is unavailable. You can still edit Direct servers."
+            : settings.status === "loaded" ? "Codex context loaded."
+              : "Open this tab to load Codex context.";
+  els.codexContextWarnings.replaceChildren();
+  for (const message of [settings.readError, settings.operationError].filter(Boolean)) {
+    els.codexContextWarnings.append(projectContextNode("p", message, "project-context-warning"));
+  }
+  for (const entry of [...(context?.invalidServers || []), ...(context?.errors || [])]) {
+    const prefix = [entry.name, entry.source].filter(Boolean).join(" · ");
+    els.codexContextWarnings.append(projectContextNode("p", `${prefix ? `${prefix}: ` : ""}${entry.message || "Could not read this definition."}`, "project-context-warning"));
+  }
+  const trust = typeof context?.projectTrust === "string" ? context.projectTrust
+    : context?.projectTrust?.trustLevel || context?.projectTrust?.trust_level || "unknown";
+  els.codexContextSummary.textContent = context
+    ? `Codex home: ${context.codexHome || "unknown"}\nconfig.toml: ${context.userConfigFound ? "found" : "not found"} · Project trust: ${trust}`
+    : "";
+  els.codexContextServerList.replaceChildren();
+  for (const server of context?.servers || []) els.codexContextServerList.append(renderProjectMcpServer(project, server, true, settings));
+  if (!els.codexContextServerList.childElementCount) {
+    els.codexContextServerList.append(projectContextNode("p", context ? "No Codex MCP servers found." : "No Codex context loaded.", "muted"));
+  }
+  els.directMcpServerList.replaceChildren();
+  for (const server of project?.mcpServers || []) els.directMcpServerList.append(renderProjectMcpServer(project, server, false, settings));
+  if (!els.directMcpServerList.childElementCount) els.directMcpServerList.append(projectContextNode("p", "No Direct servers configured.", "muted"));
+  els.codexContextAgentsList.replaceChildren();
+  const agentsMd = context?.agentsMd;
+  const docs = [...(agentsMd?.global ? [{ ...agentsMd.global, scope: "Global" }] : []),
+    ...(agentsMd?.projectDocs || []).map((doc) => ({ ...doc, scope: "Project" }))];
+  for (const doc of docs) {
+    els.codexContextAgentsList.append(projectContextNode("p", `${doc.scope}: ${doc.file} · ${Number(doc.bytes || 0).toLocaleString()} bytes`, "mono muted project-context-detail"));
+  }
+  if (!docs.length) els.codexContextAgentsList.append(projectContextNode("p", context ? "No AGENTS.md files found." : "Files appear after loading Codex context.", "muted"));
+  if (agentsMd?.truncated) els.codexContextAgentsList.append(projectContextNode("p", "Instructions truncated at the 32 KiB cap.", "project-context-warning"));
+  els.codexContextSkillsList.replaceChildren();
+  for (const skill of context?.skills || []) {
+    const row = projectContextNode("article", "", "project-context-item");
+    row.append(projectContextNode("strong", skill.name), projectContextNode("p", skill.description || "No description.", "muted"),
+      projectContextNode("p", `${skill.scope || "unknown scope"} · ${skill.path || ""}`, "mono muted project-context-detail"));
+    els.codexContextSkillsList.append(row);
+  }
+  if (!els.codexContextSkillsList.childElementCount) els.codexContextSkillsList.append(projectContextNode("p", context ? "No skills found." : "Skills appear after loading Codex context.", "muted"));
+  els.codexContextHooksList.replaceChildren();
+  for (const hook of context?.hooks || []) {
+    const row = projectContextNode("article", "", "project-context-item");
+    const heading = projectContextNode("div", "", "section-heading");
+    heading.append(projectContextNode("strong", `${hook.event} · ${hook.matcher || "all"}`),
+      projectContextToggle("Trust", hook.trusted === true, busy || settings.status === "loading" || !hook.id, (trusted) => {
+        updateProjectHookTrust(project.id, hook.id, trusted);
+      }));
+    row.append(heading, projectContextNode("p", hook.command, "mono project-context-detail"),
+      projectContextNode("p", `Source: ${hook.source || "unknown"} · Timeout: ${hook.timeoutSec ?? "default"} seconds`, "muted project-context-detail"));
+    els.codexContextHooksList.append(row);
+  }
+  if (!els.codexContextHooksList.childElementCount) els.codexContextHooksList.append(projectContextNode("p", context ? "No hooks found." : "Hooks appear after loading Codex context.", "muted"));
+  els.codexContextNotify.hidden = !context?.notify?.length;
+  els.codexContextNotify.textContent = context?.notify?.length ? `Notify: ${context.notify.join(" ")}` : "";
+  if (project && state.activeMiddleTab === "project" && settings.status === "idle") refreshProjectCodexContext();
+}
+
+async function updateProjectHookTrust(projectId, hookId, trusted) {
+  const settings = ensureProjectContextSettings();
+  if (settings.busy || activeProject()?.id !== projectId) return;
+  settings.busy = true;
+  settings.operationError = "";
+  renderProjectContextSettings();
+  try {
+    if (!bridge?.setHookTrusted) throw new Error("Hook trust is unavailable in this app version.");
+    await bridge.setHookTrusted(hookId, trusted);
+    if (settings === state.projectContextSettings && activeProject()?.id === projectId) {
+      await refreshProjectCodexContext({ force: true });
+      setLastEvent(trusted ? "Hook trusted." : "Hook trust removed.");
+    }
+  } catch (error) {
+    settings.operationError = error.message || "Could not change hook trust.";
+  } finally {
+    settings.busy = false;
+    if (settings === state.projectContextSettings) renderProjectContextSettings();
+  }
+}
+
+function syncDirectMcpFormFields() {
+  const command = els.directMcpTransportSelect.value !== "streamable_http";
+  els.directMcpCommandFields.hidden = !command;
+  els.directMcpHttpFields.hidden = command;
+  els.directMcpCommandInput.required = command;
+  els.directMcpUrlInput.required = !command;
+  // Disable inactive fields so hidden inputs never block form validation.
+  const busy = state.projectContextSettings.busy || !activeProject();
+  for (const input of els.directMcpCommandFields.querySelectorAll("input, select, textarea")) input.disabled = busy || !command;
+  for (const input of els.directMcpHttpFields.querySelectorAll("input, textarea")) input.disabled = busy || command;
+  const wsl = command && els.directMcpRunsInSelect.value === "wsl";
+  els.directMcpDistroField.hidden = !wsl;
+  els.directMcpDistroInput.required = wsl;
+  els.directMcpDistroInput.disabled = busy || !wsl;
+}
+
+function openDirectMcpEditor(serverId = "") {
+  const project = activeProject();
+  if (!project) return;
+  const settings = ensureProjectContextSettings(project);
+  if (settings.busy) return;
+  const server = serverId ? (project.mcpServers || []).find((item) => item.serverIdentityId === serverId) : null;
+  if (serverId && !server) return;
+  settings.editorId = serverId;
+  settings.operationError = "";
+  els.directMcpServerForm.reset();
+  els.directMcpFormTitle.textContent = server ? "Edit server" : "Add server";
+  els.directMcpNameInput.value = server?.serverIdentityId || "";
+  els.directMcpTransportSelect.value = projectMcpTransport(server);
+  els.directMcpCommandInput.value = server?.command || "";
+  els.directMcpArgsInput.value = (server?.args || []).join("\n");
+  els.directMcpCwdInput.value = server?.cwd || "";
+  els.directMcpEnvInput.value = Object.entries(server?.envValues || {}).map(([name, value]) => `${name}=${value}`).join("\n");
+  els.directMcpProcessEnvInput.value = (server?.processEnv || []).join(", ");
+  els.directMcpRunsInSelect.value = server?.runsIn?.kind || "project";
+  els.directMcpDistroInput.value = server?.runsIn?.distro || "";
+  els.directMcpUrlInput.value = server?.url || "";
+  els.directMcpHeadersInput.value = Object.entries(server?.headers || {}).map(([name, value]) => `${name}: ${value}`).join("\n");
+  els.directMcpEnabledToolsInput.value = (server?.enabledTools || []).join(", ");
+  els.directMcpDisabledToolsInput.value = (server?.disabledTools || []).join(", ");
+  els.directMcpApprovalSelect.value = server?.defaultToolsApprovalMode || "auto";
+  els.directMcpTimeoutInput.value = String(Number(server?.toolTimeoutMs || 60000) / 1000);
+  els.directMcpFormError.hidden = true;
+  els.directMcpServerForm.hidden = false;
+  syncDirectMcpFormFields();
+  els.directMcpNameInput.focus();
+  els.directMcpServerForm.scrollIntoView({ block: "nearest" });
+}
+
+function closeDirectMcpEditor() {
+  state.projectContextSettings.editorId = null;
+  els.directMcpServerForm.hidden = true;
+  els.directMcpServerForm.reset();
+  els.directMcpFormError.hidden = true;
+}
+
+function parseProjectMcpNames(value) {
+  return [...new Set(String(value || "").split(/[,\r\n]+/).map((name) => name.trim()).filter(Boolean))];
+}
+
+function parseProjectMcpPairs(value, kind) {
+  const pairs = [];
+  const seen = new Set();
+  const separator = kind === "env" ? "=" : ":";
+  for (const line of String(value || "").split(/\r?\n/).filter((item) => item.trim())) {
+    const index = line.indexOf(separator);
+    const name = index > 0 ? line.slice(0, index).trim() : "";
+    const valid = kind === "env" ? /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)
+      : /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name);
+    if (!valid) throw new Error(kind === "env" ? "Use KEY=VALUE with a valid environment variable name." : "Use Name: value with a valid header name.");
+    const key = kind === "env" ? name : name.toLowerCase();
+    if (seen.has(key)) throw new Error(`Duplicate ${kind === "env" ? "environment variable" : "header"} name: ${name}`);
+    seen.add(key);
+    // Preserve environment value whitespace; only trim HTTP's optional leading whitespace.
+    const content = kind === "env" ? line.slice(index + 1) : line.slice(index + 1).trim();
+    pairs.push([name, content]);
+  }
+  return Object.fromEntries(pairs);
+}
+
+async function handleDirectMcpFormSubmit(event) {
+  event.preventDefault();
+  const project = activeProject();
+  const settings = ensureProjectContextSettings(project);
+  if (!project || settings.busy || settings.editorId === null) return;
+  els.directMcpFormError.hidden = true;
+  try {
+    const name = els.directMcpNameInput.value.trim();
+    if (!/^[A-Za-z0-9_:@/.-]{1,180}$/.test(name)) throw new Error("Use 1–180 letters, numbers, or _ : @ / . - in the name.");
+    const existing = settings.editorId ? (project.mcpServers || []).find((server) => server.serverIdentityId === settings.editorId) : null;
+    if (settings.editorId && !existing) throw new Error("This server was removed. Cancel and add it again.");
+    if ((project.mcpServers || []).some((server) => server !== existing && server.serverIdentityId === name)
+      || (settings.context?.servers || []).some((server) => server.serverIdentityId === name)) {
+      throw new Error("A server with that identity already exists. Choose another name.");
+    }
+    const transport = els.directMcpTransportSelect.value;
+    const timeoutSec = Number(els.directMcpTimeoutInput.value);
+    const toolTimeoutMs = Math.round(timeoutSec * 1000);
+    if (!Number.isFinite(timeoutSec) || timeoutSec <= 0 || !Number.isSafeInteger(toolTimeoutMs) || toolTimeoutMs < 1) {
+      throw new Error("Tool timeout must be a positive number of seconds.");
+    }
+    const enabledTools = parseProjectMcpNames(els.directMcpEnabledToolsInput.value);
+    const server = {
+      ...(existing || {
+        trustState: "configured",
+        enabledState: "enabled",
+        freshness: "fresh",
+        authPosture: "local_config",
+      }),
+      serverIdentityId: name,
+      displayName: name,
+      transport,
+      enabledTools: enabledTools.length ? enabledTools : null,
+      disabledTools: parseProjectMcpNames(els.directMcpDisabledToolsInput.value),
+      defaultToolsApprovalMode: els.directMcpApprovalSelect.value,
+      toolTimeoutMs,
+    };
+    if (existing && Object.hasOwn(existing, "transportKind")) server.transportKind = transport;
+    if (transport === "stdio") {
+      const command = els.directMcpCommandInput.value.trim();
+      if (!command) throw new Error("Enter a command.");
+      const processEnv = parseProjectMcpNames(els.directMcpProcessEnvInput.value);
+      if (processEnv.some((key) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))) throw new Error("Pass-through names must be valid environment variable names.");
+      const kind = els.directMcpRunsInSelect.value;
+      const distro = els.directMcpDistroInput.value.trim();
+      if (kind === "wsl" && !distro) throw new Error("Enter a WSL distro.");
+      Object.assign(server, {
+        command,
+        args: els.directMcpArgsInput.value.split(/\r?\n/).filter((line) => line.trim()),
+        cwd: els.directMcpCwdInput.value.trim(),
+        envValues: parseProjectMcpPairs(els.directMcpEnvInput.value, "env"),
+        processEnv,
+        runsIn: { ...existing?.runsIn, kind, distro: kind === "wsl" ? distro : "" },
+      });
+    } else {
+      let url;
+      try { url = new URL(els.directMcpUrlInput.value.trim()); } catch { throw new Error("Enter an http or https URL."); }
+      if (!["http:", "https:"].includes(url.protocol)) throw new Error("Enter an http or https URL.");
+      server.url = els.directMcpUrlInput.value.trim();
+      server.headers = parseProjectMcpPairs(els.directMcpHeadersInput.value, "headers");
+    }
+    const originalId = settings.editorId;
+    await saveProjectContextChange(project.id, (current) => {
+      const mcpServerSettings = { ...current.mcpServerSettings };
+      if (originalId && originalId !== name) {
+        if (Object.hasOwn(mcpServerSettings, originalId)) mcpServerSettings[name] = mcpServerSettings[originalId];
+        delete mcpServerSettings[originalId];
+      }
+      return {
+        ...current,
+        mcpServers: originalId
+          ? (current.mcpServers || []).map((item) => item.serverIdentityId === originalId ? server : item)
+          : [...(current.mcpServers || []), server],
+        mcpServerSettings,
+      };
+    }, `${existing ? "Updated" : "Added"} Direct server: ${name}.`, { closeEditor: true });
+  } catch (error) {
+    els.directMcpFormError.textContent = error.message || "Could not save server.";
+    els.directMcpFormError.hidden = false;
+  }
+}
+
 function renderProjectList() {
   const config = state.config;
   if (!config) return;
@@ -6182,6 +6657,7 @@ function render() {
   renderMiddleTabs();
   renderProjectList();
   renderSelectedProject();
+  renderProjectContextSettings();
   renderThreadDeck();
   renderProjectStash();
   renderDirectBridgeSettingsStatus();
@@ -8189,6 +8665,7 @@ function setMiddleTab(tab) {
   else state.activeMiddleTab = "overview";
   if (state.activeMiddleTab === "web" && els.controlPlane) els.controlPlane.scrollTop = 0;
   renderMiddleTabs();
+  if (state.activeMiddleTab === "project") refreshProjectCodexContext();
   if (state.activeMiddleTab === "analytics" && state.analyticsStatus === "idle") {
     loadAnalyticsThreads({ refresh: false }).catch((error) => {
       setLastEvent(`Analytics list load failed: ${error.message}`);
@@ -8727,6 +9204,22 @@ async function previewFile(relPath, row) {
 }
 
 function bindEvents() {
+  els.codexContextRefreshButton?.addEventListener("click", () => refreshProjectCodexContext({ force: true }));
+  els.directMcpAddButton?.addEventListener("click", () => openDirectMcpEditor());
+  els.directMcpCancelButton?.addEventListener("click", closeDirectMcpEditor);
+  els.directMcpTransportSelect?.addEventListener("change", syncDirectMcpFormFields);
+  els.directMcpRunsInSelect?.addEventListener("change", syncDirectMcpFormFields);
+  els.directMcpServerForm?.addEventListener("submit", handleDirectMcpFormSubmit);
+  els.projectAgentsMdScopeSelect?.addEventListener("change", () => {
+    const project = activeProject();
+    const agentsMdScope = els.projectAgentsMdScopeSelect.value;
+    if (project) saveProjectContextChange(project.id, (current) => ({ ...current, agentsMdScope }), "Updated AGENTS.md scope.");
+  });
+  els.projectSkillsEnabledInput?.addEventListener("change", () => {
+    const project = activeProject();
+    const skillsEnabled = els.projectSkillsEnabledInput.checked;
+    if (project) saveProjectContextChange(project.id, (current) => ({ ...current, skillsEnabled }), skillsEnabled ? "Skills enabled." : "Skills disabled.");
+  });
   els.rightChatgptTabButton?.addEventListener("click", () => setRightPlaneTab("chatgpt"));
   els.rightSubAgentsTabButton?.addEventListener("click", () => setRightPlaneTab("subagents"));
   els.overviewTabButton.addEventListener("click", () => setMiddleTab("overview"));

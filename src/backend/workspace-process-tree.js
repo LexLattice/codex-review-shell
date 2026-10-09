@@ -7,6 +7,10 @@ function childExited(child) {
   return !child || child.exitCode !== null || child.signalCode !== null;
 }
 
+function windowsJobReceipt(controlPath, options) {
+  return require("../main/direct/tools/windows-job-runner").windowsJobReceipt(controlPath, options);
+}
+
 function waitForChildExit(child, timeoutMs) {
   if (childExited(child)) return Promise.resolve(true);
   return new Promise((resolve) => {
@@ -160,8 +164,18 @@ async function terminateWindowsProcessTree(child, options = {}) {
   const timeoutMs = Number.isFinite(Number(options.timeoutMs))
     ? Math.max(1, Math.min(30_000, Math.floor(Number(options.timeoutMs))))
     : 2_000;
-  if (typeof options.windowsJobObjectTerminationImpl === "function") {
-    const receipt = await options.windowsJobObjectTerminationImpl(child, { timeoutMs });
+  // A child the job runner started with a control channel: its receipt
+  // (after a cancel when it still runs) proves the whole job is gone.
+  const controlPath = child?.workspaceProcessContainment?.kind === "windows_job_object"
+    ? child.workspaceProcessContainment.controlPath
+    : "";
+  const terminationImpl = typeof options.windowsJobObjectTerminationImpl === "function"
+    ? options.windowsJobObjectTerminationImpl
+    : controlPath
+      ? (target, { timeoutMs: waitMs }) => windowsJobReceipt(controlPath, { cancel: !childExited(target), timeoutMs: Math.max(waitMs, 5_000) })
+      : null;
+  if (terminationImpl) {
+    const receipt = await terminationImpl(child, { timeoutMs });
     if (
       receipt?.quiesced === true &&
       receipt?.containmentKind === "windows_job_object" &&

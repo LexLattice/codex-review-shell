@@ -4453,7 +4453,9 @@ const unreadableSuccessProbe = await runTextOnlyDirectProbe({
   fetchImpl: async () => unreadableSuccessResponse,
 });
 nodeAssert.equal(unreadableSuccessProbe.ok, false);
-nodeAssert.equal(unreadableSuccessProbe.error.code, "max_output");
+// Its own code: the body couldn't be read as a stream (not the model running
+// out of output).
+nodeAssert.equal(unreadableSuccessProbe.error.code, "provider_body_not_streamable");
 nodeAssert.equal(unreadableSuccessResponse.state.textCalls, 0, "Unreadable success bodies must fail closed without calling text().");
 
 const unreadableErrorResponse = textOnlyNoBodyResponse(502);
@@ -4466,7 +4468,7 @@ const unreadableErrorProbe = await runTextOnlyDirectProbe({
   fetchImpl: async () => unreadableErrorResponse,
 });
 nodeAssert.equal(unreadableErrorProbe.ok, false);
-nodeAssert.equal(unreadableErrorProbe.error.code, "max_output");
+nodeAssert.equal(unreadableErrorProbe.error.code, "provider_body_not_streamable");
 nodeAssert.equal(unreadableErrorResponse.state.textCalls, 0, "Unreadable error bodies must fail closed without calling text().");
 
 const expiringAuthStore = createDirectAuthStore({ mode: "memory" });

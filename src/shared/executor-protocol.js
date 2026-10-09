@@ -31,6 +31,9 @@ const EXECUTOR_METHODS = Object.freeze({
   mcpRequest: "mcp/request",
   mcpCancel: "mcp/cancel",
   mcpElicitationRespond: "mcp/elicitationRespond",
+  codexContext: "codex/context",
+  codexSkill: "codex/skill",
+  hookRun: "hook/run",
 });
 
 // Events the executor pushes for an MCP request in flight. Each carries
@@ -55,6 +58,9 @@ const IMPLEMENTED_EXECUTOR_METHODS = Object.freeze([
   EXECUTOR_METHODS.mcpRequest,
   EXECUTOR_METHODS.mcpCancel,
   EXECUTOR_METHODS.mcpElicitationRespond,
+  EXECUTOR_METHODS.codexContext,
+  EXECUTOR_METHODS.codexSkill,
+  EXECUTOR_METHODS.hookRun,
 ]);
 
 // Events the executor pushes for a process session. Each carries

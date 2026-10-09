@@ -35,6 +35,8 @@ const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-serve
 const { createCodexCliAuthStore, createDirectAuthCompositeStore } = require("./main/direct/auth/codex-cli-auth");
 const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-loader");
 const { DirectSessionStore } = require("./main/direct/session/session-store");
+const { CodexContextService } = require("./main/direct/codex-home/codex-context-service");
+const { DirectApprovalRuleStore } = require("./main/direct/authority/approval-rule-store");
 const { DirectEpistemicService } = require("./main/direct/epistemic/service");
 const {
   profile: directEpistemicRepositoryProfile,
@@ -320,6 +322,7 @@ const {
 const {
   configuredMcpServerIdentityInput,
   configuredMcpServersForProject,
+  codexServerIdentityId,
   createDirectConfiguredMcpResolvers,
   disposeHostMcpSessions,
   normalizeConfiguredMcpServer,
@@ -2731,6 +2734,16 @@ function migrateUi(rawUi) {
   return { leftRatio, middleRatio };
 }
 
+function normalizeMcpServerSettings(input) {
+  if (!isPlainObject(input)) return {};
+  const settings = {};
+  for (const [id, entry] of Object.entries(input).slice(0, 256)) {
+    if (!/^[A-Za-z0-9_:@/.-]{1,180}$/.test(id) || !isPlainObject(entry)) continue;
+    if (typeof entry.enabled === "boolean") settings[id] = { enabled: entry.enabled };
+  }
+  return settings;
+}
+
 function normalizeProject(input, index = 0) {
   const fallback = defaultConfig().projects[0];
   const raw = isPlainObject(input) ? input : {};
@@ -2831,6 +2844,13 @@ function normalizeProject(input, index = 0) {
     },
     chatThreads,
     mcpServers: configuredMcpServers,
+    // Per-project switches for MCP servers (Direct's and Codex's), by id.
+    mcpServerSettings: normalizeMcpServerSettings(raw.mcpServerSettings),
+    // Who gets AGENTS.md: "workbench_and_children" (default), "workbench",
+    // "all" (workspace workers too), or "off".
+    agentsMdScope: ["workbench_and_children", "workbench", "all", "off"].includes(raw.agentsMdScope) ? raw.agentsMdScope : "workbench_and_children",
+    // Skills catalog in the turn's instructions (Codex's include_instructions).
+    skillsEnabled: raw.skillsEnabled !== false,
     activeChatThreadId: activeThreadId,
     lastActiveThreadId: normalizeString(raw.lastActiveThreadId, activeThreadId),
     laneBindings,
@@ -3578,6 +3598,22 @@ function ensureDirectConfiguredMcpResolvers() {
     },
   });
   return directConfiguredMcpResolvers;
+}
+
+// Codex's config.toml (MCP servers), AGENTS.md, skills, and hooks, read in
+// each project's environment.
+let directCodexContextService = null;
+function ensureDirectCodexContextService() {
+  if (directCodexContextService) return directCodexContextService;
+  directCodexContextService = new CodexContextService({
+    executors: {
+      requestForProject: (project, method, params, timeoutMs) => {
+        if (!workspaceBackends) throw new Error("Workspace backends are not initialized.");
+        return workspaceBackends.requestForProject(project, method, params, timeoutMs);
+      },
+    },
+  });
+  return directCodexContextService;
 }
 
 function ensureDirectCodexCliAuthStore() {
@@ -4906,6 +4942,9 @@ function ensureDirectLiveTextController() {
     mcpResourceReadResolver: (context) => ensureDirectConfiguredMcpResolvers().mcpResourceReadResolver(context),
     mcpToolCatalogResolver: (context) => ensureDirectConfiguredMcpResolvers().mcpToolCatalogResolver(context),
     mcpToolCallResolver: (context) => ensureDirectConfiguredMcpResolvers().mcpToolCallResolver(context),
+    codexContextResolver: (project) => ensureDirectCodexContextService().contextFor(project),
+    codexSkillResolver: (project, skillPath) => ensureDirectCodexContextService().skillBody(project, skillPath),
+    hookRunner: (project, hook, stdin) => ensureDirectCodexContextService().runHook(project, hook, stdin),
     attachmentPayloadResolver: async (context) => {
       const staged = await readStagedAttachmentPayload(context.project, context.draft || {});
       if (!staged) return { status: "blocked", reason: "staged_attachment_not_found" };
@@ -12452,6 +12491,73 @@ ipcMain.handle("config:save", async (_event, nextConfig) => {
   return { config: saved, configPath: configPath() };
 });
 
+let directApprovalRuleStore = null;
+function ensureDirectApprovalRuleStore() {
+  directApprovalRuleStore ||= new DirectApprovalRuleStore({ rootDir: path.join(directSessionRootDir(), "authority") });
+  return directApprovalRuleStore;
+}
+
+// What the project gets from Codex in its environment, for the settings
+// panel: never variable values or header values, only their names.
+ipcMain.handle("direct-codex:context", async (_event, payload = {}) => {
+  const config = await loadConfig();
+  const project = (config.projects || []).find((candidate) => candidate.id === payload.projectId);
+  if (!project) throw new Error("Unknown project.");
+  const context = await ensureDirectCodexContextService().contextFor(project, { force: payload.force === true });
+  const settings = isPlainObject(project.mcpServerSettings) ? project.mcpServerSettings : {};
+  const rules = ensureDirectApprovalRuleStore();
+  const bytes = (text) => Buffer.byteLength(String(text || ""), "utf8");
+  return {
+    codexHome: context.codexHome || "",
+    userConfigFound: context.userConfigFound === true,
+    projectTrust: context.projectTrust || "unknown",
+    unavailable: context.unavailable === true,
+    servers: (context.mcpServers || []).map((server) => {
+      const serverIdentityId = codexServerIdentityId(server.name);
+      return {
+        serverIdentityId,
+        name: server.name,
+        source: server.source,
+        transport: server.transport,
+        command: server.command || "",
+        args: server.args || [],
+        cwd: server.cwd || "",
+        url: server.url || "",
+        envKeys: Object.keys(server.env || {}),
+        envVarNames: server.envVars || [],
+        headerNames: Object.keys(server.headers || {}),
+        enabledInConfig: server.enabled !== false,
+        unavailable: server.unavailable || "",
+        enabledForProject: settings[serverIdentityId]?.enabled !== false,
+        enabledTools: server.enabledTools || null,
+        disabledTools: server.disabledTools || [],
+      };
+    }),
+    invalidServers: context.invalidMcpServers || [],
+    agentsMd: {
+      global: context.agentsMd?.global ? { file: context.agentsMd.global.file, bytes: bytes(context.agentsMd.global.text) } : null,
+      projectDocs: (context.agentsMd?.projectDocs || []).map((doc) => ({ file: doc.file, bytes: bytes(doc.text) })),
+      truncated: context.agentsMd?.truncated === true,
+    },
+    skills: (context.skills || []).map((skill) => ({ name: skill.name, description: skill.description, path: skill.path, scope: skill.scope })),
+    hooks: (context.hooks || []).map((hook) => ({
+      id: hook.id,
+      event: hook.event,
+      matcher: hook.matcher,
+      command: hook.command,
+      source: hook.source,
+      timeoutSec: hook.timeoutSec,
+      trusted: rules.isHookTrusted(hook.id),
+    })),
+    notify: context.notify || [],
+    errors: context.errors || [],
+  };
+});
+
+ipcMain.handle("direct-hooks:set-trust", async (_event, payload = {}) => {
+  return { trusted: ensureDirectApprovalRuleStore().setHookTrusted(String(payload.hookId || ""), payload.trusted === true) };
+});
+
 async function worldManagerSemanticCoordinatorForRequest() {
   requireWorldManagerStudioExperience("world-manager-semantic");
   const config = await loadConfig();
@@ -14480,6 +14586,7 @@ async function createDirectTestProject(spec = {}) {
       },
     },
     ...(isPlainObject(spec.delegation) ? { delegation: spec.delegation } : {}),
+    ...(Array.isArray(spec.mcpServers) ? { mcpServers: spec.mcpServers } : {}),
   }, config.projects.length + 1);
   const saved = await saveConfig({ ...config, projects: [...config.projects, project] });
   return saved.projects.find((item) => item.id === project.id) || project;

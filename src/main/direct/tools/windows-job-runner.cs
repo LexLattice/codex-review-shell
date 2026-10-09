@@ -9,14 +9,22 @@
 //
 // Usage:
 //   direct-job-runner.exe [--integrity medium|low|low-read-only]
-//                         [--label-low <dir>] [--hide <file>]... [--scratch <dir>]
+//                         [--label-low <dir>] [--project-sid <S-1-5-21-...>]
+//                         [--hide <file>]... [--scratch <dir>]
 //                         --cmdline-b64 <base64 utf-8 command line>
 //
 //   --integrity low            Workspace: Low integrity; writes land only in
 //                              folders labeled Low (the project, --scratch).
+//   --project-sid <sid>        With low: the token is also write-restricted to
+//                              this project's SID (granted Modify on the
+//                              --label-low folder) and the logon SID, so the
+//                              command can't write into another project.
 //   --integrity low-read-only  Read only: Low integrity plus a write-restricted
 //                              token; only --scratch is writable.
 //   --label-low <dir>          Ensure <dir> carries an inheritable Low label.
+//   --control <path>           Stop the job when <path>.cancel appears; when it
+//                              ends, write <path>.receipt saying whether every
+//                              process in it is gone.
 //   --hide <file>              Ensure <file> carries a Medium no-read-up label,
 //                              so Low-integrity commands cannot read it.
 //   --scratch <dir>            Create <dir> as the command's private TEMP:
@@ -42,6 +50,7 @@ using System;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
@@ -52,6 +61,7 @@ static class DirectJobRunner
     const uint CREATE_SUSPENDED = 0x00000004;
     const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
     const int PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016;
+    const int PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D;
     const int MAX_FRAME_BYTES = 1 << 20;
     const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
     const int STARTF_USESTDHANDLES = 0x00000100;
@@ -159,6 +169,71 @@ static class DirectJobRunner
     static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool QueryInformationJobObject(IntPtr job, int infoClass, out JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info, int length, IntPtr returnLength);
+
+    const int JobObjectBasicAccountingInformation = 1;
+
+    static long ActiveProcesses(IntPtr job)
+    {
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info;
+        if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformation, out info, Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)), IntPtr.Zero)) return -1;
+        return info.ActiveProcesses;
+    }
+
+    // --control <path>: `<path>.cancel` appearing stops the whole job (the
+    // host's cancel); when the job has ended, either way, `<path>.receipt`
+    // records whether every process in it is gone (the Windows counterpart
+    // of a Linux PID namespace's quiescence).
+    static void WatchCancel(string control, IntPtr job)
+    {
+        Thread watcher = new Thread(delegate()
+        {
+            string cancel = control + ".cancel";
+            while (true)
+            {
+                if (File.Exists(cancel))
+                {
+                    TerminateJobObject(job, 130);
+                    return;
+                }
+                Thread.Sleep(50);
+            }
+        });
+        watcher.IsBackground = true;
+        watcher.Start();
+    }
+
+    static void WriteReceipt(string control, IntPtr job, uint exitCode)
+    {
+        long active = ActiveProcesses(job);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+        while (active != 0 && DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(20);
+            active = ActiveProcesses(job);
+        }
+        string json = "{\"schema\":\"direct_windows_job_receipt@1\",\"quiesced\":" + (active == 0 ? "true" : "false") +
+            ",\"activeProcesses\":" + active + ",\"jobClosed\":true,\"exitCode\":" + exitCode + "}";
+        string temp = control + ".receipt.tmp";
+        File.WriteAllText(temp, json);
+        if (File.Exists(control + ".receipt")) File.Delete(control + ".receipt");
+        File.Move(temp, control + ".receipt");
+    }
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern bool CreateProcess(string app, StringBuilder cmdline, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -333,20 +408,54 @@ static class DirectJobRunner
         if (error != 0) Fail("SetNamedSecurityInfo(" + dir + ")", (int)error);
     }
 
-    static IntPtr LowIntegrityToken(IntPtr self, bool writeRestricted)
+    // Workspace isolation between projects: the project's own SID gets
+    // Modify (inherited) on its folder, and its commands' token is
+    // write-restricted to that SID, so a Workspace command writes only into
+    // its own project (and its private TEMP), even though every Workspace
+    // folder carries the same Low label. Checked first: only the first
+    // command in a folder walks the tree.
+    static void GrantProjectSid(string dir, string sidText)
+    {
+        SecurityIdentifier sid = new SecurityIdentifier(sidText);
+        DirectorySecurity security = Directory.GetAccessControl(dir, AccessControlSections.Access);
+        foreach (FileSystemAccessRule rule in security.GetAccessRules(true, false, typeof(SecurityIdentifier)))
+        {
+            if (rule.IdentityReference.Equals(sid) && rule.AccessControlType == AccessControlType.Allow &&
+                (rule.FileSystemRights & FileSystemRights.Modify) == FileSystemRights.Modify &&
+                (rule.InheritanceFlags & (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit)) == (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit))
+            {
+                return;
+            }
+        }
+        security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.Modify | FileSystemRights.Synchronize,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+        Directory.SetAccessControl(dir, security);
+    }
+
+    static IntPtr LowIntegrityToken(IntPtr self, bool writeRestricted, string projectSid)
     {
         IntPtr low, sid;
-        if (writeRestricted)
+        if (writeRestricted || projectSid != null)
         {
-            // Restricting SIDs: Everyone, and the logon SID, without which
-            // processes cannot reach their window station and fail DLL
-            // initialization (STATUS_DLL_INIT_FAILED).
+            // Restricting SIDs: the logon SID, without which processes cannot
+            // reach their window station and fail DLL initialization
+            // (STATUS_DLL_INIT_FAILED); Everyone (places anyone may write,
+            // which runtimes like PowerShell need at startup); and for
+            // Workspace the project's SID. A project folder grants the user
+            // and its own SID, not Everyone, so other projects stay closed.
             IntPtr everyone;
             if (!ConvertStringSidToSid("S-1-1-0", out everyone)) Fail("ConvertStringSidToSid");
-            SID_AND_ATTRIBUTES[] restricting = new SID_AND_ATTRIBUTES[2];
+            int count = projectSid != null ? 3 : 2;
+            SID_AND_ATTRIBUTES[] restricting = new SID_AND_ATTRIBUTES[count];
             restricting[0].Sid = everyone;
             restricting[1].Sid = LogonSid(self);
-            if (!CreateRestrictedToken(self, WRITE_RESTRICTED, 0, IntPtr.Zero, 0, IntPtr.Zero, 2, restricting, out low)) Fail("CreateRestrictedToken");
+            if (projectSid != null)
+            {
+                IntPtr project;
+                if (!ConvertStringSidToSid(projectSid, out project)) Fail("ConvertStringSidToSid");
+                restricting[2].Sid = project;
+            }
+            if (!CreateRestrictedToken(self, WRITE_RESTRICTED, 0, IntPtr.Zero, 0, IntPtr.Zero, (uint)count, restricting, out low)) Fail("CreateRestrictedToken");
             // Objects the command creates (pipes, child processes) get the
             // token's default DACL, which grants only the user, so the
             // restricted check would refuse writes to them. Grant the logon
@@ -433,6 +542,25 @@ static class DirectJobRunner
         TerminateJobObject(job, 130);
     }
 
+    // The command is created inside the job (PROC_THREAD_ATTRIBUTE_JOB_LIST),
+    // not assigned after CreateProcess: a runner killed between the two
+    // (a cancel right after start) left the command outside any job,
+    // suspended forever and holding the host's pipes open.
+    static IntPtr ProcessAttributes(IntPtr job, IntPtr console)
+    {
+        int count = console != IntPtr.Zero ? 2 : 1;
+        IntPtr listSize = IntPtr.Zero;
+        InitializeProcThreadAttributeList(IntPtr.Zero, count, 0, ref listSize);
+        IntPtr attributes = Marshal.AllocHGlobal(listSize);
+        if (!InitializeProcThreadAttributeList(attributes, count, 0, ref listSize)) Fail("InitializeProcThreadAttributeList");
+        // Read by CreateProcess, so it lives as long as the runner.
+        IntPtr jobList = Marshal.AllocHGlobal(IntPtr.Size);
+        Marshal.WriteIntPtr(jobList, job);
+        if (!UpdateProcThreadAttribute(attributes, 0, (IntPtr)PROC_THREAD_ATTRIBUTE_JOB_LIST, jobList, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) Fail("UpdateProcThreadAttribute(job)");
+        if (console != IntPtr.Zero && !UpdateProcThreadAttribute(attributes, 0, (IntPtr)PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, console, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) Fail("UpdateProcThreadAttribute");
+        return attributes;
+    }
+
     static int RunInPseudoConsole(IntPtr job, string cmdline, IntPtr token, int rows, int cols)
     {
         IntPtr inputRead, inputWrite, outputRead, outputWrite;
@@ -445,11 +573,7 @@ static class DirectJobRunner
         CloseHandle(inputRead);
         CloseHandle(outputWrite);
 
-        IntPtr listSize = IntPtr.Zero;
-        InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref listSize);
-        IntPtr attributes = Marshal.AllocHGlobal(listSize);
-        if (!InitializeProcThreadAttributeList(attributes, 1, 0, ref listSize)) Fail("InitializeProcThreadAttributeList");
-        if (!UpdateProcThreadAttribute(attributes, 0, (IntPtr)PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, console, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) Fail("UpdateProcThreadAttribute");
+        IntPtr attributes = ProcessAttributes(job, console);
         STARTUPINFOEX si = new STARTUPINFOEX();
         si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
         // Without this, Windows hands the child this runner's own redirected
@@ -464,19 +588,13 @@ static class DirectJobRunner
 
         PROCESS_INFORMATION pi;
         StringBuilder line = new StringBuilder(cmdline);
-        // Suspended until it is in the job; no handles inherited, the
-        // pseudoconsole is its terminal.
+        // Created in the job, suspended until the relays run; no handles
+        // inherited, the pseudoconsole is its terminal.
         uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
         bool created = token != IntPtr.Zero
             ? CreateProcessAsUserEx(token, null, line, IntPtr.Zero, IntPtr.Zero, false, flags, IntPtr.Zero, null, ref si, out pi)
             : CreateProcessEx(null, line, IntPtr.Zero, IntPtr.Zero, false, flags, IntPtr.Zero, null, ref si, out pi);
         if (!created) Fail(token != IntPtr.Zero ? "CreateProcessAsUser" : "CreateProcess");
-        if (!AssignProcessToJobObject(job, pi.hProcess))
-        {
-            int code = Marshal.GetLastWin32Error();
-            TerminateProcess(pi.hProcess, 125);
-            Fail("AssignProcessToJobObject", code);
-        }
 
         Stream stdout = Console.OpenStandardOutput();
         FileStream terminalOutput = new FileStream(new SafeFileHandle(outputRead, true), FileAccess.Read, 1, false);
@@ -521,6 +639,8 @@ static class DirectJobRunner
         string cmdline = null;
         string labelLow = null;
         string scratch = null;
+        string projectSid = null;
+        string control = null;
         int ptyRows = 0, ptyCols = 0;
         System.Collections.Generic.List<string> hidden = new System.Collections.Generic.List<string>();
         for (int i = 0; i < args.Length; i++)
@@ -536,6 +656,8 @@ static class DirectJobRunner
             else if (args[i] == "--label-low" && hasValue) labelLow = args[++i];
             else if (args[i] == "--hide" && hasValue) hidden.Add(args[++i]);
             else if (args[i] == "--scratch" && hasValue) scratch = args[++i];
+            else if (args[i] == "--project-sid" && hasValue) projectSid = args[++i];
+            else if (args[i] == "--control" && hasValue) control = args[++i];
             else
             {
                 Console.Error.WriteLine("direct-job-runner: unknown argument " + args[i]);
@@ -553,8 +675,14 @@ static class DirectJobRunner
             return 125;
         }
 
+        if (projectSid != null && (integrity != "low" || labelLow == null || !projectSid.StartsWith("S-1-5-21-")))
+        {
+            Console.Error.WriteLine("direct-job-runner: --project-sid needs Workspace integrity, a project folder, and an S-1-5-21 SID");
+            return 125;
+        }
         IntPtr self = OwnToken();
         if (labelLow != null) EnsureLowLabel(labelLow);
+        if (projectSid != null) GrantProjectSid(labelLow, projectSid);
         foreach (string file in hidden) EnsureHidden(file);
         if (scratch != null) CreateScratch(scratch, self);
 
@@ -567,41 +695,39 @@ static class DirectJobRunner
 
         if (ptyRows > 0 && ptyCols > 0)
         {
-            IntPtr ptyToken = integrity != "medium" ? LowIntegrityToken(self, integrity == "low-read-only") : IntPtr.Zero;
+            IntPtr ptyToken = integrity != "medium" ? LowIntegrityToken(self, integrity == "low-read-only", projectSid) : IntPtr.Zero;
             return RunInPseudoConsole(job, cmdline, ptyToken, ptyRows, ptyCols);
         }
 
-        STARTUPINFO si = new STARTUPINFO();
-        si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-        si.dwFlags = STARTF_USESTDHANDLES;
-        si.hStdInput = GetStdHandle(-10);
-        si.hStdOutput = GetStdHandle(-11);
-        si.hStdError = GetStdHandle(-12);
-        SetHandleInformation(si.hStdInput, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-        SetHandleInformation(si.hStdOutput, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-        SetHandleInformation(si.hStdError, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        STARTUPINFOEX si = new STARTUPINFOEX();
+        si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.StartupInfo.hStdInput = GetStdHandle(-10);
+        si.StartupInfo.hStdOutput = GetStdHandle(-11);
+        si.StartupInfo.hStdError = GetStdHandle(-12);
+        SetHandleInformation(si.StartupInfo.hStdInput, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        SetHandleInformation(si.StartupInfo.hStdOutput, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        SetHandleInformation(si.StartupInfo.hStdError, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        si.lpAttributeList = ProcessAttributes(job, IntPtr.Zero);
 
         PROCESS_INFORMATION pi;
         StringBuilder line = new StringBuilder(cmdline);
-        // Suspended until it is in the job, so nothing it starts can escape.
-        uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
+        // Created in the job, so nothing it starts can escape; suspended
+        // until the cancel watcher is in place.
+        uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
         bool lowered = integrity != "medium";
         bool created = lowered
-            ? CreateProcessAsUser(LowIntegrityToken(self, integrity == "low-read-only"), null, line, IntPtr.Zero, IntPtr.Zero, true, flags, IntPtr.Zero, null, ref si, out pi)
-            : CreateProcess(null, line, IntPtr.Zero, IntPtr.Zero, true, flags, IntPtr.Zero, null, ref si, out pi);
+            ? CreateProcessAsUserEx(LowIntegrityToken(self, integrity == "low-read-only", projectSid), null, line, IntPtr.Zero, IntPtr.Zero, true, flags, IntPtr.Zero, null, ref si, out pi)
+            : CreateProcessEx(null, line, IntPtr.Zero, IntPtr.Zero, true, flags, IntPtr.Zero, null, ref si, out pi);
         if (!created) Fail(lowered ? "CreateProcessAsUser" : "CreateProcess");
-        if (!AssignProcessToJobObject(job, pi.hProcess))
-        {
-            int code = Marshal.GetLastWin32Error();
-            TerminateProcess(pi.hProcess, 125);
-            Fail("AssignProcessToJobObject", code);
-        }
+        if (control != null) WatchCancel(control, job);
         ResumeThread(pi.hThread);
         WaitForSingleObject(pi.hProcess, INFINITE);
         uint exitCode;
         GetExitCodeProcess(pi.hProcess, out exitCode);
         // Like a Linux PID namespace: when the command exits, its leftovers go too.
         TerminateJobObject(job, exitCode);
+        if (control != null) WriteReceipt(control, job, exitCode);
         return (int)exitCode;
     }
 }

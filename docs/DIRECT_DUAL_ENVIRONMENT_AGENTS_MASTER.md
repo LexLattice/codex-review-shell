@@ -102,8 +102,9 @@ executor could later be swapped for it.
 
 **None planned.** All turns are done. The owner's manual Electron checks
 for turns 9, 10, 11a, and 11b are still pending, and **Findings** lists
-follow-up candidates (long-lived MCP sessions, Windows per-project
-isolation, the owner's WSL terminal and `sudo`).
+follow-up candidates (the owner's WSL terminal and `sudo`; native Windows
+workspace workers; hooks for SessionEnd, subagents, compaction, and
+Interrupt; an AGENTS.md scope choice, set per project for now).
 
 ## Gates for every turn
 
@@ -1608,6 +1609,98 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   unchanged). Gates: `npm run direct:mcp-session-pool` (both
   hosts), `direct-mcp-per-environment` and
   `direct-provider-external-production-wiring` (updated; both hosts).
+- Added 2026-10-09: what Codex reads from its home and the project, read the
+  same way in the project's environment (owner's calls: import Codex's
+  config plus a settings panel; Codex's skill and hook locations plus
+  Direct's own; AGENTS.md with its scope as a per-project setting). One
+  reader (`codex-home/codex-environment-context.js`, with a small TOML reader,
+  `external/toml-lite.js`) runs in-process for the host's own environment and
+  behind the executor's `codex/context` for the other one;
+  `codex-context-service.js` keeps the result a few seconds per project and
+  the turn takes it at its start.
+  - **MCP servers from `config.toml`.** `[mcp_servers.<name>]` from
+    `$CODEX_HOME/config.toml`, plus `.codex/config.toml` from the project
+    root down to cwd when the project is trusted (`[projects."<path>"]
+    trust_level = "trusted"`), deeper layers winning. Stdio (`command`,
+    `args`, literal `env`, `env_vars`, `cwd`) and streamable HTTP (`url`,
+    `http_headers`, `env_http_headers`, `bearer_token_env_var`, read in that
+    environment), `enabled`, `startup_timeout_sec`/`_ms`, `tool_timeout_sec`,
+    `enabled_tools`/`disabled_tools`, `default_tools_approval_mode` and
+    per-tool `approval_mode` (auto/prompt/writes/approve),
+    `supports_parallel_tool_calls`. Codex's rules apply (name pattern;
+    `command` xor `url`; no literal `bearer_token`). They join the project as
+    `codex_<name>`, run where the project runs, and are read live, never
+    copied into Direct's config; values (env, headers) stay in memory and the
+    renderer sees only names. Every project gets its environment's servers,
+    as in Codex; the panel's per-project switch turns one off.
+  - **Streamable HTTP** (`mcp-stdio-transport.js`, `McpHttpChannel`): POST per
+    message with `Accept: application/json, text/event-stream`;
+    `Mcp-Session-Id` from initialize and `MCP-Protocol-Version` on later
+    requests; JSON or SSE replies, where the server's own requests (forms,
+    ping) arrive and their answers are POSTed back; DELETE at the end; a 404
+    for a known session closes it so the next request starts over; 401/403
+    reported as unauthorized. HTTP servers are reached from the host.
+    `notifications/initialized` is delivered before the handshake counts as
+    done. OAuth login isn't supported (bearer tokens and headers are).
+    Checked live: the owner's `openaiDeveloperDocs` HTTP server answered and
+    its five tools were declared.
+  - **URL forms**: `mode: "url"` with an https link (no embedded
+    credentials) shows Open link and I finished (accept; opening alone
+    doesn't), Decline, Cancel, as Codex's TUI; anything else is declined.
+  - Tool lists for a turn are fetched from all servers together and kept two
+    minutes (a failure one minute), so a slow or broken server doesn't hold
+    up every turn.
+  - **Settings panel** (Project settings, "MCP servers, skills, and hooks"):
+    Codex's servers read-only with a per-project switch; Direct's own servers
+    add, edit, remove, and switch (stdio or HTTP, env and headers, runs-in,
+    tool filters, approval, timeout); AGENTS.md files and scope; skills and a
+    switch; hooks with Trust. IPC: `direct-codex:context` (names, never
+    values) and `direct-hooks:set-trust`.
+  - **AGENTS.md**: `$CODEX_HOME/AGENTS.override.md` or `AGENTS.md`, then one
+    file per directory from the git root down to cwd (override first, then
+    `AGENTS.md`, then `project_doc_fallback_filenames`), within
+    `project_doc_max_bytes` (32 KiB), skipped for an explicitly untrusted
+    project. Sent first in the input as Codex's user message
+    (`# AGENTS.md instructions for <dir>` / `<INSTRUCTIONS>`, the global text,
+    `--- project-doc ---`, the project files). `agentsMdScope` per project:
+    `workbench_and_children` (default), `workbench`, `all` (workspace workers
+    too), `off`.
+  - **Skills**: `SKILL.md` (front matter `name`, `description`,
+    `metadata.short-description`) under `$CODEX_HOME/skills`,
+    `~/.agents/skills`, a trusted project's `.codex/skills`, and
+    `.agents/skills` from the git root down, plus Direct's `~/.direct/skills`
+    and `<project>/.direct/skills` (depth 6, hidden folders skipped, deduped
+    by path, `[[skills.config]]` enable rules, `[skills]
+    include_instructions`). The catalog goes after AGENTS.md as Codex's
+    `<skills_instructions>` developer message (8,000-character budget,
+    descriptions shortened first). A `$name` in the prompt that names one
+    skill adds its SKILL.md (up to 32 KiB, read only from inside a skill
+    root, `codex/skill` in another environment) after the prompt as
+    `<skill><name>…</name><path>…</path>…</skill>`.
+  - **Hooks**: Codex's `[hooks]` in `config.toml` and `hooks.json` (user, and
+    a trusted project's `.codex/`), plus `~/.direct/hooks.json` and
+    `<project>/.direct/hooks.json`. Each hook runs only after the owner
+    trusts it in the panel; its id covers event, matcher, command, and source
+    file, so an edit needs a new approval (Codex's `trusted_hash`, kept by
+    Direct). Hooks run as Codex runs them, outside the tool sandbox, but in
+    the project's environment (its shell, the project folder, one JSON object
+    on stdin; `hook/run` in another environment), with Codex's exit-2 and
+    JSON decisions. Events: SessionStart (a thread's first turn) and
+    UserPromptSubmit (block the turn, or add context as developer messages),
+    PreToolUse (block a call, or rewrite its input), PostToolUse (feedback or
+    context appended to the result), PermissionRequest (answer Direct's MCP
+    approval or command escalation before it's shown), Stop (a block starts
+    the next turn with the hook's reason, at most three in a row). Codex's
+    legacy `notify` program runs after each finished turn with its
+    `agent-turn-complete` JSON, once trusted like a hook. Not yet:
+    SessionEnd, SubagentStart/Stop, Pre/PostCompact, Interrupt, MCP-tool
+    hooks. On Windows the runner passes the program's own exit code through
+    PowerShell (2 would otherwise arrive as 1).
+  - Gates: `direct-codex-environment-context`, `direct-codex-context-turns`
+    (a turn with all of it, real hook processes), `direct-mcp-http`;
+    `direct-mcp-per-environment` covers `codex/context` and `hook/run` in the
+    other executor; live suite `mcp_tool_call`, `mcp_form`, `mcp_approval`,
+    `exec_escalation`.
 - Added 2026-10-09: MCP tool calls, as in Codex (owner's call; before,
   Direct only listed tools and read resources, and any tool call was
   blocked). When a turn starts, the project's current, trusted servers are
@@ -1653,12 +1746,21 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
     `direct-mcp-session-pool`, `direct-mcp-per-environment` (a form from a
     server in the other executor, with the clock stopped), and
     `direct-provider-external-production-wiring` updated.
-- On Windows, the Low integrity label a Workspace command puts on its
-  project folder is persistent and isn't per project. A Workspace command in
-  one project can write another project folder that was labeled earlier,
-  unless that folder's own permissions stop it. Turn 11b's shared executor
-  neither causes nor fixes this; per-project isolation needs something like
-  AppContainer or per-project capability SIDs.
+- Fixed 2026-10-09: Windows Workspace commands are isolated per project.
+  The Low integrity label a Workspace command puts on its project folder is
+  persistent and the same for every project, so a Workspace command in one
+  project could write any other project folder that had run one. Now each
+  project has its own SID (`S-1-5-21-…` from a hash of the folder), the
+  runner grants it inheritable Modify on the folder (`--project-sid`, once
+  per folder), and Workspace tokens are write-restricted to that SID, the
+  logon SID (private TEMP, pipes), and Everyone (which PowerShell needs at
+  startup, as in Codex's own restricted tokens; project folders don't grant
+  Everyone). Low integrity stays, so credential stores keep their
+  no-read-up labels. Not AppContainer: that would hide user-installed tools
+  (Git, Python under the profile) from commands. The labels already on
+  folders are left as they are; other Low-integrity programs on the machine
+  (not Direct's) can still write labeled folders. Gate:
+  `direct-windows-project-isolation-regression` (Windows Node).
 - The WSL Workspace sandbox keeps `/tmp` writable (by design, as in turn 3),
   so project folders under `/tmp` can be written by Workspace commands from
   other projects. Projects normally live elsewhere.
@@ -1666,19 +1768,39 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   trusted `unshare` launcher is missing (marked `guaranteed: false`), so
   existing setups keep working.
 - Since turn 7, process sessions (`exec_command`) on Windows run under the
-  job runner. The workspace backend's request-scoped command paths still
-  refuse on Windows (`workspace_windows_job_object_containment_unavailable`
-  from `containedWorkspaceProcessSpawn`): `run_command` for threads without a
-  task grant, and workspace-worker test profiles. Moving them to the runner
-  means giving its process groups and quiescence receipts a Windows
-  counterpart.
+  job runner. Since 2026-10-09 the workspace backend's request-scoped command
+  paths do too (`run_command` for threads without a task grant, Git probes,
+  workspace-worker test profiles), with a Windows counterpart of the Linux
+  quiescence proof: the runner's `--control` channel stops the job when asked
+  and, when the job ends, writes a receipt once `ActiveProcesses` is 0
+  (`windowsJobReceipt`). Request finalization keeps a Windows child in custody
+  until that receipt proves it and everything it started are gone; a child
+  without one (or a receipt that never comes) is still unverified. The
+  containment probe now reports `windows_job_object`, so
+  `direct-workspace-worker-lifecycle` and
+  `direct-workspace-worker-policy-repository` run their live parts on Windows
+  instead of skipping. `direct-headless-provider-workspace-worker` still
+  skips on Windows (it needs native Windows workers and worktrees). Gate:
+  `direct-windows-job-receipt-regression` (Windows Node).
+- The job runner creates its command inside the job
+  (`PROC_THREAD_ATTRIBUTE_JOB_LIST`) instead of assigning it after
+  `CreateProcess` (since 2026-10-10). A runner killed between the two, which a
+  Stop right after a prewarmed shell took its command could do, left the
+  shell outside any job, suspended forever and holding the host's pipes
+  open: `direct-test-control-regression` printed its result and then hung on
+  Windows (on main too) until the shell's pipes closed, and every such run
+  left a suspended `pwsh.exe` behind. Now that test exits in about 3 seconds
+  and leaves nothing. A synthetic race (runners killed at 0-600 ms) didn't
+  reproduce the leak with the old runner, so the gate is that test.
 - Scratch `TEMP` folders are removed when a command closes. Leftovers from
   a host or executor that died abruptly (under
   `%LOCALAPPDATA%\codex-review-shell\direct-job-runner\scratch`) are swept
   when the Windows sandbox first starts in a process, if older than a day
   (since 2026-10-09; `npm run direct:scratch-sweep`).
-- The patch parser rejects a bare `@@` hunk header (vanilla Codex accepts
-  it); hunks need `@@ -a,b +c,d @@`.
+- Bare `@@` hunk headers (Codex's patch format) are accepted: the patch
+  parser locates them by context, and the workspace agent's own path
+  translates Codex patches to numbered hunks first (checked 2026-10-09; the
+  earlier note that they were rejected was out of date).
 - The Workbench Electron smoke is not part of the sweep. It runs headless in
   WSL with
   `env -u DISPLAY -u WAYLAND_DISPLAY node scripts/direct-t3-alternate-gui-electron-smoke.mjs`
@@ -1712,9 +1834,14 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   (semantic-service host and commissioning process, headless provider
   workspace worker, ARO reconstruction runtime) or that target Windows from
   a Linux host (native Windows workspace executor) skip under Windows
-  Node. The headless workspace worker's positive containment cases skip on
-  Windows: its backend still lacks a Job Object broker (see above). Result:
-  Linux all pass; Windows all pass or skip.
+  Node. (The workspace worker's positive containment cases skipped on
+  Windows until the job runner's receipts, 2026-10-09; see above.) Result:
+  Linux all pass; Windows all pass or skip. Rerun 2026-10-10 (`--jobs 4`):
+  Linux 311 pass, 10 skip; Windows 309 pass, 12 skip. On the way, the native
+  Windows workspace executor regression (run from Linux) now expects
+  process-backed capabilities and runs a contained command in a throwaway
+  folder, and the sandboxed writer goes in as `node -e <source>` on Windows
+  too (the write-restricted token can't load it from `\\wsl.localhost`).
 - UI turns must be checked through `start-direct-workbench.cmd` on Windows
   too, not only in WSL's Electron: the Windows launch path (mirror sync,
   Windows npm, Windows Electron) differs.
@@ -1722,9 +1849,17 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   `%USERPROFILE%\.codex`, `%CODEX_HOME%`, `%USERPROFILE%\.codex-review-shell`,
   and `%APPDATA%\<app>[\<profile>]\direct-auth`. To undo a label:
   `icacls <file> /setintegritylevel M`.
-- The transport reports a provider body it can't read incrementally as
-  `max_output`, which surfaces to users as `max_output_terminal`. A distinct
-  code (for example `provider_body_not_streamable`) would be clearer.
+- Since 2026-10-09 a provider body the transport can't read incrementally
+  fails with its own code, `provider_body_not_streamable`, instead of
+  `max_output` (which showed as `max_output_terminal`, as if the model had
+  run out of output). Real output-budget overruns stay `max_output`.
+- Fixed 2026-10-09: input sent to a Windows command right after it starts
+  could be lost when the shell started cold. The prewarmed PowerShell read
+  its command line with `[Console]::In.ReadLine()`, which buffers and
+  swallowed the input meant for a program the command started; it now reads
+  the line a byte at a time from the raw stream. Gate:
+  `direct-windows-prewarm-regression` (input sent at once, cold and warm, to
+  a native program).
 - In WSL, a non-login shell resolves a Node without `node:sqlite`. Executor
   launch (turn 1 onward) must use a login shell, as `launchDescriptor` already
   does with `bash -lc`.

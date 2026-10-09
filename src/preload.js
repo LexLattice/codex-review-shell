@@ -18,6 +18,8 @@ function fileSystemPathsForFiles(files) {
 contextBridge.exposeInMainWorld("workspaceShell", {
   loadConfig: () => ipcRenderer.invoke("config:load"),
   saveConfig: (config) => ipcRenderer.invoke("config:save", config),
+  readCodexContext: (projectId, options = {}) => ipcRenderer.invoke("direct-codex:context", { ...options, projectId }),
+  setHookTrusted: (hookId, trusted) => ipcRenderer.invoke("direct-hooks:set-trust", { hookId, trusted }),
   selectProject: (projectId) => ipcRenderer.invoke("project:select", projectId),
   chooseDirectory: () => ipcRenderer.invoke("dialog:choose-directory"),
   setSurfaceLayout: (bounds) => ipcRenderer.invoke("surface:set-layout", bounds),

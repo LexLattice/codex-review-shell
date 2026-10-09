@@ -44,8 +44,10 @@ const {
   findExecutableOnPath,
 } = require("../shared/executor-protocol");
 const { BASE_COMMAND_ENVIRONMENT_KEYS, LocalChildProcessBackend } = require("../main/direct/tools/exec-process-backends");
-const { WINDOWS_JOB_LAUNCHER } = require("../main/direct/tools/windows-job-runner");
+const { WINDOWS_JOB_LAUNCHER, WindowsJobSandbox } = require("../main/direct/tools/windows-job-runner");
 const { PtyChannel } = require("../main/direct/tools/pty-frames");
+const { readCodexEnvironmentContext, readSkillBody } = require("../main/direct/codex-home/codex-environment-context");
+const { runHookProcess } = require("../main/direct/codex-home/hook-runner");
 const { spawnInLinuxPidNamespace } = require("../shared/linux-pid-namespace");
 const { McpSessionPool, mcpServerEnvironment } = require("../main/direct/external/mcp-stdio-transport");
 const { LocalFilePort, MAX_IMAGE_BYTES, parseUnifiedPatch: parseCodexOrUnifiedPatch } = require("../main/direct/tools/full-access-local-environment");
@@ -618,9 +620,12 @@ function terminateScopeChild(scope, child, signal = "SIGTERM", options = {}) {
   if (retainedGroup) return terminateRetainedProcessGroup(scope, retainedGroup, signal);
   if (scope.terminationPromises.has(child)) return scope.terminationPromises.get(child);
   const pending = terminateWorkspaceProcessTree(child, { signal, timeoutMs: 2_000 })
-    .then(async (receipt) => {
-      if (receipt.quiesced) return receipt;
-      return terminateWorkspaceProcessTree(child, { signal: "SIGKILL", timeoutMs: 2_000 });
+    .then(async (receipt) => (receipt.quiesced ? receipt : terminateWorkspaceProcessTree(child, { signal: "SIGKILL", timeoutMs: 5_000 })))
+    .then((receipt) => {
+      // Windows keeps a child in custody until its job's receipt proves it
+      // and everything it started are gone.
+      if (receipt?.quiesced === true && process.platform === "win32") scope.children.delete(child);
+      return receipt;
     })
     .catch((error) => ({
       quiesced: false,
@@ -2822,8 +2827,26 @@ function minimalCommandEnv(extraEnv = {}) {
   return base;
 }
 
+let windowsWorkspaceSandbox = null;
+
 function containedWorkspaceProcessSpawn(command, args, options = {}) {
   const platform = options.platform || process.platform;
+  if (platform === "win32") {
+    // The job runner: a Job Object no process can leave, and a receipt (its
+    // --control channel) that proves the whole job is gone, which is what
+    // request finalization needs.
+    windowsWorkspaceSandbox ||= new WindowsJobSandbox();
+    const plan = windowsWorkspaceSandbox.wrap({ sandboxMode: "danger-full-access", command, args, control: true });
+    const exactEnv = options.exactEnv === true && options.env && typeof options.env === "object";
+    const { exactEnv: _exactEnv, platform: _platform, ...spawnOptions } = options;
+    const child = spawn(plan.command, plan.args, {
+      ...spawnOptions,
+      env: { ...(exactEnv ? { ...options.env } : minimalCommandEnv(options.env)), ...plan.env },
+      windowsHide: true,
+    });
+    child.workspaceProcessContainment = { guaranteed: true, kind: "windows_job_object", controlPath: plan.controlPath };
+    return child;
+  }
   if (platform !== "linux") {
     const error = new Error(
       "Workspace process containment is unavailable on this host; execution is denied instead of relying on lossy process ancestry.",
@@ -3864,9 +3887,38 @@ function probeLinuxWorkspaceProcessContainment() {
   });
 }
 
+// Windows: a command in the job runner exits and its receipt proves the job
+// empty.
+async function probeWindowsWorkspaceProcessContainment() {
+  let child;
+  try {
+    child = trackChildProcess(containedWorkspaceProcessSpawn("cmd.exe", ["/d", "/c", "exit 0"], {
+      cwd: environmentCwd(),
+      env: minimalCommandEnv(),
+      stdio: ["ignore", "ignore", "ignore"],
+    }), { systemOwned: true });
+  } catch (error) {
+    return { available: false, blockerCode: error?.code || "workspace_windows_job_object_containment_unavailable" };
+  }
+  const exitCode = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 15_000);
+    child.once("error", () => { clearTimeout(timer); resolve(null); });
+    child.once("close", (code) => { clearTimeout(timer); resolve(code); });
+  });
+  const receipt = await terminateWorkspaceProcessTree(child, { timeoutMs: 5_000 });
+  if (exitCode !== 0 || receipt?.quiesced !== true) {
+    return { available: false, blockerCode: receipt?.blockerCode || "workspace_windows_job_object_probe_failed" };
+  }
+  return { available: true, kind: "windows_job_object", blockerCode: "", launcherDigest: "" };
+}
+
 async function workspaceProcessContainmentStatus() {
   if (workspaceProcessContainmentProbePromise) return workspaceProcessContainmentProbePromise;
   workspaceProcessContainmentProbePromise = (async () => {
+    if (process.platform === "win32") {
+      const probe = await probeWindowsWorkspaceProcessContainment();
+      return probe.available === true ? probe : { ...probe, kind: "unavailable" };
+    }
     if (process.platform !== "linux") {
       return {
         available: false,
@@ -6344,8 +6396,10 @@ async function executorMcpRequest(params = {}) {
       params.params && typeof params.params === "object" ? params.params : {},
       {
         timeoutMs: params.timeoutMs,
+        startupTimeoutMs: Number(source.startupTimeoutMs) > 0 ? Number(source.startupTimeoutMs) : undefined,
         signal: controller.signal,
-        env: mcpServerEnvironment(processEnv),
+        // Allowlisted names read here, plus literal values (Codex's env).
+        env: { ...mcpServerEnvironment(processEnv), ...literalMcpEnv(source.envValues) },
         spawnProcess: spawnContainedMcpServer,
         placementKey: "executor",
         identityKey: serverIdentityId,
@@ -6356,6 +6410,43 @@ async function executorMcpRequest(params = {}) {
   } finally {
     executorMcpRequests.delete(id);
   }
+}
+
+function literalMcpEnv(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .filter(([name, entry]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && typeof entry === "string")
+    .slice(0, 64));
+}
+
+// Codex's config.toml, AGENTS.md, skills, and hooks as this environment has
+// them, for the project in `projectContext` (codex/context). Host-private:
+// it can carry the owner's server variables.
+function executorCodexContext() {
+  const root = currentRoot();
+  return readCodexEnvironmentContext({ projectRoot: root, cwd: root, env: process.env });
+}
+
+// A skill's SKILL.md for a `$name` mention (codex/skill); refused unless it
+// sits in one of this environment's skill roots.
+function executorCodexSkill(params = {}) {
+  return { skill: readSkillBody({ path: typeof params.path === "string" ? params.path : "", projectRoot: currentRoot(), env: process.env }) };
+}
+
+// One owner-trusted hook (hook/run), as Codex runs hooks: this
+// environment's shell, the project folder, JSON on stdin. The host decides
+// which hooks run and reads the result.
+async function executorRunHook(params = {}) {
+  const hook = params.hook && typeof params.hook === "object" ? params.hook : {};
+  return runHookProcess({
+    command: typeof hook.command === "string" ? hook.command : "",
+    commandWindows: typeof hook.commandWindows === "string" ? hook.commandWindows : "",
+    argv: Array.isArray(hook.argv) ? hook.argv.map(String) : undefined,
+    stdin: typeof params.stdin === "string" ? params.stdin.slice(0, 1024 * 1024) : "",
+    cwd: currentRoot(),
+    timeoutMs: params.timeoutMs,
+    env: process.env,
+  });
 }
 
 function respondExecutorMcpElicitation(params = {}) {
@@ -6581,6 +6672,9 @@ async function handleRequest(method, params = {}) {
   if (method === EXECUTOR_METHODS.mcpRequest) return executorMcpRequest(params);
   if (method === EXECUTOR_METHODS.mcpCancel) return cancelExecutorMcpRequest(params);
   if (method === EXECUTOR_METHODS.mcpElicitationRespond) return respondExecutorMcpElicitation(params);
+  if (method === EXECUTOR_METHODS.codexContext) return executorCodexContext(params);
+  if (method === EXECUTOR_METHODS.codexSkill) return executorCodexSkill(params);
+  if (method === EXECUTOR_METHODS.hookRun) return executorRunHook(params);
   if (method === EXECUTOR_METHODS.environmentDescribe) {
     // On Windows, process sessions are contained by the job runner, which
     // also provides the Workspace and Read-only sandbox.

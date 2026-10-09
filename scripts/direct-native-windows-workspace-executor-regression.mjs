@@ -50,13 +50,17 @@ assert.equal(windowsOption.admissionState, "eligible");
 assert.equal(windowsOption.nativeProcess, true);
 assert.equal(windowsOption.residentExecutorSupport, true);
 
+// Process-backed work grants the project's isolation SID Modify on the root,
+// so the workspace is a throwaway directory, not the shared Temp folder.
+const windowsTempMount = "/mnt/c/Users/Rose/AppData/Local/Temp";
+const windowsRootMount = fs.mkdtempSync(path.join(windowsTempMount, "direct-native-ws-"));
+const windowsRoot = `C:\\Users\\Rose\\AppData\\Local\\Temp\\${path.basename(windowsRootMount)}`;
 const project = {
   id: "project_windows_native_regression",
   name: "Windows native regression",
   workspace: {
     kind: "windows",
-    windowsPath:
-      "C:\\Users\\Rose\\AppData\\Local\\Temp",
+    windowsPath: windowsRoot,
     windowsNodePath:
       discovery.privateBindings.windowsNodePath,
   },
@@ -105,10 +109,12 @@ try {
   assert.equal(status.hello.workspaceKind, "windows");
   assert.equal(status.hello.projectId, project.id);
   assert.equal(status.hello.root, project.workspace.windowsPath);
-  assert.equal(status.hello.capabilities.runCommand, false);
-  assert.equal(status.hello.capabilities.runDirectCommand, false);
-  assert.equal(status.hello.capabilities.provisionGitWorktree, false);
-  assert.equal(status.hello.capabilities.repositorySemanticSnapshot, false);
+  // Process-backed work is advertised because the Job Object runner proves
+  // containment on this host.
+  assert.equal(status.hello.capabilities.runCommand, true);
+  assert.equal(status.hello.capabilities.runDirectCommand, true);
+  assert.equal(status.hello.capabilities.provisionGitWorktree, true);
+  assert.equal(status.hello.capabilities.repositorySemanticSnapshot, true);
   assert.equal(status.hello.capabilities.readFilePreview, true);
   assert.equal(status.hygiene.skipped, true);
   assert.equal(status.hygiene.changed, false);
@@ -119,28 +125,17 @@ try {
   );
   assert.equal(helloAgain.sessionId, status.hello.sessionId);
   assert.equal(helloAgain.pid, status.hello.pid);
-  const unavailableTestProfile = await manager.requestForProject(
+  const testProfile = await manager.requestForProject(
     project,
     "directTestProfile",
   );
-  assert.equal(unavailableTestProfile.available, false);
-  assert.equal(
-    unavailableTestProfile.unavailableReason,
-    "workspace_windows_job_object_containment_unavailable",
-  );
-  assert.equal(
-    unavailableTestProfile.substrateCapabilities.processContainmentBlockerCode,
-    "workspace_windows_job_object_containment_unavailable",
-  );
-  await assert.rejects(
-    manager.requestForProject(project, "runCommand", { command: "cmd.exe", args: ["/c", "exit", "0"] }),
-    (error) => {
-      assert.equal(error.code, "workspace_windows_job_object_containment_unavailable");
-      assert.equal(error.backendQuiesced, true);
-      return true;
-    },
-    "native Windows process-backed work fails closed until Job Object custody is installed",
-  );
+  assert.notEqual(testProfile.unavailableReason, "workspace_windows_job_object_containment_unavailable");
+  const contained = await manager.requestForProject(project, "runCommand", {
+    command: "cmd.exe",
+    args: ["/c", "echo", "contained"],
+  });
+  assert.equal(contained.exitCode, 0);
+  assert.match(contained.stdout, /contained/);
 
   const wslSession = await manager.ensureForProject(wslProject, {
     workspaceHygiene: false,
@@ -194,10 +189,11 @@ try {
       windowsProbeWorkspaceMutation: status.hygiene.changed,
       wslProbeWorkspaceMutation: wslStatus.hygiene.changed,
       windowsProcessBackedCapabilitiesAdvertised: status.hello.capabilities.runDirectCommand,
-      windowsProcessContainmentBlocker: unavailableTestProfile.unavailableReason,
+      windowsContainedCommandExitCode: contained.exitCode,
     },
   }, null, 2));
 } finally {
   manager.disposeAll();
   fs.rmSync(wslRoot, { recursive: true, force: true });
+  fs.rmSync(windowsRootMount, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }

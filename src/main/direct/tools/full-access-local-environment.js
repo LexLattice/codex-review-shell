@@ -33,15 +33,16 @@ function sandboxedWriterSource() {
 function runSandboxedWrites({ root, files }) {
   const platform = process.platform;
   const sandbox = platform === "win32" ? new WindowsJobSandbox({ platform }) : new BubblewrapExecSandbox({ platform });
-  // On Linux the script goes in as source: run from a Windows app, this file
-  // lives under /mnt/<drive>, which the sandbox doesn't mount. (It needs only
-  // node builtins.) Windows keeps the path; its command line is size-limited.
+  // The script goes in as source (it needs only node builtins): the sandbox
+  // may not be able to read this file. Bubblewrap doesn't mount /mnt/<drive>
+  // when run from a Windows app, and the write-restricted Windows token can't
+  // load from a \\wsl.localhost share. The source fits the Windows command line.
   const plan = sandbox.wrap({
     sandboxMode: "workspace-write",
     root,
     cwd: root,
     command: process.execPath,
-    args: platform === "win32" ? [SANDBOXED_WRITER_PATH] : ["-e", sandboxedWriterSource()],
+    args: ["-e", sandboxedWriterSource()],
   });
   const env = { ELECTRON_RUN_AS_NODE: "1" };
   for (const key of SANDBOXED_WRITER_ENV_KEYS) if (process.env[key] !== undefined) env[key] = process.env[key];

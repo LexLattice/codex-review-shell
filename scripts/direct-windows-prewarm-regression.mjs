@@ -22,7 +22,7 @@ const env = Object.fromEntries(BASE_COMMAND_ENVIRONMENT_KEYS.filter((key) => pro
 const backend = new LocalChildProcessBackend({ workspaceRootResolver: () => root });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function run(shellCommand, { sandboxMode = "danger-full-access", stdin = null } = {}) {
+function run(shellCommand, { sandboxMode = "danger-full-access", stdin = null, stdinDelayMs = 800 } = {}) {
   const plan = backend.planLaunch({ shellCommand, sandboxMode, workspace: { root, cwd: root } });
   assert.ok(plan.prewarmScriptLine, "command strings take the prewarm path");
   const started = Date.now();
@@ -31,7 +31,9 @@ function run(shellCommand, { sandboxMode = "danger-full-access", stdin = null } 
   let err = "";
   handle.onStdout((chunk) => { out += chunk; });
   handle.onStderr((chunk) => { err += chunk; });
-  if (stdin) setTimeout(() => { handle.writeStdin(stdin); handle.endStdin(); }, 800);
+  const feed = () => { handle.writeStdin(stdin); handle.endStdin(); };
+  if (stdin && stdinDelayMs === 0) feed();
+  else if (stdin) setTimeout(feed, stdinDelayMs);
   return new Promise((resolve) => handle.onClose((code) => resolve({ code, out: out.trim(), err: err.trim(), ms: Date.now() - started })));
 }
 async function warmUp() {
@@ -68,6 +70,17 @@ try {
   await warmUp();
   const piped = await run("$l = [Console]::In.ReadLine(); \"got $l\"", { stdin: "abc\n" });
   assert.equal(piped.out, "got abc");
+
+  // Input sent right away, before the shell has read its command line, still
+  // belongs to the command, also to a native program it starts (the shell
+  // must not read ahead of its command line).
+  const nativeReader = `& '${process.execPath}' -e 'let s=\`\`;process.stdin.on(\`data\`,(d)=>s+=d).on(\`end\`,()=>console.log(\`native:\`+s.trim()))'`;
+  await warmUp();
+  const warmEarly = await run(nativeReader, { stdin: "early-warm\n", stdinDelayMs: 0 });
+  assert.equal(warmEarly.out, "native:early-warm", JSON.stringify(warmEarly));
+  backend.disposePrewarmed();
+  const coldEarly = await run(nativeReader, { stdin: "early-cold\n", stdinDelayMs: 0 });
+  assert.equal(coldEarly.out, "native:early-cold", JSON.stringify(coldEarly));
 
   // A sandboxed profile gets its own idle shell (a different launch shape).
   const sandboxed = await run("Write-Output low", { sandboxMode: "workspace-write" });
