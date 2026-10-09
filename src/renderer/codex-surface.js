@@ -7766,15 +7766,31 @@ function renderCommandRequestDetails(request, details, actions) {
   appendRequestLine(details, "reason", params.reason || "");
   appendRequestLine(details, "permissions", params.additionalPermissions || "", { pre: true });
 
+  // "Don't ask again for commands that start with …" (Codex's execpolicy
+  // amendment); Direct offers it for this project's environment or
+  // everywhere.
+  const amendment = Array.isArray(params.proposedExecpolicyAmendment) ? params.proposedExecpolicyAmendment : null;
+  const prefixText = amendment ? amendment.join(" ") : "";
+  const amend = (scope) => (event) => submitRequestResponse(request, {
+    decision: { acceptWithExecpolicyAmendment: { execpolicy_amendment: amendment, ...(scope ? { scope } : {}) } },
+  }, event.currentTarget);
+  const scopes = Array.isArray(params.directRuleScopes) ? params.directRuleScopes : [];
   const decisions = [
     ["Approve once", "accept", { decision: "accept" }, ""],
-    ["Approve for session", "acceptForSession", { decision: "acceptForSession" }, ""],
+    [params.directRuleScopes ? "Approve for this thread" : "Approve for session", "acceptForSession", { decision: "acceptForSession" }, ""],
     ["Decline", "decline", { decision: "decline" }, "secondary"],
     ["Cancel", "cancel", { decision: "cancel" }, "secondary"],
   ];
   for (const [label, decision, result, className] of decisions) {
     if (!decisionAllowed(params, decision)) continue;
     actions.appendChild(createRequestButton(label, className, (event) => submitRequestResponse(request, result, event.currentTarget)));
+    if (decision !== "acceptForSession" || !amendment || prefixText.includes("\n") || !decisionAllowed(params, "acceptWithExecpolicyAmendment")) continue;
+    if (scopes.length) {
+      if (scopes.includes("project")) actions.appendChild(createRequestButton(`Always allow "${prefixText}" in this project`, "", amend("project")));
+      if (scopes.includes("global")) actions.appendChild(createRequestButton(`Always allow "${prefixText}" everywhere`, "", amend("global")));
+    } else {
+      actions.appendChild(createRequestButton(`Yes, and don't ask again for "${prefixText}"`, "", amend("")));
+    }
   }
 }
 

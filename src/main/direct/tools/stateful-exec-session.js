@@ -746,7 +746,12 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       : []);
     const backend = this.backendFor(input, grant);
     const workspace = backend.resolveWorkspace(input, grant);
-    const sandboxMode = normalizeString(grant?.sandboxMode, "danger-full-access");
+    // Codex's escalation: the owner approved this command (or a saved allow
+    // rule covers it) to run outside the sandbox, in the same folder and
+    // still contained. The controller decides; the grant still has to
+    // authorize exec_command above.
+    const escalated = isPlainObject(input.escalation) && ["owner", "rule"].includes(input.escalation.approvedBy);
+    const sandboxMode = escalated ? "danger-full-access" : normalizeString(grant?.sandboxMode, "danger-full-access");
     // Like Codex's exec_command `tty`: the command gets a terminal (24x80
     // unless sized), and its output is the terminal's.
     const tty = input.tty === true ? normalizePtySize({ rows: input.rows, cols: input.cols }) : null;
@@ -782,6 +787,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       stdinPolicy,
       backendId: backend.id,
       sandboxMode,
+      ...(escalated ? { escalation: { approvedBy: input.escalation.approvedBy } } : {}),
       sandboxLauncher: spawnPlan.launcher,
       networkAccess: spawnPlan.networkAccess !== false,
       transportMode: tty ? "pty" : "plain_pipe",
@@ -1422,6 +1428,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       cancellationRequested: record.cancellationRequested === true,
       stdinPolicy: record.stdinPolicy || "blocked_until_policy",
       sandboxMode: record.sandboxMode || "danger-full-access",
+      ...(record.escalation ? { escalated: true } : {}),
       // A remote handle learns the real value from the executor once the
       // process starts; the plan only guessed it.
       networkAccess: typeof record.process?.networkAccess === "boolean"

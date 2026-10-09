@@ -57,6 +57,7 @@ const {
 } = require("../external/mcp-tool-calls");
 const { DirectApprovalRuleStore } = require("../authority/approval-rule-store");
 const { configuredMcpServersForProject } = require("../external/configured-mcp-adapter");
+const { commandSegments, evaluateCommandRules, proposeCommandRule } = require("../tools/command-rules");
 const {
   APPLY_PATCH_TOOL_NAMES,
   MAX_PATCH_APPROVAL_CARD_CHARS,
@@ -369,9 +370,39 @@ function requestPermissionsToolSchema(currentProfile = "") {
 }
 function withPermissionsTool(tools, grant) {
   if (!Array.isArray(tools) || !isPlainObject(grant)) return tools;
+  tools = withExecEscalationParams(tools, grantAccessProfile(grant));
   if (tools.some((tool) => normalizeString(tool?.name || tool?.function?.name, "") === REQUEST_PERMISSIONS_TOOL_NAME)) return tools;
   const schema = requestPermissionsToolSchema(grantAccessProfile(grant));
   return schema ? [...tools, schema] : tools;
+}
+
+// Codex's per-command escalation for sandboxed profiles: exec_command can
+// ask to run one command outside the sandbox (the owner approves it), and
+// suggest a prefix to remember. Full access has no sandbox to leave.
+const SANDBOXED_ACCESS_PROFILES = new Set(["workspace", "read_only"]);
+const EXEC_ESCALATION_PROPERTIES = Object.freeze({
+  sandbox_permissions: {
+    type: "string",
+    enum: ["use_default", "require_escalated"],
+    description: "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\".",
+  },
+  justification: {
+    type: "string",
+    description: "Only set if sandbox_permissions is \"require_escalated\". Request approval from the user to run this command outside the sandbox. Phrased as a simple question that summarizes the purpose of the command as it relates to the task at hand - e.g. 'Do you want to fetch and pull the latest version of this git branch?'",
+  },
+  prefix_rule: {
+    type: "array",
+    items: { type: "string" },
+    description: "Only specify when sandbox_permissions is `require_escalated`. Suggest a prefix command pattern that will allow you to fulfill similar requests from the user in the future. Should be a short but reasonable prefix, e.g. [\"git\", \"pull\"] or [\"uv\", \"run\"] or [\"pytest\"].",
+  },
+});
+function withExecEscalationParams(tools, accessProfile = "") {
+  if (!SANDBOXED_ACCESS_PROFILES.has(accessProfile)) return tools;
+  return tools.map((tool) => {
+    if (normalizeString(tool?.name, "") !== "exec_command" || !isPlainObject(tool.parameters?.properties)) return tool;
+    if (tool.parameters.properties.sandbox_permissions) return tool;
+    return { ...tool, parameters: { ...tool.parameters, properties: { ...tool.parameters.properties, ...EXEC_ESCALATION_PROPERTIES } } };
+  });
 }
 // The thread's model proposes standing sub-agent policy changes itself and
 // the owner confirms each one. This replaces a separate per-turn model call
@@ -1501,7 +1532,7 @@ function buildSafeResidentUtilitySlice(toolName, projectId = "") {
 // anything needing the owner run alone).
 // Prompts that are themselves the owner's question; they need no separate
 // "approval required" warning.
-const OWNER_PROMPT_METHODS = new Set(["item/tool/requestUserInput", "mcpServer/elicitation/request"]);
+const OWNER_PROMPT_METHODS = new Set(["item/tool/requestUserInput", "mcpServer/elicitation/request", "item/commandExecution/requestApproval"]);
 const PARALLEL_SAFE_TOOL_NAMES = new Set(["exec_command", "write_stdin", "read_file", "view_image", "list_agents", "inspect_agent"]);
 
 function toolBatchKey(sessionId, turnId) {
@@ -6838,6 +6869,17 @@ class DirectLiveTextController {
     const session = this.sessionStore.readSession(sessionId) || {};
     const grant = this.harnessGrantForTurn(sessionId, turnId, project);
     const args = parseToolArgumentsObject(obligation);
+    let escalation = null;
+    if (toolName === "exec_command") {
+      const decision = await this.authorizeCommandEscalation(surfaceSession, sessionId, turnId, obligation, project, grant, args);
+      if (decision.declined) {
+        if (this.endTurnIfStopped(surfaceSession, sessionId, turnId)) return 1;
+        const declined = new Error(decision.message);
+        declined.code = "direct_exec_escalation_declined";
+        return this.continueAfterRejectedStatefulExec(surfaceSession, sessionId, turnId, obligation, project, toolName, grantAuthorization, declined);
+      }
+      escalation = decision.escalation;
+    }
     try {
       const binding = {
         project,
@@ -6866,6 +6908,7 @@ class DirectLiveTextController {
           idleTimeoutMs: args.idleTimeoutMs,
           hardTimeoutMs: args.hardTimeoutMs,
           tty: args.tty === true,
+          ...(escalation ? { escalation } : {}),
         });
         // Stop must reach the process during the initial wait below, before
         // the session ID is recorded on the obligation.
@@ -6972,6 +7015,74 @@ class DirectLiveTextController {
       });
       return 0;
     }
+  }
+
+  // Where a command's commands are parsed and its project rules kept: the
+  // environment it runs in (PowerShell on Windows, Bash elsewhere).
+  commandEnvironment(project = {}) {
+    const kind = normalizeString(project?.workspace?.kind, "local");
+    if (kind === "windows" || (kind === "local" && process.platform === "win32")) return { environmentKind: "windows", shell: "powershell" };
+    if (kind === "wsl") return { environmentKind: "wsl", shell: "bash" };
+    return { environmentKind: process.platform === "darwin" ? "macos" : "linux", shell: "bash" };
+  }
+
+  // Codex's escalation for a sandboxed thread. A command whose every part
+  // matches a saved allow rule runs outside the sandbox without asking. One
+  // that asks (sandbox_permissions: require_escalated) goes to the owner:
+  // approve once, for this thread (this exact command), or always for a
+  // prefix (in this project's environment or everywhere); declining tells
+  // the model. Anything else runs in the sandbox as before.
+  async authorizeCommandEscalation(surfaceSession, sessionId, turnId, obligation = {}, project = {}, grant = null, args = {}) {
+    if (!SANDBOXED_ACCESS_PROFILES.has(grantAccessProfile(grant))) return { escalation: null };
+    const { environmentKind, shell } = this.commandEnvironment(project);
+    const projectId = normalizeString(project?.id || project?.projectId, "");
+    const cmd = typeof args.cmd === "string" ? args.cmd.trim() : "";
+    const directCommand = normalizeString(args.command || args.executable, "");
+    const argv = Array.isArray(args.args || args.argv) ? (args.args || args.argv).map(String) : [];
+    const segments = cmd ? commandSegments(cmd, shell) : directCommand ? [[directCommand, ...argv]] : null;
+    const rules = this.approvalRuleStore ? this.approvalRuleStore.commandRulesFor(projectId, environmentKind) : [];
+    if (evaluateCommandRules(segments, rules, shell).allAllowed) return { escalation: { approvedBy: "rule" } };
+    if (args.sandbox_permissions !== "require_escalated") return { escalation: null };
+    const commandText = cmd || [directCommand, ...argv].join(" ");
+    const threadKey = `${environmentKind}\u0000${commandText}`;
+    if (this.commandThreadAllows?.get(sessionId)?.has(threadKey)) return { escalation: { approvedBy: "owner" } };
+    if (!surfaceSession || typeof surfaceSession.createCommandApprovalRequest !== "function") {
+      return { declined: true, message: "Nobody is available to approve running this command outside the sandbox; it was not run." };
+    }
+    const proposal = proposeCommandRule(segments, rules, args.prefix_rule, shell);
+    this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+      authorityState: "approval_waiting",
+      approvalAvailable: true,
+    }, { nextTurnState: "tool_waiting" });
+    const answer = await surfaceSession.createCommandApprovalRequest({
+      summary: commandText.slice(0, 180),
+      signal: this.turnAbortSignal(turnId),
+      proposal,
+      params: {
+        threadId: sessionId,
+        turnId,
+        itemId: obligation.obligationId,
+        command: commandText.slice(0, 16_384),
+        cwd: normalizeString(args.cwd || args.workdir, "."),
+        reason: normalizeString(args.justification, "The model asks to run this command outside the sandbox.").slice(0, 1_000),
+        environment: environmentKind,
+        proposedExecpolicyAmendment: proposal,
+        directRuleScopes: proposal ? ["project", "global"] : [],
+        availableDecisions: ["accept", "acceptForSession", ...(proposal ? ["acceptWithExecpolicyAmendment"] : []), "decline"],
+      },
+    });
+    if (answer.decision === "accept") return { escalation: { approvedBy: "owner" } };
+    if (answer.decision === "acceptForSession") {
+      if (!this.commandThreadAllows) this.commandThreadAllows = new Map();
+      if (!this.commandThreadAllows.has(sessionId)) this.commandThreadAllows.set(sessionId, new Set());
+      this.commandThreadAllows.get(sessionId).add(threadKey);
+      return { escalation: { approvedBy: "owner" } };
+    }
+    if (answer.decision === "acceptWithExecpolicyAmendment" && proposal) {
+      this.approvalRuleStore?.addCommandRule({ scope: answer.scope, projectId, environmentKind, pattern: proposal });
+      return { escalation: { approvedBy: "owner" } };
+    }
+    return { declined: true, message: "The user declined running this command outside the sandbox. Do something else, or ask the user how to proceed." };
   }
 
   async continueAfterRejectedStatefulExec(surfaceSession, sessionId, turnId, obligation, project, toolName, grantAuthorization, error) {
@@ -9624,6 +9735,8 @@ class DirectLiveTextController {
     // As in Codex, an MCP tool runs alongside others when it is read-only.
     if (this.mcpToolEntry(sessionId, turnId, name)?.readOnly === true) return true;
     if (!PARALLEL_SAFE_TOOL_NAMES.has(name)) return false;
+    // A command asking to leave the sandbox waits for the owner; one at a time.
+    if (name === "exec_command" && parseToolArgumentsObject(obligation).sandbox_permissions === "require_escalated") return false;
     // A read without the grant waits for the owner's approval; one prompt
     // at a time.
     if (name === "read_file") return this.harnessGrantAuthorizationFor(sessionId, turnId, project, name).authorized === true;
@@ -13070,7 +13183,7 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     this.connectionId = "";
     this.transportKind = DIRECT_LIVE_TEXT_SURFACE_TRANSPORT;
     this.serverRequests = new Map();
-    this.mcpElicitations = new Map();
+    this.awaitedRequests = new Map();
     this.activeThreadId = "";
     this.taskCapabilityProjection = null;
   }
@@ -13081,35 +13194,98 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
   // signal (the turn or the call) ends first.
   createMcpElicitationRequest(input = {}) {
     const params = isPlainObject(input.params) ? input.params : {};
-    const id = `direct_mcp_elicitation_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const approval = params._meta?.codex_approval_kind === MCP_TOOL_APPROVAL_KIND;
+    const validate = typeof input.validate === "function" ? input.validate : null;
+    return this.createAwaitedRequest({
+      idPrefix: "direct_mcp_elicitation",
+      method: "mcpServer/elicitation/request",
+      title: approval ? "Approve MCP tool call" : "MCP server request",
+      summary: input.summary || params.message || "MCP server request",
+      riskCategory: approval ? "mcpTool" : "user-input",
+      params,
+      signal: input.signal,
+      cancelled: { action: "cancel" },
+      // An answer that doesn't fit the form is refused and the form stays open.
+      parse: (result = {}) => {
+        const action = ["accept", "decline", "cancel"].includes(result?.action) ? result.action : "";
+        if (!action) throw new Error("Answer with accept, decline, or cancel.");
+        const answer = { action };
+        if (action === "accept") {
+          if (validate) {
+            const checked = validate(isPlainObject(result.content) ? result.content : {});
+            if (!checked.ok) throw new Error(checked.error);
+            answer.content = checked.content;
+          } else if (isPlainObject(result.content)) {
+            answer.content = result.content;
+          }
+          if (isPlainObject(result._meta)) answer._meta = { persist: normalizeString(result._meta.persist, "") };
+        }
+        return answer;
+      },
+    });
+  }
+
+  // Codex's command approval (item/commandExecution/requestApproval):
+  // accept, acceptForSession, decline, cancel, or
+  // { acceptWithExecpolicyAmendment: { execpolicy_amendment, scope } }, which
+  // must name exactly the offered prefix.
+  createCommandApprovalRequest(input = {}) {
+    const proposal = Array.isArray(input.proposal) ? input.proposal : null;
+    return this.createAwaitedRequest({
+      idPrefix: "direct_command_escalation",
+      method: "item/commandExecution/requestApproval",
+      title: "Run outside the sandbox?",
+      summary: input.summary || "command",
+      riskCategory: "command",
+      params: isPlainObject(input.params) ? input.params : {},
+      signal: input.signal,
+      cancelled: { decision: "cancel" },
+      parse: (result = {}) => {
+        const decision = result?.decision;
+        if (["accept", "acceptForSession", "decline", "cancel"].includes(decision)) return { decision };
+        const amendment = isPlainObject(decision) ? decision.acceptWithExecpolicyAmendment : null;
+        if (isPlainObject(amendment) && proposal &&
+            JSON.stringify(amendment.execpolicy_amendment) === JSON.stringify(proposal)) {
+          return { decision: "acceptWithExecpolicyAmendment", scope: amendment.scope === "global" ? "global" : "project" };
+        }
+        throw new Error("Answer with accept, acceptForSession, decline, cancel, or the offered prefix rule.");
+      },
+    });
+  }
+
+  // A prompt the caller awaits: resolves with parse(owner's result), or with
+  // `cancelled` when the signal ends first. A result parse() refuses leaves
+  // the prompt open.
+  createAwaitedRequest(spec = {}) {
+    const id = `${spec.idPrefix || "direct_prompt"}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
     const key = `direct:${id}`;
     const now = nowIso();
-    const approval = params._meta?.codex_approval_kind === MCP_TOOL_APPROVAL_KIND;
     const record = {
       id,
       key,
-      method: "mcpServer/elicitation/request",
-      title: approval ? "Approve MCP tool call" : "MCP server request",
-      summary: normalizeString(input.summary || params.message, "MCP server request").slice(0, 200),
-      riskCategory: approval ? "mcpTool" : "user-input",
+      method: spec.method,
+      title: spec.title,
+      summary: normalizeString(spec.summary, spec.method).slice(0, 200),
+      riskCategory: spec.riskCategory,
       status: "pending",
-      params,
+      params: spec.params || {},
       createdAt: now,
       updatedAt: now,
     };
-    const signal = input.signal;
+    const signal = spec.signal;
     return new Promise((resolve) => {
       const finish = (answer, status) => {
-        if (!this.mcpElicitations.has(key)) return;
-        this.mcpElicitations.delete(key);
+        if (!this.awaitedRequests.has(key)) return;
+        this.awaitedRequests.delete(key);
         signal?.removeEventListener?.("abort", onAbort);
-        const next = { ...this.serverRequests.get(key), status, updatedAt: nowIso(), responseSummary: answer.action };
+        const summary = answer.action || answer.decision || status;
+        const next = { ...this.serverRequests.get(key), status, updatedAt: nowIso(), responseSummary: summary };
         this.serverRequests.set(key, next);
         this.sendEvent({ type: "rpc-request-updated", request: this.publicServerRequest(next) });
         resolve(answer);
       };
-      const onAbort = () => finish({ action: "cancel" }, "cancelled");
-      this.mcpElicitations.set(key, { finish, validate: typeof input.validate === "function" ? input.validate : null });
+      const onAbort = () => finish(spec.cancelled || {}, "cancelled");
+      this.awaitedRequests.set(key, { finish, parse: spec.parse });
       this.serverRequests.set(key, record);
       this.sendEvent({ type: "rpc-request", request: this.publicServerRequest(record) });
       if (signal?.aborted) onAbort();
@@ -13117,25 +13293,11 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     });
   }
 
-  // An answer that doesn't fit the form is refused and the form stays open.
-  respondToMcpElicitation(record = {}, result = {}) {
-    const pending = this.mcpElicitations.get(record.key);
-    if (!pending) throw new Error("This MCP request is no longer waiting for an answer.");
-    const action = ["accept", "decline", "cancel"].includes(result?.action) ? result.action : "";
-    if (!action) throw new Error("Answer with accept, decline, or cancel.");
-    const answer = { action };
-    if (action === "accept") {
-      if (pending.validate) {
-        const checked = pending.validate(isPlainObject(result.content) ? result.content : {});
-        if (!checked.ok) throw new Error(checked.error);
-        answer.content = checked.content;
-      } else if (isPlainObject(result.content)) {
-        answer.content = result.content;
-      }
-      if (isPlainObject(result._meta)) answer._meta = { persist: normalizeString(result._meta.persist, "") };
-    }
+  respondToAwaitedRequest(record = {}, result = {}) {
+    const pending = this.awaitedRequests.get(record.key);
+    const answer = pending.parse(result);
     pending.finish(answer, "completed");
-    return { request: this.publicServerRequest(this.serverRequests.get(record.key)), response: { decision: action } };
+    return { request: this.publicServerRequest(this.serverRequests.get(record.key)), response: { decision: answer.action || answer.decision } };
   }
 
   sendEvent(payload) {
@@ -13362,7 +13524,7 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     if (record.status !== "pending") {
       return { request: this.publicServerRequest(record), reused: true };
     }
-    if (record.method === "mcpServer/elicitation/request") return this.respondToMcpElicitation(record, result || {});
+    if (this.awaitedRequests.has(requestKey)) return this.respondToAwaitedRequest(record, result || {});
     try {
       const handler = record.method === "direct/tool/patchApply/requestApproval"
         ? "handlePatchApplyResponse"

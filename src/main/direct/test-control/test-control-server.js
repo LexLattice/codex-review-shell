@@ -312,6 +312,15 @@ class DirectTestControlServer {
       });
       return { answers };
     }
+    if (request.method === "item/commandExecution/requestApproval") {
+      if (decision !== "approve") return { decision: decision === "cancel" ? "cancel" : "decline" };
+      // --answer session | project | global picks the scope.
+      if (answer === "session") return { decision: "acceptForSession" };
+      if ((answer === "project" || answer === "global") && Array.isArray(params.proposedExecpolicyAmendment)) {
+        return { decision: { acceptWithExecpolicyAmendment: { execpolicy_amendment: params.proposedExecpolicyAmendment, scope: answer } } };
+      }
+      return { decision: "accept" };
+    }
     if (request.method === "mcpServer/elicitation/request") {
       if (decision !== "approve") return { action: decision === "cancel" ? "cancel" : "decline" };
       // A tool approval: --answer session|always picks the scope.
