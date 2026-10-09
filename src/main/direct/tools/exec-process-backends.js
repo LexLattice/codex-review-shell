@@ -39,7 +39,7 @@ const {
   prewarmedPowerShellCommand,
   prewarmedPowerShellScriptLine,
 } = require("../runtime/execution-environment-contract");
-const { PTY_HELPER_PATH, PtyChannel, normalizePtySize } = require("./pty-frames");
+const { PtyChannel, normalizePtySize, ptyHelperArgs } = require("./pty-frames");
 const { findExecutableOnPath } = require("../../../shared/executor-protocol");
 
 const LOCAL_CHILD_BACKEND_ID = "local-child";
@@ -280,12 +280,41 @@ class LocalChildProcessBackend {
     } catch {}
   }
 
-  disposePrewarmed() {
+  // Starts an idle shell for a launch shape before its first command (a
+  // thread opening), so even that command starts warm.
+  prewarmShape(plan, options = {}) {
+    if (!plan?.prewarmScriptLine) return false;
+    this.refillPrewarmed(this.prewarmKey(plan, options), plan, options);
+    return true;
+  }
+
+  // Resolves once the idle shells have exited: on Windows a running shell
+  // keeps its project folder (its working directory) from being removed.
+  disposePrewarmed(options = {}) {
+    const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 3_000;
+    const exits = [];
     for (const entry of this.prewarmed.values()) {
       clearTimeout(entry.timer);
-      try { entry.child.stdin.end(); } catch {}
+      const child = entry.child;
+      if (child && child.exitCode === null && child.signalCode === null && typeof child.once === "function") {
+        // Idle shells are unref'd; while disposal waits for them they (and
+        // the bounded timer) must keep the process alive.
+        setChildRef(child, true);
+        exits.push(new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            try { child.kill(); } catch {}
+            resolve();
+          }, timeoutMs);
+          child.once("close", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        }));
+      }
+      try { child.stdin.end(); } catch {}
     }
     this.prewarmed.clear();
+    return Promise.all(exits).then(() => undefined);
   }
 
   resolveWorkspace(input = {}, grant = null) {
@@ -373,7 +402,7 @@ class LocalChildProcessBackend {
       if (!python) {
         throw statefulExecError("direct_pty_unavailable", "Terminal sessions in this environment need python3, which isn't installed.");
       }
-      args = [PTY_HELPER_PATH, String(tty.rows), String(tty.cols), "--", command, ...(Array.isArray(args) ? args : [])];
+      args = ptyHelperArgs(tty.rows, tty.cols, command, args);
       command = python;
     }
     // On Windows the sandbox also wraps Full access: the job that stops the

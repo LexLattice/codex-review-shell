@@ -70,6 +70,43 @@ function defaultRunnerRoot(env = process.env) {
   return path.win32.join(localAppData, "codex-review-shell", "direct-job-runner");
 }
 
+// Scratch folders are removed when their command closes; a host or executor
+// that died abruptly leaves them behind. Older than this, they are swept on
+// the next start (another app instance's live scratch is younger, and a file
+// still open inside one makes its removal fail, which is ignored).
+const STALE_SCRATCH_MS = 24 * 60 * 60 * 1000;
+const sweptScratchRoots = new Set();
+
+async function sweepStaleScratch(scratchRoot, options = {}) {
+  const fsp = options.fs?.promises || fs.promises;
+  const now = typeof options.now === "function" ? options.now() : Date.now();
+  const maxAgeMs = Number(options.maxAgeMs) > 0 ? Number(options.maxAgeMs) : STALE_SCRATCH_MS;
+  let entries;
+  try {
+    entries = await fsp.readdir(scratchRoot, { withFileTypes: true });
+  } catch {
+    return { removed: 0, kept: 0 };
+  }
+  let removed = 0;
+  let kept = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^[0-9a-f]{16}$/.test(entry.name)) continue;
+    const dir = path.join(scratchRoot, entry.name);
+    try {
+      const stats = await fsp.stat(dir);
+      if (now - stats.mtimeMs < maxAgeMs) {
+        kept += 1;
+        continue;
+      }
+      await fsp.rm(dir, { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      kept += 1;
+    }
+  }
+  return { removed, kept };
+}
+
 function compilerCandidates(env = process.env) {
   const systemRoot = normalizeString(env.SystemRoot || env.SYSTEMROOT || env.windir, "C:\\Windows");
   return [
@@ -188,6 +225,10 @@ class WindowsJobSandbox {
       ? options.credentialStoreFiles
       : () => discoverCredentialStoreFiles({ platform: "win32", env: this.env, homedir: os.homedir() });
     this.containsFullAccess = true;
+    if (this.platform === "win32" && options.sweepScratch !== false && !sweptScratchRoots.has(this.scratchRoot)) {
+      sweptScratchRoots.add(this.scratchRoot);
+      sweepStaleScratch(this.scratchRoot).catch(() => {});
+    }
   }
 
   available() {
@@ -258,6 +299,8 @@ class WindowsJobSandbox {
 }
 
 module.exports = {
+  STALE_SCRATCH_MS,
+  sweepStaleScratch,
   WINDOWS_JOB_LAUNCHER,
   WINDOWS_JOB_RUNNER_SOURCE,
   WindowsJobRunner,

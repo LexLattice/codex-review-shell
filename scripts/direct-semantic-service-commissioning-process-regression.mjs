@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { runClosedPage, pageBytes, sha256 } from "../src/main/direct/semantic-service/commissioning-process.js";
 
+// The closed page runs in Linux namespaces (no network, no credentials,
+// read-only work); elsewhere it fails closed as UNAVAILABLE by design.
+if (process.platform !== "linux") {
+  const unavailable = await runClosedPage({ attemptRef: "attempt:s14-non-linux", page: { schema: "direct_commissioning_chain_page@1" } });
+  assert.notEqual(unavailable.status, "CAPTURED", "no unisolated capture off Linux");
+  console.log("SKIPPED: the commissioning page's isolation is Linux-only (it fails closed here, as checked).");
+  process.exit(77);
+}
+
 const base = (overrides = {}) => ({ schema: "direct_commissioning_chain_page@1", pageRef: "page:s14-1", compilationDigest: "sha256:" + "1".repeat(64), obligationIds: ["obl:s14-1"], law: { family: "s14-m2-chain-contiguity", revision: "commissioning@1", predicate: "finite complete unique chain" }, evidence: { entityRef: "entity:s14-1", genesisRef: "genesis:s14-1", currentRevision: "rev:s14-2", snapshotRevision: "rev:s14-2", complete: true, lineageAvailable: true, nodes: [{ bindingRef: "bind:1", entityRef: "entity:s14-1", predecessorRef: null, beforeRef: "genesis:s14-1", afterRef: "occ:1", ordinal: 0 }, { bindingRef: "bind:2", entityRef: "entity:s14-1", predecessorRef: "bind:1", beforeRef: "occ:1", afterRef: "occ:2", ordinal: 1 }], alternatives: [] }, ...overrides });
 
 const supported = await runClosedPage({ attemptRef: "attempt:s14-supported", page: base() });

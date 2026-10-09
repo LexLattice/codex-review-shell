@@ -61,6 +61,8 @@ const execManager = new DirectStatefulExecSessionManager({
   hardTimeoutMs: 5_000,
 });
 const node = process.execPath;
+const controllers = [];
+const threadStores = [threadStore];
 
 function textResponse(body, status = 200, headers = {}) {
   return new Response(body, { status, headers });
@@ -103,7 +105,7 @@ function makePool() {
 }
 
 function makeController(store = sessionStore, grants = grantStore, threads = threadStore) {
-  return new DirectLiveTextController({
+  const controller = new DirectLiveTextController({
     sessionStore: store,
     directThreadStore: threads,
     harnessGrantStore: grants,
@@ -113,6 +115,8 @@ function makeController(store = sessionStore, grants = grantStore, threads = thr
     subAgentPool: makePool(),
     fetchImpl: async (_url, _init) => textResponse(sse(`parity-response-${Date.now()}`, "direct continuation"), 200, { "content-type": "text/event-stream" }),
   });
+  controllers.push(controller);
+  return controller;
 }
 
 const context = { project, ownerControlled: true };
@@ -139,7 +143,7 @@ try {
 
   const exec = await controller.handleRequest("exec_command", {
     taskId,
-    cmd: `${node} -e "process.stdout.write('full-access-harness')"`,
+    cmd: `${process.platform === "win32" ? "& " : ""}'${node}' -e 'process.stdout.write(\`full-access-harness\`)'`,
     cwd: root,
     stdinPolicy: "disabled",
   }, context);
@@ -209,6 +213,7 @@ try {
   const restartedSessionStore = new DirectSessionStore({ rootDir: sessionRoot });
   const restartedGrantStore = new DirectThreadHarnessGrantStore({ rootDir: grantRoot });
   const restartedThreadStore = new DirectThreadStore({ rootDir: threadRoot, mode: "index_only" });
+  threadStores.push(restartedThreadStore);
   const restartedController = makeController(restartedSessionStore, restartedGrantStore, restartedThreadStore);
   const reopened = restartedController.capabilitiesForTask(project, taskId);
   assert.equal(reopened.taskBinding.taskId, taskId);
@@ -232,7 +237,8 @@ try {
     perCallApprovals: 0,
   }, null, 2));
 } finally {
-  execManager.dispose("integration-complete");
-  try { threadStore.close(); } catch {}
-  fs.rmSync(root, { recursive: true, force: true });
+  for (const controller of controllers) controller.close("integration-complete");
+  await execManager.dispose("integration-complete");
+  for (const store of threadStores) store.close();
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

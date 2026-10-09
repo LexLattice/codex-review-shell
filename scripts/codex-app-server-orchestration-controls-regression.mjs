@@ -257,6 +257,9 @@ const nativeWslDescriptor = buildDescriptor({
   binaryPath: "codex",
 }, 47891, {
   codexHome: "/home/rose/.codex",
+  // From inside WSL (from Windows the same project goes through wsl.exe; see
+  // the windowsToWsl descriptors below).
+  hostPlatform: "linux",
 });
 assert.equal(nativeWslDescriptor.runtime, "wsl");
 assert.deepEqual(nativeWslDescriptor.args, buildManagedAppServerArgs(wsUrl));
@@ -275,6 +278,7 @@ const alphaWslDescriptor = buildDescriptor({
   spawnAgentModelOverrides: true,
 }, 47891, {
   codexHome: "/home/rose/.codex",
+  hostPlatform: "linux",
 });
 assert.equal(alphaWslDescriptor.runtime, "wsl");
 assert.deepEqual(alphaWslDescriptor.args, buildManagedAppServerArgs(wsUrl, splitCodex));

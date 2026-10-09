@@ -682,6 +682,27 @@ class DirectSessionStore {
     return record;
   }
 
+  // Images view_image loaded, one file per call, outside the turn record
+  // (which is rewritten on every state change).
+  toolImagePath(sessionId, obligationId) {
+    return path.join(this.rootDir, "sessions", requireSafeId(sessionId, "session"), "images", `${requireSafeId(obligationId, "tool image")}.json`);
+  }
+
+  writeToolImage(sessionId, obligationId, image = {}) {
+    writeJsonAtomic(this.toolImagePath(sessionId, obligationId), {
+      mimeType: String(image.mimeType || ""),
+      dataBase64: String(image.dataBase64 || ""),
+    });
+  }
+
+  readToolImage(sessionId, obligationId) {
+    try {
+      return readJsonFile(this.toolImagePath(sessionId, obligationId));
+    } catch {
+      return null;
+    }
+  }
+
   turnPath(sessionId, turnId) {
     return path.join(this.rootDir, "turns", requireSafeId(sessionId, "session"), `${requireSafeId(turnId, "turn")}.json`);
   }
@@ -2356,6 +2377,29 @@ class DirectSessionStore {
       try { fs.closeSync(lockHandle); } catch {}
       try { fs.unlinkSync(lockPath); } catch (error) { if (error?.code !== "ENOENT") throw error; }
     }
+  }
+
+  // Usage from a request whose events don't belong in the turn's event log
+  // (compaction): counted in the turn's usage rows only.
+  recordTurnUsage(sessionId, turnId, normalizedEvents = [], options = {}) {
+    const events = (Array.isArray(normalizedEvents) ? normalizedEvents : [])
+      .filter((event) => event?.type === "usage_delta" || event?.type === "response_completed");
+    if (!events.some((event) => event.type === "usage_delta")) return null;
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) return null;
+    const session = this.readSession(sessionId);
+    const usageAttribution = updateDirectTurnUsageAttribution({
+      existing: turn.usageAttribution,
+      session,
+      turn,
+      events,
+      observedAt: nowIso(options.nowMs),
+      projectId: session?.projectId,
+      model: normalizeString(options.model, turn.model),
+      reasoningEffort: normalizeString(options.reasoningEffort, turn.reasoningEffort),
+      requestKind: normalizeString(options.requestKind, ""),
+    });
+    return this.updateTurnState(sessionId, turnId, turn.state, { usageAttribution }, options);
   }
 
   writeDiagnostic(sessionId, fixtureId, record, options = {}) {

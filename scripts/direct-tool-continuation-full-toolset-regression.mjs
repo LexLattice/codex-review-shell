@@ -19,8 +19,8 @@ const { DirectStatefulExecSessionManager } = require("../src/main/direct/tools/s
 const { DirectFullAccessLocalEnvironmentExecutor } = require("../src/main/direct/tools/full-access-local-environment.js");
 const { DirectLiveTextController, DirectLiveTextSurfaceSession } = require("../src/main/direct/controller/live-text-controller.js");
 
-const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
-const node = quote(process.execPath);
+const quote = (s) => `'${s.replaceAll("'", process.platform === "win32" ? "''" : "'\\''")}'`;
+const node = `${process.platform === "win32" ? "& " : ""}${quote(process.execPath)}`;
 const event = (type, data) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 
 // One provider response: tool calls (in order) or final text.
@@ -162,5 +162,5 @@ try {
   controller.close("regression cleanup");
   await manager.dispose("regression cleanup");
   threadStore.close();
-  await fs.rm(root, { recursive: true, force: true });
+  await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

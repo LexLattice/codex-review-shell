@@ -78,7 +78,18 @@ try {
 
   backend.disposePrewarmed();
   assert.equal(backend.prewarmed.size, 0);
-  console.log(JSON.stringify({ ok: true, coldMs: first.ms, warmMs: warmTimes, stats: backend.prewarmStats }));
+
+  // Opening a thread warms its default shape, so even the first command
+  // starts warm.
+  assert.equal(backend.prewarmShape(backend.planLaunch({ shellCommand: "prewarm", sandboxMode: "danger-full-access", workspace: { root, cwd: root } }), { cwd: root, env }), true);
+  const before = { ...backend.prewarmStats };
+  await warmUp();
+  const firstAfterOpen = await run("Write-Output opened");
+  assert.equal(firstAfterOpen.out, "opened");
+  assert.equal(backend.prewarmStats.warm, before.warm + 1, "the first command after opening used the warmed shell");
+  assert.equal(backend.prewarmStats.cold, before.cold);
+  backend.disposePrewarmed();
+  console.log(JSON.stringify({ ok: true, coldMs: first.ms, warmMs: warmTimes, firstAfterOpenMs: firstAfterOpen.ms, stats: backend.prewarmStats }));
 } finally {
   backend.disposePrewarmed();
   // Idle shells exit once their stdin closes; until then they hold the folder.

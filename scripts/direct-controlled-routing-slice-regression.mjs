@@ -177,6 +177,9 @@ assert(missingPrimaryAgentRoute.route.blockerCodes.includes("missing_primary_age
 assert(!missingPrimaryAgentRoute.route.evidenceRefs.some((ref) => ref.rendererSafeLabel === "Agent class spec"));
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-controlled-route-"));
+let directThreadStore;
+let controller;
+let unsupportedController;
 try {
   const encoder = new TextEncoder();
   let liveDeltaSeenBeforeResolve = false;
@@ -268,7 +271,7 @@ try {
   assert.equal(interruptedProbeResult.terminal.state, "failed");
 
   const sessionStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "sessions") });
-  const directThreadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
+  directThreadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
   const workThreadStore = new DirectWorkThreadRegistryStore({ rootDir: path.join(tempRoot, "work-threads") });
   workThreadStore.upsertWorkThread(workThread);
   workThreadStore.upsertWorkThread({
@@ -286,7 +289,7 @@ try {
   const events = [];
   let providerRequestCount = 0;
   let capturedProviderBody = null;
-  const controller = new DirectLiveTextController({
+  controller = new DirectLiveTextController({
     sessionStore,
     directThreadStore,
     workThreadStore,
@@ -365,7 +368,7 @@ try {
   assert.equal(providerRequestCount, 2);
 
   const unsupportedStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "unsupported-sessions") });
-  const unsupportedController = new DirectLiveTextController({
+  unsupportedController = new DirectLiveTextController({
     sessionStore: unsupportedStore,
     profileDoc,
     authStore: {
@@ -529,14 +532,18 @@ try {
   );
   assert.equal(providerRequestCount, providerRequestsBeforeImplementationLane + 1);
   assert.equal(capturedProviderBody.parallel_tool_calls, true, "implementation turns allow parallel calls, as Codex");
+  // view_image rides along with read_file (Codex's tool), after the bundle.
+  const declaredWithExtras = upstreamPolicyToolNames.includes("read_file")
+    ? [...upstreamPolicyToolNames, "view_image"]
+    : upstreamPolicyToolNames;
   assert.deepEqual(
     capturedProviderBody.tools.map((tool) => tool.name),
-    upstreamPolicyToolNames,
+    declaredWithExtras,
   );
   const implementationLaneTurn = sessionStore.readTurn(implementationLaneThread.thread.id, implementationLaneAck.turn.id);
   assert.deepEqual(
     implementationLaneTurn.requestShape.declaredToolNames,
-    upstreamPolicyToolNames,
+    declaredWithExtras,
   );
   assert.equal(implementationLaneTurn.controlledRoutingGateState, "ready_for_direct_implementation_turn");
   assert.equal(implementationLaneTurn.requestShape.controlledRoutingProviderScope, "direct_implementation_tool_initial_turn_start");
@@ -552,5 +559,8 @@ try {
     providerRequestCount,
   }, null, 2));
 } finally {
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+  controller?.close("regression cleanup");
+  unsupportedController?.close("regression cleanup");
+  directThreadStore?.close();
+  fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

@@ -158,6 +158,11 @@ function fixtureLaunchDigest(label) {
 }
 
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-worker-lifecycle-"));
+let registry;
+let recoveryRegistry;
+let unacknowledgedIndeterminateRegistry;
+let liveManager;
+let probeRaceTransport;
 const lifecycleAuthorityPacket = createWorkspaceParentAuthorityPacket({
   boundaryId: "workspace_worker_lifecycle_fixture_authority",
   upstreamPolicyId: "workspace_worker_lifecycle_fixture_policy",
@@ -193,7 +198,7 @@ try {
     );
   }
   const dbPath = path.join(temporaryRoot, "worker-lifecycle.sqlite");
-  let registry = new WorkspaceWorkerLifecycleRegistry({ dbPath });
+  registry = new WorkspaceWorkerLifecycleRegistry({ dbPath });
   const opened = registry.openSession({
     sessionId: "session_fixture",
     leaseId: "lease_fixture",
@@ -696,7 +701,7 @@ try {
   registry.close();
 
   const recoveryDbPath = path.join(temporaryRoot, "worker-recovery.sqlite");
-  let recoveryRegistry = new WorkspaceWorkerLifecycleRegistry({ dbPath: recoveryDbPath });
+  recoveryRegistry = new WorkspaceWorkerLifecycleRegistry({ dbPath: recoveryDbPath });
   const interrupted = recoveryRegistry.openSession({
     sessionId: "session_restart_interrupted",
     leaseId: "lease_restart_interrupted",
@@ -1757,7 +1762,7 @@ try {
     temporaryRoot,
     "unacknowledged-indeterminate.sqlite",
   );
-  let unacknowledgedIndeterminateRegistry = new WorkspaceWorkerLifecycleRegistry({
+  unacknowledgedIndeterminateRegistry = new WorkspaceWorkerLifecycleRegistry({
     dbPath: unacknowledgedIndeterminateDbPath,
   });
   const unacknowledgedIndeterminatePool = new DirectNativeAgentPool({
@@ -3095,10 +3100,10 @@ try {
   const digestOverflowFile = path.join(liveBackendRoot, "digest-overflow.txt");
   fs.writeFileSync(digestOverflowFile, "seed\n");
   runGitFixtureCommand(["init", "--quiet"]);
-  runGitFixtureCommand(["config", "user.email", "fixture@example.invalid"]);
-  runGitFixtureCommand(["config", "user.name", "Fixture"]);
   runGitFixtureCommand(["add", "digest-overflow.txt"]);
-  runGitFixtureCommand(["commit", "--quiet", "-m", "digest fixture"]);
+  runGitFixtureCommand(["diff", "--cached"]);
+  runGitFixtureCommand(["status", "--short"]);
+  runGitFixtureCommand(["commit", "--quiet", "-m", "digest fixture", "-m", "Co-authored-by: factory-droid[bot] <138933559+factory-droid[bot]@users.noreply.github.com>"]);
   fs.writeFileSync(digestOverflowFile, `${"x".repeat(17 * 1024 * 1024)}\n`);
   const probeRaceChild = spawn(process.execPath, [
     path.resolve("src/backend/wsl-agent.js"),
@@ -3130,7 +3135,7 @@ try {
     probeRaceStdinWrite(payload.subarray(splitAt), done);
     return true;
   };
-  const probeRaceTransport = new NdjsonTransport(probeRaceChild);
+  probeRaceTransport = new NdjsonTransport(probeRaceChild);
   const firstProbeHello = probeRaceTransport.request("hello", { marker: "€" }, 8_000);
   const firstProbeRequestId = [...probeRaceTransport.pending.values()]
     .find((pending) => pending.method === "hello")?.requestId;
@@ -3143,6 +3148,24 @@ try {
   assert.equal(firstProbeCancel.quiesced, true);
   await assert.rejects(firstProbeHello, (error) => error?.workspaceBackendRequest === true);
   const retriedProbeHello = await probeRaceTransport.request("hello", {}, 8_000);
+  let liveIntegrationSkipped = false;
+  let liveShutdownOrder = [];
+  if (process.platform === "win32" && retriedProbeHello.capabilities.runCommand === false) {
+    // The workspace backend (unlike the Direct command executor) deliberately
+    // has no native Windows Job Object broker yet. Verify the exact fail-closed
+    // denial; only the live subprocess section needs that unavailable substrate.
+    assert.equal(retriedProbeHello.capabilities.provisionGitWorktree, false);
+    await assert.rejects(
+      probeRaceTransport.request("runDirectCommand", {
+        command: process.execPath, args: ["-e", "process.exit(0)"], cwdRelPath: "",
+      }, 8_000),
+      (error) => error?.code === "workspace_windows_job_object_containment_unavailable",
+    );
+    console.log("SKIPPED: live workspace lifecycle needs the unavailable native Windows Job Object containment broker (fail-closed verified)");
+    process.exitCode = 77;
+    liveIntegrationSkipped = true;
+    probeRaceTransport.dispose();
+  } else {
   assert.equal(
     retriedProbeHello.capabilities.runCommand,
     true,
@@ -3150,7 +3173,7 @@ try {
   );
   assert.equal(retriedProbeHello.capabilities.provisionGitWorktree, true);
   probeRaceTransport.dispose();
-  const liveManager = new WorkspaceBackendManager({
+  liveManager = new WorkspaceBackendManager({
     agentPath: path.resolve("src/backend/wsl-agent.js"),
     fallbackRoot: liveBackendRoot,
   });
@@ -3163,7 +3186,8 @@ try {
   const liveTestProfile = await liveSession.request("directTestProfile", {}, 8_000);
   assert.equal(liveTestProfile.available, true);
   assert.equal(liveTestProfile.substrateCapabilities.processContainmentGuaranteed, true);
-  assert.equal(liveTestProfile.substrateCapabilities.processContainmentKind, "linux_pid_namespace");
+  assert.equal(liveTestProfile.substrateCapabilities.processContainmentKind,
+    process.platform === "win32" ? "windows_job_object" : "linux_pid_namespace");
   const backendOversizedPatchFile = path.join(liveBackendRoot, "backend-oversized-patch-target.txt");
   const backendOversizedPatchSize = 384 * 1024 + 1;
   fs.writeFileSync(backendOversizedPatchFile, "oversized-prefix");
@@ -3363,7 +3387,6 @@ try {
     (error) => error.code === "workspace_backend_cancel_target_unavailable",
     "an absent or forged request ID cannot receive a quiescence acknowledgement",
   );
-  const liveShutdownOrder = [];
   const liveShutdown = await runWorkspaceWorkerShutdown({
     reasonCode: "fixture_live_shutdown",
     stopWorkerIntake: () => { liveShutdownOrder.push("stop"); return livePool.stopAccepting(); },
@@ -3394,6 +3417,7 @@ try {
   ]);
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   assert.equal(fs.existsSync(lateMarkerPath), false, "a detached descendant cannot escape cancellation and finish later");
+  }
 
   const mainSource = fs.readFileSync(path.resolve("src/main.js"), "utf8");
   const backendSource = fs.readFileSync(path.resolve("src/backend/wsl-agent.js"), "utf8");
@@ -3454,6 +3478,7 @@ try {
 
   console.log(JSON.stringify({
     ok: true,
+    status: liveIntegrationSkipped ? "partial_skipped" : "passed",
     durableEvents: durableEventCount,
     exactCancellationLeaseHeld: true,
     positiveCancellationReceiptRequired: true,
@@ -3464,11 +3489,16 @@ try {
     operationIdentityBound: true,
     settlementFailureRetryable: true,
     shutdownOrder: order,
-    liveBackendCancellationQuiesced: true,
-    liveCapacityReleasedAfterAcknowledgement: true,
+    liveBackendCancellationQuiesced: !liveIntegrationSkipped,
+    liveCapacityReleasedAfterAcknowledgement: !liveIntegrationSkipped,
     liveOrderedShutdown: liveShutdownOrder,
     failedWorktreeRetentionWired: true,
   }, null, 2));
 } finally {
-  fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  probeRaceTransport?.dispose();
+  liveManager?.disposeAll();
+  registry?.close();
+  recoveryRegistry?.close();
+  unacknowledgedIndeterminateRegistry?.close();
+  await fs.promises.rm(temporaryRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

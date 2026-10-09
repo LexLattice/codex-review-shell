@@ -14,8 +14,9 @@ const { DirectThreadHarnessGrantStore } = require("../src/main/direct/authority/
 const { DirectStatefulExecSessionManager } = require("../src/main/direct/tools/stateful-exec-session.js");
 const { DirectLiveTextController, DirectLiveTextSurfaceSession } = require("../src/main/direct/controller/live-text-controller.js");
 
-const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
-const node = quote(process.execPath);
+// Keep literal scripts intact in bash and PowerShell, including embedded JS quotes.
+const quote = (s) => `'${s.replaceAll("'", process.platform === "win32" ? "''" : "'\\''")}'`;
+const node = `${process.platform === "win32" ? "& " : ""}${quote(process.execPath)}`;
 const initialSource = "module.exports = (a, b) => a - b;\n";
 const expectedSource = initialSource.replace("a - b", "a + b");
 const testSource = "const assert = require('node:assert/strict'); const add = require('./calc'); assert.equal(add(2, 3), 5); console.log('repair-test-passed');\n";
@@ -233,7 +234,8 @@ async function pollBoundary(root) {
   try {
     const grant = grants.issueFullAccess({ taskId: "poll_task", threadId: "poll_task", projectId: "poll_project", executionEnvironment: { environmentId: "poll_env", kind: "local", bindingDigest: "sha256:poll-env" }, capabilities: ["exec_command", "write_stdin"] });
     const scope = { taskId: "poll_task", threadId: "poll_task", projectId: "poll_project", grantId: grant.grantId, harnessGrant: grant, executionEnvironmentDigest: grant.executionEnvironmentDigest };
-    const initial = manager.start({ ...scope, cmd: `${node} -e ${quote("process.stdin.once('data', () => { console.log('poll-complete'); process.exit(0); });")}`, stdinPolicy: "line_input" });
+    const readyFile = path.join(root, "poll-ready.txt");
+    const initial = manager.start({ ...scope, cmd: `${node} -e ${quote("process.stdin.once('data', () => { console.log('poll-complete'); process.exit(0); }); require('node:fs').writeFileSync('poll-ready.txt', 'ready');")}`, stdinPolicy: "line_input" });
     const input = { ...scope, sessionId: initial.sessionId };
     const poll1 = manager.writeStdin({ ...input, chars: "" });
     const poll2 = manager.writeStdin({ ...input, chars: "" });
@@ -242,6 +244,14 @@ async function pollBoundary(root) {
     assert.equal(poll1.emptyPoll, true);
     assert.equal(poll1.stdinAccepted, false);
     assert.deepEqual(processObservation(poll2), processObservation(poll1), "empty reads cannot mutate process state");
+    // The shell/Job Object may still be starting; input belongs to Node only
+    // once its listener is installed. Empty startup polls above remain tested.
+    const deadline = Date.now() + 5000;
+    while (true) {
+      try { await fs.access(readyFile); break; } catch {}
+      assert(Date.now() < deadline, "the input fixture became ready");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     manager.writeStdin({ ...input, chars: "finish\n" });
     const ended = await manager.wait(input);
     assert.equal(ended.exitCode, 0);
@@ -271,5 +281,5 @@ try {
   const recoversAfterPreTransportFailure = await preTransportRecovery(root);
   console.log(JSON.stringify({ ok: true, routes, readRepairTest: true, terminalPollAuthorization: true, recoversAfterPreTransportFailure }));
 } finally {
-  await fs.rm(root, { recursive: true, force: true });
+  await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

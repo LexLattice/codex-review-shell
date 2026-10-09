@@ -1,10 +1,11 @@
 "use strict";
 
-// One configured-MCP stdio exchange: start the server, initialize, send one
-// request, return its result, and reap the process. The host runs this for
-// servers local to it; an environment's executor runs the same code natively
-// behind `mcp/request` for servers that live there. Trust, freshness, scope,
-// and the result envelope stay with the host (configured-mcp-adapter.js).
+// Configured-MCP stdio transport. McpSessionPool keeps initialized servers
+// for reuse (below); requestMcpStdio is the one-shot form (start,
+// initialize, one request, reap). The host runs this for servers local to
+// it; an environment's executor runs the same code natively behind
+// `mcp/request` for servers that live there. Trust, freshness, scope, and the
+// result envelope stay with the host (configured-mcp-adapter.js).
 
 const { spawn } = require("node:child_process");
 const { BASE_COMMAND_ENVIRONMENT_KEYS } = require("../tools/exec-process-backends");
@@ -257,10 +258,290 @@ function requestMcpStdio(server, method, params = {}, options = {}) {
   });
 }
 
+// Long-lived sessions, as Codex keeps its MCP connections: one initialized
+// server per (placement, command, args, cwd, environment), reused across
+// requests (concurrent ones share it), closed after a quiet period, on a
+// config change for the same server, or when the pool is disposed. The pool
+// lives where the server runs (the host for its own servers, an executor for
+// servers in its environment), so a lost executor takes its servers with it.
+// Trust, freshness, and scope are still checked by the host on every
+// operation before a request reaches here.
+const MCP_SESSION_IDLE_MS = 10 * 60_000;
+const MCP_SESSION_MAX = 16;
+
+function setChildReferenced(child, referenced) {
+  for (const target of [child, child?.stdin, child?.stdout, child?.stderr]) {
+    try {
+      if (referenced) target?.ref?.();
+      else target?.unref?.();
+    } catch {}
+  }
+}
+
+class McpStdioSession {
+  constructor(pool, key, identityKey, server, options) {
+    this.pool = pool;
+    this.key = key;
+    this.identityKey = identityKey;
+    this.pending = new Map();
+    this.nextId = 0;
+    this.closed = false;
+    this.idleTimer = null;
+    this.lastUsedAt = Date.now();
+    this.initialized = false;
+    // Requests between choosing this session and registering their call
+    // (waiting for the handshake, or about to send).
+    this.holds = 0;
+    this.child = options.spawnProcess(server.command, server.args || [], { cwd: server.cwd || undefined, env: options.env });
+    this.exited = new Promise((resolve) => { this.resolveExited = resolve; });
+    const parser = lineOrContentLengthParser((message) => this.onMessage(message), (error) => this.close(error));
+    this.child.stdout?.on("data", parser);
+    this.child.stderr?.on("data", (chunk) => {
+      if (String(chunk).length > MAX_MCP_RESULT_BYTES) this.close(mcpError("direct_mcp_result_too_large", "Configured MCP stderr exceeded the bounded output limit."));
+    });
+    this.child.once("error", (error) => this.close(error));
+    this.child.once("exit", (code, signalName) => {
+      this.resolveExited();
+      this.close(mcpError("direct_mcp_transport_exited", `Configured MCP exited (${code ?? signalName ?? "unknown"}).`));
+    });
+    this.child.once("close", () => this.resolveExited());
+    this.ready = this.call("initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "codex-direct", version: "1" },
+    }, { timeoutMs: options.timeoutMs }).then((result) => {
+      this.initialized = true;
+      this.write({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
+      return result;
+    });
+    // A failed start is reported by the request that waits on it; the next
+    // request starts a fresh server.
+    this.ready.catch((error) => this.close(error));
+  }
+
+  get pid() {
+    return this.child?.pid;
+  }
+
+  get busy() {
+    return this.pending.size > 0 || this.holds > 0;
+  }
+
+  // Waits for the handshake within this request's own timeout and signal.
+  // If it gives up and no other request is waiting, the half-started server
+  // is stopped (as the one-shot exchange did); otherwise it keeps starting.
+  async waitReady(signal, timeoutMs) {
+    if (this.initialized) return;
+    let timer = null;
+    let onAbort = null;
+    try {
+      await new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(mcpError("direct_mcp_request_timeout", "Configured MCP request exceeded the timeout.")), timeoutMs);
+        if (signal) {
+          onAbort = () => reject(mcpError("direct_mcp_request_aborted", "Configured MCP request was cancelled."));
+          if (signal.aborted) return onAbort();
+          signal.addEventListener?.("abort", onAbort, { once: true });
+        }
+        this.ready.then(resolve, reject);
+      });
+    } catch (error) {
+      if (!this.initialized && this.holds <= 1) this.close(null);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener?.("abort", onAbort);
+    }
+  }
+
+  write(message) {
+    if (this.closed || !this.child?.stdin?.writable) return false;
+    this.child.stdin.write(`${JSON.stringify(message)}\n`);
+    return true;
+  }
+
+  call(method, params = {}, options = {}) {
+    if (this.closed) return Promise.reject(mcpError("direct_mcp_transport_closed", "Configured MCP transport closed before the response."));
+    const id = ++this.nextId;
+    const timeoutMs = boundedInteger(options.timeoutMs, DEFAULT_MCP_TIMEOUT_MS, 100, MAX_MCP_TIMEOUT_MS);
+    const signal = options.signal;
+    clearTimeout(this.idleTimer);
+    if (this.pending.size === 0) setChildReferenced(this.child, true);
+    return new Promise((resolve, reject) => {
+      const entry = { resolve, reject, timer: null, onAbort: null };
+      const settle = () => {
+        clearTimeout(entry.timer);
+        if (signal && entry.onAbort) signal.removeEventListener?.("abort", entry.onAbort);
+        this.pending.delete(id);
+        this.lastUsedAt = Date.now();
+        if (!this.pending.size) this.idle();
+      };
+      entry.resolve = (value) => { settle(); resolve(value); };
+      entry.reject = (error) => { settle(); reject(error); };
+      // A request that never answers may mean a wedged server: replace it.
+      entry.timer = setTimeout(() => {
+        entry.reject(mcpError("direct_mcp_request_timeout", "Configured MCP request exceeded the timeout."));
+        this.close(mcpError("direct_mcp_request_timeout", "Configured MCP request exceeded the timeout."));
+      }, timeoutMs);
+      if (signal) {
+        if (signal.aborted) {
+          entry.reject(mcpError("direct_mcp_request_aborted", "Configured MCP request was cancelled."));
+          return;
+        }
+        entry.onAbort = () => {
+          // The server keeps running for other requests; it is told to stop.
+          this.write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "cancelled by Direct" } });
+          entry.reject(mcpError("direct_mcp_request_aborted", "Configured MCP request was cancelled."));
+        };
+        signal.addEventListener?.("abort", entry.onAbort, { once: true });
+      }
+      this.pending.set(id, entry);
+      if (!this.write({ jsonrpc: "2.0", id, method, params })) {
+        entry.reject(mcpError("direct_mcp_transport_closed", "Configured MCP transport closed before the response."));
+      }
+    });
+  }
+
+  onMessage(message) {
+    if (this.closed || !isPlainObject(message)) return;
+    if (message.method) {
+      if (String(message.method).startsWith("notifications/")) return;
+      // Server-initiated requests (elicitation, sampling, roots) need the
+      // owner; Direct answers with an error and fails what is in flight.
+      if (message.id !== undefined) {
+        this.write({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Direct does not answer server requests; owner interaction is required." } });
+      }
+      for (const entry of [...this.pending.values()]) {
+        entry.reject(mcpError("mcp_elicitation_owner_required", "Configured MCP requested owner-controlled interaction."));
+      }
+      return;
+    }
+    const entry = this.pending.get(Number(message.id));
+    if (!entry) return;
+    if (message.error) entry.reject(mcpError("direct_mcp_rpc_error", boundedString(message.error.message, 360) || "Configured MCP returned an error."));
+    else entry.resolve(isPlainObject(message.result) ? message.result : {});
+  }
+
+  idle() {
+    // An idle server neither keeps this process alive nor runs forever.
+    setChildReferenced(this.child, false);
+    clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => this.close(null), this.pool.idleMs);
+    this.idleTimer.unref?.();
+  }
+
+  close(error) {
+    if (this.closed) return this.exited;
+    this.closed = true;
+    clearTimeout(this.idleTimer);
+    this.pool.forget(this);
+    const failure = error || mcpError("direct_mcp_transport_closed", "Configured MCP session closed.");
+    for (const entry of [...this.pending.values()]) entry.reject(failure);
+    try { this.child.stdin?.destroy?.(); } catch {}
+    const child = this.child;
+    const live = () => child && child.exitCode === null && child.signalCode === null;
+    if (live()) {
+      setChildReferenced(child, true);
+      try { child.kill("SIGTERM"); } catch {}
+      const kill = setTimeout(() => { if (live()) { try { child.kill("SIGKILL"); } catch {} } }, MCP_CHILD_TERM_GRACE_MS);
+      kill.unref?.();
+      const giveUp = setTimeout(() => this.resolveExited(), MCP_CHILD_CLEANUP_DEADLINE_MS);
+      giveUp.unref?.();
+    } else {
+      this.resolveExited();
+    }
+    return this.exited;
+  }
+}
+
+class McpSessionPool {
+  constructor(options = {}) {
+    this.sessions = new Map();
+    this.idleMs = Number(options.idleMs) > 0 ? Number(options.idleMs) : MCP_SESSION_IDLE_MS;
+    this.maxSessions = Number(options.maxSessions) > 0 ? Number(options.maxSessions) : MCP_SESSION_MAX;
+    this.started = 0;
+  }
+
+  static keyFor(server, options = {}) {
+    const env = isPlainObject(options.env) ? Object.entries(options.env).sort(([a], [b]) => a.localeCompare(b)) : [];
+    return JSON.stringify([
+      String(options.placementKey || ""),
+      server.command,
+      server.args || [],
+      server.cwd || "",
+      env,
+    ]);
+  }
+
+  sessionFor(server, options) {
+    const key = McpSessionPool.keyFor(server, options);
+    const existing = this.sessions.get(key);
+    if (existing && !existing.closed) {
+      // Most recently used last, for eviction.
+      this.sessions.delete(key);
+      this.sessions.set(key, existing);
+      return existing;
+    }
+    const identityKey = options.identityKey ? `${options.placementKey || ""}::${options.identityKey}` : "";
+    if (identityKey) {
+      // The same server with a changed config: the old process goes.
+      for (const session of [...this.sessions.values()]) {
+        if (session.identityKey === identityKey) session.close(null);
+      }
+    }
+    // Only idle servers make room (least recently used first); closing a
+    // busy one would fail requests that have nothing to do with this one.
+    while (this.sessions.size >= this.maxSessions) {
+      const idle = [...this.sessions.values()].find((session) => !session.busy);
+      if (!idle) {
+        throw mcpError("direct_mcp_session_limit", `At most ${this.maxSessions} MCP servers run at once here, and all of them are handling requests. Try again when one finishes.`);
+      }
+      idle.close(null);
+    }
+    const session = new McpStdioSession(this, key, identityKey, server, options);
+    this.sessions.set(key, session);
+    this.started += 1;
+    return session;
+  }
+
+  forget(session) {
+    if (this.sessions.get(session.key) === session) this.sessions.delete(session.key);
+  }
+
+  async request(server, method, params = {}, options = {}) {
+    if (!server.command) throw mcpError("direct_mcp_transport_unavailable", "The configured MCP server has no local transport command.");
+    if (server.transportKind !== "stdio") throw mcpError("direct_mcp_transport_unsupported", "The configured MCP transport is not supported by Direct.");
+    if (options.signal?.aborted) throw mcpError("direct_mcp_request_aborted", "Configured MCP request was cancelled.");
+    const spawnProcess = typeof options.spawnProcess === "function"
+      ? options.spawnProcess
+      : (command, args, spawnOptions) => spawn(command, args, { ...spawnOptions, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const env = isPlainObject(options.env) ? options.env : mcpServerEnvironment(server.processEnv || []);
+    // One deadline for handshake and call together, as in the one-shot
+    // exchange.
+    const timeoutMs = boundedInteger(options.timeoutMs, DEFAULT_MCP_TIMEOUT_MS, 100, MAX_MCP_TIMEOUT_MS);
+    const deadline = Date.now() + timeoutMs;
+    const session = this.sessionFor(server, { ...options, timeoutMs, spawnProcess, env });
+    session.holds += 1;
+    try {
+      await session.waitReady(options.signal, timeoutMs);
+      // call() registers the request before returning, so the session stays
+      // busy without a gap.
+      return session.call(method, params, { timeoutMs: Math.max(100, deadline - Date.now()), signal: options.signal });
+    } finally {
+      session.holds -= 1;
+    }
+  }
+
+  async dispose() {
+    await Promise.all([...this.sessions.values()].map((session) => session.close(null)));
+  }
+}
+
 module.exports = {
   DEFAULT_MCP_TIMEOUT_MS,
   MAX_MCP_RESULT_BYTES,
   MAX_MCP_TIMEOUT_MS,
+  MCP_SESSION_IDLE_MS,
+  McpSessionPool,
   lineOrContentLengthParser,
   mcpServerEnvironment,
   requestMcpStdio,

@@ -144,10 +144,15 @@ function runCommand(command, args, options = {}) {
       if (/OPENAI|CHATGPT|CODEX_DIRECT|CODEX_REVIEW|AUTH|TOKEN|SECRET|PASSWORD/i.test(key)) delete env[key];
     }
     const started = Date.now();
-    const spawnCommand = process.platform === "win32" && command === "npm" ? "npm.cmd" : command;
+    // A .cmd shim cannot be spawned shell:false. Run the same npm CLI with Node instead.
+    const windowsNpm = process.platform === "win32" && command === "npm";
+    const spawnCommand = windowsNpm ? process.execPath : command;
+    const spawnArgs = windowsNpm
+      ? [path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), ...args]
+      : args;
     let child;
     try {
-      child = spawn(spawnCommand, args, {
+      child = spawn(spawnCommand, spawnArgs, {
         cwd: options.cwd,
         env,
         shell: false,
@@ -862,7 +867,7 @@ async function main() {
         threadStore.close();
       } catch {}
     }
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }
 

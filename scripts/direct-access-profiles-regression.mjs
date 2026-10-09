@@ -245,7 +245,9 @@ async function main() {
     assert.equal(workspaceExecutesLocally("wsl", { workspace: { distro: "Ubuntu" } }, { platform: "linux", env: { WSL_DISTRO_NAME: "Ubuntu" } }), true);
     assert.equal(workspaceExecutesLocally("wsl", { workspace: { distro: "Debian" } }, { platform: "linux", env: { WSL_DISTRO_NAME: "Ubuntu" } }), false);
     assert.equal(workspaceExecutesLocally("wsl", { workspace: { distro: "Ubuntu" } }, { platform: "win32", env: {} }), false);
-    assert.equal(workspaceExecutesLocally("windows", {}), false);
+    // A Windows workspace is local on a Windows host and remote elsewhere.
+    assert.equal(workspaceExecutesLocally("windows", {}, { platform: "linux", env: {} }), false);
+    assert.equal(workspaceExecutesLocally("windows", {}, { platform: "win32", env: {} }), true);
     report.checks.push("workspace_locality");
 
     // 6. Stateful exec: sandboxed profiles always go through the launcher.
@@ -265,8 +267,14 @@ async function main() {
     assert.equal(fakeResult.sandboxMode, "workspace-write");
     assert.equal(fakeResult.networkAccess, false);
     fakeManager.start({ ...executorInput(fullGrant), cmd: "echo hi" });
-    assert.match(spawned[1].command, /\/bash$/, "full access runs cmd in the native shell without a sandbox");
-    assert.deepEqual(spawned[1].args, ["-c", "echo hi"]);
+    // The native shell: bash on Linux, PowerShell on Windows (its command
+    // line arrives through a warm shell's stdin, so its args vary).
+    if (process.platform === "win32") {
+      assert.match(spawned[1].command, /(pwsh|powershell)\.exe$/i, "full access runs cmd in the native shell without a sandbox");
+    } else {
+      assert.match(spawned[1].command, /\/bash$/, "full access runs cmd in the native shell without a sandbox");
+      assert.deepEqual(spawned[1].args, ["-c", "echo hi"]);
+    }
     const noSandboxManager = new DirectStatefulExecSessionManager({
       workspaceRootResolver: () => workspaceRoot,
       sandbox: new BubblewrapExecSandbox({ platform: "win32" }),

@@ -22,6 +22,8 @@ const {
 } = require("../src/main/direct/thread/thread-deck");
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-thread-deck-"));
+let threadStore;
+let controller;
 
 function textResponse(body, status = 200, headers = {}) {
   return new Response(body, { status, headers });
@@ -93,7 +95,7 @@ try {
     objective: "Should render archived only when included.",
     activeRuntimePath: "direct-implementation",
   });
-  const controller = new DirectLiveTextController({
+  controller = new DirectLiveTextController({
     sessionStore,
     profileDoc,
     authStore,
@@ -108,7 +110,7 @@ try {
   });
   const { DirectThreadWorkbenchController } = require("../src/main/direct/thread/thread-workbench-controller");
   const { DirectThreadStore } = require("../src/main/direct/thread/thread-store");
-  const threadStore = new DirectThreadStore({ rootDir: tempRoot, mode: "index_only" });
+  threadStore = new DirectThreadStore({ rootDir: tempRoot, mode: "index_only" });
   const workbenchController = new DirectThreadWorkbenchController({
     threadStore,
     sessionStore,
@@ -386,5 +388,7 @@ try {
 
   console.log("direct thread deck regression passed");
 } finally {
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+  controller?.close("regression cleanup");
+  threadStore?.close();
+  fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

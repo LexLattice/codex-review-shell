@@ -1248,7 +1248,10 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   turn's history. Before, the history was one quoted transcript where
   every tool call was a placeholder line ("ready_for_provider_continuation"),
   so the model re-ran commands to recall what they printed. The context
-  pack and request manifest still record the quoted form; the turn's
+  pack still renders the quoted form, but the request manifest records
+  what was sent (`continuityPolicy: fresh_request_with_history_items`,
+  `providerHistory` with turn and item counts and any checkpoint,
+  `quotedTranscriptSentToProvider: false`; since 2026-10-09); the turn's
   `requestShape` marks `historyItemsUsed` with the counts. Live: asked what
   an earlier command printed, the model answers from history without a
   tool call (live suite `remembers_tool_output`). Gate:
@@ -1341,14 +1344,39 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   - Manual: the Workbench header's Compact button
     (`thread/compact/start`, Codex's `/compact`), available between turns.
   - The transcript shows "Context compacted for this thread." (Codex's
-    `contextCompaction` item) while the app is open; it isn't kept in the
-    saved transcript yet. Compaction requests aren't counted in the turn's
-    usage rows yet.
+    `contextCompaction` item), kept under the turn it happened in (a manual
+    compaction: the last turn it covers), so it shows again after a reload.
+    Compaction requests count in that turn's usage rows
+    (`context_compaction_remote` / `_local`).
+  - `get_context_remaining` now answers from the model's context window
+    (account model list) and the turn's last request usage (input plus
+    output); Direct's runtime status had no context fields, so it always
+    said unknown. Gate: `npm run direct:context-remaining`.
+  - Live suite `auto_compaction` lowers the limit through the test control
+    port (`direct-drive test-settings --auto-compact-limit N`) and checks
+    that the next turn compacts and still knows a number found only in a
+    compacted command output. The Compact button was checked on screen in
+    the WSL and Windows Workbench (`direct-drive screenshot`).
   - Live, luna/low, manual compaction: remote form accepted (1,352 → 605
     estimated tokens); asked afterwards, the model gave a number that
     appeared only in a compacted command output. (When the user had said
     nothing about the number, the checkpoint left it out; that's the
     backend's summary, as in Codex.) Gate: `npm run direct:context-compaction`.
+- Added 2026-10-09: `view_image`, as in Codex. Offered wherever `read_file`
+  is, under the same read rules (the access profile's, through the same
+  file port, so it works in WSL and Windows executors too). The image (PNG,
+  JPEG, GIF, or WebP by content, up to 1.4 MB so its base64 fits the
+  executor's 2 MiB message frame) goes back the way Codex sends it: a
+  `function_call_output` whose output is one `input_image` data URL
+  (`detail: high`). Kept in `sessions/<id>/images/`, not in the turn record;
+  later turns replay a text note instead of the image. A non-image is an
+  answer to the model, not a failed turn. Parallel-safe like `read_file`.
+  Gate: `npm run direct:view-image` (both hosts).
+- Added 2026-10-09: the plan shows in the turn. When the model calls
+  `update_plan`, the Workbench shows a checklist (`[x]` done, `[~]` in
+  progress, `[ ]` pending, `[!]` blocked, `[-]` deferred) as the turn's
+  plan item, replaced by each update and kept in the transcript. Gate:
+  `npm run direct:plan-ui`.
 - Added 2026-10-08: Windows commands start in an already-running
   PowerShell. The local process backend (also used natively by the
   Windows executor) keeps one idle shell per launch shape (sandbox
@@ -1360,13 +1388,18 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   pwsh startup is 370–500 ms here; a command in a warm shell finishes in
   100–200 ms. Live: `exec` 0.2–0.3 s instead of 0.5–1.2 s, and the
   tools/harness gap per command step dropped from about 0.9 s to 0.5 s.
-  Terminals and the first command of a shape still start cold. Gate:
+  Terminals still start cold. Since 2026-10-09 opening or resuming a thread
+  warms its default shape (project root, no extra environment), so the
+  thread's first command starts warm too (measured 215 ms). Gate:
   `direct-windows-prewarm-regression` (Windows Node; skips elsewhere);
   live suite 8/8 on Windows.
-- Found 2026-10-08, not fixed: `direct-native-windows-workspace-executor-regression`
-  fails under Windows Node (expects transport `windows-native-resident`,
-  gets `local-child`); it already failed before these changes, and the
-  Linux sweep doesn't run it.
+- Fixed 2026-10-09: a question to the owner (`request_user_input`,
+  `request_permissions`, `update_sub_agent_policy`) no longer also shows
+  the "Local approval is required" warning; only approvals do.
+- `direct-native-windows-workspace-executor-regression` covers a WSL/Linux
+  host reaching Windows; under Windows Node it now skips (a Windows
+  workspace runs in-process there, by design). See "Windows regression
+  sweep" under Findings for the rest of the Windows Node results.
 - Fixed 2026-10-08: the workspace agent's own patch path (no task grant)
   accepts Codex's patch format (translated to git-style diffs; bare hunks
   located by context); deletes stay deferred there. Gate:
@@ -1514,19 +1547,34 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   already declares the new tools; a turn-scoped grant returns the thread to
   its previous Access when the turn ends (or, if the turn ended elsewhere,
   before the next turn starts). Full access threads aren't offered the
-  tool. Known edge: a command session started before the raise may refuse
-  `write_stdin` afterwards (its grant is no longer current). Gate:
+  tool. A command session started before the raise keeps taking
+  `write_stdin` afterwards (checked 2026-10-09 on Linux and Windows Node:
+  `npm run direct:stdin-after-raise`; the earlier "may refuse" note was a
+  guess). Gate:
   `npm run direct:request-permissions`; live suite scenario
   `permission_request` passes on both hosts.
 - Since turn 8, configured MCP servers run in their own environment, and
   since turn 11b every server is tree-contained, including ones a Linux host
-  runs itself. One gap remains: **one process per request.** Servers are
-  started for each request, so stateful servers and server-initiated
-  sessions aren't supported. Long-lived sessions would need an
-  environment-owned registry per (environment, server config), initialize
-  once, request routing and cancellation, eviction on config change, idle
-  expiry, and executor loss, with the host's scope and freshness checks still
-  applied to every operation. The owner deferred this in turn 11b.
+  runs itself. Since 2026-10-09 servers are long-lived, as in Codex
+  (`McpSessionPool` in `mcp-stdio-transport.js`): one initialized server per
+  (placement, command, args, cwd, environment), owned by the environment it
+  runs in (the host's pool for its own servers, each executor's pool for
+  servers there, so a lost executor takes its servers with it). Later and
+  concurrent requests reuse it (`tool_search`'s three lists now share one
+  server instead of starting three); the handshake runs once; a cancelled
+  request sends `notifications/cancelled` and keeps the server; a
+  server-initiated request (elicitation, sampling) gets a JSON-RPC error and
+  fails what is in flight, as before, without killing the server; a crash
+  or a timed-out request replaces the server on the next request; a config
+  change for the same server stops the old process; servers stop after 10
+  minutes idle, at app quit, and when their executor stops (at most 16 per
+  pool). The host's scope, trust, and freshness checks still run on every
+  operation before a request reaches a server. Children a server starts
+  live as long as its session and are reaped with it (containment
+  unchanged). Server-initiated requests still need owner-interaction
+  support to be answered. Gates: `npm run direct:mcp-session-pool` (both
+  hosts), `direct-mcp-per-environment` and
+  `direct-provider-external-production-wiring` (updated; both hosts).
 - On Windows, the Low integrity label a Workspace command puts on its
   project folder is persistent and isn't per project. A Workspace command in
   one project can write another project folder that was labeled earlier,
@@ -1546,10 +1594,11 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   task grant, and workspace-worker test profiles. Moving them to the runner
   means giving its process groups and quiescence receipts a Windows
   counterpart.
-- Scratch `TEMP` folders are removed when a command closes. If the host or
-  executor dies abruptly, leftovers stay under
-  `%LOCALAPPDATA%\codex-review-shell\direct-job-runner\scratch`; nothing
-  sweeps them yet.
+- Scratch `TEMP` folders are removed when a command closes. Leftovers from
+  a host or executor that died abruptly (under
+  `%LOCALAPPDATA%\codex-review-shell\direct-job-runner\scratch`) are swept
+  when the Windows sandbox first starts in a process, if older than a day
+  (since 2026-10-09; `npm run direct:scratch-sweep`).
 - The patch parser rejects a bare `@@` hunk header (vanilla Codex accepts
   it); hunks need `@@ -a,b +c,d @@`.
 - The Workbench Electron smoke is not part of the sweep. It runs headless in
@@ -1561,10 +1610,33 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   machine", so projects created there are `wsl` projects (run locally, same
   distro) rather than `local` ones.
 - The Windows launcher syncs the mirror from WSL, launchers included, while
-  `cmd.exe` is executing them. `cmd` reads batch files from disk as it goes,
-  so the first launch after a launcher change runs garbled lines (`'an' is
-  not recognized…`, `robocopy failed … 9009`) before it recovers. A fix would
-  copy the launcher to a temp file and run that copy.
+  `cmd.exe` is executing them, and `cmd` reads batch files as it goes, so
+  the first launch after a launcher change used to run garbled lines. Since
+  2026-10-09 `start-codex-review-shell.cmd` and `sync-from-wsl.cmd` run from
+  a copy in `%TEMP%`, and the per-experience wrappers call the launcher and
+  exit on one line. Checked with a batch file that rewrites itself mid-run
+  (the unprotected form stopped after the rewrite and returned 0; the copied
+  form ran to the end and kept its exit code) and by running the new sync in
+  the Windows test mirror while it rewrote itself. Not checked end to end
+  with the full launcher, which stops the owner's running app.
+- Windows regression sweep (2026-10-09). `npm run direct:regression-sweep`
+  (`scripts/direct-regression-sweep.mjs`) runs every `direct-*` regression
+  under the current host's Node, on Windows or Linux, and treats exit 77 as
+  a skip. Run from the Windows test mirror (`--jobs 2`) it found two real
+  bugs, both scripts a sandbox in WSL couldn't see when the app runs on
+  Windows (the WSL executor's copy of the app sits under `/mnt/c`, which
+  bubblewrap doesn't mount): the sandboxed file writer (now `node -e
+  <source>` on Linux) and the terminal helper `pty-helper.py` (now
+  `python3 -c <source>`). Other fixes were in the tests (stores closed
+  before folders are removed, PowerShell quoting, `npm` run through `node`,
+  host-aware expectations), plus OpenCode WSL paths built with
+  `path.posix` on a Windows host. Tests that need Linux-only machinery
+  (semantic-service host and commissioning process, headless provider
+  workspace worker, ARO reconstruction runtime) or that target Windows from
+  a Linux host (native Windows workspace executor) skip under Windows
+  Node. The headless workspace worker's positive containment cases skip on
+  Windows: its backend still lacks a Job Object broker (see above). Result:
+  Linux all pass; Windows all pass or skip.
 - UI turns must be checked through `start-direct-workbench.cmd` on Windows
   too, not only in WSL's Electron: the Windows launch path (mirror sync,
   Windows npm, Windows Electron) differs.

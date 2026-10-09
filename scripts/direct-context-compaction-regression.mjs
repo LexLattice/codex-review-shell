@@ -42,7 +42,7 @@ function sse(id, step = {}) {
     text += event("response.output_item.added", { item }) + event("response.output_item.done", { item });
   }
   if (step.text) text += event("response.output_text.delta", { item_id: `msg_${id}`, delta: step.text });
-  text += event("response.completed", { response: { id, status: "completed" } });
+  text += event("response.completed", { response: { id, status: "completed", ...(step.usage ? { usage: step.usage } : {}) } });
   return {
     ok: true, status: 200, headers: { get: () => "text/event-stream" },
     body: { async *[Symbol.asyncIterator]() { yield new TextEncoder().encode(text); } },
@@ -143,6 +143,8 @@ try {
       const sessionText = await fs.readFile(h.sessionStore.sessionPath(h.threadId), "utf8");
       assert(!sessionText.includes("ENC_PRE_TURN"), "the checkpoint stays out of the session file");
       assert(h.notifications.some((e) => JSON.stringify(e).includes("contextCompaction")), "the transcript shows the compaction");
+      const secondMessage = h.sessionStore.readSession(h.threadId).messages.find((entry) => entry.id === second.stored.turnId);
+      assert(secondMessage?.items?.some((item) => item.type === "contextCompaction" && item.id === checkpoint.compactionId), "and keeps it once the turn has finished");
 
       // A later turn starts from the checkpoint, then the turns after it.
       h.controller.autoCompactTokenLimit = 0;
@@ -223,14 +225,26 @@ try {
       const nothing = await h.controller.handleRequest("thread/compact/start", { threadId: h.threadId }, h.context);
       assert.equal(nothing.compacted, false, "nothing to compact in a new thread");
       await h.runTurn("First request.", "one");
-      await h.runTurn("Second request.", "two");
-      h.setRespond((body) => isCompactionRequest(body) ? { compaction: "ENC_MANUAL" } : { text: "Third answer." });
+      const secondTurn = await h.runTurn("Second request.", "two");
+      h.setRespond((body) => isCompactionRequest(body)
+        ? { compaction: "ENC_MANUAL", usage: { input_tokens: 1200, output_tokens: 300, total_tokens: 1500 } }
+        : { text: "Third answer." });
       const before = h.bodies.length;
       const result = await h.controller.handleRequest("thread/compact/start", { threadId: h.threadId }, h.context);
       assert.equal(result.compacted, true);
       assert.equal(result.compaction.trigger, "manual");
       assert.equal(h.bodies.length, before + 1);
       assert(isCompactionRequest(h.bodies.at(-1)));
+      // The marker and the request's usage are kept with the last covered turn.
+      const coveredId = secondTurn.stored.turnId;
+      const message = h.sessionStore.readSession(h.threadId).messages.find((entry) => entry.id === coveredId);
+      assert(message.items.some((item) => item.type === "contextCompaction" && item.id === result.compaction.compactionId), "the transcript keeps the marker");
+      const read = await h.controller.handleRequest("thread/read", { threadId: h.threadId, includeTurns: true }, h.context);
+      assert(JSON.stringify(read).includes(result.compaction.compactionId), "thread/read returns it after a reload");
+      const rows = h.sessionStore.readTurn(h.threadId, coveredId).usageAttribution?.rows || [];
+      const compactionRow = rows.find((row) => row.requestKind === "context_compaction_remote");
+      assert(compactionRow, `the compaction request's usage is counted (${JSON.stringify(rows.map((row) => row.requestKind))})`);
+      assert.equal(compactionRow.totalTokens ?? compactionRow.tokens?.totalTokens ?? compactionRow.tokenUsage?.totalTokens, 1500);
       const again = await h.controller.handleRequest("thread/compact/start", { threadId: h.threadId }, h.context);
       assert.equal(again.compacted, false);
       assert.equal(again.reason, "already_compacted");

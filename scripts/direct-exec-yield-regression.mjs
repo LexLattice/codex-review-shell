@@ -16,8 +16,9 @@ const { DirectThreadHarnessGrantStore } = require("../src/main/direct/authority/
 const { DirectStatefulExecSessionManager } = require("../src/main/direct/tools/stateful-exec-session.js");
 const { DirectLiveTextController, DirectLiveTextSurfaceSession } = require("../src/main/direct/controller/live-text-controller.js");
 
-const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
-const node = quote(process.execPath);
+// PowerShell uses doubled quotes in literal strings and requires & for a quoted executable.
+const quote = (s) => `'${s.replaceAll("'", process.platform === "win32" ? "''" : "'\\''")}'`;
+const node = `${process.platform === "win32" ? "& " : ""}${quote(process.execPath)}`;
 const event = (type, data) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 const authStore = {
   readStatus: () => ({ status: "authenticated", hasAccessToken: true }),
@@ -47,7 +48,7 @@ function lastCallOutput(body) {
 
 // steps: each entry receives the request bodies so far and returns the next
 // provider call ({ name, args }), null for a final answer, or a promise.
-async function runTurn(root, name, steps, { interruptAfterMs = 0 } = {}) {
+async function runTurn(root, name, steps, { interruptAfterMs = 0, interruptReadyFile = "" } = {}) {
   const workspace = path.join(root, name);
   await fs.mkdir(workspace, { recursive: true });
   const project = {
@@ -68,7 +69,7 @@ async function runTurn(root, name, steps, { interruptAfterMs = 0 } = {}) {
       bodies.push(JSON.parse(init.body));
       assert(bodies.length <= steps.length + 1, `${name}: unexpected extra provider request`);
       const step = steps[bodies.length - 1];
-      const call = step ? await step(bodies) : null;
+      const call = step ? await step(bodies, { manager, workspace }) : null;
       return response(`${name}_${bodies.length}`, call);
     },
   });
@@ -84,6 +85,16 @@ async function runTurn(root, name, steps, { interruptAfterMs = 0 } = {}) {
       threadId: taskId, clientTurnRequestId: `exec_yield_${name}`, promptText: "Run it.",
     }, context);
     if (interruptAfterMs) {
+      // Windows starts a Job Object runner and PowerShell before Node. Stop must
+      // exercise a running fixture, not occasionally cancel shell startup.
+      if (interruptReadyFile) {
+        const deadline = Date.now() + 5000;
+        while (true) {
+          try { await fs.access(path.join(workspace, interruptReadyFile)); break; } catch {}
+          assert(Date.now() < deadline, "the command became ready before Stop");
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
       setTimeout(() => {
         controller.handleRequest("turn/interrupt", { threadId: taskId, turnId: startedTurn.turn.id }, context).catch(() => {});
       }, interruptAfterMs);
@@ -117,10 +128,11 @@ try {
   // result instead of failing with session_not_live.
   const late = await runTurn(root, "late_eof", [
     () => ({ name: "exec_command", args: { cmd: `${node} -e ${quote("setTimeout(() => { console.log('exited-early'); process.exit(0); }, 200)")}`, stdinPolicy: "line_input", yield_time_ms: 50 } }),
-    async (bodies) => {
+    async (bodies, { manager }) => {
       const running = lastCallOutput(bodies.at(-1));
       assert.equal(running.status, "running", "yield_time_ms shortens the wait");
-      await new Promise((resolve) => setTimeout(resolve, 700));
+      // Wait for actual process completion, not a host-dependent startup delay.
+      await manager.wait(running);
       return { name: "write_stdin", args: { session_id: running.sessionId, eof: true } };
     },
   ]);
@@ -134,8 +146,16 @@ try {
   // Input to a live process: write_stdin waits briefly, so a process that
   // answers and exits reports completion in the same call.
   const live = await runTurn(root, "live_input", [
-    () => ({ name: "exec_command", args: { cmd: `${node} -e ${quote("process.stdin.once('data', (d) => { console.log('got ' + String(d).trim()); process.exit(0); })")}`, stdinPolicy: "line_input", yield_time_ms: 100 } }),
-    (bodies) => ({ name: "write_stdin", args: { session_id: lastCallOutput(bodies.at(-1)).sessionId, chars: "hi\n" } }),
+    () => ({ name: "exec_command", args: { cmd: `${node} -e ${quote("process.stdin.once('data', (d) => { console.log('got ' + String(d).trim()); process.exit(0); }); require('node:fs').writeFileSync('input-ready.txt', 'ready')")}`, stdinPolicy: "line_input", yield_time_ms: 100 } }),
+    async (bodies, { workspace }) => {
+      const deadline = Date.now() + 5000;
+      while (true) {
+        try { await fs.access(path.join(workspace, "input-ready.txt")); break; } catch {}
+        assert(Date.now() < deadline, "the input fixture became ready");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      return { name: "write_stdin", args: { session_id: lastCallOutput(bodies.at(-1)).sessionId, chars: "hi\n" } };
+    },
   ]);
   assert.equal(live.turn.state, "completed", JSON.stringify(live.turn.error));
   assert.equal(live.outputs[0].status, "running");
@@ -147,7 +167,7 @@ try {
   // process too, although its session isn't on the obligation yet.
   const stopped = await runTurn(root, "stop_during_wait", [
     () => ({ name: "exec_command", args: { cmd: `${node} -e ${quote("setInterval(() => require('node:fs').appendFileSync('ticks.txt', 'x\\n'), 100)")}` } }),
-  ], { interruptAfterMs: 800 });
+  ], { interruptAfterMs: 800, interruptReadyFile: process.platform === "win32" ? "ticks.txt" : "" });
   assert.equal(stopped.turn.state, "aborted", JSON.stringify(stopped.turn.error));
   assert.equal(stopped.bodies.length, 1, "no continuation after Stop");
   // The kill ends the wait at once; before, the process ran out the full
@@ -186,5 +206,5 @@ try {
     elapsedMs: { slow: slow.elapsedMs, late: late.elapsedMs, live: live.elapsedMs },
   }));
 } finally {
-  await fs.rm(root, { recursive: true, force: true });
+  await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

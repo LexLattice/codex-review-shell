@@ -321,6 +321,7 @@ const {
   configuredMcpServerIdentityInput,
   configuredMcpServersForProject,
   createDirectConfiguredMcpResolvers,
+  disposeHostMcpSessions,
   normalizeConfiguredMcpServer,
 } = require("./main/direct/external/configured-mcp-adapter");
 const {
@@ -14513,6 +14514,11 @@ async function startDirectTestControlServer() {
     },
     createThread: (project, payload) => ensureDirectThreadWorkbenchController().createWorkThreadDraftSession(project, payload),
     terminalStates: DIRECT_TERMINAL_TURN_STATES,
+    // What the owner sees: the Workbench surface as a PNG.
+    captureSurface: async () => {
+      if (!codexView || codexView.webContents.isDestroyed()) return null;
+      return (await codexView.webContents.capturePage()).toPNG();
+    },
     onShutdown: () => app.quit(),
     appInfo: { experience: APP_EXPERIENCE.id, appRoot },
   });
@@ -14574,6 +14580,9 @@ app.on("before-quit", (event) => {
       console.warn("[direct-live-text] ordered shutdown blocked", statefulReceipt.cleanupFailure || "stateful_exec_cleanup_incomplete");
       return;
     }
+    // Long-lived MCP servers this host runs (contained, so they'd also end
+    // with the app; this stops them cleanly first).
+    await disposeHostMcpSessions().catch(() => {});
     closeApplicationRuntimeAfterOrderedWorkspaceShutdown();
     applicationQuitAfterOrderedShutdown = true;
     app.quit();

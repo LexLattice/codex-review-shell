@@ -5,9 +5,20 @@
 // on stdin (one type byte, a 4-byte big-endian length, the payload) and
 // write the terminal's output to stdout.
 
+const fs = require("node:fs");
 const path = require("node:path");
 
 const PTY_HELPER_PATH = path.join(__dirname, "..", "..", "..", "backend", "pty-helper.py");
+let ptyHelperSource = null;
+
+// The helper is passed to python3 as `-c <source>` rather than by path: when
+// the app runs on Windows, the WSL executor's copy of this file sits under
+// /mnt/c, which the sandbox does not mount. With -c, sys.argv[0] is "-c", so
+// the helper's argument positions are unchanged.
+function ptyHelperArgs(rows, cols, command, args = []) {
+  if (ptyHelperSource === null) ptyHelperSource = fs.readFileSync(PTY_HELPER_PATH, "utf8");
+  return ["-c", ptyHelperSource, String(rows), String(cols), "--", command, ...(Array.isArray(args) ? args : [])];
+}
 const DEFAULT_PTY_ROWS = 24;
 const DEFAULT_PTY_COLS = 80;
 const PTY_SIGNALS = new Set(["SIGINT", "SIGTERM", "SIGKILL", "SIGHUP", "SIGQUIT"]);
@@ -85,4 +96,5 @@ module.exports = {
   encodePtyFrame,
   encodePtyResize,
   normalizePtySize,
+  ptyHelperArgs,
 };

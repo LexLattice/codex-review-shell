@@ -1,10 +1,11 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 
 set "CODEX_EXPERIENCE=direct-workbench"
 set "CODEX_DIRECT_T3_GUI="
 set "CODEX_WORLD_MANAGER="
 set "CODEX_WORLD_MANAGER_MOCKUP="
 
-call "%~dp0start-codex-review-shell.cmd"
-exit /b %ERRORLEVEL%
+rem One line: the launcher sync may rewrite this file while it runs, and
+rem cmd.exe would read the rest of it from the changed file.
+call "%~dp0start-codex-review-shell.cmd" & exit /b !ERRORLEVEL!

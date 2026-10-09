@@ -8,6 +8,14 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 
+// Reconstruction reads a repository semantic snapshot from the Linux
+// workspace agent; the Windows workspace backend doesn't offer one
+// (capabilities.repositorySemanticSnapshot is false there by design).
+if (process.platform === "win32") {
+  console.log("SKIPPED: repository semantic snapshots come from the Linux workspace agent.");
+  process.exit(77);
+}
+
 const require = createRequire(import.meta.url);
 const {
   DirectWorldManagerControlPlaneStore,

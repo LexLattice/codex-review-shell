@@ -219,6 +219,30 @@ const scenarios = [
     },
   },
   {
+    name: "auto_compaction",
+    async run(ctx) {
+      // A number that appears only in a command's output; after the history
+      // is compacted the model must still know it.
+      const first = chat('Run exactly this command and just say done (I will ask about its number later): node -e "console.log(6007*7*3)"', ["--project", ctx.projectId]);
+      // Below any real request, so the next turn compacts first.
+      drive(["test-settings", "--auto-compact-limit", "1000"]);
+      let second;
+      try {
+        second = chat("Without running anything, what number did that command print?", ["--project", ctx.projectId, "--thread", first.report.threadId]);
+      } finally {
+        drive(["test-settings", "--auto-compact-limit", "0"]);
+      }
+      const before = second.report.compaction?.beforeTurn;
+      return [
+        [first.report.state === "completed" && second.report.state === "completed", `turns ${first.report.state}, ${second.report.state}`],
+        [Boolean(before), `history compacted before the turn (${before?.mode || "no"}${before ? `, ${before.tokensBefore} → ${before.tokensAfter} tokens` : ""})`],
+        [(second.report.toolCalls || []).length === 0, "answered without a tool call"],
+        [/126,?147/.test(second.report.assistant || ""), "reply has 126147"],
+        [true, "", second],
+      ];
+    },
+  },
+  {
     name: "follow_up_turn",
     async run(ctx) {
       if (!ctx.editThreadId) return [[false, "needs edit_and_run first"]];

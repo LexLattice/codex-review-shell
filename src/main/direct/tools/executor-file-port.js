@@ -9,6 +9,7 @@
 const path = require("node:path");
 const { EXECUTOR_METHODS } = require("../../../shared/executor-protocol");
 const {
+  MAX_READ_FILE_BYTES,
   localError,
   pathText,
   safePathEvidence,
@@ -50,12 +51,13 @@ class ExecutorFilePort {
   // The executor applies the profile's read rules inside fs/read.
   async assertReadable() {}
 
-  async readFile(resolved, maxBytes, input, grant) {
+  async readFile(resolved, maxBytes, input, grant, capBytes = MAX_READ_FILE_BYTES) {
     const result = await this.request(input, EXECUTOR_METHODS.fsRead, {
       path: resolved.target,
       maxBytes,
       sandboxMode: grant?.sandboxMode,
-      purpose: "read",
+      // An image read (view_image) gets the larger image ceiling there too.
+      purpose: capBytes > MAX_READ_FILE_BYTES ? "image" : "read",
     });
     return { size: Number(result?.size || 0), bytes: Buffer.from(String(result?.bytesBase64 || ""), "base64") };
   }

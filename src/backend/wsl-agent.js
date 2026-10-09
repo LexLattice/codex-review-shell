@@ -46,8 +46,8 @@ const { BASE_COMMAND_ENVIRONMENT_KEYS, LocalChildProcessBackend } = require("../
 const { WINDOWS_JOB_LAUNCHER } = require("../main/direct/tools/windows-job-runner");
 const { PtyChannel } = require("../main/direct/tools/pty-frames");
 const { spawnInLinuxPidNamespace } = require("../shared/linux-pid-namespace");
-const { mcpServerEnvironment, requestMcpStdio } = require("../main/direct/external/mcp-stdio-transport");
-const { LocalFilePort, parseUnifiedPatch: parseCodexOrUnifiedPatch } = require("../main/direct/tools/full-access-local-environment");
+const { McpSessionPool, mcpServerEnvironment } = require("../main/direct/external/mcp-stdio-transport");
+const { LocalFilePort, MAX_IMAGE_BYTES, parseUnifiedPatch: parseCodexOrUnifiedPatch } = require("../main/direct/tools/full-access-local-environment");
 
 const PROTOCOL_VERSION = 1;
 // Keep the protocol line bounded while still admitting the largest supported
@@ -6271,11 +6271,12 @@ function signalExecutorProcessSessionRequest(params = {}) {
 }
 
 // Configured MCP servers that live in this environment (`mcp/*`). The host
-// keeps trust, freshness, scope, and the result envelope; the executor runs
-// the same one-request stdio exchange the host runs for its own servers,
-// with the server contained like a full-access process session and its
-// allowlisted variables read from this environment.
+// keeps trust, freshness, scope, and the result envelope; the executor keeps
+// this environment's long-lived server sessions (the same pool the host
+// keeps for its own servers), each server contained like a full-access
+// process session with its allowlisted variables read from this environment.
 const executorMcpRequests = new Map();
+const executorMcpSessions = new McpSessionPool();
 
 function spawnContainedMcpServer(command, args, options = {}) {
   if (process.platform === "win32") {
@@ -6314,10 +6315,11 @@ async function executorMcpRequest(params = {}) {
     cwd: typeof source.cwd === "string" && source.cwd.trim() ? source.cwd : currentRoot(),
     processEnv,
   };
+  const serverIdentityId = typeof source.serverIdentityId === "string" ? source.serverIdentityId.slice(0, 200) : "";
   const controller = new AbortController();
   executorMcpRequests.set(id, controller);
   try {
-    const result = await requestMcpStdio(
+    const result = await executorMcpSessions.request(
       server,
       String(params.method || ""),
       params.params && typeof params.params === "object" ? params.params : {},
@@ -6326,6 +6328,8 @@ async function executorMcpRequest(params = {}) {
         signal: controller.signal,
         env: mcpServerEnvironment(processEnv),
         spawnProcess: spawnContainedMcpServer,
+        placementKey: "executor",
+        identityKey: serverIdentityId,
       },
     );
     return { result };
@@ -6342,6 +6346,7 @@ function cancelExecutorMcpRequest(params = {}) {
 
 function abortAllExecutorMcpRequests() {
   for (const controller of executorMcpRequests.values()) controller.abort();
+  executorMcpSessions.dispose().catch(() => {});
 }
 
 // Folder browsing (`fs/list`) for picking a project folder in this
@@ -6441,7 +6446,9 @@ async function executorFsRead(params = {}) {
     return { exists: target.exists, bytesBase64: target.bytes.toString("base64") };
   }
   await port.assertReadable(grant, resolved);
-  const { size, bytes } = await port.readFile(resolved, params.maxBytes, {}, grant);
+  // view_image reads whole images, up to the image ceiling.
+  const capBytes = params.purpose === "image" ? MAX_IMAGE_BYTES : undefined;
+  const { size, bytes } = await port.readFile(resolved, params.maxBytes, {}, grant, capBytes);
   return { size, bytesBase64: bytes.toString("base64") };
 }
 

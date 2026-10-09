@@ -320,6 +320,10 @@ function historyToolOutput(toolName = "", outputText) {
   if (toolName === DIRECT_SELF_CONSTITUTION_TOOL_NAME) {
     return JSON.stringify({ kind: "inspect_self_constitution_result", status: "completed", note: "Snapshot omitted from history; call inspect_self_constitution for the current one." });
   }
+  if (toolName === "view_image") {
+    // Earlier turns keep the text record; the image itself isn't resent.
+    return historyText(`${outputText}\n[image not repeated in history; call view_image again to see it]`, HISTORY_TOOL_OUTPUT_CHARS);
+  }
   return historyText(outputText, HISTORY_TOOL_OUTPUT_CHARS);
 }
 
@@ -411,11 +415,32 @@ function describeSubAgentPolicyUpdate(args = {}, scope = "thread") {
   const summary = normalizeString(args.summary, "").slice(0, 300);
   return `${scope === "project" ? "For this project" : "For this thread"}: ${parts.join("; ") || "no settings"}.${summary ? ` (${summary})` : ""}`;
 }
-function withSubAgentPolicyTool(tools, enabled) {
-  if (!enabled || !Array.isArray(tools)) return tools;
+// Codex's view_image, offered wherever read_file is (same read rules).
+const VIEW_IMAGE_TOOL_NAME = "view_image";
+function viewImageToolSchema() {
+  return {
+    type: "function",
+    name: VIEW_IMAGE_TOOL_NAME,
+    description: "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Local filesystem path to an image file." },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  };
+}
+// Tools a turn gets beyond its composed bundle: view_image with read_file,
+// and update_sub_agent_policy with spawn_agent (when a policy service exists).
+function withExtraTurnTools(tools, policyEnabled) {
+  if (!Array.isArray(tools)) return tools;
   const names = new Set(tools.map((tool) => normalizeString(tool?.name || tool?.function?.name, "")));
-  if (!names.has("spawn_agent") || names.has(SUB_AGENT_POLICY_TOOL_NAME)) return tools;
-  return [...tools, subAgentPolicyToolSchema()];
+  const extra = [];
+  if (names.has("read_file") && !names.has(VIEW_IMAGE_TOOL_NAME)) extra.push(viewImageToolSchema());
+  if (policyEnabled && names.has("spawn_agent") && !names.has(SUB_AGENT_POLICY_TOOL_NAME)) extra.push(subAgentPolicyToolSchema());
+  return extra.length ? [...tools, ...extra] : tools;
 }
 const EXTERNAL_DISCOVERY_TOOL_NAMES = Object.freeze([
   "tool_search",
@@ -1463,7 +1488,7 @@ function buildSafeResidentUtilitySlice(toolName, projectId = "") {
 // Calls that may run at the same time as each other (Codex marks
 // exec_command, write_stdin, and read-only tools parallel; apply_patch and
 // anything needing the owner run alone).
-const PARALLEL_SAFE_TOOL_NAMES = new Set(["exec_command", "write_stdin", "read_file", "list_agents", "inspect_agent"]);
+const PARALLEL_SAFE_TOOL_NAMES = new Set(["exec_command", "write_stdin", "read_file", "view_image", "list_agents", "inspect_agent"]);
 
 function toolBatchKey(sessionId, turnId) {
   return `${normalizeString(sessionId, "")}:${normalizeString(turnId, "")}`;
@@ -2749,6 +2774,45 @@ class DirectLiveTextController {
     return this.continueAfterSafeResidentUtilityResult(context.surfaceSession, sessionId, turnId, obligation, envelope, project);
   }
 
+  // view_image: the image goes back to the model as an input_image (Codex's
+  // output shape); the turn keeps it in a side file, not in its record.
+  async emitViewImageRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
+    const args = parseToolArgumentsObject(obligation);
+    const imagePath = normalizeString(args.path, "");
+    const fail = (code, message) => this.returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation, project, { code, message });
+    if (!imagePath) return fail("view_image_path_required", "view_image needs a path.");
+    const binding = this.fullAccessLocalBinding(sessionId, turnId, project, "read_file");
+    if (!binding) return fail("view_image_unavailable", "This thread can't read files, so it can't view images either.");
+    let image;
+    try {
+      image = await this.fullAccessLocalEnvironmentExecutor.request(binding, "readImage", { path: imagePath });
+    } catch (error) {
+      return fail(normalizeString(error?.code, "view_image_failed"), normalizeString(error?.message, "The image couldn't be read."));
+    }
+    this.sessionStore.writeToolImage(sessionId, obligation.obligationId, { mimeType: image.mimeType, dataBase64: image.dataBase64 });
+    const envelope = {
+      schema: "direct_view_image_result_envelope@1",
+      envelopeId: `view_image_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}`).slice(0, 24)}`,
+      toolName: VIEW_IMAGE_TOOL_NAME,
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: "view_image",
+      status: "ready_for_provider_continuation",
+      providerOutput: {
+        kind: "view_image_result",
+        status: "loaded",
+        path: image.pathEvidenceKey,
+        mimeType: image.mimeType,
+        bytes: image.size,
+      },
+      sideEffectExecuted: false,
+      rawWorkspacePathIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
+    return 1;
+  }
+
   async emitSubAgentPolicyRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
     const args = parseToolArgumentsObject(obligation);
     const fail = (code, message) => this.returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation, project, { code, message });
@@ -3512,7 +3576,7 @@ class DirectLiveTextController {
     });
     return {
       ...composition,
-      tools: withSubAgentPolicyTool(withPermissionsTool(
+      tools: withExtraTurnTools(withPermissionsTool(
         withDelegationTargets(applyEnvironmentToToolSchemas(composition.tools, facts), this.delegationTargetsFor(project || {}, session)),
         grant,
       ), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
@@ -4588,6 +4652,7 @@ class DirectLiveTextController {
       instructions: normalizeString(admitted.instructions, ""),
       historyItems: history.items,
       coversThroughTurnId: history.lastTurnId,
+      transcriptTurnId: history.lastTurnId,
       trigger: "manual",
     });
     return { threadId: sessionId, compacted: true, compaction };
@@ -5104,12 +5169,21 @@ class DirectLiveTextController {
   appendSessionTurn(sessionId, turnId, items, model, status) {
     const session = this.sessionStore.readSession(sessionId);
     if (!session) return;
+    // Harness items recorded during the turn (compaction markers, the plan)
+    // go after the user's message (the turn's own items replace the rest).
+    const markers = (this.sessionStore.readTurn(sessionId, turnId)?.transcriptExtraItems || [])
+      .filter((marker) => isPlainObject(marker) && !(items || []).some((item) => item?.id === marker.id));
+    const ownItems = Array.isArray(items) ? items : [];
+    const userIndex = ownItems.findIndex((item) => item?.type === "userMessage");
+    const mergedItems = markers.length
+      ? [...ownItems.slice(0, userIndex + 1), ...markers, ...ownItems.slice(userIndex + 1)]
+      : items;
     const nextMessages = [
       ...(Array.isArray(session.messages) ? session.messages.filter((message) => message.id !== turnId) : []),
       {
         id: turnId,
         status,
-        items,
+        items: mergedItems,
       },
     ];
     this.sessionStore.writeSession({
@@ -7357,16 +7431,29 @@ class DirectLiveTextController {
     if (toolName === "get_context_remaining") {
       const status = this.statusForProject(options.project || {});
       const context = isPlainObject(status.context) ? status.context : {};
+      // The model's window from the account's model list, and what the last
+      // request of this turn used (its input plus output, which the next
+      // request carries), as Codex counts it.
+      const turn = this.sessionStore.readTurn(baseInput.threadId, baseInput.turnId) || {};
+      const turnModel = normalizeString(turn.model, status.model);
+      const descriptorWindow = Number(this.catalogModelDescriptor(options.project || {}, turnModel)?.contextWindow || 0);
+      const rows = Array.isArray(turn.usageAttribution?.rows) ? turn.usageAttribution.rows : [];
+      const lastRow = [...rows].reverse().find((row) => !String(row?.requestKind || "").startsWith("context_compaction") && Number(row?.inputTokens) > 0);
+      const lastUsed = lastRow ? Number(lastRow.inputTokens || 0) + Number(lastRow.outputTokens || 0) : 0;
+      const contextWindow = descriptorWindow || Number(context.contextWindow || context.windowTokens || status.contextWindow || 0);
+      const usedTokens = lastUsed || Number(context.usedTokens || context.contextTokensUsed || status.contextUsedTokens || 0);
       return buildContextRemainingResultEnvelope({
         gate,
         contextRemainingInput: {
           ...baseInput,
-          model: normalizeString(status.model, ""),
-          contextWindow: Number(context.contextWindow || context.windowTokens || status.contextWindow || 0),
-          usedTokens: Number(context.usedTokens || context.contextTokensUsed || status.contextUsedTokens || 0),
-          remainingTokens: Number(context.remainingTokens || context.contextTokensRemaining || status.contextRemainingTokens || 0),
-          confidence: normalizeString(context.confidence, "estimated"),
-          estimateKind: normalizeString(context.estimateKind, "harness_estimate"),
+          model: turnModel,
+          contextWindow,
+          usedTokens,
+          remainingTokens: contextWindow && usedTokens
+            ? Math.max(0, contextWindow - usedTokens)
+            : Number(context.remainingTokens || context.contextTokensRemaining || status.contextRemainingTokens || 0),
+          confidence: lastUsed && descriptorWindow ? "derived" : normalizeString(context.confidence, "estimated"),
+          estimateKind: lastUsed ? "provider_reported" : normalizeString(context.estimateKind, "harness_estimate"),
         },
       });
     }
@@ -7623,12 +7710,21 @@ class DirectLiveTextController {
       } else {
         items.push(
           { type: "function_call", call_id: callId, name, arguments: prior.argumentsText || "{}" },
-          { type: "function_call_output", call_id: callId, output: prior.providerOutputText },
+          { type: "function_call_output", call_id: callId, output: this.viewImageOutput(turn, prior) || prior.providerOutputText },
         );
       }
     }
     const base = turnCompaction ? turnCompaction.replacementItems : admitted.input;
     return [...JSON.parse(JSON.stringify(base)), ...items];
+  }
+
+  // A loaded view_image result goes back as the image (Codex sends a
+  // content-item output with one input_image).
+  viewImageOutput(turn = {}, prior = {}) {
+    if (normalizeString(prior.toolName, "") !== VIEW_IMAGE_TOOL_NAME || typeof this.sessionStore.readToolImage !== "function") return null;
+    const image = this.sessionStore.readToolImage(normalizeString(turn.sessionId, ""), prior.obligationId);
+    if (!image?.dataBase64 || !image.mimeType) return null;
+    return [{ type: "input_image", image_url: `data:${image.mimeType};base64,${image.dataBase64}`, detail: "high" }];
   }
 
   // Earlier turns of the thread as Codex sends them: each user message, the
@@ -7813,11 +7909,27 @@ class DirectLiveTextController {
       tools: Array.isArray(input.tools) ? input.tools : [],
       input: items,
     };
+    // Compaction is billed like any request; its usage counts toward the
+    // turn it ran in (a manual compaction: the last turn it covers).
+    const usageTurnId = normalizeString(input.transcriptTurnId, turnId);
+    const recordUsage = (result, requestKind) => {
+      if (!usageTurnId || typeof this.sessionStore.recordTurnUsage !== "function") return;
+      try {
+        this.sessionStore.recordTurnUsage(sessionId, usageTurnId, result?.normalizedEvents, {
+          requestKind,
+          model: common.model,
+          reasoningEffort: common.reasoningEffort,
+        });
+      } catch {
+        // Usage rows are accounting; they never decide the compaction.
+      }
+    };
     let replacementItems = null;
     let mode = "";
     const failures = [];
     try {
       const remote = await runRemoteCompactionRequest(common);
+      recordUsage(remote, "context_compaction_remote");
       if (remote.ok && Array.isArray(remote.compactionItems) && remote.compactionItems.length === 1) {
         mode = "remote";
         replacementItems = [...retainedUserMessages(items, COMPACT_RETAINED_TOKENS_REMOTE), remote.compactionItems[0]];
@@ -7830,6 +7942,7 @@ class DirectLiveTextController {
     if (!replacementItems && !common.signal?.aborted) {
       try {
         const local = await runLocalCompactionRequest(common);
+        recordUsage(local, "context_compaction_local");
         const summary = local.ok ? assistantTextFromDirectEvents(local.normalizedEvents) : "";
         if (summary) {
           mode = "local";
@@ -7845,6 +7958,7 @@ class DirectLiveTextController {
       }
     }
     notify("item/completed", replacementItems ? "completed" : "failed");
+    if (replacementItems) this.recordCompactionTranscriptItem(sessionId, normalizeString(input.transcriptTurnId, turnId), compactionId, mode);
     if (!replacementItems) {
       const error = new Error(`Context compaction failed (${failures.join(", ") || "unknown"}).`);
       error.code = "direct_context_compaction_failed";
@@ -7865,6 +7979,46 @@ class DirectLiveTextController {
       tokensAfter: estimateTokens(replacementItems),
       remoteFailure: mode === "local" ? failures[0] || "" : "",
     };
+  }
+
+  // The transcript keeps the "Context compacted" marker under the turn it
+  // happened in (a manual compaction: the last turn it covers), so it shows
+  // again after a reload.
+  recordCompactionTranscriptItem(sessionId, turnId, compactionId, mode = "") {
+    this.recordTranscriptItem(sessionId, turnId, { id: compactionId, type: "contextCompaction", turnId, status: "completed", ...(mode ? { mode } : {}) });
+  }
+
+  // A harness-made transcript item (compaction marker, plan) for a turn,
+  // replacing any earlier item with the same id.
+  recordTranscriptItem(sessionId, turnId, marker = {}) {
+    if (!turnId || !marker.id) return;
+    // On the turn, for when its message is (re)written at the end...
+    const turn = this.sessionStore.readTurn(sessionId, turnId);
+    if (turn) {
+      this.sessionStore.updateTurnState(sessionId, turnId, turn.state, {
+        transcriptExtraItems: [
+          ...(Array.isArray(turn.transcriptExtraItems) ? turn.transcriptExtraItems : []).filter((item) => item?.id !== marker.id),
+          marker,
+        ],
+      });
+    }
+    const compactionId = marker.id;
+    // ...and in its message now, if it has one (a finished turn).
+    const session = this.sessionStore.readSession(sessionId);
+    if (!session || !Array.isArray(session.messages) || !session.messages.some((message) => message?.id === turnId)) return;
+    this.sessionStore.writeSession({
+      ...session,
+      updatedAt: nowIso(),
+      messages: session.messages.map((message) => message.id !== turnId
+        ? message
+        : {
+            ...message,
+            items: [
+              ...(Array.isArray(message.items) ? message.items : []).filter((item) => item?.id !== compactionId),
+              marker,
+            ],
+          }),
+    });
   }
 
   // Compacts the thread's history (the earlier turns, or the checkpoint and
@@ -8271,8 +8425,32 @@ class DirectLiveTextController {
       });
       return recorded ? 1 : 0;
     }
+    if (obligation.name === "update_plan" && envelope.status !== "blocked") this.showPlan(surfaceSession, sessionId, turnId, obligation, envelope);
     await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
     return 1;
+  }
+
+  // Codex shows the model's update_plan as a checklist in the turn; one
+  // item per turn, replaced by each update.
+  showPlan(surfaceSession, sessionId, turnId, obligation = {}, envelope = {}) {
+    const args = parseToolArgumentsObject(obligation);
+    // The plan as the projection now holds it, else as the call sent it
+    // (Direct's steps[].text or Codex's plan[].step).
+    const candidates = [envelope.planStore?.currentPlan?.steps, args.steps, args.plan];
+    const source = candidates.find((entry) => Array.isArray(entry) && entry.length) || [];
+    const steps = source
+      .filter((entry) => isPlainObject(entry) && normalizeString(entry.text || entry.step, ""))
+      .slice(0, 50);
+    if (!steps.length) return;
+    const mark = { completed: "[x]", completed_in_plan: "[x]", in_progress: "[~]", blocked: "[!]", deferred: "[-]" };
+    const explanation = normalizeString(args.explanation || args.summary, "");
+    const text = [
+      ...(explanation ? [explanation.slice(0, 600), ""] : []),
+      ...steps.map((entry) => `${mark[normalizeString(entry.status, "")] || "[ ]"} ${normalizeString(entry.text || entry.step, "").slice(0, 300)}`),
+    ].join("\n");
+    const item = { id: `${turnId}_plan`, type: "plan", turnId, text };
+    this.recordTranscriptItem(sessionId, turnId, item);
+    this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
   }
 
   isReadOnlySubAgentStatusObligation(obligation = {}) {
@@ -9270,6 +9448,10 @@ class DirectLiveTextController {
         createdCount += await this.emitSubAgentPolicyRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
       }
+      if (normalizeString(obligation.name, "") === VIEW_IMAGE_TOOL_NAME) {
+        createdCount += await this.emitViewImageRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
       if (this.isEpistemicLedgerObligation(sessionId, turnId, obligation)) {
         createdCount += await this.emitEpistemicLedgerRequest(
           surfaceSession,
@@ -9497,8 +9679,10 @@ class DirectLiveTextController {
       // Calls the thread's access covers run without asking; only a request
       // actually put to the owner (an rpc-request) needs a warning.
       let ownerRequests = 0;
+      // A question to the owner (request_user_input, request_permissions,
+      // update_sub_agent_policy) is its own prompt; only approvals warn.
       const countOwnerRequests = (event) => {
-        if (event?.type === "rpc-request") ownerRequests += 1;
+        if (event?.type === "rpc-request" && event.request?.method !== "item/tool/requestUserInput") ownerRequests += 1;
       };
       surfaceSession?.on?.("event", countOwnerRequests);
       let createdApprovalRequests = 0;
@@ -11464,6 +11648,21 @@ class DirectLiveTextController {
               harnessGrant,
             })
           : null;
+        // The pack still renders earlier turns as a quoted transcript; the
+        // provider gets them as history items (structuredHistoryInput), and
+        // the manifest says so.
+        const plannedHistoryLimit = implementationTier ? this.autoCompactTokenLimitFor(project, model) : 0;
+        const plannedHistory = implementationTier && useRecentDialogue
+          ? this.priorTurnHistoryItems(session.sessionId, turn.turnId, plannedHistoryLimit ? { budgetChars: plannedHistoryLimit * 4 } : {})
+          : null;
+        const plannedHistoryShape = plannedHistory?.items?.length
+          ? {
+              providerHistoryForm: "structured_items",
+              providerHistoryTurnCount: plannedHistory.turnCount,
+              providerHistoryItemCount: plannedHistory.items.length,
+              ...(plannedHistory.compactionId ? { providerHistoryCompactionId: plannedHistory.compactionId } : {}),
+            }
+          : {};
         contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
           session: this.sessionStore.readSession(session.sessionId) || session,
           projectId: session.projectId,
@@ -11482,6 +11681,7 @@ class DirectLiveTextController {
           requestShape: {
             ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
             ...selfConstitutionRequestShapeFields(selfConstitutionSnapshot),
+            ...plannedHistoryShape,
           },
           endpointClass: "chatgpt-codex-responses",
           endpointHash: this.endpoint ? sha256(this.endpoint) : "",
@@ -11550,7 +11750,7 @@ class DirectLiveTextController {
               reasoningEffort,
               serviceTier,
               cyberAccessProgram,
-              tools: withSubAgentPolicyTool(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
+              tools: withExtraTurnTools(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
               toolChoicePolicy: "auto",
             })
           : buildTextOnlyProbeRequest({
@@ -11588,7 +11788,7 @@ class DirectLiveTextController {
           reasoningEffort,
           serviceTier,
           cyberAccessProgram,
-          tools: withSubAgentPolicyTool(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
+          tools: withExtraTurnTools(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
           toolChoicePolicy: "auto",
         });
       }
@@ -12338,8 +12538,10 @@ class DirectLiveTextController {
       // Tool calls the thread's access covers run without asking; only a
       // request actually put to the owner (an rpc-request) needs a warning.
       let ownerRequests = 0;
+      // A question to the owner (request_user_input, request_permissions,
+      // update_sub_agent_policy) is its own prompt; only approvals warn.
       const countOwnerRequests = (event) => {
-        if (event?.type === "rpc-request") ownerRequests += 1;
+        if (event?.type === "rpc-request" && event.request?.method !== "item/tool/requestUserInput") ownerRequests += 1;
       };
       surfaceSession?.on?.("event", countOwnerRequests);
       let createdApprovalRequests = 0;
@@ -12518,6 +12720,30 @@ class DirectLiveTextController {
     return { turn: turnSnapshot(aborted), status: "aborted" };
   }
 
+  // A thread's first command starts in an already-running PowerShell
+  // (Windows); best effort, after the reply.
+  prewarmThreadShell(sessionId, project = {}) {
+    if (!sessionId || typeof this.statefulExecSessionManager?.prewarm !== "function") return;
+    setImmediate(() => {
+      try {
+        const session = this.sessionStore.readSession(sessionId);
+        const grant = session ? this.resolveHarnessGrant(project, session) : null;
+        if (!grant) return;
+        this.statefulExecSessionManager.prewarm({
+          project,
+          harnessGrant: grant,
+          grantId: grant.grantId,
+          taskId: sessionId,
+          threadId: sessionId,
+          projectId: normalizeString(project.id || project.projectId || session.projectId, ""),
+          executionEnvironmentDigest: normalizeString(grant.executionEnvironmentDigest || session.executionEnvironmentDigest, ""),
+        });
+      } catch {
+        // The first command then starts cold, as before.
+      }
+    });
+  }
+
   async handleRequest(method, params = {}, context = {}) {
     if (method === "initialize") return this.initialize(params, context);
     if (method === "account/read") return this.accountRead(params, context);
@@ -12527,8 +12753,11 @@ class DirectLiveTextController {
     if (method === "model/list") return this.modelList(params, context);
     if (method === "configRequirements/read") return this.configRequirementsRead(params, context);
     if (method === "environment/status") return this.environmentStatus(params, context);
-    if (method === "thread/start") return this.startThread(params, context);
-    if (method === "thread/resume") return this.resumeThread(params, context);
+    if (method === "thread/start" || method === "thread/resume") {
+      const result = await (method === "thread/start" ? this.startThread(params, context) : this.resumeThread(params, context));
+      this.prewarmThreadShell(normalizeString(result?.thread?.id, ""), context.project || {});
+      return result;
+    }
     if (method === "thread/fork") return this.forkThread(params, context);
     if (method === "thread/selectAccessProfile") return this.selectTaskAccessProfile(params, context);
     if (method === "thread/list") return this.listThreads(params, context);

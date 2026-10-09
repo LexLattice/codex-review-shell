@@ -840,7 +840,9 @@ function inferredOpenCodeWslExecutable(env = {}) {
 function resolveOpenCodeLaunchTarget(options = {}) {
   const env = options.env || process.env;
   const platform = normalizeString(options.platform, process.platform);
-  const pathApi = platform === "win32" ? path.win32 : path;
+  // The target platform's path rules, not the host's (a Windows host can run
+  // OpenCode in WSL).
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
   const homeDir = normalizeString(options.homeDir, os.homedir());
   const accessSync = options.accessSync || fs.accessSync;
   const candidates = [
@@ -1187,7 +1189,9 @@ function safeOpenCodeRuntimeEnv(options = {}) {
   const source = options.env || process.env;
   const env = safeOpenCodeHostEnv({ env: source });
   const platform = normalizeString(options.platform, process.platform);
-  const pathApi = platform === "win32" ? path.win32 : path;
+  // The target platform's path rules, not the host's (a Windows host can run
+  // OpenCode in WSL).
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
   const runtimeDirectory = pathApi.resolve(normalizeString(
     options.openCodeRuntimeDirectory || options.runtimeDirectory || source.CODEX_DIRECT_OPENCODE_RUNTIME_DIR,
     pathApi.join(os.tmpdir(), "codex-direct-opencode-runtime"),

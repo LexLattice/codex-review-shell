@@ -162,13 +162,15 @@ validateDirectRoleHandoffPacket(handoffPacket);
 assert.equal(handoffPacket.status, "operator_review_required");
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-worker-start-"));
+let directThreadStore;
+let controller;
 try {
   const sessionStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "sessions") });
-  const directThreadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
+  directThreadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
   const events = [];
   let providerRequestCount = 0;
   let capturedProviderPrompt = "";
-  const controller = new DirectLiveTextController({
+  controller = new DirectLiveTextController({
     sessionStore,
     directThreadStore,
     profileDoc,
@@ -313,5 +315,7 @@ try {
     providerRequestCount,
   }, null, 2));
 } finally {
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+  controller?.close("regression cleanup");
+  directThreadStore?.close();
+  fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }
