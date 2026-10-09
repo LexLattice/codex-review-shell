@@ -288,6 +288,10 @@ class McpStdioSession {
     this.closed = false;
     this.idleTimer = null;
     this.lastUsedAt = Date.now();
+    this.initialized = false;
+    // Requests between choosing this session and registering their call
+    // (waiting for the handshake, or about to send).
+    this.holds = 0;
     this.child = options.spawnProcess(server.command, server.args || [], { cwd: server.cwd || undefined, env: options.env });
     this.exited = new Promise((resolve) => { this.resolveExited = resolve; });
     const parser = lineOrContentLengthParser((message) => this.onMessage(message), (error) => this.close(error));
@@ -306,6 +310,7 @@ class McpStdioSession {
       capabilities: {},
       clientInfo: { name: "codex-direct", version: "1" },
     }, { timeoutMs: options.timeoutMs }).then((result) => {
+      this.initialized = true;
       this.write({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
       return result;
     });
@@ -316,6 +321,36 @@ class McpStdioSession {
 
   get pid() {
     return this.child?.pid;
+  }
+
+  get busy() {
+    return this.pending.size > 0 || this.holds > 0;
+  }
+
+  // Waits for the handshake within this request's own timeout and signal.
+  // If it gives up and no other request is waiting, the half-started server
+  // is stopped (as the one-shot exchange did); otherwise it keeps starting.
+  async waitReady(signal, timeoutMs) {
+    if (this.initialized) return;
+    let timer = null;
+    let onAbort = null;
+    try {
+      await new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(mcpError("direct_mcp_request_timeout", "Configured MCP request exceeded the timeout.")), timeoutMs);
+        if (signal) {
+          onAbort = () => reject(mcpError("direct_mcp_request_aborted", "Configured MCP request was cancelled."));
+          if (signal.aborted) return onAbort();
+          signal.addEventListener?.("abort", onAbort, { once: true });
+        }
+        this.ready.then(resolve, reject);
+      });
+    } catch (error) {
+      if (!this.initialized && this.holds <= 1) this.close(null);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener?.("abort", onAbort);
+    }
   }
 
   write(message) {
@@ -453,9 +488,14 @@ class McpSessionPool {
         if (session.identityKey === identityKey) session.close(null);
       }
     }
+    // Only idle servers make room (least recently used first); closing a
+    // busy one would fail requests that have nothing to do with this one.
     while (this.sessions.size >= this.maxSessions) {
-      const [, oldest] = this.sessions.entries().next().value;
-      oldest.close(null);
+      const idle = [...this.sessions.values()].find((session) => !session.busy);
+      if (!idle) {
+        throw mcpError("direct_mcp_session_limit", `At most ${this.maxSessions} MCP servers run at once here, and all of them are handling requests. Try again when one finishes.`);
+      }
+      idle.close(null);
     }
     const session = new McpStdioSession(this, key, identityKey, server, options);
     this.sessions.set(key, session);
@@ -475,9 +515,20 @@ class McpSessionPool {
       ? options.spawnProcess
       : (command, args, spawnOptions) => spawn(command, args, { ...spawnOptions, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     const env = isPlainObject(options.env) ? options.env : mcpServerEnvironment(server.processEnv || []);
-    const session = this.sessionFor(server, { ...options, spawnProcess, env });
-    await session.ready;
-    return session.call(method, params, { timeoutMs: options.timeoutMs, signal: options.signal });
+    // One deadline for handshake and call together, as in the one-shot
+    // exchange.
+    const timeoutMs = boundedInteger(options.timeoutMs, DEFAULT_MCP_TIMEOUT_MS, 100, MAX_MCP_TIMEOUT_MS);
+    const deadline = Date.now() + timeoutMs;
+    const session = this.sessionFor(server, { ...options, timeoutMs, spawnProcess, env });
+    session.holds += 1;
+    try {
+      await session.waitReady(options.signal, timeoutMs);
+      // call() registers the request before returning, so the session stays
+      // busy without a gap.
+      return session.call(method, params, { timeoutMs: Math.max(100, deadline - Date.now()), signal: options.signal });
+    } finally {
+      session.holds -= 1;
+    }
   }
 
   async dispose() {

@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 
 const require = createRequire(import.meta.url);
 process.env.CODEX_EXPERIENCE = "direct-workbench";
@@ -15,6 +16,24 @@ const { DirectThreadStore } = require("../src/main/direct/thread/thread-store.js
 const { DirectThreadHarnessGrantStore } = require("../src/main/direct/authority/direct-thread-harness-grant.js");
 const { DirectStatefulExecSessionManager } = require("../src/main/direct/tools/stateful-exec-session.js");
 const { DirectLiveTextController, DirectLiveTextSurfaceSession } = require("../src/main/direct/controller/live-text-controller.js");
+
+// The thread starts in Workspace access, whose commands run in bubblewrap on
+// Linux; without a working one the first exec_command is refused before
+// the raise this test is about.
+if (process.platform === "linux") {
+  const { BubblewrapExecSandbox } = require("../src/main/direct/tools/exec-sandbox.js");
+  const sandbox = new BubblewrapExecSandbox();
+  let usable = false;
+  if (sandbox.available()) {
+    const probeRoot = os.tmpdir();
+    const plan = sandbox.wrap({ sandboxMode: "workspace-write", root: probeRoot, cwd: probeRoot, command: "/bin/true" });
+    usable = spawnSync(plan.command, plan.args, { timeout: 5000 }).status === 0;
+  }
+  if (!usable) {
+    console.log("SKIPPED: Workspace access needs a working bubblewrap sandbox on this host.");
+    process.exit(77);
+  }
+}
 
 const event = (type, data) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 function response(id, call) {
