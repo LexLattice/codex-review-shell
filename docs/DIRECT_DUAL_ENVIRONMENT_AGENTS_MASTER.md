@@ -1553,6 +1553,39 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   guess). Gate:
   `npm run direct:request-permissions`; live suite scenario
   `permission_request` passes on both hosts.
+- Added 2026-10-09: per-command escalation and command rules, as in Codex
+  (owner's call: Codex's model, allowed prefixes run outside the sandbox;
+  rules global and per project; Codex's own `~/.codex/rules` files are not
+  read). In Read only and Workspace threads `exec_command` takes Codex's
+  `sandbox_permissions` (`require_escalated`), `justification`, and
+  `prefix_rule`. A command that asks goes to the owner as Codex's
+  `item/commandExecution/requestApproval` card: Approve once, Approve for
+  this thread (that exact invocation: the shell string, or the program and
+  its exact argument list), Always allow "<prefix>" in this project,
+  Always allow "<prefix>" everywhere, Decline (the model is told it was
+  declined; nothing runs), Cancel. Approved commands run in the same folder
+  with the sandbox off (`danger-full-access`), still contained.
+  - Rules: `prefix_rule(pattern, decision="allow")` semantics, kept in
+    `<userData>/direct-sessions/authority/approval-rules.json` (global, or
+    per project and environment: `wsl`, `windows`, `linux`). A command whose
+    every part matches an allow rule runs outside the sandbox without asking,
+    whether or not it asked to. Commands are split into parts across `&&`,
+    `||`, `;`, and pipes only when every word is a plain literal (Bash; for
+    a Windows project, conservative PowerShell parsing); anything with
+    expansions, redirects, substitutions, subshells, globs, or `VAR=` stays
+    one opaque command that matches no rule (Codex's lowering). A rule
+    naming a program also matches it by path (`/usr/bin/git` for `git`).
+  - The prefix offered is the model's `prefix_rule` when it covers every
+    unallowed part and isn't a bare shell, interpreter, `git`, `rm`,
+    `sudo`, or `npm run` (Codex's banned list, extended for PowerShell;
+    a program named by path or with a Windows suffix counts as itself, so
+    `/bin/bash` or `cmd.exe` is banned too),
+    otherwise the whole command when it is the only unallowed part; none
+    when no single rule would cover the line. The answer must name exactly
+    the offered prefix.
+  - Full access threads don't get the parameters (no sandbox to leave).
+  - Gate: `npm run direct:exec-escalation` (both hosts; skips on Linux
+    without a working bubblewrap).
 - Since turn 8, configured MCP servers run in their own environment, and
   since turn 11b every server is tree-contained, including ones a Linux host
   runs itself. Since 2026-10-09 servers are long-lived, as in Codex
@@ -1562,19 +1595,64 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   servers there, so a lost executor takes its servers with it). Later and
   concurrent requests reuse it (`tool_search`'s three lists now share one
   server instead of starting three); the handshake runs once; a cancelled
-  request sends `notifications/cancelled` and keeps the server; a
-  server-initiated request (elicitation, sampling) gets a JSON-RPC error and
-  fails what is in flight, as before, without killing the server; a crash
+  request sends `notifications/cancelled` and keeps the server; server
+  requests are answered without failing what is in flight (forms go to the
+  owner, see MCP tool calls below; `ping` is answered; sampling and roots
+  get method-not-found, as Codex doesn't offer them); a crash
   or a timed-out request replaces the server on the next request; a config
   change for the same server stops the old process; servers stop after 10
   minutes idle, at app quit, and when their executor stops (at most 16 per
   pool). The host's scope, trust, and freshness checks still run on every
   operation before a request reaches a server. Children a server starts
   live as long as its session and are reaped with it (containment
-  unchanged). Server-initiated requests still need owner-interaction
-  support to be answered. Gates: `npm run direct:mcp-session-pool` (both
+  unchanged). Gates: `npm run direct:mcp-session-pool` (both
   hosts), `direct-mcp-per-environment` and
   `direct-provider-external-production-wiring` (updated; both hosts).
+- Added 2026-10-09: MCP tool calls, as in Codex (owner's call; before,
+  Direct only listed tools and read resources, and any tool call was
+  blocked). When a turn starts, the project's current, trusted servers are
+  asked for `tools/list`, and each tool becomes a function
+  `mcp__<server>__<tool>` (sanitized to `[A-Za-z0-9_]`, at most 64
+  characters; a collision or a long name gets a 12-character hash of the
+  raw identity; the schema cut down to Codex's keywords, `strict: false`).
+  The catalog is kept on the turn, so every continuation declares the same
+  functions. A call runs `tools/call` where the server runs (host or
+  executor), with Codex's 300 s default timeout. The output is Codex's:
+  `Wall time: … seconds\nOutput:\n` then `structuredContent` as JSON if
+  present, else the text blocks; images go back as `input_image` content
+  items (kept under `sessions/<id>/images/`), audio is left out. The turn
+  shows an `mcpToolCall` item (server, tool, status, result or error,
+  duration). Read-only tools (`readOnlyHint`) run in parallel with other
+  parallel-safe calls.
+  - Approval follows Codex's "auto" rule: a tool marked destructive asks, one
+    marked read-only doesn't, an unmarked tool counts as destructive and
+    open-world and asks. Full access doesn't ask (Codex skips the prompt
+    when approvals are off and the sandbox is off). The prompt is Codex's
+    shape (`mcpServer/elicitation/request` with
+    `_meta.codex_approval_kind: "mcp_tool_call"`): Allow, Allow for this
+    thread (in memory, Codex's "session"), Always allow this tool (saved
+    per project in `<userData>/direct-sessions/authority/approval-rules.json`,
+    Codex's `approval_mode = "approve"`), Decline (the model gets "user
+    rejected MCP tool call").
+  - Forms (`elicitation/create`): Direct advertises `elicitation` and sends a
+    server's form to the owner as a form built from its `requestedSchema`
+    (text, numbers, checkboxes, single and multiple choice); the answer is
+    checked against the schema in the main process (an answer that doesn't
+    fit is refused and the form stays open). The request's clock stops while
+    the owner answers, on the host and in executors. A form from a server in
+    the other environment reaches the host through an executor event
+    (`mcp/elicitation`) and goes back with `mcp/elicitationRespond`. Stopping
+    the turn cancels an open form. In Full access an empty confirmation form
+    is accepted without asking (Codex does this); a form with fields still
+    asks. A form during a resource read, or with no owner to ask, is
+    declined, as Codex declines a form it can't deliver. A server's form
+    names no call, so calls that can answer forms take turns on a server
+    (others, such as resource reads and listings, don't wait); time spent
+    waiting for a turn doesn't count against a call's timeout.
+  - Gate: `npm run direct:mcp-tool-calls` (both hosts);
+    `direct-mcp-session-pool`, `direct-mcp-per-environment` (a form from a
+    server in the other executor, with the clock stopped), and
+    `direct-provider-external-production-wiring` updated.
 - On Windows, the Low integrity label a Workspace command puts on its
   project folder is persistent and isn't per project. A Workspace command in
   one project can write another project folder that was labeled earlier,
@@ -1728,6 +1806,8 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-08 | "No step cap" covers distinct work only; the same call with the same result repeating is stopped | Owner's call, after a 58-call `inspect_self_constitution` loop. |
 | 2026-10-08 | Agent testing drives the real app through an opt-in local test control port, with an isolated profile, `gpt-6-luna`/low by default, on both hosts | Owner's call. The older headless scripts built their own reduced controller or tool loop, so they didn't test what the owner runs. |
 | 2026-10-09 | Workspace patch writes run inside the sandbox; Workspace and Read only reads are identity-checked after opening | Owner's call after the security review. Node has no directory-relative file calls, so the host can't close a symlink race on its own; the sandbox can't reach outside however a path resolves. This is how Codex runs apply_patch. |
+| 2026-10-09 | MCP server tools are callable as in Codex; approval follows Codex's annotation rule (none in Full access), with "for this thread" and "always" per project; server forms go to the owner; Full access accepts an empty confirmation | Owner's call. Server forms almost always come from tool calls, so forms without tool calls would have been nearly unused. |
+| 2026-10-09 | Sandboxed threads get Codex's per-command escalation; saved allow rules (global or per project and environment) run matching commands outside the sandbox without asking; Codex's own rules files are not read | Owner's call. Prompt-only rules would have added nothing: sandboxed profiles never prompt per command. |
 | 2026-10-08 | `request_permissions` raises the thread's Access profile for the turn or the thread; it doesn't grant per-path or network-only permissions | Owner's call. It reuses Direct's grants and sandboxes as they are; Codex's path-scoped form would mean widening bubblewrap binds and Windows labels per request. |
 | 2026-10-08 | Every request carries the thread ID as `prompt_cache_key` and `session-id`/`thread-id` headers; continuation guidance is a trailing developer message, not an instructions suffix | Matches the Codex CLI's cache identity. The backend's cache matches exact prefixes, so a turn's instructions and tools must not change between its requests. |
 | 2026-10-08 | `exec_command` waits up to 10 s (`yield_time_ms`, max 30 s, at most half the idle timeout) for the command to finish; `write_stdin` waits 250 ms, or 5 s for an empty poll (supersedes the 100 ms first yield in the 2026-10-06 rows) | Codex's defaults. A 100 ms wait turned every command longer than that into an extra provider round trip, measured live at up to 19 s, and a write to the exited process then failed the turn. |

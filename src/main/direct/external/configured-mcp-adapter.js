@@ -5,13 +5,14 @@ const { spawn } = require("node:child_process");
 const {
   DEFAULT_MCP_TIMEOUT_MS,
   MAX_MCP_TIMEOUT_MS,
+  MCP_TOOL_CALL_TIMEOUT_MS,
   McpSessionPool,
   requestMcpStdio,
 } = require("./mcp-stdio-transport");
 
 // This host's own long-lived MCP servers (see McpSessionPool).
 const hostMcpSessions = new McpSessionPool();
-const { EXECUTOR_METHODS } = require("../../../shared/executor-protocol");
+const { EXECUTOR_MCP_EVENTS, EXECUTOR_METHODS } = require("../../../shared/executor-protocol");
 const { LocalChildProcessBackend } = require("../tools/exec-process-backends");
 const { workspaceExecutesLocally } = require("../tools/exec-sandbox");
 const { spawnInLinuxPidNamespace } = require("../../../shared/linux-pid-namespace");
@@ -27,6 +28,9 @@ const MAX_MCP_SCHEMA_STRING_BYTES = 4_096;
 const MAX_MCP_SCHEMA_ENCODED_BYTES = 64 * 1024;
 // Extra time the host allows an executor beyond the server's own timeout.
 const MCP_EXECUTOR_TRANSPORT_GRACE_MS = 5_000;
+// With an owner to answer forms, the host's own deadline (paused while the
+// owner answers) bounds the request; the transport only needs an outer cap.
+const MCP_EXECUTOR_ELICITATION_TRANSPORT_MS = 24 * 60 * 60_000;
 const MCP_PLACEMENT_KINDS = new Set(["project", "host", "local", "wsl", "windows"]);
 
 function isPlainObject(value) {
@@ -182,7 +186,19 @@ function sanitizeDescriptor(entry = {}, fallbackKind = "mcp_resource") {
     permissionClass: boundedString(source.permissionClass, 120),
     externalSideEffectClass: boundedString(source.externalSideEffectClass, 120),
     requiresOwnerApproval: source.requiresOwnerApproval === true,
+    ...(isPlainObject(source.annotations) ? { annotations: toolAnnotations(source.annotations) } : {}),
   };
+}
+
+// MCP tool annotations (hints only; Codex's approval rule reads them).
+function toolAnnotations(value) {
+  if (!isPlainObject(value)) return undefined;
+  const out = {};
+  for (const key of ["readOnlyHint", "destructiveHint", "openWorldHint", "idempotentHint"]) {
+    if (typeof value[key] === "boolean") out[key] = value[key];
+  }
+  if (typeof value.title === "string") out.title = boundedString(value.title, 180);
+  return out;
 }
 
 function normalizeConfiguredMcpServer(input = {}) {
@@ -449,7 +465,7 @@ async function queryConfiguredServer(server, method, params, options = {}) {
   }
   const placement = mcpPlacementFor(server, options.project || {}, options);
   if (placement.local) {
-    const transportOptions = { timeoutMs: options.timeoutMs, signal: options.signal, spawnProcess: spawnOnHost };
+    const transportOptions = { timeoutMs: options.timeoutMs, signal: options.signal, spawnProcess: spawnOnHost, onElicitation: options.onElicitation };
     if (options.mcpSessions === false) return requestMcpStdio(server, method, params, transportOptions);
     return (options.mcpSessionPool || hostMcpSessions).request(server, method, params, {
       ...transportOptions,
@@ -541,14 +557,63 @@ async function requestViaExecutor(placement, server, method, params, options = {
   const signal = options.signal;
   const aborted = () => scopeError("direct_mcp_request_aborted", "Configured MCP request was cancelled.");
   if (signal?.aborted) throw aborted();
+  const project = placement.executorProject;
+  const cancelRemote = () => executors.requestForProject(project, EXECUTOR_METHODS.mcpCancel, { mcpRequestId }, 10_000).catch(() => {});
   let onAbort = null;
+  let failRequest = null;
   const abortPromise = new Promise((_, reject) => {
+    failRequest = reject;
     onAbort = () => {
-      executors.requestForProject(placement.executorProject, EXECUTOR_METHODS.mcpCancel, { mcpRequestId }, 10_000).catch(() => {});
+      cancelRemote();
       reject(aborted());
     };
     signal?.addEventListener?.("abort", onAbort, { once: true });
   });
+  // Forms from the server reach the owner through executor events. The
+  // host then keeps the deadline itself, stopped while the owner answers
+  // (the executor's own clock stops too); the transport just waits.
+  const elicitation = typeof options.onElicitation === "function" && typeof executors.ensureForProject === "function";
+  let session = null;
+  let onEvent = null;
+  let deadlineTimer = null;
+  let remainingMs = timeoutMs + MCP_EXECUTOR_TRANSPORT_GRACE_MS;
+  let deadlineAt = 0;
+  const armDeadline = () => {
+    deadlineAt = Date.now() + remainingMs;
+    deadlineTimer = setTimeout(() => {
+      cancelRemote();
+      failRequest(scopeError("direct_mcp_request_timeout", "Configured MCP request exceeded the timeout."));
+    }, remainingMs);
+  };
+  if (elicitation) {
+    session = await executors.ensureForProject(project);
+    const elicitationAborts = new Set();
+    let open = 0;
+    onEvent = async (event = {}) => {
+      if (event.event !== EXECUTOR_MCP_EVENTS.elicitation || event.mcpRequestId !== mcpRequestId) return;
+      if (open++ === 0) {
+        clearTimeout(deadlineTimer);
+        remainingMs = Math.max(100, deadlineAt - Date.now());
+      }
+      const controller = new AbortController();
+      elicitationAborts.add(controller);
+      signal?.addEventListener?.("abort", () => controller.abort(), { once: true });
+      let answer;
+      try {
+        answer = await options.onElicitation(isPlainObject(event.params) ? event.params : {}, { signal: controller.signal });
+      } catch {
+        answer = { action: controller.signal.aborted ? "cancel" : "decline" };
+      }
+      elicitationAborts.delete(controller);
+      if (--open === 0 && !signal?.aborted) armDeadline();
+      executors.requestForProject(project, EXECUTOR_METHODS.mcpElicitationRespond, {
+        elicitationId: normalizeString(event.elicitationId, ""),
+        result: answer,
+      }, 10_000).catch(() => {});
+    };
+    session.on("executor-mcp-event", onEvent);
+    armDeadline();
+  }
   try {
     // Only the transport crosses: command, args, cwd, and the names of
     // allowlisted variables, whose values come from that environment.
@@ -567,13 +632,80 @@ async function requestViaExecutor(placement, server, method, params, options = {
         method,
         params,
         timeoutMs,
-      }, timeoutMs + MCP_EXECUTOR_TRANSPORT_GRACE_MS),
+        ...(elicitation ? { elicitation: true } : {}),
+      }, elicitation ? MCP_EXECUTOR_ELICITATION_TRANSPORT_MS : timeoutMs + MCP_EXECUTOR_TRANSPORT_GRACE_MS),
       abortPromise,
     ]);
     return isPlainObject(response?.result) ? response.result : {};
   } finally {
+    clearTimeout(deadlineTimer);
+    if (session && onEvent) session.removeListener("executor-mcp-event", onEvent);
     signal?.removeEventListener?.("abort", onAbort);
   }
+}
+
+// MCP tools a project's current servers offer, for declaring them to the
+// model (Codex lists them when a session starts; here each turn asks the
+// long-lived servers, which answer quickly). A server that fails to answer
+// is left out of this turn rather than failing it.
+async function listConfiguredMcpTools(input = {}) {
+  const profile = input.profile || {};
+  const scope = assertExactScope(input, profile);
+  const servers = [];
+  const errors = [];
+  for (const candidate of configuredMcpServersForProject(input.project || {})) {
+    let server;
+    try {
+      server = serverFor(input, profile, candidate.serverIdentityId).configured;
+    } catch {
+      continue;
+    }
+    try {
+      const result = server.command
+        ? await queryConfiguredServer(server, "tools/list", {}, { ...input, timeoutMs: input.listTimeoutMs || 10_000 })
+        : { tools: server.tools };
+      const tools = arrayOrEmpty(result.tools).slice(0, MAX_DISCOVERY_RESULTS).map((tool) => {
+        if (!isPlainObject(tool) || !normalizeString(tool.name, "")) return null;
+        let inputSchema;
+        try {
+          inputSchema = Object.hasOwn(tool, "inputSchema") ? sanitizeInputSchema(tool.inputSchema) : undefined;
+        } catch {
+          return null;
+        }
+        return {
+          name: boundedString(tool.name, 180),
+          description: typeof tool.description === "string" ? tool.description.slice(0, 2_000) : "",
+          inputSchema,
+          annotations: toolAnnotations(tool.annotations) || {},
+        };
+      }).filter(Boolean);
+      servers.push({ serverIdentityId: server.serverIdentityId, serverName: server.displayName || server.serverIdentityId, tools });
+    } catch (error) {
+      errors.push({ serverIdentityId: server.serverIdentityId, code: normalizeString(error?.code, "direct_mcp_tools_list_failed") });
+    }
+  }
+  return { ...scope, profileDigest: normalizeString(profile.profileDigest, ""), servers, errors };
+}
+
+// One MCP tools/call, under the same scope, trust, and placement rules as
+// resource reads. Forms the server asks for during the call go to
+// `onElicitation`.
+async function callConfiguredMcpTool(input = {}) {
+  const profile = input.profile || {};
+  const scope = assertExactScope(input, profile);
+  const serverIdentityId = normalizeString(input.serverIdentityId, "");
+  const toolName = normalizeString(input.toolName, "");
+  if (!serverIdentityId || !toolName) throw scopeError("direct_mcp_tool_selector_missing", "MCP tool calls require an exact server identity and tool name.");
+  const server = serverFor(input, profile, serverIdentityId).configured;
+  if (!server.command) throw scopeError("direct_mcp_transport_unavailable", "The configured MCP server has no local transport command.");
+  const params = { name: toolName };
+  if (isPlainObject(input.arguments) && Object.keys(input.arguments).length) params.arguments = input.arguments;
+  if (isPlainObject(input.meta)) params._meta = input.meta;
+  const result = await queryConfiguredServer(server, "tools/call", params, {
+    ...input,
+    timeoutMs: input.timeoutMs || MCP_TOOL_CALL_TIMEOUT_MS,
+  });
+  return { ...scope, profileDigest: normalizeString(profile.profileDigest, ""), serverIdentityId, toolName, result: isPlainObject(result) ? result : {} };
 }
 
 async function discoverConfiguredMcp(input = {}) {
@@ -666,6 +798,8 @@ function createDirectConfiguredMcpResolvers(options = {}) {
   return Object.freeze({
     externalDiscoveryResolver: (input) => discoverConfiguredMcp(withExecutors(input)),
     mcpResourceReadResolver: (input) => readConfiguredMcpResource(withExecutors(input)),
+    mcpToolCatalogResolver: (input) => listConfiguredMcpTools(withExecutors(input)),
+    mcpToolCallResolver: (input) => callConfiguredMcpTool(withExecutors(input)),
   });
 }
 
@@ -674,6 +808,8 @@ function disposeHostMcpSessions() {
 }
 
 module.exports = {
+  callConfiguredMcpTool,
+  listConfiguredMcpTools,
   configuredMcpServersForProject,
   disposeHostMcpSessions,
   hostMcpSessions,

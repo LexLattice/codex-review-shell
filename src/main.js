@@ -3570,6 +3570,11 @@ function ensureDirectConfiguredMcpResolvers() {
         if (!workspaceBackends) throw new Error("Workspace backends are not initialized.");
         return workspaceBackends.requestForProject(project, method, params, timeoutMs);
       },
+      // The executor session, for its MCP form events (elicitation).
+      ensureForProject: (project) => {
+        if (!workspaceBackends) throw new Error("Workspace backends are not initialized.");
+        return workspaceBackends.ensureForProject(project);
+      },
     },
   });
   return directConfiguredMcpResolvers;
@@ -4899,6 +4904,8 @@ function ensureDirectLiveTextController() {
     environmentStatusResolver: (context) => refreshWorldManagerEnvironmentReadiness({ project: context.project }),
     externalDiscoveryResolver: (context) => ensureDirectConfiguredMcpResolvers().externalDiscoveryResolver(context),
     mcpResourceReadResolver: (context) => ensureDirectConfiguredMcpResolvers().mcpResourceReadResolver(context),
+    mcpToolCatalogResolver: (context) => ensureDirectConfiguredMcpResolvers().mcpToolCatalogResolver(context),
+    mcpToolCallResolver: (context) => ensureDirectConfiguredMcpResolvers().mcpToolCallResolver(context),
     attachmentPayloadResolver: async (context) => {
       const staged = await readStagedAttachmentPayload(context.project, context.draft || {});
       if (!staged) return { status: "blocked", reason: "staged_attachment_not_found" };

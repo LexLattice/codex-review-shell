@@ -13,7 +13,10 @@ const { BASE_COMMAND_ENVIRONMENT_KEYS } = require("../tools/exec-process-backend
 const MAX_MCP_RESULT_BYTES = 2 * 1024 * 1024;
 const MAX_MCP_HEADER_BYTES = 64 * 1024;
 const DEFAULT_MCP_TIMEOUT_MS = 15_000;
-const MAX_MCP_TIMEOUT_MS = 60_000;
+// Codex's default tool_timeout_sec; also the ceiling for any request.
+const MCP_TOOL_CALL_TIMEOUT_MS = 300_000;
+const MAX_MCP_TIMEOUT_MS = MCP_TOOL_CALL_TIMEOUT_MS;
+const ELICITATION_ACTIONS = new Set(["accept", "decline", "cancel"]);
 const MCP_CHILD_TERM_GRACE_MS = 200;
 const MCP_CHILD_CLEANUP_DEADLINE_MS = 2_000;
 
@@ -305,9 +308,11 @@ class McpStdioSession {
       this.close(mcpError("direct_mcp_transport_exited", `Configured MCP exited (${code ?? signalName ?? "unknown"}).`));
     });
     this.child.once("close", () => this.resolveExited());
+    this.openElicitations = 0;
     this.ready = this.call("initialize", {
       protocolVersion: "2025-06-18",
-      capabilities: {},
+      // As Codex: forms the server asks for go to the owner.
+      capabilities: { elicitation: {} },
       clientInfo: { name: "codex-direct", version: "1" },
     }, { timeoutMs: options.timeoutMs }).then((result) => {
       this.initialized = true;
@@ -325,6 +330,32 @@ class McpStdioSession {
 
   get busy() {
     return this.pending.size > 0 || this.holds > 0;
+  }
+
+  // A server's form request names no call, so at most one call that can
+  // answer forms runs on a session at a time: a form then belongs to that
+  // call (other form-capable calls queue here). Resolves with a release.
+  async acquireFormSlot(signal) {
+    const previous = this.formSlot || Promise.resolve();
+    let release;
+    const mine = new Promise((resolve) => { release = resolve; });
+    this.formSlot = previous.then(() => mine);
+    let onAbort = null;
+    try {
+      await new Promise((resolve, reject) => {
+        onAbort = () => reject(mcpError("direct_mcp_request_aborted", "Configured MCP request was cancelled."));
+        if (signal?.aborted) return onAbort();
+        signal?.addEventListener?.("abort", onAbort, { once: true });
+        previous.then(resolve);
+      });
+    } catch (error) {
+      // Give up this place in line; later callers wait only for earlier ones.
+      release();
+      throw error;
+    } finally {
+      if (onAbort) signal?.removeEventListener?.("abort", onAbort);
+    }
+    return release;
   }
 
   // Waits for the handshake within this request's own timeout and signal.
@@ -367,21 +398,31 @@ class McpStdioSession {
     clearTimeout(this.idleTimer);
     if (this.pending.size === 0) setChildReferenced(this.child, true);
     return new Promise((resolve, reject) => {
-      const entry = { resolve, reject, timer: null, onAbort: null };
+      const entry = {
+        id,
+        resolve,
+        reject,
+        timer: null,
+        onAbort: null,
+        remainingMs: timeoutMs,
+        deadline: Date.now() + timeoutMs,
+        onElicitation: typeof options.onElicitation === "function" ? options.onElicitation : null,
+        elicitationAborts: new Set(),
+      };
       const settle = () => {
         clearTimeout(entry.timer);
+        entry.timer = null;
+        entry.settled = true;
         if (signal && entry.onAbort) signal.removeEventListener?.("abort", entry.onAbort);
+        for (const controller of entry.elicitationAborts) controller.abort();
         this.pending.delete(id);
         this.lastUsedAt = Date.now();
         if (!this.pending.size) this.idle();
       };
       entry.resolve = (value) => { settle(); resolve(value); };
       entry.reject = (error) => { settle(); reject(error); };
-      // A request that never answers may mean a wedged server: replace it.
-      entry.timer = setTimeout(() => {
-        entry.reject(mcpError("direct_mcp_request_timeout", "Configured MCP request exceeded the timeout."));
-        this.close(mcpError("direct_mcp_request_timeout", "Configured MCP request exceeded the timeout."));
-      }, timeoutMs);
+      this.pending.set(id, entry);
+      if (this.openElicitations === 0) this.armTimeout(entry);
       if (signal) {
         if (signal.aborted) {
           entry.reject(mcpError("direct_mcp_request_aborted", "Configured MCP request was cancelled."));
@@ -394,25 +435,82 @@ class McpStdioSession {
         };
         signal.addEventListener?.("abort", entry.onAbort, { once: true });
       }
-      this.pending.set(id, entry);
       if (!this.write({ jsonrpc: "2.0", id, method, params })) {
         entry.reject(mcpError("direct_mcp_transport_closed", "Configured MCP transport closed before the response."));
       }
     });
   }
 
+  // A request that never answers may mean a wedged server: replace it.
+  armTimeout(entry) {
+    clearTimeout(entry.timer);
+    entry.deadline = Date.now() + entry.remainingMs;
+    entry.timer = setTimeout(() => {
+      entry.reject(mcpError("direct_mcp_request_timeout", "Configured MCP request exceeded the timeout."));
+      this.close(mcpError("direct_mcp_request_timeout", "Configured MCP request exceeded the timeout."));
+    }, entry.remainingMs);
+  }
+
+  // While the owner fills in a server's form, its requests' clocks stop (as
+  // Codex pauses its MCP timeouts during an elicitation).
+  pauseTimeouts() {
+    this.openElicitations += 1;
+    if (this.openElicitations > 1) return;
+    for (const entry of this.pending.values()) {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+      entry.remainingMs = Math.max(100, entry.deadline - Date.now());
+    }
+  }
+
+  resumeTimeouts() {
+    this.openElicitations = Math.max(0, this.openElicitations - 1);
+    if (this.openElicitations || this.closed) return;
+    for (const entry of this.pending.values()) this.armTimeout(entry);
+  }
+
+  reply(id, payload) {
+    this.write({ jsonrpc: "2.0", id, ...payload });
+  }
+
+  // elicitation/create goes to the request in flight that can answer forms
+  // (there is at most one per session; see acquireFormSlot); with none, it
+  // is declined, as Codex declines a form it can't deliver.
+  async answerElicitation(message) {
+    const params = isPlainObject(message.params) ? message.params : {};
+    const owner = [...this.pending.values()].reverse().find((entry) => entry.onElicitation);
+    if (!owner) return this.reply(message.id, { result: { action: "decline" } });
+    const controller = new AbortController();
+    owner.elicitationAborts.add(controller);
+    this.pauseTimeouts();
+    let answer;
+    try {
+      answer = await owner.onElicitation(params, { signal: controller.signal });
+    } catch {
+      answer = { action: controller.signal.aborted ? "cancel" : "decline" };
+    } finally {
+      owner.elicitationAborts.delete(controller);
+      this.resumeTimeouts();
+    }
+    const action = ELICITATION_ACTIONS.has(answer?.action) ? answer.action : "decline";
+    const result = { action };
+    if (action === "accept" && isPlainObject(answer.content)) result.content = answer.content;
+    if (isPlainObject(answer?._meta)) result._meta = answer._meta;
+    this.reply(message.id, { result });
+  }
+
   onMessage(message) {
     if (this.closed || !isPlainObject(message)) return;
     if (message.method) {
-      if (String(message.method).startsWith("notifications/")) return;
-      // Server-initiated requests (elicitation, sampling, roots) need the
-      // owner; Direct answers with an error and fails what is in flight.
-      if (message.id !== undefined) {
-        this.write({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Direct does not answer server requests; owner interaction is required." } });
+      const method = String(message.method);
+      if (method.startsWith("notifications/") || message.id === undefined) return;
+      if (method === "ping") return this.reply(message.id, { result: {} });
+      if (method === "elicitation/create") {
+        this.answerElicitation(message).catch(() => {});
+        return;
       }
-      for (const entry of [...this.pending.values()]) {
-        entry.reject(mcpError("mcp_elicitation_owner_required", "Configured MCP requested owner-controlled interaction."));
-      }
+      // Sampling and roots aren't offered (not advertised, as in Codex).
+      this.reply(message.id, { error: { code: -32601, message: `Direct does not support ${method.slice(0, 80)}.` } });
       return;
     }
     const entry = this.pending.get(Number(message.id));
@@ -518,15 +616,28 @@ class McpSessionPool {
     // One deadline for handshake and call together, as in the one-shot
     // exchange.
     const timeoutMs = boundedInteger(options.timeoutMs, DEFAULT_MCP_TIMEOUT_MS, 100, MAX_MCP_TIMEOUT_MS);
-    const deadline = Date.now() + timeoutMs;
+    let deadline = Date.now() + timeoutMs;
     const session = this.sessionFor(server, { ...options, timeoutMs, spawnProcess, env });
     session.holds += 1;
+    let releaseFormSlot = null;
     try {
       await session.waitReady(options.signal, timeoutMs);
+      if (typeof options.onElicitation === "function") {
+        // Waiting behind another call's open form doesn't use up this
+        // call's time.
+        const waitStarted = Date.now();
+        releaseFormSlot = await session.acquireFormSlot(options.signal);
+        deadline += Date.now() - waitStarted;
+      }
       // call() registers the request before returning, so the session stays
       // busy without a gap.
-      return session.call(method, params, { timeoutMs: Math.max(100, deadline - Date.now()), signal: options.signal });
+      return await session.call(method, params, {
+        timeoutMs: Math.max(100, deadline - Date.now()),
+        signal: options.signal,
+        onElicitation: options.onElicitation,
+      });
     } finally {
+      releaseFormSlot?.();
       session.holds -= 1;
     }
   }
@@ -541,6 +652,7 @@ module.exports = {
   MAX_MCP_RESULT_BYTES,
   MAX_MCP_TIMEOUT_MS,
   MCP_SESSION_IDLE_MS,
+  MCP_TOOL_CALL_TIMEOUT_MS,
   McpSessionPool,
   lineOrContentLengthParser,
   mcpServerEnvironment,
