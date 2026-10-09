@@ -25,7 +25,7 @@ const { DirectThreadStore } = require("../src/main/direct/thread/thread-store.js
 const { DirectThreadHarnessGrantStore } = require("../src/main/direct/authority/direct-thread-harness-grant.js");
 const { DirectStatefulExecSessionManager } = require("../src/main/direct/tools/stateful-exec-session.js");
 const { COMPACTION_PROMPT, COMPACTION_SUMMARY_PREFIX } = require("../src/main/direct/transport/codex-responses-transport.js");
-const { DirectLiveTextController, DirectLiveTextSurfaceSession } = require("../src/main/direct/controller/live-text-controller.js");
+const { DirectLiveTextController, DirectLiveTextSurfaceSession, retainedUserMessages } = require("../src/main/direct/controller/live-text-controller.js");
 
 const event = (type, data) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 function sse(id, step = {}) {
@@ -244,7 +244,24 @@ try {
     }
   }
 
-  console.log(JSON.stringify({ ok: true, cases: ["pre_turn", "local_fallback", "mid_turn", "manual"] }));
+  // 5. The retained-message budget is in UTF-8 bytes (bytes/4 tokens), so
+  // CJK text and emoji can't exceed it.
+  {
+    const cjk = "漢".repeat(30_000); // 90,000 bytes
+    const kept = retainedUserMessages([{ role: "user", content: [{ type: "input_text", text: cjk }] }], 10_000);
+    const keptBytes = Buffer.byteLength(textOf(kept[0]), "utf8");
+    assert(keptBytes <= 40_000 + 64, `clipped to the 40,000-byte budget (got ${keptBytes})`);
+    assert(!textOf(kept[0]).includes("\uFFFD"), "no broken character at the cut");
+    const emoji = "😀".repeat(5_000); // 20,000 bytes, 10,000 UTF-16 units
+    const both = retainedUserMessages([
+      { role: "user", content: [{ type: "input_text", text: emoji }] },
+      { role: "user", content: [{ type: "input_text", text: "newest" }] },
+    ], 2_000);
+    assert.equal(textOf(both.at(-1)), "newest", "the newest message is kept whole");
+    assert(Buffer.byteLength(both.map(textOf).join(""), "utf8") <= 8_000 + 64, "older messages fill only what's left");
+  }
+
+  console.log(JSON.stringify({ ok: true, cases: ["pre_turn", "local_fallback", "mid_turn", "manual", "utf8_budget"] }));
 } finally {
   await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

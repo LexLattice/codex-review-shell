@@ -278,10 +278,12 @@ function estimateTokens(value) {
 }
 // The newest user messages, newest first, up to the budget (the boundary
 // message is cut), returned oldest first. Earlier summaries aren't kept.
+// Measured in UTF-8 bytes, like estimateTokens, so non-ASCII text can't
+// exceed the token budget.
 function retainedUserMessages(items = [], budgetTokens = COMPACT_RETAINED_TOKENS_REMOTE) {
-  let remainingChars = budgetTokens * 4;
+  let remainingBytes = budgetTokens * 4;
   const kept = [];
-  for (let index = items.length - 1; index >= 0 && remainingChars > 0; index -= 1) {
+  for (let index = items.length - 1; index >= 0 && remainingBytes > 0; index -= 1) {
     const item = items[index];
     if (item?.role !== "user") continue;
     const text = (Array.isArray(item.content) ? item.content : [])
@@ -289,8 +291,12 @@ function retainedUserMessages(items = [], budgetTokens = COMPACT_RETAINED_TOKENS
       .map((part) => String(part.text ?? ""))
       .join("\n");
     if (!text || text.startsWith(COMPACTION_SUMMARY_PREFIX)) continue;
-    const clipped = text.length > remainingChars ? `${text.slice(0, remainingChars)}\n[… truncated at compaction]` : text;
-    remainingChars -= clipped.length;
+    const bytes = Buffer.from(text, "utf8");
+    // A cut inside a multi-byte character decodes to U+FFFD; drop it.
+    const clipped = bytes.length > remainingBytes
+      ? `${bytes.subarray(0, remainingBytes).toString("utf8").replace(/\uFFFD+$/, "")}\n[… truncated at compaction]`
+      : text;
+    remainingBytes -= Buffer.byteLength(clipped, "utf8");
     kept.unshift({ role: "user", content: [{ type: "input_text", text: clipped }] });
   }
   return kept;
@@ -9192,8 +9198,46 @@ class DirectLiveTextController {
     const settled = await Promise.allSettled(group.map((entry) =>
       this.dispatchToolObligations(surfaceSession, sessionId, turnId, [entry.obligation], project)));
     const failure = settled.find((entry) => entry.status === "rejected");
+    // Parallel-safe calls finish within their dispatch, so one still in
+    // flight here failed without reaching continueToolBatch. Its siblings
+    // are waiting on it and may have moved the turn off "failed".
+    const stranded = group
+      .map((entry) => entry.obligation.obligationId)
+      .filter((obligationId) => batch.inFlight.has(obligationId));
+    if (stranded.length || failure) {
+      this.finishFailedToolBatch(surfaceSession, sessionId, turnId, batch, stranded, project, failure?.reason);
+    }
     if (failure) throw failure.reason;
     return settled.reduce((total, entry) => total + (Number(entry.value) || 0), 0);
+  }
+
+  finishFailedToolBatch(surfaceSession, sessionId, turnId, batch, stranded = [], project = {}, thrown = null) {
+    const key = toolBatchKey(sessionId, turnId);
+    // Stop already ended the batch and the turn.
+    if (this.toolBatches.get(key) !== batch || this.turnStopRequested(sessionId, turnId)) return;
+    for (const obligationId of stranded) batch.inFlight.delete(obligationId);
+    this.toolBatches.delete(key);
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    if (normalizeString(turn.state, "") === "aborted") return;
+    const failed = stranded
+      .map((obligationId) => this.sessionStore.findToolObligation(sessionId, turnId, obligationId)?.obligation)
+      .find(Boolean);
+    const error = isPlainObject(turn.error) && turn.error.code
+      ? turn.error
+      : {
+          code: normalizeString(thrown?.code || failed?.failureKind, "parallel_tool_call_failed"),
+          message: normalizeString(thrown?.message, `The ${normalizeString(failed?.name, "tool")} call failed.`),
+        };
+    if (turn.state !== "failed" || !isPlainObject(turn.error)) {
+      this.sessionStore.updateTurnState(sessionId, turnId, "failed", { error });
+    }
+    if (thrown) return; // the caller reports a thrown error
+    this.forgetTurnRuntime(turnId, sessionId, project);
+    this.emitNotification(surfaceSession, "turn/completed", {
+      threadId: sessionId,
+      turnId,
+      turn: { id: turnId, status: "failed", error, completedAt: nowSeconds() },
+    });
   }
 
   // Called where a tool's continuation would be sent. True when that
@@ -12806,4 +12850,5 @@ module.exports = {
   composeImplementationToolBundleForRequest,
   implementationInitialPolicyCandidateToolNames,
   modelEvidenceFor,
+  retainedUserMessages,
 };

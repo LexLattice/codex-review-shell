@@ -64,6 +64,8 @@ const manager = new DirectStatefulExecSessionManager({ grantStore: grants, works
 const threadStore = new DirectThreadStore({ rootDir: path.join(root, "threads"), mode: "index_only" });
 const executor = new DirectFullAccessLocalEnvironmentExecutor({ grantStore: grants, workspaceRootResolver: () => workspace });
 const bodies = [];
+let script = [CALLS, null];
+let scriptStart = 0;
 const controller = new DirectLiveTextController({
   sessionStore, directThreadStore: threadStore, harnessGrantStore: grants, statefulExecSessionManager: manager,
   fullAccessLocalEnvironmentExecutor: executor,
@@ -73,8 +75,9 @@ const controller = new DirectLiveTextController({
   activationStatusResolver: () => ({ status: "ready", model: "gpt-5.6-sol", context: { contextWindow: 100000, usedTokens: 1, remainingTokens: 99999 } }),
   fetchImpl: async (_url, init) => {
     bodies.push(JSON.parse(init.body));
-    assert(bodies.length <= 2, "one continuation carries all four results");
-    return response(`r${bodies.length}`, bodies.length === 1 ? CALLS : null);
+    const index = bodies.length - 1 - scriptStart;
+    assert(index < script.length, "no extra continuation");
+    return response(`r${bodies.length}`, script[index]);
   },
 });
 
@@ -117,6 +120,46 @@ try {
   assert.equal(c.notes, "beta", "C ran after the patch");
   assert(c.start >= a.end, "C started after the patch, which started after A");
   assert.equal((await fs.readFile(path.join(workspace, "notes.txt"), "utf8")).trim(), "beta");
+
+  // A parallel call that fails outright (a backend error, not an answer for
+  // the model) ends the turn as failed even though its sibling succeeded
+  // after it; the sibling doesn't wait for it forever.
+  const realStart = manager.start.bind(manager);
+  manager.start = (input = {}) => {
+    if (String(input.cmd || "").includes("FAIL_ME")) {
+      const error = new Error("fixture backend failure");
+      error.code = "fixture_backend_failure";
+      throw error;
+    }
+    return realStart(input);
+  };
+  const events = [];
+  surface.on("event", (e) => events.push(e));
+  scriptStart = bodies.length;
+  script = [[
+    { name: "exec_command", args: { cmd: "echo FAIL_ME" } },
+    { name: "exec_command", args: { cmd: timedRead("D", 300) } },
+  ], null];
+  const failThread = (await controller.handleRequest("thread/start", {
+    title: "Parallel failure", model: "gpt-5.6-sol", accessProfile: "full_access", workThreadId: "work_thread_parallel_failure",
+  }, context)).thread.id;
+  const failTurn = await controller.handleRequest("turn/start", { threadId: failThread, clientTurnRequestId: "parallel_fail", promptText: "Run both." }, context);
+  await Promise.race([
+    controller.waitForTurnCompletion({ sessionId: failThread, turnId: failTurn.turn.id }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("turn never finished")), 15_000).unref()),
+  ]);
+  const deadline = Date.now() + 5_000;
+  while (sessionStore.readTurn(failThread, failTurn.turn.id).state !== "failed" && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const failedTurn = sessionStore.readTurn(failThread, failTurn.turn.id);
+  assert.equal(failedTurn.state, "failed", `the turn ends failed (state ${failedTurn.state})`);
+  assert.equal(failedTurn.error?.code, "fixture_backend_failure");
+  assert.equal(bodies.length - scriptStart, 1, "no continuation after the failure");
+  assert.equal(controller.toolBatches.size, 0, "the batch is cleared");
+  assert(events.some((e) => /turn\/completed/.test(JSON.stringify(e)) && /"failed"/.test(JSON.stringify(e))), "the UI is told the turn failed");
+  const sibling = failedTurn.unresolvedObligations.find((entry) => /D start/.test(JSON.stringify(entry.result || {})) || entry.callId?.endsWith("_1"));
+  assert(sibling?.result, "the sibling still ran");
 
   console.log(JSON.stringify({ ok: true, overlapMs: a.end - b.start, requests: bodies.length }));
 } finally {
