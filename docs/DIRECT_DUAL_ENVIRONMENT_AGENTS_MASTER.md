@@ -1248,7 +1248,10 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   turn's history. Before, the history was one quoted transcript where
   every tool call was a placeholder line ("ready_for_provider_continuation"),
   so the model re-ran commands to recall what they printed. The context
-  pack and request manifest still record the quoted form; the turn's
+  pack still renders the quoted form, but the request manifest records
+  what was sent (`continuityPolicy: fresh_request_with_history_items`,
+  `providerHistory` with turn and item counts and any checkpoint,
+  `quotedTranscriptSentToProvider: false`; since 2026-10-09); the turn's
   `requestShape` marks `historyItemsUsed` with the counts. Live: asked what
   an earlier command printed, the model answers from history without a
   tool call (live suite `remembers_tool_output`). Gate:
@@ -1345,6 +1348,10 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
     compaction: the last turn it covers), so it shows again after a reload.
     Compaction requests count in that turn's usage rows
     (`context_compaction_remote` / `_local`).
+  - `get_context_remaining` now answers from the model's context window
+    (account model list) and the turn's last request usage (input plus
+    output); Direct's runtime status had no context fields, so it always
+    said unknown. Gate: `npm run direct:context-remaining`.
   - Live suite `auto_compaction` lowers the limit through the test control
     port (`direct-drive test-settings --auto-compact-limit N`) and checks
     that the next turn compacts and still knows a number found only in a
@@ -1366,9 +1373,14 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   pwsh startup is 370–500 ms here; a command in a warm shell finishes in
   100–200 ms. Live: `exec` 0.2–0.3 s instead of 0.5–1.2 s, and the
   tools/harness gap per command step dropped from about 0.9 s to 0.5 s.
-  Terminals and the first command of a shape still start cold. Gate:
+  Terminals still start cold. Since 2026-10-09 opening or resuming a thread
+  warms its default shape (project root, no extra environment), so the
+  thread's first command starts warm too (measured 215 ms). Gate:
   `direct-windows-prewarm-regression` (Windows Node; skips elsewhere);
   live suite 8/8 on Windows.
+- Fixed 2026-10-09: a question to the owner (`request_user_input`,
+  `request_permissions`, `update_sub_agent_policy`) no longer also shows
+  the "Local approval is required" warning; only approvals do.
 - Found 2026-10-08, not fixed: `direct-native-windows-workspace-executor-regression`
   fails under Windows Node (expects transport `windows-native-resident`,
   gets `local-child`); it already failed before these changes, and the
@@ -1520,8 +1532,10 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   already declares the new tools; a turn-scoped grant returns the thread to
   its previous Access when the turn ends (or, if the turn ended elsewhere,
   before the next turn starts). Full access threads aren't offered the
-  tool. Known edge: a command session started before the raise may refuse
-  `write_stdin` afterwards (its grant is no longer current). Gate:
+  tool. A command session started before the raise keeps taking
+  `write_stdin` afterwards (checked 2026-10-09 on Linux and Windows Node:
+  `npm run direct:stdin-after-raise`; the earlier "may refuse" note was a
+  guess). Gate:
   `npm run direct:request-permissions`; live suite scenario
   `permission_request` passes on both hosts.
 - Since turn 8, configured MCP servers run in their own environment, and

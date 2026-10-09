@@ -855,6 +855,19 @@ class DirectStatefulExecSessionManager extends EventEmitter {
     }
   }
 
+  // Warms the shell a default exec_command in this task would use (project
+  // root, no extra environment). False when the backend doesn't prewarm.
+  prewarm(input = {}) {
+    if (this.disposed) return false;
+    const { grant } = this.resolveGrant(input, "exec_command");
+    const backend = this.backendFor(input, grant);
+    if (typeof backend.prewarmShape !== "function") return false;
+    const workspace = backend.resolveWorkspace(input, grant);
+    const sandboxMode = normalizeString(grant?.sandboxMode, "danger-full-access");
+    const plan = backend.planLaunch({ sandboxMode, workspace, shellCommand: "prewarm", command: "prewarm", args: [], tty: null });
+    return backend.prewarmShape(plan, { cwd: workspace.cwd, env: safeExecEnvironment(undefined) });
+  }
+
   attachProcess(record) {
     const onData = (stream, chunk) => {
       if (record.tty && stream === "stdout") this.recordTerminalBytes(record, chunk);

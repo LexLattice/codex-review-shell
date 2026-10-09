@@ -1656,10 +1656,23 @@ function buildRequestManifest({
       previousResponseIdUsed: false,
       providerContinuityHandleUsed: false,
       importedContinuityHandleUsed: false,
-      continuityPolicy: contextPack.policy?.policyId === DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID
-        ? "fresh_request_with_quoted_recent_dialogue"
-        : "fresh_request",
+      // Implementation turns send earlier turns as history items rather
+      // than this pack's quoted transcript.
+      continuityPolicy: requestShape.providerHistoryForm === "structured_items"
+        ? "fresh_request_with_history_items"
+        : contextPack.policy?.policyId === DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID
+          ? "fresh_request_with_quoted_recent_dialogue"
+          : "fresh_request",
     },
+    ...(requestShape.providerHistoryForm === "structured_items" ? {
+      providerHistory: {
+        form: "structured_items",
+        turnCount: Number(requestShape.providerHistoryTurnCount || 0),
+        itemCount: Number(requestShape.providerHistoryItemCount || 0),
+        compactionId: normalizeString(requestShape.providerHistoryCompactionId, ""),
+        quotedTranscriptSentToProvider: false,
+      },
+    } : {}),
     capabilityEvidence: {
       modelEvidenceRef: normalizeString(modelEvidenceRef, ""),
       requestShapeEvidenceRef: normalizeString(requestShapeEvidenceRef, ""),

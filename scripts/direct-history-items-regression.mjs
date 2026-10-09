@@ -105,6 +105,13 @@ try {
   assert.equal(input.at(-1).role, "developer", "the per-turn snapshot note stays last");
   assert.equal(second.stored.requestShape.historyItemsUsed, true);
   assert.equal(second.stored.requestShape.historyTurnCount, 1);
+  // The request manifest records that history went as items, not as the
+  // pack's quoted transcript.
+  const manifest = threadStore.readRequestManifest(second.stored.requestManifestId);
+  assert.equal(manifest.continuity.continuityPolicy, "fresh_request_with_history_items");
+  assert.equal(manifest.providerHistory.form, "structured_items");
+  assert.equal(manifest.providerHistory.turnCount, 1);
+  assert.equal(manifest.providerHistory.quotedTranscriptSentToProvider, false);
 
   // The next turn's input begins with everything up to this turn's message.
   const third = await runTurn("Thanks.", [{ text: "You're welcome." }]);

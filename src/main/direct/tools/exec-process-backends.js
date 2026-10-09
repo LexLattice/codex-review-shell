@@ -280,6 +280,14 @@ class LocalChildProcessBackend {
     } catch {}
   }
 
+  // Starts an idle shell for a launch shape before its first command (a
+  // thread opening), so even that command starts warm.
+  prewarmShape(plan, options = {}) {
+    if (!plan?.prewarmScriptLine) return false;
+    this.refillPrewarmed(this.prewarmKey(plan, options), plan, options);
+    return true;
+  }
+
   disposePrewarmed() {
     for (const entry of this.prewarmed.values()) {
       clearTimeout(entry.timer);

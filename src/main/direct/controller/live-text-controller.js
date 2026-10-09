@@ -7367,16 +7367,29 @@ class DirectLiveTextController {
     if (toolName === "get_context_remaining") {
       const status = this.statusForProject(options.project || {});
       const context = isPlainObject(status.context) ? status.context : {};
+      // The model's window from the account's model list, and what the last
+      // request of this turn used (its input plus output, which the next
+      // request carries), as Codex counts it.
+      const turn = this.sessionStore.readTurn(baseInput.threadId, baseInput.turnId) || {};
+      const turnModel = normalizeString(turn.model, status.model);
+      const descriptorWindow = Number(this.catalogModelDescriptor(options.project || {}, turnModel)?.contextWindow || 0);
+      const rows = Array.isArray(turn.usageAttribution?.rows) ? turn.usageAttribution.rows : [];
+      const lastRow = [...rows].reverse().find((row) => !String(row?.requestKind || "").startsWith("context_compaction") && Number(row?.inputTokens) > 0);
+      const lastUsed = lastRow ? Number(lastRow.inputTokens || 0) + Number(lastRow.outputTokens || 0) : 0;
+      const contextWindow = descriptorWindow || Number(context.contextWindow || context.windowTokens || status.contextWindow || 0);
+      const usedTokens = lastUsed || Number(context.usedTokens || context.contextTokensUsed || status.contextUsedTokens || 0);
       return buildContextRemainingResultEnvelope({
         gate,
         contextRemainingInput: {
           ...baseInput,
-          model: normalizeString(status.model, ""),
-          contextWindow: Number(context.contextWindow || context.windowTokens || status.contextWindow || 0),
-          usedTokens: Number(context.usedTokens || context.contextTokensUsed || status.contextUsedTokens || 0),
-          remainingTokens: Number(context.remainingTokens || context.contextTokensRemaining || status.contextRemainingTokens || 0),
-          confidence: normalizeString(context.confidence, "estimated"),
-          estimateKind: normalizeString(context.estimateKind, "harness_estimate"),
+          model: turnModel,
+          contextWindow,
+          usedTokens,
+          remainingTokens: contextWindow && usedTokens
+            ? Math.max(0, contextWindow - usedTokens)
+            : Number(context.remainingTokens || context.contextTokensRemaining || status.contextRemainingTokens || 0),
+          confidence: lastUsed && descriptorWindow ? "derived" : normalizeString(context.confidence, "estimated"),
+          estimateKind: lastUsed ? "provider_reported" : normalizeString(context.estimateKind, "harness_estimate"),
         },
       });
     }
@@ -9559,8 +9572,10 @@ class DirectLiveTextController {
       // Calls the thread's access covers run without asking; only a request
       // actually put to the owner (an rpc-request) needs a warning.
       let ownerRequests = 0;
+      // A question to the owner (request_user_input, request_permissions,
+      // update_sub_agent_policy) is its own prompt; only approvals warn.
       const countOwnerRequests = (event) => {
-        if (event?.type === "rpc-request") ownerRequests += 1;
+        if (event?.type === "rpc-request" && event.request?.method !== "item/tool/requestUserInput") ownerRequests += 1;
       };
       surfaceSession?.on?.("event", countOwnerRequests);
       let createdApprovalRequests = 0;
@@ -11526,6 +11541,21 @@ class DirectLiveTextController {
               harnessGrant,
             })
           : null;
+        // The pack still renders earlier turns as a quoted transcript; the
+        // provider gets them as history items (structuredHistoryInput), and
+        // the manifest says so.
+        const plannedHistoryLimit = implementationTier ? this.autoCompactTokenLimitFor(project, model) : 0;
+        const plannedHistory = implementationTier && useRecentDialogue
+          ? this.priorTurnHistoryItems(session.sessionId, turn.turnId, plannedHistoryLimit ? { budgetChars: plannedHistoryLimit * 4 } : {})
+          : null;
+        const plannedHistoryShape = plannedHistory?.items?.length
+          ? {
+              providerHistoryForm: "structured_items",
+              providerHistoryTurnCount: plannedHistory.turnCount,
+              providerHistoryItemCount: plannedHistory.items.length,
+              ...(plannedHistory.compactionId ? { providerHistoryCompactionId: plannedHistory.compactionId } : {}),
+            }
+          : {};
         contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
           session: this.sessionStore.readSession(session.sessionId) || session,
           projectId: session.projectId,
@@ -11544,6 +11574,7 @@ class DirectLiveTextController {
           requestShape: {
             ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
             ...selfConstitutionRequestShapeFields(selfConstitutionSnapshot),
+            ...plannedHistoryShape,
           },
           endpointClass: "chatgpt-codex-responses",
           endpointHash: this.endpoint ? sha256(this.endpoint) : "",
@@ -12400,8 +12431,10 @@ class DirectLiveTextController {
       // Tool calls the thread's access covers run without asking; only a
       // request actually put to the owner (an rpc-request) needs a warning.
       let ownerRequests = 0;
+      // A question to the owner (request_user_input, request_permissions,
+      // update_sub_agent_policy) is its own prompt; only approvals warn.
       const countOwnerRequests = (event) => {
-        if (event?.type === "rpc-request") ownerRequests += 1;
+        if (event?.type === "rpc-request" && event.request?.method !== "item/tool/requestUserInput") ownerRequests += 1;
       };
       surfaceSession?.on?.("event", countOwnerRequests);
       let createdApprovalRequests = 0;
@@ -12580,6 +12613,30 @@ class DirectLiveTextController {
     return { turn: turnSnapshot(aborted), status: "aborted" };
   }
 
+  // A thread's first command starts in an already-running PowerShell
+  // (Windows); best effort, after the reply.
+  prewarmThreadShell(sessionId, project = {}) {
+    if (!sessionId || typeof this.statefulExecSessionManager?.prewarm !== "function") return;
+    setImmediate(() => {
+      try {
+        const session = this.sessionStore.readSession(sessionId);
+        const grant = session ? this.resolveHarnessGrant(project, session) : null;
+        if (!grant) return;
+        this.statefulExecSessionManager.prewarm({
+          project,
+          harnessGrant: grant,
+          grantId: grant.grantId,
+          taskId: sessionId,
+          threadId: sessionId,
+          projectId: normalizeString(project.id || project.projectId || session.projectId, ""),
+          executionEnvironmentDigest: normalizeString(grant.executionEnvironmentDigest || session.executionEnvironmentDigest, ""),
+        });
+      } catch {
+        // The first command then starts cold, as before.
+      }
+    });
+  }
+
   async handleRequest(method, params = {}, context = {}) {
     if (method === "initialize") return this.initialize(params, context);
     if (method === "account/read") return this.accountRead(params, context);
@@ -12589,8 +12646,11 @@ class DirectLiveTextController {
     if (method === "model/list") return this.modelList(params, context);
     if (method === "configRequirements/read") return this.configRequirementsRead(params, context);
     if (method === "environment/status") return this.environmentStatus(params, context);
-    if (method === "thread/start") return this.startThread(params, context);
-    if (method === "thread/resume") return this.resumeThread(params, context);
+    if (method === "thread/start" || method === "thread/resume") {
+      const result = await (method === "thread/start" ? this.startThread(params, context) : this.resumeThread(params, context));
+      this.prewarmThreadShell(normalizeString(result?.thread?.id, ""), context.project || {});
+      return result;
+    }
     if (method === "thread/fork") return this.forkThread(params, context);
     if (method === "thread/selectAccessProfile") return this.selectTaskAccessProfile(params, context);
     if (method === "thread/list") return this.listThreads(params, context);
