@@ -62,6 +62,7 @@ class DirectTestControlServer {
     this.createThread = options.createThread; // (project, payload) => draft-session result
     this.terminalStates = options.terminalStates instanceof Set ? options.terminalStates : new Set();
     this.onShutdown = typeof options.onShutdown === "function" ? options.onShutdown : () => {};
+    this.captureSurface = typeof options.captureSurface === "function" ? options.captureSurface : null;
     this.appInfo = isPlainObject(options.appInfo) ? options.appInfo : {};
     this.token = crypto.randomBytes(24).toString("hex");
     this.server = null;
@@ -162,6 +163,8 @@ class DirectTestControlServer {
       "POST /v1/request": () => this.genericRequest(body),
       "GET /v1/events": () => this.events(query),
       "POST /v1/respond": () => this.respond(body),
+      "POST /v1/test/settings": () => this.applyTestSettings(body),
+      "POST /v1/screenshot": () => this.screenshot(body),
       "POST /v1/shutdown": () => {
         setTimeout(() => this.onShutdown(), 50);
         return { shuttingDown: true };
@@ -390,6 +393,30 @@ class DirectTestControlServer {
     };
   }
 
+  // Writes the Workbench as the owner sees it to a PNG in the test profile.
+  async screenshot(body = {}) {
+    if (!this.captureSurface) throw httpError(501, "test_control_screenshot_unavailable", "This app can't capture its surface.");
+    const png = await this.captureSurface();
+    if (!png || !png.length) throw httpError(409, "test_control_screenshot_empty", "The surface returned no image (is the window shown?).");
+    const name = normalizeString(body.name, `surface-${Date.now()}`).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
+    const dir = path.join(this.userDataDir, "screenshots");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, name.endsWith(".png") ? name : `${name}.png`);
+    fs.writeFileSync(file, png);
+    return { path: file, bytes: png.length };
+  }
+
+  // Knobs a live test needs to reach behavior that otherwise takes a huge
+  // thread: autoCompactTokenLimit (0 restores the model's own limit).
+  applyTestSettings(body = {}) {
+    const controller = this.controller();
+    if (Object.prototype.hasOwnProperty.call(body, "autoCompactTokenLimit")) {
+      const limit = Number(body.autoCompactTokenLimit);
+      controller.autoCompactTokenLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+    }
+    return { autoCompactTokenLimit: controller.autoCompactTokenLimit || 0 };
+  }
+
   turnReport(query = {}) {
     return {
       report: this.buildTurnReport(normalizeString(query.threadId, ""), normalizeString(query.turnId, ""), {
@@ -508,6 +535,14 @@ class DirectTestControlServer {
       model: normalizeString(turn.model, ""),
       reasoningEffort: normalizeString(turn.reasoningEffort, ""),
       durationMs: started && ended ? ended - started : null,
+      ...(turn.requestShape?.threadCompactedBeforeTurn || turn.turnCompaction ? {
+        compaction: {
+          beforeTurn: turn.requestShape?.threadCompactedBeforeTurn || null,
+          midTurn: turn.turnCompaction
+            ? { mode: turn.turnCompaction.mode, count: turn.turnCompaction.compactionCount, tokensBefore: turn.turnCompaction.tokensBefore, tokensAfter: turn.turnCompaction.tokensAfter }
+            : null,
+        },
+      } : {}),
       user: clip(userText, textLimit),
       requests,
       timeline: turnTimeline(requestTiming, started && ended ? ended - started : null),

@@ -396,6 +396,8 @@ const usage = `usage: node scripts/direct-drive.mjs <command> [options]
   report --thread ID|last [--turn ID|last] [--json] [--full]
   events [--since N]
   request --method M [--params JSON]       any runtime request (escape hatch)
+  test-settings [--auto-compact-limit N]   test knobs (N tokens; 0 = the model's own limit)
+  screenshot [--name N]                    save the Workbench as shown (start --show) to a PNG
   options: --project last|ID, --profile DIR (default ${profileDir()})`;
 
 const commands = {
@@ -423,6 +425,10 @@ const commands = {
     projectId: resolveProjectId(),
     method: options.method,
     params: options.params ? JSON.parse(String(options.params)) : {},
+  })),
+  screenshot: async () => print(await post("/v1/screenshot", { name: options.name })),
+  "test-settings": async () => print(await post("/v1/test/settings", {
+    ...(options["auto-compact-limit"] !== undefined ? { autoCompactTokenLimit: Number(options["auto-compact-limit"]) } : {}),
   })),
 };
 

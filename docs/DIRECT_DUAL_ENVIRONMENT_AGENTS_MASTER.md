@@ -1341,9 +1341,15 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   - Manual: the Workbench header's Compact button
     (`thread/compact/start`, Codex's `/compact`), available between turns.
   - The transcript shows "Context compacted for this thread." (Codex's
-    `contextCompaction` item) while the app is open; it isn't kept in the
-    saved transcript yet. Compaction requests aren't counted in the turn's
-    usage rows yet.
+    `contextCompaction` item), kept under the turn it happened in (a manual
+    compaction: the last turn it covers), so it shows again after a reload.
+    Compaction requests count in that turn's usage rows
+    (`context_compaction_remote` / `_local`).
+  - Live suite `auto_compaction` lowers the limit through the test control
+    port (`direct-drive test-settings --auto-compact-limit N`) and checks
+    that the next turn compacts and still knows a number found only in a
+    compacted command output. The Compact button was checked on screen in
+    the WSL and Windows Workbench (`direct-drive screenshot`).
   - Live, luna/low, manual compaction: remote form accepted (1,352 → 605
     estimated tokens); asked afterwards, the model gave a number that
     appeared only in a compacted command output. (When the user had said

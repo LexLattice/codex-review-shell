@@ -56,6 +56,12 @@ or `--stop-after-calls N`, or `stop-turn --thread last --turn last`.
 
 Anything else the runtime accepts: `request --method thread/read --params '{...}'`.
 
+What the owner sees: start with `start --show`, then `screenshot [--name N]`
+saves the Workbench surface to `<profile>/screenshots/N.png` (needs a shown
+window). Test knobs: `test-settings --auto-compact-limit N` sets the
+auto-compaction limit to N tokens so a short thread compacts; `0` restores
+the model's own limit.
+
 ## Live suite
 
 `node scripts/direct-live-suite.mjs` (or `npm run direct:live-suite`) runs a
@@ -75,6 +81,7 @@ folder (`<test data>/direct-test/suite`) it empties first.
 | `permission_request` | a Read only thread asks with `request_permissions`, gets Workspace for the turn, writes the file, and is back at Read only |
 | `path_in_prompt` | an absolute path in the prompt is accepted |
 | `remembers_tool_output` | a follow-up turn answers what an earlier command printed from history, without a tool call |
+| `auto_compaction` | with a lowered limit, the next turn compacts its history first and still answers a number found only in a compacted command output |
 | `follow_up_turn` | a second turn on the edit thread works; prints its cached input |
 
 `--only a,b` runs some; `--json` adds a machine-readable summary; `--model`

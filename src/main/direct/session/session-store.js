@@ -2358,6 +2358,29 @@ class DirectSessionStore {
     }
   }
 
+  // Usage from a request whose events don't belong in the turn's event log
+  // (compaction): counted in the turn's usage rows only.
+  recordTurnUsage(sessionId, turnId, normalizedEvents = [], options = {}) {
+    const events = (Array.isArray(normalizedEvents) ? normalizedEvents : [])
+      .filter((event) => event?.type === "usage_delta" || event?.type === "response_completed");
+    if (!events.some((event) => event.type === "usage_delta")) return null;
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) return null;
+    const session = this.readSession(sessionId);
+    const usageAttribution = updateDirectTurnUsageAttribution({
+      existing: turn.usageAttribution,
+      session,
+      turn,
+      events,
+      observedAt: nowIso(options.nowMs),
+      projectId: session?.projectId,
+      model: normalizeString(options.model, turn.model),
+      reasoningEffort: normalizeString(options.reasoningEffort, turn.reasoningEffort),
+      requestKind: normalizeString(options.requestKind, ""),
+    });
+    return this.updateTurnState(sessionId, turnId, turn.state, { usageAttribution }, options);
+  }
+
   writeDiagnostic(sessionId, fixtureId, record, options = {}) {
     const diagnostic = {
       schema: DIRECT_DIAGNOSTIC_SCHEMA,

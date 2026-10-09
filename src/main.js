@@ -14513,6 +14513,11 @@ async function startDirectTestControlServer() {
     },
     createThread: (project, payload) => ensureDirectThreadWorkbenchController().createWorkThreadDraftSession(project, payload),
     terminalStates: DIRECT_TERMINAL_TURN_STATES,
+    // What the owner sees: the Workbench surface as a PNG.
+    captureSurface: async () => {
+      if (!codexView || codexView.webContents.isDestroyed()) return null;
+      return (await codexView.webContents.capturePage()).toPNG();
+    },
     onShutdown: () => app.quit(),
     appInfo: { experience: APP_EXPERIENCE.id, appRoot },
   });

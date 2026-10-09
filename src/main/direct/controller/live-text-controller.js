@@ -4588,6 +4588,7 @@ class DirectLiveTextController {
       instructions: normalizeString(admitted.instructions, ""),
       historyItems: history.items,
       coversThroughTurnId: history.lastTurnId,
+      transcriptTurnId: history.lastTurnId,
       trigger: "manual",
     });
     return { threadId: sessionId, compacted: true, compaction };
@@ -5104,12 +5105,21 @@ class DirectLiveTextController {
   appendSessionTurn(sessionId, turnId, items, model, status) {
     const session = this.sessionStore.readSession(sessionId);
     if (!session) return;
+    // Compaction markers recorded during the turn go after the user's
+    // message (the turn's own items replace the rest).
+    const markers = (this.sessionStore.readTurn(sessionId, turnId)?.compactionTranscriptItems || [])
+      .filter((marker) => isPlainObject(marker) && !(items || []).some((item) => item?.id === marker.id));
+    const ownItems = Array.isArray(items) ? items : [];
+    const userIndex = ownItems.findIndex((item) => item?.type === "userMessage");
+    const mergedItems = markers.length
+      ? [...ownItems.slice(0, userIndex + 1), ...markers, ...ownItems.slice(userIndex + 1)]
+      : items;
     const nextMessages = [
       ...(Array.isArray(session.messages) ? session.messages.filter((message) => message.id !== turnId) : []),
       {
         id: turnId,
         status,
-        items,
+        items: mergedItems,
       },
     ];
     this.sessionStore.writeSession({
@@ -7813,11 +7823,27 @@ class DirectLiveTextController {
       tools: Array.isArray(input.tools) ? input.tools : [],
       input: items,
     };
+    // Compaction is billed like any request; its usage counts toward the
+    // turn it ran in (a manual compaction: the last turn it covers).
+    const usageTurnId = normalizeString(input.transcriptTurnId, turnId);
+    const recordUsage = (result, requestKind) => {
+      if (!usageTurnId || typeof this.sessionStore.recordTurnUsage !== "function") return;
+      try {
+        this.sessionStore.recordTurnUsage(sessionId, usageTurnId, result?.normalizedEvents, {
+          requestKind,
+          model: common.model,
+          reasoningEffort: common.reasoningEffort,
+        });
+      } catch {
+        // Usage rows are accounting; they never decide the compaction.
+      }
+    };
     let replacementItems = null;
     let mode = "";
     const failures = [];
     try {
       const remote = await runRemoteCompactionRequest(common);
+      recordUsage(remote, "context_compaction_remote");
       if (remote.ok && Array.isArray(remote.compactionItems) && remote.compactionItems.length === 1) {
         mode = "remote";
         replacementItems = [...retainedUserMessages(items, COMPACT_RETAINED_TOKENS_REMOTE), remote.compactionItems[0]];
@@ -7830,6 +7856,7 @@ class DirectLiveTextController {
     if (!replacementItems && !common.signal?.aborted) {
       try {
         const local = await runLocalCompactionRequest(common);
+        recordUsage(local, "context_compaction_local");
         const summary = local.ok ? assistantTextFromDirectEvents(local.normalizedEvents) : "";
         if (summary) {
           mode = "local";
@@ -7845,6 +7872,7 @@ class DirectLiveTextController {
       }
     }
     notify("item/completed", replacementItems ? "completed" : "failed");
+    if (replacementItems) this.recordCompactionTranscriptItem(sessionId, normalizeString(input.transcriptTurnId, turnId), compactionId, mode);
     if (!replacementItems) {
       const error = new Error(`Context compaction failed (${failures.join(", ") || "unknown"}).`);
       error.code = "direct_context_compaction_failed";
@@ -7865,6 +7893,40 @@ class DirectLiveTextController {
       tokensAfter: estimateTokens(replacementItems),
       remoteFailure: mode === "local" ? failures[0] || "" : "",
     };
+  }
+
+  // The transcript keeps the "Context compacted" marker under the turn it
+  // happened in (a manual compaction: the last turn it covers), so it shows
+  // again after a reload.
+  recordCompactionTranscriptItem(sessionId, turnId, compactionId, mode = "") {
+    if (!turnId) return;
+    const marker = { id: compactionId, type: "contextCompaction", turnId, status: "completed", ...(mode ? { mode } : {}) };
+    // On the turn, for when its message is (re)written at the end...
+    const turn = this.sessionStore.readTurn(sessionId, turnId);
+    if (turn) {
+      this.sessionStore.updateTurnState(sessionId, turnId, turn.state, {
+        compactionTranscriptItems: [
+          ...(Array.isArray(turn.compactionTranscriptItems) ? turn.compactionTranscriptItems : []).filter((item) => item?.id !== compactionId),
+          marker,
+        ],
+      });
+    }
+    // ...and in its message now, if it has one (a finished turn).
+    const session = this.sessionStore.readSession(sessionId);
+    if (!session || !Array.isArray(session.messages) || !session.messages.some((message) => message?.id === turnId)) return;
+    this.sessionStore.writeSession({
+      ...session,
+      updatedAt: nowIso(),
+      messages: session.messages.map((message) => message.id !== turnId
+        ? message
+        : {
+            ...message,
+            items: [
+              ...(Array.isArray(message.items) ? message.items : []).filter((item) => item?.id !== compactionId),
+              marker,
+            ],
+          }),
+    });
   }
 
   // Compacts the thread's history (the earlier turns, or the checkpoint and
