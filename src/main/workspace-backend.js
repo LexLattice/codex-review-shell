@@ -1305,6 +1305,12 @@ class WorkspaceSession extends EventEmitter {
         this.emit("executor-process-event", event);
         return;
       }
+      // A configured MCP server's form request (elicitation) for the owner:
+      // host-private too, routed to the MCP request that is waiting for it.
+      if (typeof event.event === "string" && event.event.startsWith("mcp/")) {
+        this.emit("executor-mcp-event", event);
+        return;
+      }
       this.emit("agent-event", {
         session: this.publicSnapshot(),
         event: this.publicAgentEvent(event),

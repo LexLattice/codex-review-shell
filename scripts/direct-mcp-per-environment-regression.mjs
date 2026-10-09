@@ -61,11 +61,20 @@ const serverScript = [
   "readline.createInterface({ input: process.stdin }).on('line', (line) => {",
   "  const q = JSON.parse(line);",
   "  if (q.id === undefined || q.id === null) return;",
+  // The owner's answer to the form below: the read returns it, or fails
+  // when declined.
+  "  if (!q.method && q.id === 99) {",
+  "    const reply = q.result && q.result.action === 'accept'",
+  "      ? { result: { contents: [{ type: 'text', uri: 'mcp://env/owner', text: JSON.stringify(q.result.content || {}) }] } }",
+  "      : { error: { code: -32000, message: 'owner answered ' + (q.result && q.result.action) } };",
+  "    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: globalThis.ownerReadId, ...reply }) + '\\n');",
+  "    return;",
+  "  }",
   "  let result = {};",
   "  if (q.method === 'resources/list') result = { resources: [{ uri: 'mcp://env/where', name: 'Where' }] };",
   "  if (q.method === 'resources/read') {",
   "    const uri = q.params.uri;",
-  "    if (uri === 'mcp://env/owner') { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'elicitation/create', params: {} }) + '\\n'); return; }",
+  "    if (uri === 'mcp://env/owner') { globalThis.ownerReadId = q.id; process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'elicitation/create', params: { mode: 'form', message: 'Which name?', requestedSchema: { type: 'object', properties: { name: { type: 'string' } } } } }) + '\\n'); return; }",
   "    if (uri === 'mcp://env/slow') return;",
   "    let text = '';",
   "    if (uri === 'mcp://env/where') text = JSON.stringify({ platform: process.platform, release: os.release(), cwd: process.cwd(), allowed: process.env." + ALLOWED + " || '', forbidden: process.env." + FORBIDDEN + " || '' });",
@@ -246,16 +255,30 @@ try {
   );
   report.checks.push(`named_server_runs_in_${otherKind}`);
 
-  // 5. The host still owns the envelope and owner-interaction refusals for
-  // remote servers.
+  // 5. The host still owns the envelope for remote servers. A server's form
+  // reaches the host's owner through the executor and the answer goes back
+  // (the host's clock stops while the owner answers, longer than the
+  // request's timeout here); with nobody to ask, the form is declined.
   await assert.rejects(
     () => read(otherProject, inProject, "mcp://env/launder"),
     (error) => error.code === "direct_mcp_resource_result_scope_mismatch",
   );
   await assert.rejects(
     () => read(otherProject, inProject, "mcp://env/owner"),
-    (error) => error.code === "mcp_elicitation_owner_required",
+    (error) => error.code === "direct_mcp_rpc_error" && /decline/.test(error.message),
   );
+  const forms = [];
+  const answeredRemote = await read(otherProject, inProject, "mcp://env/owner", {
+    timeoutMs: 1_000,
+    onElicitation: async (params) => {
+      forms.push(params);
+      await new Promise((resolve) => setTimeout(resolve, 7_000));
+      return { action: "accept", content: { name: "Ada" } };
+    },
+  });
+  assert.equal(forms[0]?.message, "Which name?");
+  assert.deepEqual(JSON.parse(answeredRemote.payload), { name: "Ada" });
+  report.checks.push("remote_server_form_reaches_owner");
   const listed = await resolvers.externalDiscoveryResolver({
     project: otherProject,
     profile: profileFor(otherProject.mcpServers),

@@ -312,6 +312,29 @@ class DirectTestControlServer {
       });
       return { answers };
     }
+    if (request.method === "mcpServer/elicitation/request") {
+      if (decision !== "approve") return { action: decision === "cancel" ? "cancel" : "decline" };
+      // A tool approval: --answer session|always picks the scope.
+      if (params._meta?.codex_approval_kind === "mcp_tool_call") {
+        return { action: "accept", _meta: ["session", "always"].includes(answer) ? { persist: answer } : null };
+      }
+      // A form: --answer as a JSON object, else each field's default (or
+      // first choice).
+      try {
+        const parsed = JSON.parse(answer);
+        if (isPlainObject(parsed)) return { action: "accept", content: parsed };
+      } catch {}
+      const properties = isPlainObject(params.requestedSchema?.properties) ? params.requestedSchema.properties : {};
+      const content = {};
+      for (const [name, field] of Object.entries(properties)) {
+        if (field?.default !== undefined) content[name] = field.default;
+        else if (Array.isArray(field?.enum) && field.enum.length) content[name] = field.enum[0];
+        else if (field?.type === "boolean") content[name] = true;
+        else if (field?.type === "number" || field?.type === "integer") content[name] = Number(field.minimum ?? 1);
+        else if (field?.type !== "array") content[name] = answer || "test";
+      }
+      return { action: "accept", content };
+    }
     const decisionId = `test_control_${decision}_${crypto.randomBytes(4).toString("hex")}`;
     return {
       decision,

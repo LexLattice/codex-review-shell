@@ -30,6 +30,14 @@ const EXECUTOR_METHODS = Object.freeze({
   fsStat: "fs/stat",
   mcpRequest: "mcp/request",
   mcpCancel: "mcp/cancel",
+  mcpElicitationRespond: "mcp/elicitationRespond",
+});
+
+// Events the executor pushes for an MCP request in flight. Each carries
+// `mcpRequestId`; an elicitation also carries `elicitationId`, which the
+// host's mcp/elicitationRespond answers.
+const EXECUTOR_MCP_EVENTS = Object.freeze({
+  elicitation: "mcp/elicitation",
 });
 
 // Methods this executor build actually serves. Later turns add to this list
@@ -46,6 +54,7 @@ const IMPLEMENTED_EXECUTOR_METHODS = Object.freeze([
   EXECUTOR_METHODS.fsList,
   EXECUTOR_METHODS.mcpRequest,
   EXECUTOR_METHODS.mcpCancel,
+  EXECUTOR_METHODS.mcpElicitationRespond,
 ]);
 
 // Events the executor pushes for a process session. Each carries
@@ -265,6 +274,7 @@ function publicEnvironmentDescription(description) {
 module.exports = {
   ENVIRONMENT_DESCRIPTION_SCHEMA,
   EXECUTOR_METHODS,
+  EXECUTOR_MCP_EVENTS,
   EXECUTOR_PROCESS_EVENTS,
   EXECUTOR_PROTOCOL_NAME,
   EXECUTOR_PROTOCOL_VERSION,

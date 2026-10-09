@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const path = require("node:path");
 const { EventEmitter } = require("node:events");
 const { subAgentPolicyUpdateParameters } = require("../agents/active-sub-agent-policy.js");
 const {
@@ -46,6 +47,16 @@ const {
   checkpointTerminalFromEvents,
 } = require("../import/checkpoint-continuation");
 const { toolTranscriptItemFromObligation } = require("../session/session-store");
+const {
+  MCP_TOOL_APPROVAL_KIND,
+  buildMcpToolCatalog,
+  elicitationHasFields,
+  mcpToolDeclaration,
+  mcpToolResultOutput,
+  validateElicitationContent,
+} = require("../external/mcp-tool-calls");
+const { DirectApprovalRuleStore } = require("../authority/approval-rule-store");
+const { configuredMcpServersForProject } = require("../external/configured-mcp-adapter");
 const {
   APPLY_PATCH_TOOL_NAMES,
   MAX_PATCH_APPROVAL_CARD_CHARS,
@@ -1488,6 +1499,9 @@ function buildSafeResidentUtilitySlice(toolName, projectId = "") {
 // Calls that may run at the same time as each other (Codex marks
 // exec_command, write_stdin, and read-only tools parallel; apply_patch and
 // anything needing the owner run alone).
+// Prompts that are themselves the owner's question; they need no separate
+// "approval required" warning.
+const OWNER_PROMPT_METHODS = new Set(["item/tool/requestUserInput", "mcpServer/elicitation/request"]);
 const PARALLEL_SAFE_TOOL_NAMES = new Set(["exec_command", "write_stdin", "read_file", "view_image", "list_agents", "inspect_agent"]);
 
 function toolBatchKey(sessionId, turnId) {
@@ -2303,6 +2317,14 @@ class DirectLiveTextController {
     this.attachmentPayloadResolver = typeof options.attachmentPayloadResolver === "function" ? options.attachmentPayloadResolver : null;
     this.externalDiscoveryResolver = typeof options.externalDiscoveryResolver === "function" ? options.externalDiscoveryResolver : null;
     this.mcpResourceReadResolver = typeof options.mcpResourceReadResolver === "function" ? options.mcpResourceReadResolver : null;
+    this.mcpToolCatalogResolver = typeof options.mcpToolCatalogResolver === "function" ? options.mcpToolCatalogResolver : null;
+    this.mcpToolCallResolver = typeof options.mcpToolCallResolver === "function" ? options.mcpToolCallResolver : null;
+    // "Allow for this thread" answers (Codex's "for this session").
+    this.mcpThreadToolAllows = new Map();
+    this.approvalRuleStore = options.approvalRuleStore ||
+      (normalizeString(this.sessionStore?.rootDir, "")
+        ? new DirectApprovalRuleStore({ rootDir: path.join(this.sessionStore.rootDir, "authority") })
+        : null);
     this.harnessGrantStore = options.harnessGrantStore || null;
     this.statefulExecSessionManager = options.statefulExecSessionManager &&
       typeof options.statefulExecSessionManager.start === "function"
@@ -2811,6 +2833,176 @@ class DirectLiveTextController {
     envelope.envelopeDigest = sha256(stableStringify(envelope));
     await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
     return 1;
+  }
+
+  // A configured MCP server's tool, called as Codex calls it: approval when
+  // the tool may change something (its annotations), tools/call where the
+  // server runs, forms the server asks for shown to the owner, and the result
+  // returned to the model as Codex formats it.
+  async emitMcpToolCall(surfaceSession, sessionId, turnId, obligation = {}, project = {}, entry = {}) {
+    const fail = (code, message) => this.returnToolFailureToModel(surfaceSession, sessionId, turnId, obligation, project, { code, message });
+    let args = null;
+    try {
+      args = JSON.parse(normalizeString(obligation.argumentsText, "{}"));
+    } catch {
+      args = null;
+    }
+    if (!isPlainObject(args)) return fail("mcp_tool_arguments_invalid", "The tool arguments must be a JSON object.");
+    if (!this.mcpToolCallResolver) return fail("mcp_tool_call_unavailable", "MCP tool calls aren't available in this app.");
+    const binding = this.externalMcpBinding(project);
+    if (!binding.profile) return fail("mcp_tool_call_unavailable", "The project's MCP servers aren't available right now.");
+    const accessProfile = grantAccessProfile(this.harnessGrantForTurn(sessionId, turnId, project));
+    const mcpTool = (patch = {}) => ({
+      serverIdentityId: entry.serverIdentityId,
+      serverName: entry.serverName,
+      toolName: entry.toolName,
+      readOnly: entry.readOnly === true,
+      ...patch,
+    });
+    const showItem = (patch) => {
+      const updated = this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, { mcpTool: mcpTool(patch) }).obligation;
+      const item = toolTranscriptItemFromObligation(updated);
+      this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
+    };
+    const approval = await this.authorizeMcpToolCall(surfaceSession, sessionId, turnId, obligation, project, entry, { accessProfile, args, projectId: binding.projectId });
+    if (!approval.allowed) {
+      if (this.endTurnIfStopped(surfaceSession, sessionId, turnId)) return 1;
+      showItem({ status: "failed", error: { message: "Declined by the user." } });
+      return fail("mcp_tool_call_declined", "user rejected MCP tool call");
+    }
+    showItem({ status: "inProgress" });
+    const startedAt = Date.now();
+    let response;
+    try {
+      response = await this.mcpToolCallResolver({
+        project,
+        projectId: binding.projectId,
+        workThreadId: binding.workThreadId,
+        threadId: sessionId,
+        turnId,
+        profile: binding.profile,
+        serverIdentityId: entry.serverIdentityId,
+        toolName: entry.toolName,
+        arguments: args,
+        meta: { callId: normalizeString(obligation.callId, ""), threadId: sessionId },
+        signal: this.turnAbortSignal(turnId),
+        onElicitation: (params, options) => this.askOwnerMcpElicitation(surfaceSession, sessionId, turnId, entry, params, { ...options, accessProfile }),
+      });
+      this.assertOpen();
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      const message = normalizeString(error?.message, "The MCP tool call failed.");
+      showItem({ status: "failed", error: { message }, durationMs });
+      if (this.endTurnIfStopped(surfaceSession, sessionId, turnId)) return 1;
+      return fail(normalizeString(error?.code, "mcp_tool_call_failed"), `tool call error: ${message}`);
+    }
+    const durationMs = Date.now() - startedAt;
+    const output = mcpToolResultOutput(response?.result || {}, { durationMs });
+    if (output.contentItems && typeof this.sessionStore.writeToolContentItems === "function") {
+      this.sessionStore.writeToolContentItems(sessionId, obligation.obligationId, output.contentItems);
+    }
+    showItem({
+      status: output.isError ? "failed" : "completed",
+      resultPreview: output.text.slice(0, 4_000),
+      durationMs,
+    });
+    const envelope = {
+      schema: "direct_mcp_tool_call_result_envelope@1",
+      envelopeId: `mcp_tool_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}`).slice(0, 24)}`,
+      toolName: normalizeString(obligation.name, ""),
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: "mcp_tool_call",
+      status: "ready_for_provider_continuation",
+      providerOutput: {
+        kind: "mcp_tool_call_result",
+        server: entry.serverName,
+        tool: entry.toolName,
+        isError: output.isError,
+        durationMs,
+        images: Math.max(0, (output.contentItems?.length || 1) - 1),
+      },
+      providerOutputText: output.text,
+      sideEffectExecuted: entry.readOnly !== true,
+      rawWorkspacePathIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
+    return 1;
+  }
+
+  // Codex's MCP tool approval in "auto" mode. Read-only tools run; others
+  // ask, except in Full access (Codex skips the prompt when approvals are
+  // off and the sandbox is too) or when the owner said "for this thread" or
+  // "don't ask again".
+  async authorizeMcpToolCall(surfaceSession, sessionId, turnId, obligation = {}, project = {}, entry = {}, context = {}) {
+    if (entry.needsApproval !== true) return { allowed: true, reason: "read_only" };
+    if (context.accessProfile === "full_access") return { allowed: true, reason: "full_access" };
+    const key = `${entry.serverIdentityId}\u0000${entry.toolName}`;
+    if (this.mcpThreadToolAllows.get(sessionId)?.has(key)) return { allowed: true, reason: "allowed_for_thread" };
+    if (this.approvalRuleStore?.isMcpToolAllowed(context.projectId, entry.serverIdentityId, entry.toolName)) {
+      return { allowed: true, reason: "always_allowed" };
+    }
+    if (!surfaceSession || typeof surfaceSession.createMcpElicitationRequest !== "function") return { allowed: false, reason: "no_owner" };
+    this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+      authorityState: "approval_waiting",
+      approvalAvailable: true,
+    }, { nextTurnState: "tool_waiting" });
+    const answer = await surfaceSession.createMcpElicitationRequest({
+      summary: `${entry.serverName} · ${entry.toolName}`,
+      signal: this.turnAbortSignal(turnId),
+      params: {
+        threadId: sessionId,
+        turnId,
+        serverName: entry.serverName,
+        mode: "form",
+        message: `Allow the ${entry.serverName} MCP server to run tool "${entry.toolName}"?`,
+        requestedSchema: { type: "object", properties: {} },
+        _meta: {
+          codex_approval_kind: MCP_TOOL_APPROVAL_KIND,
+          persist: ["session", "always"],
+          tool_name: entry.toolName,
+          ...(entry.annotations?.title ? { tool_title: entry.annotations.title } : {}),
+          ...(entry.description ? { tool_description: entry.description.slice(0, 600) } : {}),
+          tool_params: context.args || {},
+        },
+      },
+    });
+    if (answer?.action !== "accept") return { allowed: false, reason: answer?.action || "decline" };
+    const persist = normalizeString(answer?._meta?.persist, "");
+    if (persist === "session") {
+      if (!this.mcpThreadToolAllows.has(sessionId)) this.mcpThreadToolAllows.set(sessionId, new Set());
+      this.mcpThreadToolAllows.get(sessionId).add(key);
+    } else if (persist === "always") {
+      this.approvalRuleStore?.allowMcpTool(context.projectId, entry.serverIdentityId, entry.toolName);
+    }
+    return { allowed: true, reason: persist ? `allowed_${persist}` : "allowed_once" };
+  }
+
+  // A form the server asks for during a tool call. Full access accepts an
+  // empty confirmation without asking (as Codex does); anything else goes
+  // to the owner, and the answer is checked against the form's schema.
+  async askOwnerMcpElicitation(surfaceSession, sessionId, turnId, entry = {}, params = {}, options = {}) {
+    const requestedSchema = isPlainObject(params.requestedSchema) ? params.requestedSchema : { type: "object", properties: {} };
+    if (options.accessProfile === "full_access" && !elicitationHasFields(requestedSchema) && normalizeString(params.mode, "form") === "form") {
+      return { action: "accept", content: {} };
+    }
+    if (normalizeString(params.mode, "form") !== "form") return { action: "decline" };
+    if (!surfaceSession || typeof surfaceSession.createMcpElicitationRequest !== "function") return { action: "decline" };
+    return surfaceSession.createMcpElicitationRequest({
+      summary: `${entry.serverName}: ${normalizeString(params.message, "request")}`.slice(0, 200),
+      signal: options.signal,
+      validate: (content) => validateElicitationContent(requestedSchema, content),
+      params: {
+        threadId: sessionId,
+        turnId,
+        serverName: entry.serverName,
+        mode: "form",
+        message: normalizeString(params.message, "").slice(0, 4_000),
+        requestedSchema,
+        _meta: isPlainObject(params._meta) ? params._meta : null,
+      },
+    });
   }
 
   async emitSubAgentPolicyRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
@@ -3565,8 +3757,12 @@ class DirectLiveTextController {
 
   // Continuation requests re-declare tools; they carry the same
   // environment-specialized descriptions as the turn's first request.
-  withEnvironmentTools(composition, project = {}, sessionId = "", harnessGrant = null) {
+  withEnvironmentTools(composition, project = {}, sessionId = "", harnessGrant = null, turnId = "") {
     if (!isPlainObject(composition) || !Array.isArray(composition.tools) || !composition.tools.length) return composition;
+    if (turnId) {
+      const withoutMcp = this.withEnvironmentTools(composition, project, sessionId, harnessGrant);
+      return { ...withoutMcp, tools: this.withMcpTools(withoutMcp.tools, sessionId, turnId) };
+    }
     const session = this.sessionStore.readSession(normalizeString(sessionId, "")) || {};
     const grant = isPlainObject(harnessGrant) ? harnessGrant : this.resolveHarnessGrant(project || {}, session);
     const facts = resolveExecutionEnvironmentFacts({
@@ -3581,6 +3777,73 @@ class DirectLiveTextController {
         grant,
       ), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
     };
+  }
+
+  // The turn's MCP tools (listed when the turn started), one function each.
+  withMcpTools(tools, sessionId = "", turnId = "") {
+    if (!Array.isArray(tools)) return tools;
+    const entries = this.mcpToolEntries(sessionId, turnId);
+    if (!entries.length) return tools;
+    const names = new Set(tools.map((tool) => normalizeString(tool?.name || tool?.function?.name, "")));
+    return [...tools, ...entries.filter((entry) => !names.has(entry.functionName)).map(mcpToolDeclaration)];
+  }
+
+  mcpToolEntries(sessionId = "", turnId = "") {
+    if (!sessionId || !turnId) return [];
+    const catalog = this.sessionStore.readTurn(sessionId, turnId)?.mcpToolCatalog;
+    return Array.isArray(catalog?.entries) ? catalog.entries : [];
+  }
+
+  mcpToolEntry(sessionId, turnId, name = "") {
+    const functionName = normalizeString(name, "");
+    if (!functionName.startsWith("mcp__")) return null;
+    return this.mcpToolEntries(sessionId, turnId).find((entry) => entry.functionName === functionName) || null;
+  }
+
+  // Scope and witnessed server identities for MCP calls, as resource reads
+  // use them.
+  externalMcpBinding(project = {}) {
+    const projectId = normalizeString(project?.id || project?.projectId || project?.name, "project_direct_external");
+    const workThreadId = normalizeString(directWorkThreadContextCarrier(project)?.workThreadId, "work_thread_direct_external");
+    const profile = this.resolveExternalCapabilityProfile({ ...project, workThreadId });
+    let valid = profile?.schema === "external_capability_profile@1";
+    if (valid) {
+      try {
+        validateExternalCapabilityProfile(profile);
+      } catch {
+        valid = false;
+      }
+    }
+    return { projectId, workThreadId, profile: valid ? profile : null };
+  }
+
+  // Lists the project's MCP tools for this turn and keeps the catalog on
+  // the turn, so its continuations declare the same functions. A project
+  // without configured servers costs nothing.
+  async loadMcpToolCatalog(project = {}, sessionId = "", turnId = "") {
+    if (!this.mcpToolCatalogResolver || !sessionId || !turnId) return null;
+    if (!configuredMcpServersForProject(project).length) return null;
+    const binding = this.externalMcpBinding(project);
+    if (!binding.profile) return null;
+    let listed;
+    try {
+      listed = await this.mcpToolCatalogResolver({
+        project,
+        projectId: binding.projectId,
+        workThreadId: binding.workThreadId,
+        threadId: sessionId,
+        turnId,
+        profile: binding.profile,
+        signal: this.turnAbortSignal(turnId),
+      });
+    } catch {
+      return null;
+    }
+    const catalog = buildMcpToolCatalog(listed?.servers || []);
+    if (!catalog.entries.length) return null;
+    const turn = this.sessionStore.readTurn(sessionId, turnId);
+    if (turn) this.sessionStore.updateTurnState(sessionId, turnId, turn.state, { mcpToolCatalog: catalog });
+    return catalog;
   }
 
   compileSelfConstitutionSnapshot(input = {}) {
@@ -7474,10 +7737,14 @@ class DirectLiveTextController {
       ? "custom_tool_call_output"
       : "function_call_output";
     const resultId = normalizeString(envelope.envelopeId, `utility_result_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`);
-    const providerOutputText = JSON.stringify(envelope.providerOutput || {
-      kind: `${normalizeString(obligation.name, "utility")}_result`,
-      status: normalizeString(envelope.status, "ready_for_provider_continuation"),
-    });
+    // An MCP tool's output is the text Codex sends (wall time, then output),
+    // not a JSON summary.
+    const providerOutputText = typeof envelope.providerOutputText === "string"
+      ? envelope.providerOutputText
+      : JSON.stringify(envelope.providerOutput || {
+          kind: `${normalizeString(obligation.name, "utility")}_result`,
+          status: normalizeString(envelope.status, "ready_for_provider_continuation"),
+        });
     return {
       schema: "direct_safe_resident_utility_continuation_request@1",
       continuationId: `utility_continuation_${sha256(`${obligation.obligationId}:${resultId}`).slice(0, 20)}`,
@@ -7710,7 +7977,7 @@ class DirectLiveTextController {
       } else {
         items.push(
           { type: "function_call", call_id: callId, name, arguments: prior.argumentsText || "{}" },
-          { type: "function_call_output", call_id: callId, output: this.viewImageOutput(turn, prior) || prior.providerOutputText },
+          { type: "function_call_output", call_id: callId, output: this.viewImageOutput(turn, prior) || this.storedContentItemsOutput(turn, prior) || prior.providerOutputText },
         );
       }
     }
@@ -7725,6 +7992,13 @@ class DirectLiveTextController {
     const image = this.sessionStore.readToolImage(normalizeString(turn.sessionId, ""), prior.obligationId);
     if (!image?.dataBase64 || !image.mimeType) return null;
     return [{ type: "input_image", image_url: `data:${image.mimeType};base64,${image.dataBase64}`, detail: "high" }];
+  }
+
+  // An MCP tool result with images goes back as content items (text plus
+  // input_image), as Codex sends it.
+  storedContentItemsOutput(turn = {}, prior = {}) {
+    if (!normalizeString(prior.toolName, "").startsWith("mcp__") || typeof this.sessionStore.readToolContentItems !== "function") return null;
+    return this.sessionStore.readToolContentItems(normalizeString(turn.sessionId, ""), prior.obligationId);
   }
 
   // Earlier turns of the thread as Codex sends them: each user message, the
@@ -8208,7 +8482,7 @@ class DirectLiveTextController {
       harnessGrant,
       executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
       roleLedgerToolBundle: ledgerBinding?.bundle || null,
-    }), project, sessionId, harnessGrant);
+    }), project, sessionId, harnessGrant, turnId);
     const turnCompaction = await this.compactTurnBeforeContinuation(sessionId, turnId, project, continuationToolComposition.tools, surfaceSession);
     const continuationTurn = turnCompaction ? { ...turn, turnCompaction } : turn;
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
@@ -9347,6 +9621,8 @@ class DirectLiveTextController {
 
   parallelSafeObligation(sessionId, turnId, obligation = {}, project = {}) {
     const name = normalizeString(obligation.name, "");
+    // As in Codex, an MCP tool runs alongside others when it is read-only.
+    if (this.mcpToolEntry(sessionId, turnId, name)?.readOnly === true) return true;
     if (!PARALLEL_SAFE_TOOL_NAMES.has(name)) return false;
     // A read without the grant waits for the owner's approval; one prompt
     // at a time.
@@ -9450,6 +9726,11 @@ class DirectLiveTextController {
       }
       if (normalizeString(obligation.name, "") === VIEW_IMAGE_TOOL_NAME) {
         createdCount += await this.emitViewImageRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
+      const mcpEntry = this.mcpToolEntry(sessionId, turnId, obligation.name);
+      if (mcpEntry) {
+        createdCount += await this.emitMcpToolCall(surfaceSession, sessionId, turnId, obligation, project, mcpEntry);
         continue;
       }
       if (this.isEpistemicLedgerObligation(sessionId, turnId, obligation)) {
@@ -9680,9 +9961,10 @@ class DirectLiveTextController {
       // actually put to the owner (an rpc-request) needs a warning.
       let ownerRequests = 0;
       // A question to the owner (request_user_input, request_permissions,
-      // update_sub_agent_policy) is its own prompt; only approvals warn.
+      // update_sub_agent_policy, an MCP server's form or tool approval) is
+      // its own prompt; only approvals warn.
       const countOwnerRequests = (event) => {
-        if (event?.type === "rpc-request" && event.request?.method !== "item/tool/requestUserInput") ownerRequests += 1;
+        if (event?.type === "rpc-request" && !OWNER_PROMPT_METHODS.has(event.request?.method)) ownerRequests += 1;
       };
       surfaceSession?.on?.("event", countOwnerRequests);
       let createdApprovalRequests = 0;
@@ -10296,7 +10578,7 @@ class DirectLiveTextController {
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
-    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant).tools;
+    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant, turnId).tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
@@ -10561,7 +10843,7 @@ class DirectLiveTextController {
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
-    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant).tools;
+    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant, turnId).tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
@@ -10827,7 +11109,7 @@ class DirectLiveTextController {
       roleLedgerToolBundle:
         this.epistemicLedgerTurnBinding(sessionId, turnId)?.bundle,
     });
-    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant).tools;
+    const continuationTools = this.withEnvironmentTools(continuationToolComposition, project, sessionId, harnessGrant, turnId).tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
@@ -11543,6 +11825,7 @@ class DirectLiveTextController {
       },
     });
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
+    if (implementationTier) await this.loadMcpToolCatalog(project, session.sessionId, turn.turnId);
     let contextResult = null;
     let controlledRoutingResult = null;
     let requestShape = null;
@@ -11750,7 +12033,7 @@ class DirectLiveTextController {
               reasoningEffort,
               serviceTier,
               cyberAccessProgram,
-              tools: withExtraTurnTools(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
+              tools: this.withMcpTools(withExtraTurnTools(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)), session.sessionId, turn.turnId),
               toolChoicePolicy: "auto",
             })
           : buildTextOnlyProbeRequest({
@@ -11788,7 +12071,7 @@ class DirectLiveTextController {
           reasoningEffort,
           serviceTier,
           cyberAccessProgram,
-          tools: withExtraTurnTools(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)),
+          tools: this.withMcpTools(withExtraTurnTools(withPermissionsTool(withDelegationTargets(environmentToolsFor(implementationToolComposition.tools, selfConstitutionSnapshot), this.delegationTargetsFor(project, session)), harnessGrant), Boolean(this.activeSubAgentPolicyConfirmedUpdate)), session.sessionId, turn.turnId),
           toolChoicePolicy: "auto",
         });
       }
@@ -12539,9 +12822,10 @@ class DirectLiveTextController {
       // request actually put to the owner (an rpc-request) needs a warning.
       let ownerRequests = 0;
       // A question to the owner (request_user_input, request_permissions,
-      // update_sub_agent_policy) is its own prompt; only approvals warn.
+      // update_sub_agent_policy, an MCP server's form or tool approval) is
+      // its own prompt; only approvals warn.
       const countOwnerRequests = (event) => {
-        if (event?.type === "rpc-request" && event.request?.method !== "item/tool/requestUserInput") ownerRequests += 1;
+        if (event?.type === "rpc-request" && !OWNER_PROMPT_METHODS.has(event.request?.method)) ownerRequests += 1;
       };
       surfaceSession?.on?.("event", countOwnerRequests);
       let createdApprovalRequests = 0;
@@ -12786,8 +13070,72 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     this.connectionId = "";
     this.transportKind = DIRECT_LIVE_TEXT_SURFACE_TRANSPORT;
     this.serverRequests = new Map();
+    this.mcpElicitations = new Map();
     this.activeThreadId = "";
     this.taskCapabilityProjection = null;
+  }
+
+  // An MCP server's form, or an MCP tool approval (Codex sends both as
+  // mcpServer/elicitation/request). Resolves with the owner's answer:
+  // { action: accept|decline|cancel, content?, _meta? }; cancel when the
+  // signal (the turn or the call) ends first.
+  createMcpElicitationRequest(input = {}) {
+    const params = isPlainObject(input.params) ? input.params : {};
+    const id = `direct_mcp_elicitation_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const key = `direct:${id}`;
+    const now = nowIso();
+    const approval = params._meta?.codex_approval_kind === MCP_TOOL_APPROVAL_KIND;
+    const record = {
+      id,
+      key,
+      method: "mcpServer/elicitation/request",
+      title: approval ? "Approve MCP tool call" : "MCP server request",
+      summary: normalizeString(input.summary || params.message, "MCP server request").slice(0, 200),
+      riskCategory: approval ? "mcpTool" : "user-input",
+      status: "pending",
+      params,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const signal = input.signal;
+    return new Promise((resolve) => {
+      const finish = (answer, status) => {
+        if (!this.mcpElicitations.has(key)) return;
+        this.mcpElicitations.delete(key);
+        signal?.removeEventListener?.("abort", onAbort);
+        const next = { ...this.serverRequests.get(key), status, updatedAt: nowIso(), responseSummary: answer.action };
+        this.serverRequests.set(key, next);
+        this.sendEvent({ type: "rpc-request-updated", request: this.publicServerRequest(next) });
+        resolve(answer);
+      };
+      const onAbort = () => finish({ action: "cancel" }, "cancelled");
+      this.mcpElicitations.set(key, { finish, validate: typeof input.validate === "function" ? input.validate : null });
+      this.serverRequests.set(key, record);
+      this.sendEvent({ type: "rpc-request", request: this.publicServerRequest(record) });
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener?.("abort", onAbort, { once: true });
+    });
+  }
+
+  // An answer that doesn't fit the form is refused and the form stays open.
+  respondToMcpElicitation(record = {}, result = {}) {
+    const pending = this.mcpElicitations.get(record.key);
+    if (!pending) throw new Error("This MCP request is no longer waiting for an answer.");
+    const action = ["accept", "decline", "cancel"].includes(result?.action) ? result.action : "";
+    if (!action) throw new Error("Answer with accept, decline, or cancel.");
+    const answer = { action };
+    if (action === "accept") {
+      if (pending.validate) {
+        const checked = pending.validate(isPlainObject(result.content) ? result.content : {});
+        if (!checked.ok) throw new Error(checked.error);
+        answer.content = checked.content;
+      } else if (isPlainObject(result.content)) {
+        answer.content = result.content;
+      }
+      if (isPlainObject(result._meta)) answer._meta = { persist: normalizeString(result._meta.persist, "") };
+    }
+    pending.finish(answer, "completed");
+    return { request: this.publicServerRequest(this.serverRequests.get(record.key)), response: { decision: action } };
   }
 
   sendEvent(payload) {
@@ -13014,6 +13362,7 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     if (record.status !== "pending") {
       return { request: this.publicServerRequest(record), reused: true };
     }
+    if (record.method === "mcpServer/elicitation/request") return this.respondToMcpElicitation(record, result || {});
     try {
       const handler = record.method === "direct/tool/patchApply/requestApproval"
         ? "handlePatchApplyResponse"

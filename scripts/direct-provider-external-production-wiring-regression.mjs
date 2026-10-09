@@ -50,7 +50,10 @@ const fixtureServerCode = [
   "rl.on('line',line=>{",
   "const q=JSON.parse(line);",
   "if(q.id===undefined||q.id===null)return;",
-  `if(q.method==='resources/read'&&q.params?.uri==='${ownerResourceUri}') { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:99,method:'elicitation/create',params:{message:'Owner approval required'}})+'\\n'); return; }`,
+  // Answers the read once Direct answers its form (declined: nobody can be
+  // asked during a resource read).
+  "if(!q.method&&q.id===99){ const ok=q.result&&q.result.action==='accept'; process.stdout.write(JSON.stringify(ok?{jsonrpc:'2.0',id:globalThis.ownerReadId,result:{contents:[]}}:{jsonrpc:'2.0',id:globalThis.ownerReadId,error:{code:-32000,message:'owner declined: '+(q.result&&q.result.action)}})+'\\n'); return; }",
+  `if(q.method==='resources/read'&&q.params?.uri==='${ownerResourceUri}') { globalThis.ownerReadId=q.id; process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:99,method:'elicitation/create',params:{message:'Owner approval required'}})+'\\n'); return; }`,
   `const result=q.method==='initialize'?{}:q.method==='resources/list'?{resources:[{uri:'${resourceUri}',name:'Alpha resource'},{uri:'${environmentResourceUri}',name:'Environment boundary'},{uri:'${launderingResourceUri}',name:'Launder fixture'}]}:q.method==='resources/templates/list'?{resourceTemplates:[{uriTemplate:'mcp://fixture/{id}',name:'Fixture template'}]}:q.method==='tools/list'?{tools:[{name:'read_only_status',description:'Read-only status',inputSchema:{type:'object'}}]}:q.method==='resources/read'&&q.params?.uri==='${launderingResourceUri}'?{contents:[{type:'text',uri:'mcp://foreign/resource',text:'laundered payload',mimeType:'text/plain'}]}:q.method==='resources/read'&&q.params?.uri==='${mixedResourceUri}'?{contents:[{type:'text',uri:'${mixedResourceUri}',text:'safe first content',mimeType:'text/plain'},{type:'text',uri:'mcp://foreign/resource',text:'foreign later content',mimeType:'text/plain'}]}:q.method==='resources/read'&&q.params?.uri==='${environmentResourceUri}'?{contents:[{type:'text',uri:'${environmentResourceUri}',text:JSON.stringify({allowed:process.env.${allowedEnvironmentKey}||'',forbidden:process.env.${forbiddenEnvironmentKey}||''}),mimeType:'application/json'}]}:q.method==='resources/read'&&q.params?.uri==='${splitFrameResourceUri}'?{contents:[{type:'text',uri:'${splitFrameResourceUri}',text:'Synthetic split Content-Length evidence.',mimeType:'text/plain'}]}:q.method==='resources/read'&&q.params?.uri==='${reapedResourceUri}'?{contents:[{type:'text',uri:'${reapedResourceUri}',text:'fixture-child-pid:'+process.pid,mimeType:'text/plain'}]}:q.method==='resources/read'?{contents:[{type:'text',uri:'${resourceUri}',text:'Synthetic configured MCP evidence.',mimeType:'text/plain'}]}:{};`,
   `const reaped=q.method==='resources/read'&&q.params?.uri==='${reapedResourceUri}'; if(reaped) { process.on('SIGTERM',()=>{}); setInterval(()=>{},10000); }`,
   "const payload=JSON.stringify({jsonrpc:'2.0',id:q.id,result});",
@@ -182,8 +185,11 @@ try {
   assert.doesNotMatch(JSON.stringify(mixed), /foreign later content/);
 
   const ownerRequired = await envelope("read_mcp_resource", { serverIdentityId, resourceUri: ownerResourceUri }, "owner-required");
+  // A form during a resource read has nobody to ask: it is declined (as
+  // Codex declines a form it can't deliver), and the server's refusal blocks
+  // the read.
   assert.equal(ownerRequired.status, "blocked");
-  assert(ownerRequired.blockerCodes.includes("mcp_elicitation_owner_required"));
+  assert(ownerRequired.blockerCodes.includes("direct_mcp_rpc_error"), JSON.stringify(ownerRequired.blockerCodes));
 
   // Servers are long-lived: every request above went to one initialized
   // server, which stays up until its session ends.

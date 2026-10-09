@@ -1562,19 +1562,61 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   servers there, so a lost executor takes its servers with it). Later and
   concurrent requests reuse it (`tool_search`'s three lists now share one
   server instead of starting three); the handshake runs once; a cancelled
-  request sends `notifications/cancelled` and keeps the server; a
-  server-initiated request (elicitation, sampling) gets a JSON-RPC error and
-  fails what is in flight, as before, without killing the server; a crash
+  request sends `notifications/cancelled` and keeps the server; server
+  requests are answered without failing what is in flight (forms go to the
+  owner, see MCP tool calls below; `ping` is answered; sampling and roots
+  get method-not-found, as Codex doesn't offer them); a crash
   or a timed-out request replaces the server on the next request; a config
   change for the same server stops the old process; servers stop after 10
   minutes idle, at app quit, and when their executor stops (at most 16 per
   pool). The host's scope, trust, and freshness checks still run on every
   operation before a request reaches a server. Children a server starts
   live as long as its session and are reaped with it (containment
-  unchanged). Server-initiated requests still need owner-interaction
-  support to be answered. Gates: `npm run direct:mcp-session-pool` (both
+  unchanged). Gates: `npm run direct:mcp-session-pool` (both
   hosts), `direct-mcp-per-environment` and
   `direct-provider-external-production-wiring` (updated; both hosts).
+- Added 2026-10-09: MCP tool calls, as in Codex (owner's call; before,
+  Direct only listed tools and read resources, and any tool call was
+  blocked). When a turn starts, the project's current, trusted servers are
+  asked for `tools/list`, and each tool becomes a function
+  `mcp__<server>__<tool>` (sanitized to `[A-Za-z0-9_]`, at most 64
+  characters; a collision or a long name gets a 12-character hash of the
+  raw identity; the schema cut down to Codex's keywords, `strict: false`).
+  The catalog is kept on the turn, so every continuation declares the same
+  functions. A call runs `tools/call` where the server runs (host or
+  executor), with Codex's 300 s default timeout. The output is Codex's:
+  `Wall time: … seconds\nOutput:\n` then `structuredContent` as JSON if
+  present, else the text blocks; images go back as `input_image` content
+  items (kept under `sessions/<id>/images/`), audio is left out. The turn
+  shows an `mcpToolCall` item (server, tool, status, result or error,
+  duration). Read-only tools (`readOnlyHint`) run in parallel with other
+  parallel-safe calls.
+  - Approval follows Codex's "auto" rule: a tool marked destructive asks, one
+    marked read-only doesn't, an unmarked tool counts as destructive and
+    open-world and asks. Full access doesn't ask (Codex skips the prompt
+    when approvals are off and the sandbox is off). The prompt is Codex's
+    shape (`mcpServer/elicitation/request` with
+    `_meta.codex_approval_kind: "mcp_tool_call"`): Allow, Allow for this
+    thread (in memory, Codex's "session"), Always allow this tool (saved
+    per project in `<userData>/direct-sessions/authority/approval-rules.json`,
+    Codex's `approval_mode = "approve"`), Decline (the model gets "user
+    rejected MCP tool call").
+  - Forms (`elicitation/create`): Direct advertises `elicitation` and sends a
+    server's form to the owner as a form built from its `requestedSchema`
+    (text, numbers, checkboxes, single and multiple choice); the answer is
+    checked against the schema in the main process (an answer that doesn't
+    fit is refused and the form stays open). The request's clock stops while
+    the owner answers, on the host and in executors. A form from a server in
+    the other environment reaches the host through an executor event
+    (`mcp/elicitation`) and goes back with `mcp/elicitationRespond`. Stopping
+    the turn cancels an open form. In Full access an empty confirmation form
+    is accepted without asking (Codex does this); a form with fields still
+    asks. A form during a resource read, or with no owner to ask, is
+    declined, as Codex declines a form it can't deliver.
+  - Gate: `npm run direct:mcp-tool-calls` (both hosts);
+    `direct-mcp-session-pool`, `direct-mcp-per-environment` (a form from a
+    server in the other executor, with the clock stopped), and
+    `direct-provider-external-production-wiring` updated.
 - On Windows, the Low integrity label a Workspace command puts on its
   project folder is persistent and isn't per project. A Workspace command in
   one project can write another project folder that was labeled earlier,

@@ -25,16 +25,31 @@ const fs = require("node:fs");
 const readline = require("node:readline");
 const log = (entry) => fs.appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ pid: process.pid, tag: process.argv[2] || "", ...entry }) + "\\n");
 let initializeCount = 0;
+let serverRequests = 0;
+const waiting = new Map();
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+// Asks Direct something and answers the original request with the reply.
+const askThenAnswer = (originalId, method, params) => {
+  const id = "srv-" + (++serverRequests);
+  waiting.set(id, originalId);
+  send({ jsonrpc: "2.0", id, method, params });
+};
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
-  log({ method: message.method || "", id: message.id ?? null, error: message.error ? message.error.code : null, params: message.params || null });
+  log({ method: message.method || "", id: message.id ?? null, error: message.error ? message.error.code : null, params: message.params || null, result: message.result ?? null });
+  if (!message.method && waiting.has(message.id)) {
+    const originalId = waiting.get(message.id);
+    waiting.delete(message.id);
+    return send({ jsonrpc: "2.0", id: originalId, result: { reply: message.result ?? null, error: message.error ? message.error.code : null } });
+  }
   if (message.method === "initialize" && process.argv[3] === "hang-init") return;
   if (message.method === "initialize") { initializeCount += 1; return send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18", capabilities: {} } }); }
   if (message.method === "whoami") return send({ jsonrpc: "2.0", id: message.id, result: { pid: process.pid, initializeCount, tag: process.argv[2] || "" } });
   if (message.method === "slow") return setTimeout(() => send({ jsonrpc: "2.0", id: message.id, result: { slow: true } }), 3000);
   if (message.method === "never") return;
-  if (message.method === "ask_owner") return send({ jsonrpc: "2.0", id: "srv-1", method: "elicitation/create", params: { message: "Pick one" } });
+  if (message.method === "ask_owner") return askThenAnswer(message.id, "elicitation/create", { mode: "form", message: "Pick one", requestedSchema: { type: "object", properties: { color: { type: "string", enum: ["red", "blue"] } }, required: ["color"] } });
+  if (message.method === "ping_client") return askThenAnswer(message.id, "ping", {});
+  if (message.method === "sample") return askThenAnswer(message.id, "sampling/createMessage", {});
   if (message.method === "crash") process.exit(3);
 });
 `);
@@ -77,11 +92,47 @@ try {
   assert(log().some((entry) => entry.method === "notifications/cancelled" && entry.pid === first.pid), "the server is told about the cancellation");
   assert.equal((await pool.request(server(), "whoami", {}, options)).pid, first.pid, "and it keeps serving");
 
-  // A server-initiated request needs the owner: refused (the server gets an
-  // error reply), the request in flight fails, the server stays.
-  await assert.rejects(pool.request(server(), "ask_owner", {}, options), (error) => error.code === "mcp_elicitation_owner_required");
+  // Server-initiated requests. A form (elicitation/create) with nobody to
+  // answer it is declined, as in Codex; ping is answered; sampling isn't
+  // offered. None of them fails the request or the server.
+  assert.deepEqual((await pool.request(server(), "ask_owner", {}, options)).reply, { action: "decline" });
+  assert.deepEqual((await pool.request(server(), "ping_client", {}, options)).reply, {});
+  assert.equal((await pool.request(server(), "sample", {}, options)).error, -32601);
+  assert.equal((await pool.request(server(), "whoami", {}, options)).pid, first.pid);
+
+  // A form goes to the request that asked to handle forms, and its answer
+  // goes back to the server. The request's clock stops meanwhile: the owner
+  // takes longer than the request's timeout here.
+  const seenForms = [];
+  const answered = await pool.request(server(), "ask_owner", {}, {
+    ...options,
+    timeoutMs: 400,
+    onElicitation: async (params) => {
+      seenForms.push(params);
+      await sleep(900);
+      return { action: "accept", content: { color: "blue" } };
+    },
+  });
+  assert.equal(seenForms[0]?.message, "Pick one");
+  assert.deepEqual(answered.reply, { action: "accept", content: { color: "blue" } });
+
+  // Cancelling the request while the form is open cancels the form.
+  const cancelForm = new AbortController();
+  let formSignal = null;
+  const pendingForm = pool.request(server(), "ask_owner", {}, {
+    ...options,
+    signal: cancelForm.signal,
+    onElicitation: (_params, { signal }) => new Promise((resolve) => {
+      formSignal = signal;
+      signal.addEventListener("abort", () => resolve({ action: "cancel" }), { once: true });
+    }),
+  });
+  while (!formSignal) await sleep(20);
+  cancelForm.abort();
+  await assert.rejects(pendingForm, (error) => error.code === "direct_mcp_request_aborted");
+  assert.equal(formSignal.aborted, true, "the open form is told the request is gone");
   await sleep(100);
-  assert(log().some((entry) => entry.id === "srv-1" && entry.error === -32601), "the server's request is answered with an error");
+  assert(log().some((entry) => entry.result?.action === "cancel"), "the server gets cancel");
   assert.equal((await pool.request(server(), "whoami", {}, options)).pid, first.pid);
 
   // A crash fails the request in flight; the next request starts a new server.

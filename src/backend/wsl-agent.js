@@ -35,6 +35,7 @@ const {
 const { terminateWorkspaceProcessTree } = require("./workspace-process-tree");
 const {
   EXECUTOR_METHODS,
+  EXECUTOR_MCP_EVENTS,
   EXECUTOR_PROCESS_EVENTS,
   EXECUTOR_PROTOCOL_NAME,
   EXECUTOR_PROTOCOL_VERSION,
@@ -6276,6 +6277,7 @@ function signalExecutorProcessSessionRequest(params = {}) {
 // keeps for its own servers), each server contained like a full-access
 // process session with its allowlisted variables read from this environment.
 const executorMcpRequests = new Map();
+const executorMcpElicitations = new Map();
 const executorMcpSessions = new McpSessionPool();
 
 function spawnContainedMcpServer(command, args, options = {}) {
@@ -6318,6 +6320,23 @@ async function executorMcpRequest(params = {}) {
   const serverIdentityId = typeof source.serverIdentityId === "string" ? source.serverIdentityId.slice(0, 200) : "";
   const controller = new AbortController();
   executorMcpRequests.set(id, controller);
+  // With `elicitation: true` the host has an owner to ask: a server's form
+  // goes to it as an event, and mcp/elicitationRespond brings the answer.
+  const onElicitation = params.elicitation === true
+    ? (elicitationParams, { signal }) => new Promise((resolve) => {
+        const elicitationId = `${id}:${crypto.randomBytes(8).toString("hex")}`;
+        const finish = (answer) => {
+          if (!executorMcpElicitations.has(elicitationId)) return;
+          executorMcpElicitations.delete(elicitationId);
+          signal?.removeEventListener?.("abort", onAbort);
+          resolve(answer);
+        };
+        const onAbort = () => finish({ action: "cancel" });
+        executorMcpElicitations.set(elicitationId, finish);
+        signal?.addEventListener?.("abort", onAbort, { once: true });
+        sendEvent(EXECUTOR_MCP_EVENTS.elicitation, { mcpRequestId: id, elicitationId, params: elicitationParams });
+      })
+    : undefined;
   try {
     const result = await executorMcpSessions.request(
       server,
@@ -6330,12 +6349,19 @@ async function executorMcpRequest(params = {}) {
         spawnProcess: spawnContainedMcpServer,
         placementKey: "executor",
         identityKey: serverIdentityId,
+        onElicitation,
       },
     );
     return { result };
   } finally {
     executorMcpRequests.delete(id);
   }
+}
+
+function respondExecutorMcpElicitation(params = {}) {
+  const finish = executorMcpElicitations.get(String(params.elicitationId || ""));
+  if (finish) finish(params.result && typeof params.result === "object" ? params.result : { action: "decline" });
+  return { delivered: Boolean(finish) };
 }
 
 function cancelExecutorMcpRequest(params = {}) {
@@ -6554,6 +6580,7 @@ async function handleRequest(method, params = {}) {
   if (method === EXECUTOR_METHODS.fsList) return executorFsList(params);
   if (method === EXECUTOR_METHODS.mcpRequest) return executorMcpRequest(params);
   if (method === EXECUTOR_METHODS.mcpCancel) return cancelExecutorMcpRequest(params);
+  if (method === EXECUTOR_METHODS.mcpElicitationRespond) return respondExecutorMcpElicitation(params);
   if (method === EXECUTOR_METHODS.environmentDescribe) {
     // On Windows, process sessions are contained by the job runner, which
     // also provides the Workspace and Read-only sandbox.

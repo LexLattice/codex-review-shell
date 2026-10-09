@@ -390,6 +390,25 @@ function equivalentTerminalObligation(existingObligations = [], incoming = {}) {
 }
 
 function toolTranscriptItemFromObligation(obligation = {}) {
+  // A configured MCP server's tool, shown as Codex shows it.
+  const mcp = isPlainObject(obligation.mcpTool) ? obligation.mcpTool : null;
+  if (mcp || normalizeString(obligation.name, "").startsWith("mcp__")) {
+    return {
+      id: obligation.obligationId,
+      type: "mcpToolCall",
+      turnId: obligation.turnId,
+      server: normalizeString(mcp?.serverName, ""),
+      tool: normalizeString(mcp?.toolName, normalizeString(obligation.name, "tool")),
+      arguments: normalizeString(obligation.argumentsText, ""),
+      status: normalizeString(mcp?.status, "inProgress"),
+      result: mcp?.resultPreview || null,
+      error: mcp?.error || null,
+      ...(Number.isFinite(mcp?.durationMs) ? { durationMs: mcp.durationMs } : {}),
+      providerCallType: normalizeString(obligation.providerCallType || obligation.toolType, ""),
+      toolLoopId: normalizeString(obligation.toolLoopId, ""),
+      stepOrdinal: Number(obligation.stepOrdinal || 1),
+    };
+  }
   const resultSummary = isPlainObject(obligation.result)
     ? obligation.result.summary || obligation.result.textPreview || obligation.result.status
     : (isPlainObject(obligation.authorityDecision) ? obligation.authorityDecision.reason : "");
@@ -698,6 +717,20 @@ class DirectSessionStore {
   readToolImage(sessionId, obligationId) {
     try {
       return readJsonFile(this.toolImagePath(sessionId, obligationId));
+    } catch {
+      return null;
+    }
+  }
+
+  // A tool output with images (an MCP tool's), sent back as content items.
+  writeToolContentItems(sessionId, obligationId, items = []) {
+    writeJsonAtomic(this.toolImagePath(sessionId, `${obligationId}_items`), { items: Array.isArray(items) ? items : [] });
+  }
+
+  readToolContentItems(sessionId, obligationId) {
+    try {
+      const stored = readJsonFile(this.toolImagePath(sessionId, `${obligationId}_items`));
+      return Array.isArray(stored?.items) && stored.items.length ? stored.items : null;
     } catch {
       return null;
     }

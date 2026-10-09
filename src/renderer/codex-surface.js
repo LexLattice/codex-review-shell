@@ -7860,10 +7860,121 @@ function renderUserInputRequestDetails(request, details, actions) {
   details.appendChild(form);
 }
 
+// An MCP tool approval (Codex sends it as an elicitation with
+// _meta.codex_approval_kind): Allow, Allow for this thread, Always allow.
+function renderMcpToolApprovalDetails(request, details, actions) {
+  const params = request.params || {};
+  const meta = params._meta || {};
+  appendRequestLine(details, "server", params.serverName || "");
+  appendRequestLine(details, "tool", meta.tool_title ? `${meta.tool_name} (${meta.tool_title})` : meta.tool_name || "", { mono: true });
+  if (meta.tool_description) appendRequestLine(details, "about", meta.tool_description);
+  appendRequestLine(details, "arguments", meta.tool_params || {}, { mono: true, pre: true });
+  const persist = Array.isArray(meta.persist) ? meta.persist : [];
+  const accept = (scope) => (event) => submitRequestResponse(request, { action: "accept", content: null, _meta: scope ? { persist: scope } : null }, event.currentTarget);
+  actions.appendChild(createRequestButton("Allow", "", accept("")));
+  if (persist.includes("session")) actions.appendChild(createRequestButton("Allow for this thread", "", accept("session")));
+  if (persist.includes("always")) actions.appendChild(createRequestButton("Always allow this tool", "", accept("always")));
+  actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, { action: "decline", content: null, _meta: null }, event.currentTarget)));
+}
+
+function mcpFieldEnum(field = {}) {
+  if (Array.isArray(field.enum)) {
+    return field.enum.map((value, index) => ({ value: String(value), label: String(Array.isArray(field.enumNames) && field.enumNames[index] ? field.enumNames[index] : value) }));
+  }
+  const options = Array.isArray(field.oneOf) ? field.oneOf : Array.isArray(field.anyOf) ? field.anyOf : [];
+  return options.filter((entry) => entry && entry.const !== undefined).map((entry) => ({ value: String(entry.const), label: String(entry.title || entry.const) }));
+}
+
+// A server's form, built from its requestedSchema: text, numbers,
+// checkboxes, one-of and many-of choices. The main process checks the
+// answer against the schema again.
+function renderMcpElicitationForm(request, details, actions) {
+  const params = request.params || {};
+  const schema = params.requestedSchema || {};
+  const properties = schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const form = document.createElement("form");
+  form.className = "codex-request-form";
+  const readers = [];
+  for (const [name, field] of Object.entries(properties)) {
+    const wrapper = document.createElement("label");
+    wrapper.className = "codex-request-field";
+    const title = document.createElement("span");
+    title.textContent = `${field.title || name}${required.has(name) ? " *" : ""}`;
+    wrapper.appendChild(title);
+    if (field.description) {
+      const hint = document.createElement("small");
+      hint.textContent = field.description;
+      wrapper.appendChild(hint);
+    }
+    const choices = field.type === "array" ? mcpFieldEnum(field.items || {}) : mcpFieldEnum(field);
+    let read;
+    if (field.type === "boolean") {
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = field.default === true;
+      wrapper.appendChild(input);
+      read = () => input.checked;
+    } else if (field.type === "array" && choices.length) {
+      const select = document.createElement("select");
+      select.multiple = true;
+      for (const choice of choices) {
+        const option = document.createElement("option");
+        option.value = choice.value;
+        option.textContent = choice.label;
+        option.selected = Array.isArray(field.default) && field.default.map(String).includes(choice.value);
+        select.appendChild(option);
+      }
+      wrapper.appendChild(select);
+      read = () => [...select.selectedOptions].map((option) => option.value);
+    } else if (choices.length) {
+      const select = document.createElement("select");
+      if (!required.has(name)) select.appendChild(document.createElement("option"));
+      for (const choice of choices) {
+        const option = document.createElement("option");
+        option.value = choice.value;
+        option.textContent = choice.label;
+        option.selected = field.default !== undefined && String(field.default) === choice.value;
+        select.appendChild(option);
+      }
+      wrapper.appendChild(select);
+      read = () => select.value;
+    } else {
+      const input = document.createElement("input");
+      input.type = field.type === "number" || field.type === "integer"
+        ? "number"
+        : field.format === "email" ? "email" : field.format === "date" ? "date" : field.format === "uri" ? "url" : "text";
+      if (field.type === "integer") input.step = "1";
+      if (field.default !== undefined) input.value = String(field.default);
+      wrapper.appendChild(input);
+      read = () => input.value;
+    }
+    readers.push([name, read]);
+    form.appendChild(wrapper);
+  }
+  details.appendChild(form);
+  const submit = createRequestButton("Submit", "", null);
+  submit.addEventListener("click", (event) => {
+    event.preventDefault();
+    const content = {};
+    for (const [name, read] of readers) {
+      const value = read();
+      if (value === "" || (Array.isArray(value) && !value.length && !required.has(name))) continue;
+      content[name] = value;
+    }
+    submitRequestResponse(request, { action: "accept", content, _meta: null }, submit);
+  });
+  actions.appendChild(submit);
+  actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, { action: "decline", content: null, _meta: null }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Cancel", "secondary", (event) => submitRequestResponse(request, { action: "cancel", content: null, _meta: null }, event.currentTarget)));
+}
+
 function renderMcpRequestDetails(request, details, actions) {
   const params = request.params || {};
+  if (params._meta?.codex_approval_kind === "mcp_tool_call") return renderMcpToolApprovalDetails(request, details, actions);
   appendRequestLine(details, "server", params.serverName || "");
   appendRequestLine(details, "message", params.message || "");
+  if (params.mode !== "url") return renderMcpElicitationForm(request, details, actions);
   if (params.mode === "url") {
     appendRequestLine(details, "url", params.url || "", { mono: true });
     actions.appendChild(createRequestButton("Open URL", "secondary", () => {

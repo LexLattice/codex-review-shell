@@ -315,6 +315,7 @@
     "direct:mcp-session-pool": "node ./scripts/direct-mcp-session-pool-regression.mjs",
     "direct:view-image": "node ./scripts/direct-view-image-regression.mjs",
     "direct:plan-ui": "node ./scripts/direct-plan-ui-regression.mjs",
+    "direct:mcp-tool-calls": "node ./scripts/direct-mcp-tool-calls-regression.mjs",
     "direct:regression-sweep": "node ./scripts/direct-regression-sweep.mjs",
     "direct:review-findings": "node ./scripts/direct-review-findings-regression.mjs",
     "direct:agent-codex-patch": "node ./scripts/direct-agent-codex-patch-regression.mjs",
