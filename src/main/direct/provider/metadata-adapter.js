@@ -230,6 +230,7 @@ function normalizeModelDescriptor(raw = {}, index = 0, validation = {}) {
     supportsPersonality: raw.supportsPersonality ?? raw.supports_personality,
     contextWindow: numberOrUndefined(raw.contextWindow ?? raw.context_window),
     maxContextWindow: numberOrUndefined(raw.maxContextWindow ?? raw.max_context_window),
+    autoCompactTokenLimit: numberOrUndefined(raw.autoCompactTokenLimit ?? raw.auto_compact_token_limit),
     evidenceRefs: [evidenceRef("direct_model_descriptor", `Model descriptor ${model || modelId}`, "exact", model || modelId)],
   };
 }

@@ -570,6 +570,7 @@ const els = {
   morphicNewThreadButton: document.getElementById("morphicNewThreadButton"),
   morphicAnalyticsButton: document.getElementById("morphicAnalyticsButton"),
   morphicObservationsButton: document.getElementById("morphicObservationsButton"),
+  morphicCompactButton: document.getElementById("morphicCompactButton"),
   composerEnvironmentChip: document.getElementById("composerEnvironmentChip"),
   morphicSettingsButton: document.getElementById("morphicSettingsButton"),
   morphicThreadRail: document.getElementById("morphicThreadRail"),
@@ -766,6 +767,16 @@ function renderMorphicCockpit() {
       : state.turnPending || turnIsActive()
         ? "New thread is unavailable while the current Codex turn is active."
         : "Current runtime has not exposed thread start capability.";
+  }
+  if (els.morphicCompactButton) {
+    const available = Boolean(state.threadId) && hasCapabilityForMutation("threads", "canCompact");
+    const busy = state.turnPending || turnIsActive() || state.compactPending === true;
+    els.morphicCompactButton.hidden = !available;
+    els.morphicCompactButton.disabled = !available || busy;
+    els.morphicCompactButton.textContent = state.compactPending ? "Compacting…" : "Compact";
+    els.morphicCompactButton.title = busy && !state.compactPending
+      ? "Compact is available once the current turn ends."
+      : "Summarize this thread's earlier turns into a checkpoint; later turns start from it (Codex's /compact).";
   }
   if (els.morphicObservationsButton) {
     const count = runtimeObservationsForThread().length;
@@ -11256,6 +11267,24 @@ function toggleThreadAnalyticsPanel() {
 els.analyticsPanelButton?.addEventListener("click", () => toggleThreadAnalyticsPanel());
 els.morphicAnalyticsButton?.addEventListener("click", () => toggleThreadAnalyticsPanel());
 els.morphicObservationsButton?.addEventListener("click", () => openRuntimeDrawer("observations"));
+els.morphicCompactButton?.addEventListener("click", async () => {
+  if (!state.threadId || state.compactPending) return;
+  state.compactPending = true;
+  renderMorphicCockpit();
+  try {
+    const result = await rpc("thread/compact/start", { threadId: state.threadId });
+    if (result?.compacted === false) {
+      addSystemMessage(result.reason === "already_compacted"
+        ? "Nothing new to compact since the last checkpoint."
+        : "Nothing to compact yet.");
+    }
+  } catch (error) {
+    addSystemMessage(`Compact failed: ${error.message}`);
+  } finally {
+    state.compactPending = false;
+    renderMorphicCockpit();
+  }
+});
 els.morphicSettingsButton?.addEventListener("click", () => openRuntimeDrawer("runtime"));
 
 els.threadAnalyticsPanelClose?.addEventListener("click", () => {

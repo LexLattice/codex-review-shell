@@ -308,6 +308,7 @@
     "direct:parallel-tool-calls": "node ./scripts/direct-parallel-tool-calls-regression.mjs",
     "direct:sub-agent-policy-tool": "node ./scripts/direct-sub-agent-policy-tool-regression.mjs",
     "direct:proactive-delegation": "node ./scripts/direct-proactive-delegation-regression.mjs",
+    "direct:context-compaction": "node ./scripts/direct-context-compaction-regression.mjs",
     "direct:review-findings": "node ./scripts/direct-review-findings-regression.mjs",
     "direct:agent-codex-patch": "node ./scripts/direct-agent-codex-patch-regression.mjs",
     "direct:drive": "node ./scripts/direct-drive.mjs",

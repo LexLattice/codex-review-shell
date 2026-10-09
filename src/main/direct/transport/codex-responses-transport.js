@@ -781,6 +781,7 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
   let rawText = "";
   let buffer = "";
   const reasoningItems = [];
+  const compactionItems = [];
   let rawBytes = 0;
   let reservedRawBytes = 0;
   let reservedRawEvents = 0;
@@ -872,6 +873,8 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     notifyTransportTrace(onTransportTrace, "raw_event_parsed", { rawIndex });
     const reasoningItem = encryptedReasoningItem(rawEvent);
     if (reasoningItem) reasoningItems.push(reasoningItem);
+    const compactionItem = compactionOutputItem(rawEvent);
+    if (compactionItem) compactionItems.push(compactionItem);
     timing.rawEventCount = rawEvents.length;
     if (!timing.firstSseFrameAt) {
       timing.firstSseFrameAt = nowIso();
@@ -1016,6 +1019,7 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     normalizedEvents,
     unknownRawTypes,
     reasoningItems,
+    compactionItems,
     timing,
     error,
     commitError,
@@ -1041,6 +1045,25 @@ function encryptedReasoningItem(rawEvent) {
     type: "reasoning",
     ...(normalizeString(item.id, "") ? { id: normalizeString(item.id, "") } : {}),
     summary: Array.isArray(item.summary) ? item.summary.filter((entry) => isPlainObject(entry)).map((entry) => ({ type: normalizeString(entry.type, "summary_text"), text: String(entry.text ?? "") })) : [],
+    encrypted_content: encrypted,
+  };
+}
+
+// The encrypted checkpoint a compaction request returns (Codex's remote
+// compaction): sent back in place of the history it summarizes.
+const MAX_COMPACTION_ITEM_CHARS = 4 * 1024 * 1024;
+function compactionOutputItem(rawEvent) {
+  if (!isPlainObject(rawEvent)) return null;
+  const type = normalizeString(rawEvent.event || rawEvent.type || rawEvent.data?.type, "").toLowerCase();
+  if (type !== "response.output_item.done") return null;
+  const data = isPlainObject(rawEvent.data) ? rawEvent.data : rawEvent;
+  const item = isPlainObject(data.item) ? data.item : null;
+  if (!item || (item.type !== "compaction" && item.type !== "context_compaction")) return null;
+  const encrypted = typeof item.encrypted_content === "string" ? item.encrypted_content : "";
+  if (!encrypted || encrypted.length > MAX_COMPACTION_ITEM_CHARS) return null;
+  return {
+    type: "compaction",
+    ...(normalizeString(item.id, "") ? { id: normalizeString(item.id, "") } : {}),
     encrypted_content: encrypted,
   };
 }
@@ -1225,6 +1248,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
   let normalizedEvents = [];
   let unknownRawTypes = [];
   let reasoningItems = [];
+  let compactionItems = [];
   let error = null;
   let responseOk = false;
   let streamStarted = false;
@@ -1294,6 +1318,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
         normalizedEvents = streamed.normalizedEvents;
         unknownRawTypes = streamed.unknownRawTypes;
         reasoningItems = Array.isArray(streamed.reasoningItems) ? streamed.reasoningItems : [];
+        compactionItems = Array.isArray(streamed.compactionItems) ? streamed.compactionItems : [];
         timing.firstSseFrameAt = streamed.timing.firstSseFrameAt;
         timing.firstNormalizedEventAt = streamed.timing.firstNormalizedEventAt;
         timing.streamCompletedAt = streamed.timing.streamCompletedAt;
@@ -1408,6 +1433,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
     // Encrypted reasoning items, kept out of normalized events (and so out
     // of transcripts); callers attach them to the calls they led to.
     reasoningItems,
+    compactionItems,
     terminal,
     error,
     // The server's model-catalog version; a change means /models changed.
@@ -1471,6 +1497,78 @@ async function runReadOnlyToolContinuationProbe(options = {}) {
       previousResponseId: normalizeString(requestBody.previous_response_id, ""),
       originalRequestRetried: false,
     },
+  });
+}
+
+// Codex's compaction texts (prompts/templates/compact).
+const COMPACTION_PROMPT = [
+  "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.",
+  "",
+  "Include:",
+  "- Current progress and key decisions made",
+  "- Important context, constraints, or user preferences",
+  "- What remains to be done (clear next steps)",
+  "- Any critical data, examples, or references needed to continue",
+  "",
+  "Be concise, structured, and focused on helping the next LLM seamlessly continue the work.",
+].join("\n");
+const COMPACTION_SUMMARY_PREFIX = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
+
+function compactionRequestBase(options = {}) {
+  const requestBody = {
+    model: normalizeString(options.model, modelFromProfile(options.profileDoc)),
+    stream: true,
+    store: false,
+    parallel_tool_calls: true,
+    instructions: normalizeString(options.instructions, ""),
+  };
+  const reasoningEffort = normalizeString(options.reasoningEffort, "");
+  const serviceTier = normalizeString(options.serviceTier, "");
+  if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
+  if (serviceTier) requestBody.service_tier = serviceTier;
+  applyCyberAccessProgram(requestBody, options);
+  return requestBody;
+}
+
+// Codex's remote compaction (ChatGPT and OpenAI providers): the history as
+// it would be sent, with the same instructions and tools, ending with a
+// compaction_trigger item. The response's one compaction item is an
+// encrypted checkpoint that replaces that history in later requests.
+async function runRemoteCompactionRequest(options = {}) {
+  const input = Array.isArray(options.input) ? JSON.parse(JSON.stringify(options.input)) : [];
+  const requestBody = {
+    ...compactionRequestBase(options),
+    input: [...input, { type: "compaction_trigger" }],
+  };
+  const tools = Array.isArray(options.tools) ? options.tools.filter(Boolean) : [];
+  if (tools.length) {
+    requestBody.tools = tools;
+    requestBody.tool_choice = "auto";
+  }
+  // The checkpoint arrives in one frame and can be large.
+  return runDirectCodexStreamingRequest({
+    ...options,
+    includeReasoningContent: false,
+    maxSseFrameBytes: Math.max(Number(options.maxSseFrameBytes) || 0, MAX_COMPACTION_ITEM_CHARS + 64 * 1024),
+    maxRawResponseBytes: Math.max(Number(options.maxRawResponseBytes) || 0, 2 * MAX_COMPACTION_ITEM_CHARS),
+  }, requestBody, {
+    schema: DIRECT_TEXT_PROBE_RESULT_SCHEMA,
+    kind: "remote_compaction",
+  });
+}
+
+// Codex's local compaction, used when the remote form fails: the model
+// writes a handoff summary of the history, without tools.
+async function runLocalCompactionRequest(options = {}) {
+  const input = Array.isArray(options.input) ? JSON.parse(JSON.stringify(options.input)) : [];
+  const requestBody = {
+    ...compactionRequestBase(options),
+    parallel_tool_calls: false,
+    input: [...input, { role: "user", content: [{ type: "input_text", text: COMPACTION_PROMPT }] }],
+  };
+  return runDirectCodexStreamingRequest({ ...options, includeReasoningContent: false }, requestBody, {
+    schema: DIRECT_TEXT_PROBE_RESULT_SCHEMA,
+    kind: "local_compaction",
   });
 }
 
@@ -1913,6 +2011,10 @@ module.exports = {
   runPersistedReadOnlyToolContinuation,
   runPersistedTextOnlyDirectProbe,
   runDirectCodexStreamingRequest,
+  runRemoteCompactionRequest,
+  runLocalCompactionRequest,
+  COMPACTION_PROMPT,
+  COMPACTION_SUMMARY_PREFIX,
   runImplementationToolInitialProbe,
   runReadOnlyToolContinuationProbe,
   runTextOnlyDirectProbe,

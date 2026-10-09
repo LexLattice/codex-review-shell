@@ -663,6 +663,25 @@ class DirectSessionStore {
     return path.join(this.rootDir, "sessions", requireSafeId(sessionId, "session"), "session.json");
   }
 
+  // The thread's latest context checkpoint (compaction): kept apart from the
+  // session file, which the transcript and thread list read often.
+  compactionPath(sessionId) {
+    return path.join(this.rootDir, "sessions", requireSafeId(sessionId, "session"), "compaction.json");
+  }
+
+  readCompaction(sessionId) {
+    const record = readJsonFile(this.compactionPath(sessionId));
+    return isPlainObject(record) && Array.isArray(record.replacementItems) ? record : null;
+  }
+
+  writeCompaction(sessionId, record) {
+    if (!isPlainObject(record) || !Array.isArray(record.replacementItems)) {
+      throw new Error("Direct compaction checkpoint requires replacement items.");
+    }
+    writeJsonAtomic(this.compactionPath(sessionId), record);
+    return record;
+  }
+
   turnPath(sessionId, turnId) {
     return path.join(this.rootDir, "turns", requireSafeId(sessionId, "session"), `${requireSafeId(turnId, "turn")}.json`);
   }

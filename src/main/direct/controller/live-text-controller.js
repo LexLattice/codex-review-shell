@@ -7,13 +7,16 @@ const { subAgentPolicyUpdateParameters } = require("../agents/active-sub-agent-p
 const {
   buildImplementationToolInitialRequest,
   buildTextOnlyProbeRequest,
+  COMPACTION_SUMMARY_PREFIX,
   DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS,
   DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS,
   DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
   requestShapeForDiagnostic,
   runImplementationToolInitialProbe,
+  runLocalCompactionRequest,
   runPersistedReadOnlyToolContinuation,
   runReadOnlyToolContinuationProbe,
+  runRemoteCompactionRequest,
   runTextOnlyDirectProbe,
   terminalStateFromNormalizedEvents,
 } = require("../transport/codex-responses-transport");
@@ -259,8 +262,39 @@ const SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS = [
   "The snapshot is current as of this turn; inspecting again returns the same account, so answer from it.",
   "If the user's request needs other work, carry it out with the declared tools; otherwise answer directly.",
 ].join(" ");
-// Bounds for earlier turns replayed as history items.
+// Bounds for earlier turns replayed as history items. The budget applies
+// when the model's context window is unknown or compaction failed;
+// otherwise history grows until compaction replaces it.
 const HISTORY_BUDGET_CHARS = 60_000;
+// Codex's compaction bounds: auto-compact at 90% of the context window;
+// keep the newest user messages up to 64,000 tokens with the encrypted
+// checkpoint (20,000 with a local summary). Tokens are estimated as bytes/4,
+// as Codex does.
+const AUTO_COMPACT_WINDOW_RATIO = 0.9;
+const COMPACT_RETAINED_TOKENS_REMOTE = 64_000;
+const COMPACT_RETAINED_TOKENS_LOCAL = 20_000;
+function estimateTokens(value) {
+  return Math.ceil(Buffer.byteLength(JSON.stringify(value ?? null), "utf8") / 4);
+}
+// The newest user messages, newest first, up to the budget (the boundary
+// message is cut), returned oldest first. Earlier summaries aren't kept.
+function retainedUserMessages(items = [], budgetTokens = COMPACT_RETAINED_TOKENS_REMOTE) {
+  let remainingChars = budgetTokens * 4;
+  const kept = [];
+  for (let index = items.length - 1; index >= 0 && remainingChars > 0; index -= 1) {
+    const item = items[index];
+    if (item?.role !== "user") continue;
+    const text = (Array.isArray(item.content) ? item.content : [])
+      .filter((part) => part?.type === "input_text")
+      .map((part) => String(part.text ?? ""))
+      .join("\n");
+    if (!text || text.startsWith(COMPACTION_SUMMARY_PREFIX)) continue;
+    const clipped = text.length > remainingChars ? `${text.slice(0, remainingChars)}\n[… truncated at compaction]` : text;
+    remainingChars -= clipped.length;
+    kept.unshift({ role: "user", content: [{ type: "input_text", text: clipped }] });
+  }
+  return kept;
+}
 const HISTORY_TOOL_OUTPUT_CHARS = 2_000;
 const HISTORY_ARGUMENTS_CHARS = 8_000;
 const HISTORY_TEXT_CHARS = 16_000;
@@ -962,6 +996,7 @@ function buildDirectLiveTextCapabilities(status = {}, options = {}) {
       canList: true,
       canFork: ready,
       canRollback: ready,
+      canCompact: ready,
       canPersistExtendedHistory: true,
     },
     turns: {
@@ -2208,6 +2243,8 @@ class DirectLiveTextController {
     this.subAgentPool = options.subAgentPool && typeof options.subAgentPool.launch === "function"
       ? options.subAgentPool
       : null;
+    // Overrides the model's auto-compact limit (tests, small windows).
+    this.autoCompactTokenLimit = Number(options.autoCompactTokenLimit) > 0 ? Number(options.autoCompactTokenLimit) : 0;
     // Admits a sub-agent policy change the thread's model proposed and the
     // owner confirmed (update_sub_agent_policy).
     this.activeSubAgentPolicyConfirmedUpdate =
@@ -4507,6 +4544,47 @@ class DirectLiveTextController {
       capabilities: projection.capabilities,
       taskBinding: projection.taskBinding,
     };
+  }
+
+  // The owner's Compact action (Codex's /compact): the thread's history so
+  // far becomes a checkpoint that later turns start from.
+  async compactThread(params = {}, context = {}) {
+    const project = context.project || {};
+    const sessionId = normalizeString(params.threadId || params.sessionId, "");
+    const session = this.sessionStore.readSession(sessionId);
+    if (!session) throw new Error(`Direct live text session not found: ${sessionId}`);
+    if (!sessionMatchesProject(session, normalizeString(project.id, ""))) {
+      const error = new Error("Direct compaction target does not belong to the active project.");
+      error.code = "direct_session_project_scope_mismatch";
+      throw error;
+    }
+    this.assertReady(project, { model: session.model });
+    const activeTurn = this.activeTurnForSession(session);
+    if (activeTurn) {
+      const error = new Error("Wait for the running turn to finish before compacting.");
+      error.code = "active_turn_exists";
+      throw error;
+    }
+    const history = this.priorTurnHistoryItems(sessionId, "", { budgetChars: Number.MAX_SAFE_INTEGER });
+    const lastTurn = history.lastTurnId ? this.sessionStore.readTurn(sessionId, history.lastTurnId) : null;
+    if (!history.turnCount || !lastTurn) {
+      return { threadId: sessionId, compacted: false, reason: history.compactionId ? "already_compacted" : "nothing_to_compact" };
+    }
+    const admitted = isPlainObject(lastTurn.admittedProviderContext) ? lastTurn.admittedProviderContext : {};
+    const model = normalizeString(session.model, normalizeString(lastTurn.model, admitted.model));
+    const compaction = await this.compactThreadHistory({
+      sessionId,
+      surfaceSession: context.surfaceSession,
+      model,
+      reasoningEffort: this.providerReasoningEffortFor(project, model, normalizeString(session.reasoningEffort, lastTurn.reasoningEffort)),
+      serviceTier: normalizeString(lastTurn.serviceTier, ""),
+      cyberAccessProgram: normalizeString(lastTurn.cyberAccessProgram, ""),
+      instructions: normalizeString(admitted.instructions, ""),
+      historyItems: history.items,
+      coversThroughTurnId: history.lastTurnId,
+      trigger: "manual",
+    });
+    return { threadId: sessionId, compacted: true, compaction };
   }
 
   rollbackThread(params = {}, context = {}) {
@@ -7513,15 +7591,21 @@ class DirectLiveTextController {
   // Each response's encrypted reasoning goes back right before the calls it
   // led to, so the model keeps its chain of thought across the turn's
   // requests (store is off, so the backend can't recall it itself).
+  // After a mid-turn compaction, its checkpoint stands in for the turn's
+  // input and the results it covered.
   boundUtilityContinuationInput(admitted = {}, context = {}, turn = {}) {
     const reasoningByObligation = new Map((Array.isArray(turn?.unresolvedObligations) ? turn.unresolvedObligations : [])
       .filter((obligation) => Array.isArray(obligation?.precedingReasoningItems) && obligation.precedingReasoningItems.length)
       .map((obligation) => [obligation.obligationId, obligation.precedingReasoningItems]));
+    const turnCompaction = isPlainObject(turn?.turnCompaction) && Array.isArray(turn.turnCompaction.replacementItems)
+      ? turn.turnCompaction
+      : null;
+    const covered = new Set(turnCompaction?.coveredObligationIds || []);
     const items = [];
     for (const prior of context.priorToolResults || []) {
       const callId = normalizeString(prior.callId, "");
       const name = normalizeString(prior.toolName, "");
-      if (!callId || !name) continue;
+      if (!callId || !name || covered.has(prior.obligationId)) continue;
       for (const reasoning of reasoningByObligation.get(prior.obligationId) || []) {
         if (reasoning?.type === "reasoning" && typeof reasoning.encrypted_content === "string") items.push(reasoning);
       }
@@ -7537,22 +7621,31 @@ class DirectLiveTextController {
         );
       }
     }
-    return [...JSON.parse(JSON.stringify(admitted.input)), ...items];
+    const base = turnCompaction ? turnCompaction.replacementItems : admitted.input;
+    return [...JSON.parse(JSON.stringify(base)), ...items];
   }
 
   // Earlier turns of the thread as Codex sends them: each user message, the
   // calls the model made with their (bounded) outputs, and its reply, as
   // real input items. The quoted transcript collapsed every tool call to a
   // placeholder line, so the model couldn't see what it had done, and its
-  // shape changed every turn, defeating the prompt cache. Oldest turns drop
-  // first beyond the budget.
-  priorTurnHistoryItems(sessionId = "", currentTurnId = "") {
+  // shape changed every turn, defeating the prompt cache. The thread's
+  // compaction checkpoint, if any, stands in for the turns it covers. Oldest
+  // turns drop first beyond the budget.
+  priorTurnHistoryItems(sessionId = "", currentTurnId = "", options = {}) {
     const session = this.sessionStore.readSession(sessionId) || {};
     const messages = Array.isArray(session.messages) ? session.messages : [];
+    const summaries = Array.isArray(session.turns) ? session.turns : [];
+    const checkpoint = typeof this.sessionStore.readCompaction === "function" ? this.sessionStore.readCompaction(sessionId) : null;
+    // A checkpoint whose last turn was rolled back no longer applies.
+    const coveredIndex = checkpoint
+      ? summaries.findIndex((summary) => normalizeString(summary?.turnId, "") === normalizeString(checkpoint.coversThroughTurnId, ""))
+      : -1;
     const turns = [];
-    for (const summary of Array.isArray(session.turns) ? session.turns : []) {
+    const turnIds = [];
+    for (const [index, summary] of summaries.entries()) {
       const turnId = normalizeString(summary?.turnId, "");
-      if (!turnId || turnId === currentTurnId) continue;
+      if (!turnId || turnId === currentTurnId || index <= coveredIndex) continue;
       const turn = this.sessionStore.readTurn(sessionId, turnId);
       if (!turn || turn.preTransportFailed === true || !TERMINAL_TURN_STATES.has(normalizeString(turn.state, ""))) continue;
       const items = [];
@@ -7586,9 +7679,13 @@ class DirectLiveTextController {
         .filter(Boolean)
         .join("\n\n");
       if (replyText) items.push({ role: "assistant", content: [{ type: "output_text", text: historyText(replyText) }] });
-      if (items.length) turns.push(items);
+      if (items.length) {
+        turns.push(items);
+        turnIds.push(turnId);
+      }
     }
-    let budget = HISTORY_BUDGET_CHARS;
+    const prefix = coveredIndex >= 0 ? checkpoint.replacementItems : [];
+    let budget = (Number(options.budgetChars) > 0 ? Number(options.budgetChars) : HISTORY_BUDGET_CHARS) - JSON.stringify(prefix).length;
     const kept = [];
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const size = JSON.stringify(turns[index]).length;
@@ -7596,14 +7693,20 @@ class DirectLiveTextController {
       budget -= size;
       kept.unshift(turns[index]);
     }
-    return { items: kept.flat(), turnCount: kept.length, omittedTurnCount: turns.length - kept.length };
+    return {
+      items: [...JSON.parse(JSON.stringify(prefix)), ...kept.flat()],
+      turnCount: kept.length,
+      omittedTurnCount: turns.length - kept.length,
+      compactionId: coveredIndex >= 0 ? normalizeString(checkpoint.compactionId, "") : "",
+      lastTurnId: turnIds.at(-1) || (coveredIndex >= 0 ? normalizeString(checkpoint.coversThroughTurnId, "") : ""),
+    };
   }
 
   // The turn's input with history as items: earlier turns, then this turn's
   // other context evidence (it changes per turn, so it sits after the
   // history), then the current user message.
-  structuredHistoryInput(sessionId = "", currentTurnId = "", contextPack = {}) {
-    const history = this.priorTurnHistoryItems(sessionId, currentTurnId);
+  structuredHistoryInput(sessionId = "", currentTurnId = "", contextPack = {}, options = {}) {
+    const history = this.priorTurnHistoryItems(sessionId, currentTurnId, options);
     if (!history.items.length) return null;
     const messages = Array.isArray(contextPack?.messages) ? contextPack.messages : [];
     const current = messages.find((message) => message?.authority === "current-user-intent");
@@ -7621,7 +7724,15 @@ class DirectLiveTextController {
       ...(evidenceText ? [{ role: "user", content: [{ type: "input_text", text: evidenceText }] }] : []),
       { role: "user", content: [{ type: "input_text", text: currentText }] },
     ];
-    return { input, turnCount: history.turnCount, itemCount: history.items.length, omittedTurnCount: history.omittedTurnCount };
+    return {
+      input,
+      historyItems: history.items,
+      lastTurnId: history.lastTurnId,
+      compactionId: history.compactionId,
+      turnCount: history.turnCount,
+      itemCount: history.items.length,
+      omittedTurnCount: history.omittedTurnCount,
+    };
   }
 
   // Continuations keep the turn's instructions byte-identical and add their
@@ -7651,6 +7762,203 @@ class DirectLiveTextController {
     if (!isPlainObject(obligation?.result)) return null;
     const context = this.buildBoundUtilityContinuationContext(turn, { result: obligation.result }, sessionId, turnId);
     return this.continuationRequestParts(turn.admittedProviderContext, context, continuationInstructions, turn);
+  }
+
+  // Codex's auto-compact limit: 90% of the model's context window, or the
+  // model's own limit if lower. Zero when the window is unknown.
+  autoCompactTokenLimitFor(project = {}, model = "") {
+    if (Number(this.autoCompactTokenLimit) > 0) return Number(this.autoCompactTokenLimit);
+    const descriptor = this.catalogModelDescriptor(project, model) || {};
+    const window = Number(descriptor.contextWindow) || 0;
+    const explicit = Number(descriptor.autoCompactTokenLimit) || 0;
+    const fromWindow = window ? Math.floor(window * AUTO_COMPACT_WINDOW_RATIO) : 0;
+    if (fromWindow && explicit) return Math.min(fromWindow, explicit);
+    return fromWindow || explicit;
+  }
+
+  // One compaction, as Codex does it for ChatGPT accounts: the history with
+  // a compaction_trigger, answered by an encrypted checkpoint. If that
+  // fails, the model writes a handoff summary instead (Codex's local form).
+  // Returns the items that replace `input`.
+  async runContextCompaction(input = {}) {
+    const sessionId = normalizeString(input.sessionId, "");
+    const turnId = normalizeString(input.turnId, "");
+    const compactionId = `context_compaction_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
+    const items = Array.isArray(input.input) ? input.input : [];
+    const notify = (method, status) => this.emitNotification(input.surfaceSession, method, {
+      threadId: sessionId,
+      turnId,
+      item: { id: compactionId, type: "contextCompaction", status, turnId },
+    });
+    notify("item/started", "inProgress");
+    const common = {
+      endpoint: this.endpoint || undefined,
+      authStore: this.currentAuthStore(),
+      refreshCredentials: this.refreshCredentials,
+      profileDoc: this.profileDoc,
+      model: normalizeString(input.model, ""),
+      reasoningEffort: normalizeString(input.reasoningEffort, ""),
+      serviceTier: normalizeString(input.serviceTier, ""),
+      cyberAccessProgram: normalizeString(input.cyberAccessProgram, ""),
+      promptCacheKey: sessionId,
+      fetchImpl: this.fetchImpl || undefined,
+      signal: turnId ? this.turnAbortSignal(turnId) : undefined,
+      instructions: normalizeString(input.instructions, ""),
+      tools: Array.isArray(input.tools) ? input.tools : [],
+      input: items,
+    };
+    let replacementItems = null;
+    let mode = "";
+    const failures = [];
+    try {
+      const remote = await runRemoteCompactionRequest(common);
+      if (remote.ok && Array.isArray(remote.compactionItems) && remote.compactionItems.length === 1) {
+        mode = "remote";
+        replacementItems = [...retainedUserMessages(items, COMPACT_RETAINED_TOKENS_REMOTE), remote.compactionItems[0]];
+      } else {
+        failures.push(normalizeString(remote.error?.code || remote.terminal?.error?.code, `remote_compaction_items_${remote.compactionItems?.length || 0}`));
+      }
+    } catch (error) {
+      failures.push(normalizeString(error?.code, "remote_compaction_failed"));
+    }
+    if (!replacementItems && !common.signal?.aborted) {
+      try {
+        const local = await runLocalCompactionRequest(common);
+        const summary = local.ok ? assistantTextFromDirectEvents(local.normalizedEvents) : "";
+        if (summary) {
+          mode = "local";
+          replacementItems = [
+            ...retainedUserMessages(items, COMPACT_RETAINED_TOKENS_LOCAL),
+            { role: "user", content: [{ type: "input_text", text: `${COMPACTION_SUMMARY_PREFIX}\n${summary}` }] },
+          ];
+        } else {
+          failures.push(normalizeString(local.error?.code || local.terminal?.error?.code, "local_compaction_empty"));
+        }
+      } catch (error) {
+        failures.push(normalizeString(error?.code, "local_compaction_failed"));
+      }
+    }
+    notify("item/completed", replacementItems ? "completed" : "failed");
+    if (!replacementItems) {
+      const error = new Error(`Context compaction failed (${failures.join(", ") || "unknown"}).`);
+      error.code = "direct_context_compaction_failed";
+      throw error;
+    }
+    if (mode === "local") {
+      this.emitNotification(input.surfaceSession, "warning", {
+        threadId: sessionId,
+        ...(turnId ? { turnId } : {}),
+        message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.",
+      });
+    }
+    return {
+      compactionId,
+      mode,
+      replacementItems,
+      tokensBefore: estimateTokens(items),
+      tokensAfter: estimateTokens(replacementItems),
+      remoteFailure: mode === "local" ? failures[0] || "" : "",
+    };
+  }
+
+  // Compacts the thread's history (the earlier turns, or the checkpoint and
+  // the turns after it) into a new checkpoint that later turns start from.
+  async compactThreadHistory(input = {}) {
+    const sessionId = normalizeString(input.sessionId, "");
+    const historyItems = Array.isArray(input.historyItems) ? input.historyItems : [];
+    const coversThroughTurnId = normalizeString(input.coversThroughTurnId, "");
+    if (!historyItems.length || !coversThroughTurnId) return null;
+    const compacted = await this.runContextCompaction({ ...input, input: historyItems });
+    const record = {
+      schema: "direct_thread_compaction@1",
+      compactionId: compacted.compactionId,
+      sessionId,
+      coversThroughTurnId,
+      mode: compacted.mode,
+      trigger: normalizeString(input.trigger, "auto"),
+      model: normalizeString(input.model, ""),
+      tokensBefore: compacted.tokensBefore,
+      tokensAfter: compacted.tokensAfter,
+      ...(compacted.remoteFailure ? { remoteFailure: compacted.remoteFailure } : {}),
+      replacementItems: compacted.replacementItems,
+      createdAt: nowIso(),
+    };
+    this.sessionStore.writeCompaction(sessionId, record);
+    const { replacementItems: _items, ...summary } = record;
+    return summary;
+  }
+
+  // A failed compaction leaves the continuation as it was (it may then
+  // fail on the context limit); the owner is told.
+  async compactTurnBeforeContinuation(sessionId, turnId, project = {}, tools = [], surfaceSession = null) {
+    try {
+      return await this.maybeCompactTurnContext(sessionId, turnId, project, tools, surfaceSession);
+    } catch (error) {
+      this.emitNotification(surfaceSession, "warning", {
+        threadId: sessionId,
+        turnId,
+        message: normalizeString(error?.message, "Context compaction failed."),
+      });
+      return null;
+    }
+  }
+
+  // Mid-turn, as in Codex: when the next continuation would reach the
+  // limit, the turn's input and results so far are compacted, and later
+  // continuations carry the checkpoint plus the results after it.
+  async maybeCompactTurnContext(sessionId, turnId, project = {}, tools = [], surfaceSession = null) {
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const admitted = turn.admittedProviderContext;
+    if (!isPlainObject(admitted) || !Array.isArray(admitted.input)) return null;
+    const limit = this.autoCompactTokenLimitFor(project, normalizeString(turn.model, admitted.model));
+    if (!limit) return null;
+    const obligations = new Map((Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .map((obligation) => [obligation.obligationId, obligation]));
+    const callOrder = new Map([...obligations.keys()].map((obligationId, index) => [obligationId, index]));
+    const priorToolResults = (Array.isArray(turn.toolResults) ? turn.toolResults : [])
+      .filter((result) => obligations.has(result?.obligationId) && typeof result.providerOutputText === "string")
+      .map((result) => {
+        const obligation = obligations.get(result.obligationId);
+        return {
+          obligationId: result.obligationId,
+          toolName: obligation.name,
+          callId: obligation.callId,
+          providerCallType: normalizeString(obligation.providerCallType || obligation.toolType, "function_call"),
+          argumentsText: typeof obligation.argumentsText === "string" ? obligation.argumentsText : "",
+          providerOutputText: result.providerOutputText,
+        };
+      })
+      .sort((a, b) => callOrder.get(a.obligationId) - callOrder.get(b.obligationId));
+    const contextInput = this.boundUtilityContinuationInput(admitted, { priorToolResults }, turn);
+    if (estimateTokens({ instructions: admitted.instructions, tools, input: contextInput }) < limit) return null;
+    const compacted = await this.runContextCompaction({
+      sessionId,
+      turnId,
+      surfaceSession,
+      model: normalizeString(turn.model, admitted.model),
+      reasoningEffort: normalizeString(admitted.reasoningEffort, turn.reasoningEffort),
+      serviceTier: normalizeString(admitted.serviceTier, ""),
+      cyberAccessProgram: normalizeString(turn.cyberAccessProgram, ""),
+      instructions: admitted.instructions,
+      tools,
+      input: contextInput,
+    });
+    // The turn's own per-turn notes (snapshot digest, delegation mode) stay
+    // after the checkpoint.
+    const developerNotes = admitted.input.filter((item) => item?.role === "developer");
+    const previous = isPlainObject(turn.turnCompaction) ? turn.turnCompaction : {};
+    const turnCompaction = {
+      compactionId: compacted.compactionId,
+      mode: compacted.mode,
+      replacementItems: [...compacted.replacementItems, ...JSON.parse(JSON.stringify(developerNotes))],
+      coveredObligationIds: [...new Set([...(previous.coveredObligationIds || []), ...priorToolResults.map((result) => result.obligationId)])],
+      tokensBefore: compacted.tokensBefore,
+      tokensAfter: compacted.tokensAfter,
+      compactionCount: Number(previous.compactionCount || 0) + 1,
+      createdAt: nowIso(),
+    };
+    this.sessionStore.updateTurnState(sessionId, turnId, turn.state, { turnCompaction });
+    return turnCompaction;
   }
 
   appendUtilityContinuationMessage(sessionId, turnId, continuationId, normalizedEvents = [], terminal = {}) {
@@ -7741,6 +8049,8 @@ class DirectLiveTextController {
       executionEnvironmentDigest: this.grantEnvironmentDigest(sessionId, project),
       roleLedgerToolBundle: ledgerBinding?.bundle || null,
     }), project, sessionId, harnessGrant);
+    const turnCompaction = await this.compactTurnBeforeContinuation(sessionId, turnId, project, continuationToolComposition.tools, surfaceSession);
+    const continuationTurn = turnCompaction ? { ...turn, turnCompaction } : turn;
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       status: "continuation_sent",
       authorityState: "continuation_sent",
@@ -7781,7 +8091,7 @@ class DirectLiveTextController {
           : selfConstitutionContinuation
             ? SELF_CONSTITUTION_CONTINUATION_INSTRUCTIONS
             : DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
-        turn,
+        continuationTurn,
       ),
       continuationTools: continuationToolComposition.tools,
       onLifecycle: (event) => {
@@ -9879,6 +10189,7 @@ class DirectLiveTextController {
       continuation: { continuationId: normalizeString(continuationRequest?.continuationId, "") },
       clientDecisionId: normalizeString(options.clientToolDecisionId, ""),
     });
+    await this.compactTurnBeforeContinuation(sessionId, turnId, project, continuationTools, surfaceSession);
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
@@ -10135,6 +10446,7 @@ class DirectLiveTextController {
       normalizeString(continuationContext?.providerInput?.instructions, ""),
       DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
     ].filter(Boolean).join("\n\n");
+    await this.compactTurnBeforeContinuation(sessionId, turnId, project, continuationTools, surfaceSession);
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
@@ -10399,6 +10711,7 @@ class DirectLiveTextController {
     });
     maybeInjectToolFaultAfterHistory("run_command");
     const commandContinuationInstructions = normalizeString(continuationContext?.providerInput?.instructions, "");
+    await this.compactTurnBeforeContinuation(sessionId, turnId, project, continuationTools, surfaceSession);
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
@@ -11235,9 +11548,42 @@ class DirectLiveTextController {
           toolChoicePolicy: "auto",
         });
       }
-      const historyInput = implementationTier && useRecentDialogue && contextResult
-        ? this.structuredHistoryInput(session.sessionId, turn.turnId, contextResult.contextPack)
+      // With a known limit, history grows until compaction replaces it (as in
+      // Codex) instead of dropping its oldest turns at a fixed size.
+      const compactLimit = implementationTier ? this.autoCompactTokenLimitFor(project, model) : 0;
+      const historyOptions = compactLimit ? { budgetChars: compactLimit * 4 } : {};
+      let historyInput = implementationTier && useRecentDialogue && contextResult
+        ? this.structuredHistoryInput(session.sessionId, turn.turnId, contextResult.contextPack, historyOptions)
         : null;
+      let threadCompaction = null;
+      if (historyInput && compactLimit &&
+          estimateTokens({ instructions: requestBody.instructions, tools: requestBody.tools, input: historyInput.input }) >= compactLimit) {
+        try {
+          threadCompaction = await this.compactThreadHistory({
+            sessionId: session.sessionId,
+            turnId: turn.turnId,
+            surfaceSession: context.surfaceSession,
+            model,
+            reasoningEffort,
+            serviceTier,
+            cyberAccessProgram,
+            instructions: requestBody.instructions,
+            tools: requestBody.tools,
+            historyItems: historyInput.historyItems,
+            coversThroughTurnId: historyInput.lastTurnId,
+            trigger: "auto",
+          });
+          historyInput = this.structuredHistoryInput(session.sessionId, turn.turnId, contextResult.contextPack, historyOptions);
+        } catch (error) {
+          this.assertOpen();
+          this.emitNotification(context.surfaceSession, "warning", {
+            threadId: session.sessionId,
+            turnId: turn.turnId,
+            message: `${normalizeString(error?.message, "Context compaction failed.")} Older turns were left out to fit instead.`,
+          });
+          historyInput = this.structuredHistoryInput(session.sessionId, turn.turnId, contextResult.contextPack);
+        }
+      }
       if (historyInput) requestBody.input = historyInput.input;
       // As Codex: the model may make several calls in one response; the
       // parallel-safe ones then run at the same time (emitToolApprovalRequests).
@@ -11274,7 +11620,9 @@ class DirectLiveTextController {
           historyTurnCount: historyInput.turnCount,
           historyItemCount: historyInput.itemCount,
           historyOmittedTurnCount: historyInput.omittedTurnCount,
+          ...(historyInput.compactionId ? { historyCompactionId: historyInput.compactionId } : {}),
         } : {}),
+        ...(threadCompaction ? { threadCompactedBeforeTurn: { compactionId: threadCompaction.compactionId, mode: threadCompaction.mode, tokensBefore: threadCompaction.tokensBefore, tokensAfter: threadCompaction.tokensAfter } } : {}),
         directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
         directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
         directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
@@ -12142,6 +12490,7 @@ class DirectLiveTextController {
     if (method === "thread/list") return this.listThreads(params, context);
     if (method === "thread/read") return this.readThread(params, context);
     if (method === "thread/rollback") return this.rollbackThread(params, context);
+    if (method === "thread/compact/start") return this.compactThread(params, context);
     if (method === "exec_command") return this.startStatefulExec(params, context);
     if (method === "write_stdin") return this.writeStatefulExecStdin(params, context);
     if (method === "exec_command/cancel") return this.cancelStatefulExec(params, context);

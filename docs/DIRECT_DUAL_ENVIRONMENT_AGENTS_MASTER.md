@@ -1311,6 +1311,44 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   it. Live, luna Ultra (sent as max): the turn completed and, for a
   trivial two-part question, answered without spawning. Gate:
   `npm run direct:proactive-delegation`.
+- Changed 2026-10-09: context compaction, as in Codex. Before, a long
+  thread silently dropped its oldest turns past 60,000 characters, and a
+  long turn grew until its request failed.
+  - Limit: 90% of the model's context window (`context_window` from the
+    account's model list), or the model's `auto_compact_token_limit` if
+    lower; tokens estimated as bytes/4 like Codex. With a known limit the
+    history keeps every turn since the last checkpoint (outputs still
+    capped at 2,000 characters) instead of the fixed 60,000-character
+    budget, which remains the fallback.
+  - Before a turn whose request would reach the limit, the earlier history
+    is compacted the way Codex does it for ChatGPT accounts: the same
+    instructions and tools with the history ending in a
+    `compaction_trigger` item; the response's one `compaction` item
+    (encrypted) plus the newest user messages (up to 64,000 tokens) becomes
+    the thread's checkpoint (`sessions/<id>/compaction.json`, not the
+    session file). Later turns start from the checkpoint, then the turns
+    after it (a checkpoint whose last turn was rolled back is ignored).
+  - If the remote form fails, the model writes a handoff summary with
+    Codex's compaction prompt (no tools); the summary, behind Codex's
+    summary prefix, replaces the history with the newest user messages up
+    to 20,000 tokens, and Codex's "Long threads and multiple compactions"
+    warning is shown. If both fail, older turns are dropped as before, with
+    a warning.
+  - Mid-turn: a continuation that would reach the limit first compacts the
+    turn's input and results so far (`turn.turnCompaction`); later
+    continuations carry that checkpoint, the turn's developer notes, and
+    the results after it.
+  - Manual: the Workbench header's Compact button
+    (`thread/compact/start`, Codex's `/compact`), available between turns.
+  - The transcript shows "Context compacted for this thread." (Codex's
+    `contextCompaction` item) while the app is open; it isn't kept in the
+    saved transcript yet. Compaction requests aren't counted in the turn's
+    usage rows yet.
+  - Live, luna/low, manual compaction: remote form accepted (1,352 → 605
+    estimated tokens); asked afterwards, the model gave a number that
+    appeared only in a compacted command output. (When the user had said
+    nothing about the number, the checkpoint left it out; that's the
+    backend's summary, as in Codex.) Gate: `npm run direct:context-compaction`.
 - Added 2026-10-08: Windows commands start in an already-running
   PowerShell. The local process backend (also used natively by the
   Windows executor) keeps one idle shell per launch shape (sandbox
