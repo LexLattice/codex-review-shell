@@ -305,6 +305,7 @@
     "direct:windows-prewarm": "node ./scripts/direct-windows-prewarm-regression.mjs",
     "direct:history-items": "node ./scripts/direct-history-items-regression.mjs",
     "direct:reasoning-replay": "node ./scripts/direct-reasoning-replay-regression.mjs",
+    "direct:parallel-tool-calls": "node ./scripts/direct-parallel-tool-calls-regression.mjs",
     "direct:review-findings": "node ./scripts/direct-review-findings-regression.mjs",
     "direct:agent-codex-patch": "node ./scripts/direct-agent-codex-patch-regression.mjs",
     "direct:drive": "node ./scripts/direct-drive.mjs",

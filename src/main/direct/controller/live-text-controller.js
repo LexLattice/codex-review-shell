@@ -1359,6 +1359,11 @@ function buildSafeResidentUtilitySlice(toolName, projectId = "") {
   });
 }
 
+// Calls that may run at the same time as each other (Codex marks
+// exec_command, write_stdin, and read-only tools parallel; apply_patch and
+// anything needing the owner run alone).
+const PARALLEL_SAFE_TOOL_NAMES = new Set(["exec_command", "write_stdin", "read_file", "list_agents", "inspect_agent"]);
+
 function toolBatchKey(sessionId, turnId) {
   return `${normalizeString(sessionId, "")}:${normalizeString(turnId, "")}`;
 }
@@ -7187,7 +7192,7 @@ class DirectLiveTextController {
       },
       requestControls: {
         store: false,
-        parallelToolCalls: false,
+        parallelToolCalls: true,
         // Every continuation declares the turn's grant-authorized tools.
         toolDeclarations: true,
         toolOutputItem: true,
@@ -7316,6 +7321,10 @@ class DirectLiveTextController {
         providerOutputText: result.providerOutputText,
       });
     }
+    // Calls that ran at the same time finish in any order; the model sees
+    // them in the order it made them.
+    const callOrder = new Map([...obligations.keys()].map((obligationId, index) => [obligationId, index]));
+    priorToolResults.sort((a, b) => callOrder.get(a.obligationId) - callOrder.get(b.obligationId));
     if (!priorToolResults.some((result) => result.resultId === recorded.result?.resultId &&
         result.obligationId === recorded.result?.obligationId)) {
       remand("direct_utility_continuation_current_result_missing");
@@ -7462,6 +7471,7 @@ class DirectLiveTextController {
         ...(guidance ? [{ role: "developer", content: [{ type: "input_text", text: guidance }] }] : []),
       ],
       instructions: admitted.instructions,
+      parallelToolCalls: true,
     };
   }
 
@@ -8656,33 +8666,69 @@ class DirectLiveTextController {
     const list = (Array.isArray(obligations) ? obligations : []).filter((obligation) => obligation?.obligationId);
     if (!list.length) return 0;
     if (this.endTurnIfStopped(surfaceSession, sessionId, turnId)) return 0;
-    // Several calls in one response run one after another, in order. Each
-    // one's continuation is held back until the last, whose continuation
-    // carries every result (continuations quote all of the turn's results).
-    if (list.length > 1) {
-      this.toolBatches.set(toolBatchKey(sessionId, turnId), {
-        obligationIds: list.map((obligation) => obligation.obligationId),
-        next: 1,
-      });
+    if (list.length === 1) return this.dispatchToolObligations(surfaceSession, sessionId, turnId, list, project);
+    // Several calls in one response run in order, as in Codex: consecutive
+    // parallel-safe calls (commands, process input, granted reads, agent
+    // status) run at the same time; anything else runs alone. Each call's
+    // continuation is held back until the batch's last result, and that
+    // continuation carries every result in call order.
+    const batch = {
+      obligationIds: list.map((obligation) => obligation.obligationId),
+      next: 0,
+      inFlight: new Set(),
+    };
+    this.toolBatches.set(toolBatchKey(sessionId, turnId), batch);
+    return this.dispatchNextToolGroup(surfaceSession, sessionId, turnId, batch, project);
+  }
+
+  parallelSafeObligation(sessionId, turnId, obligation = {}, project = {}) {
+    const name = normalizeString(obligation.name, "");
+    if (!PARALLEL_SAFE_TOOL_NAMES.has(name)) return false;
+    // A read without the grant waits for the owner's approval; one prompt
+    // at a time.
+    if (name === "read_file") return this.harnessGrantAuthorizationFor(sessionId, turnId, project, name).authorized === true;
+    return true;
+  }
+
+  async dispatchNextToolGroup(surfaceSession, sessionId, turnId, batch, project = {}) {
+    const group = [];
+    while (batch.next < batch.obligationIds.length) {
+      const obligation = this.sessionStore.findToolObligation(sessionId, turnId, batch.obligationIds[batch.next])?.obligation;
+      if (!obligation) {
+        batch.next += 1;
+        continue;
+      }
+      const parallel = this.parallelSafeObligation(sessionId, turnId, obligation, project);
+      if (group.length && !(parallel && group.every((entry) => entry.parallel))) break;
+      group.push({ obligation, parallel });
+      batch.next += 1;
+      if (!parallel) break;
     }
-    return this.dispatchToolObligations(surfaceSession, sessionId, turnId, [list[0]], project);
+    if (!group.length) return 0;
+    for (const entry of group) batch.inFlight.add(entry.obligation.obligationId);
+    if (group.length === 1) {
+      return this.dispatchToolObligations(surfaceSession, sessionId, turnId, [group[0].obligation], project);
+    }
+    const settled = await Promise.allSettled(group.map((entry) =>
+      this.dispatchToolObligations(surfaceSession, sessionId, turnId, [entry.obligation], project)));
+    const failure = settled.find((entry) => entry.status === "rejected");
+    if (failure) throw failure.reason;
+    return settled.reduce((total, entry) => total + (Number(entry.value) || 0), 0);
   }
 
   // Called where a tool's continuation would be sent. True when that
-  // continuation is held back because more calls from the same response
-  // remain; the next one has then been dispatched.
+  // continuation is held back: other calls of the batch are still running,
+  // or more remain (the next group has then been dispatched).
   async continueToolBatch(surfaceSession, sessionId, turnId, obligationId, project = {}) {
     const key = toolBatchKey(sessionId, turnId);
     const batch = this.toolBatches.get(key);
     if (!batch || !batch.obligationIds.includes(obligationId)) return false;
     if (this.endTurnIfStopped(surfaceSession, sessionId, turnId)) return true;
-    while (batch.next < batch.obligationIds.length) {
-      const nextId = batch.obligationIds[batch.next];
-      batch.next += 1;
-      const next = this.sessionStore.findToolObligation(sessionId, turnId, nextId)?.obligation;
-      if (!next) continue;
-      await this.dispatchToolObligations(surfaceSession, sessionId, turnId, [next], project);
-      return true;
+    batch.inFlight.delete(obligationId);
+    if (batch.inFlight.size) return true;
+    if (batch.next < batch.obligationIds.length) {
+      await this.dispatchNextToolGroup(surfaceSession, sessionId, turnId, batch, project);
+      if (batch.inFlight.size || this.toolBatches.get(key) !== batch) return true;
     }
     this.toolBatches.delete(key);
     return false;
@@ -9579,7 +9625,7 @@ class DirectLiveTextController {
         tools: continuationTools.length > 0,
         toolCount: continuationTools.length,
         declaredToolNames: declaredContinuationToolNames,
-        parallelToolCalls: false,
+        parallelToolCalls: isPlainObject(turn?.admittedProviderContext),
         hasInstructions: true,
         hasPreviousResponseId: false,
         // Replayed as call and output items when the turn's start was captured.
@@ -9843,7 +9889,7 @@ class DirectLiveTextController {
         toolDeclarations: continuationTools.length > 0,
         // Replayed as call and output items when the turn's start was captured.
         toolOutputItem: isPlainObject(turn?.admittedProviderContext),
-        parallelToolCalls: false,
+        parallelToolCalls: isPlainObject(turn?.admittedProviderContext),
         hasInstructions: true,
         hasPreviousResponseId: false,
         functionCallOutputCount: 0,
@@ -10110,7 +10156,7 @@ class DirectLiveTextController {
         toolDeclarations: continuationTools.length > 0,
         // Replayed as call and output items when the turn's start was captured.
         toolOutputItem: isPlainObject(turn?.admittedProviderContext),
-        parallelToolCalls: false,
+        parallelToolCalls: isPlainObject(turn?.admittedProviderContext),
         hasInstructions: true,
         hasPreviousResponseId: false,
         functionCallOutputCount: 0,
@@ -11066,6 +11112,9 @@ class DirectLiveTextController {
         ? this.structuredHistoryInput(session.sessionId, turn.turnId, contextResult.contextPack)
         : null;
       if (historyInput) requestBody.input = historyInput.input;
+      // As Codex: the model may make several calls in one response; the
+      // parallel-safe ones then run at the same time (emitToolApprovalRequests).
+      if (implementationTier) requestBody.parallel_tool_calls = true;
       this.applyDirectAttachmentPayloads(requestBody, providerAttachmentPayloads);
       if (normalizeString(selfConstitutionSnapshot?.digest, "") && Array.isArray(requestBody.input)) {
         // Per-turn facts go after the dialogue so the instructions, tools,

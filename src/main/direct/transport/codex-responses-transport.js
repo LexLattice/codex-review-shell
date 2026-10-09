@@ -409,7 +409,7 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
       model: normalizeString(options.model, modelFromProfile(options.profileDoc)),
       stream: true,
       store: false,
-      parallel_tool_calls: false,
+      parallel_tool_calls: options.parallelToolCalls === true,
       instructions,
       input: contextInput ? JSON.parse(JSON.stringify(contextInput)) : [
         {

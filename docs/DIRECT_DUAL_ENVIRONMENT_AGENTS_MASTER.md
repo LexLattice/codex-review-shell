@@ -1271,6 +1271,18 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   completed; at low effort luna rarely emits reasoning before a call.
   Gate: `npm run direct:reasoning-replay` (Linux and Windows Node); live
   suite 10/10 on both hosts.
+- Changed 2026-10-09: parallel tool calls, as in Codex. Implementation
+  turns and their continuations send `parallel_tool_calls: true` (other
+  request paths keep `false`). When one response makes several calls,
+  consecutive parallel-safe calls (`exec_command`, `write_stdin`,
+  `read_file` under the thread's grant, `list_agents`, `inspect_agent`)
+  run at the same time; anything else (patches, `run_command`, approvals,
+  `spawn_agent`, ledger and permission calls) runs alone, after the calls
+  before it. The continuation waits for the last result and lists every
+  call and output in the order the model made them, not the order they
+  finished. Request manifests record the flag. Live, luna/low: two
+  3-second commands in one response finished in 3.2 s. Gate:
+  `npm run direct:parallel-tool-calls` (Linux and Windows Node).
 - Added 2026-10-08: Windows commands start in an already-running
   PowerShell. The local process backend (also used natively by the
   Windows executor) keeps one idle shell per launch shape (sandbox

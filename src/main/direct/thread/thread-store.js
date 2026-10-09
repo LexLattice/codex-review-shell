@@ -3706,7 +3706,7 @@ class DirectThreadStore {
         toolOutputItem: usesToolOutputItem,
         previousResponseId: usesPreviousResponseId,
         includes: false,
-        parallelToolCalls: false,
+        parallelToolCalls: requestShape.parallelToolCalls === true,
       },
       continuity: {
         previousResponseIdUsed: usesPreviousResponseId,
