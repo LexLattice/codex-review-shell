@@ -4724,10 +4724,12 @@ function ensureDirectActiveSubAgentPolicyService() {
       metaRoleRegistry: constitutionalMetaRoleRegistry,
       semanticRunner: (input) =>
         runWorldManagerSemanticRoleThroughDirect(input),
-      admissionGuard: ({ scope, projectId }) => {
+      admissionGuard: ({ scope, projectId, ownTurnId }) => {
         if (scope?.scopeKind !== "project") return;
         const status = ensureDirectSessionStore().status({ projectId });
-        if (Number(status.activeTurnCount || 0) > 0) {
+        // A change confirmed from inside a turn may proceed alongside that
+        // turn only.
+        if (Number(status.activeTurnCount || 0) > (ownTurnId ? 1 : 0)) {
           const error = new Error(
             "Project-scoped sub-agent policy cannot change while a project turn is running.",
           );
@@ -4873,9 +4875,9 @@ function ensureDirectLiveTextController() {
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     subAgentPool: ensureDirectNativeAgentPool(),
-    activeSubAgentPolicySemanticPreflight: (input) =>
+    activeSubAgentPolicyConfirmedUpdate: (input) =>
       ensureDirectActiveSubAgentPolicyService()
-        .semanticPreflight(input),
+        .admitConfirmedUpdate(input),
     activeSubAgentPolicyResolver: (input) =>
       ensureDirectActiveSubAgentPolicyService()
         .resolveSpawn(input),

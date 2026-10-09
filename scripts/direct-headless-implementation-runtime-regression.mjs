@@ -345,7 +345,7 @@ const controller = new DirectLiveTextController({
     const isContinuation = JSON.stringify(body.input || "").includes("read_file_result");
     if (isContinuation) {
       assert.equal(body.store, false);
-      assert.equal(body.parallel_tool_calls, false);
+      assert.equal(body.parallel_tool_calls, true);
       assert(!("previous_response_id" in body));
       // The turn's original input comes first; the call and its output follow,
       // then the continuation's guidance as a developer message.
@@ -567,7 +567,7 @@ try {
     "wait_agent",
   ];
   assert.deepEqual(capturedProviderBodies[0].tools.map((tool) => tool.name), expectedInitialToolNames);
-  assert.equal(capturedProviderBodies[0].parallel_tool_calls, false);
+  assert.equal(capturedProviderBodies[0].parallel_tool_calls, true);
   assert.equal(capturedProviderBodies[0].tool_choice, "auto");
   assert.equal(persistedTurn.requestShape.declaredToolNames.join(","), expectedInitialToolNames.join(","));
   assert.equal(persistedTurn.requestShape.toolBundleCompositionWitnessAttached, true);

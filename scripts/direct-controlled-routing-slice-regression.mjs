@@ -528,7 +528,7 @@ try {
     "implementation-lane controlled routed turn should complete",
   );
   assert.equal(providerRequestCount, providerRequestsBeforeImplementationLane + 1);
-  assert.equal(capturedProviderBody.parallel_tool_calls, false);
+  assert.equal(capturedProviderBody.parallel_tool_calls, true, "implementation turns allow parallel calls, as Codex");
   assert.deepEqual(
     capturedProviderBody.tools.map((tool) => tool.name),
     upstreamPolicyToolNames,

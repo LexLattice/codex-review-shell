@@ -1271,6 +1271,84 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   completed; at low effort luna rarely emits reasoning before a call.
   Gate: `npm run direct:reasoning-replay` (Linux and Windows Node); live
   suite 10/10 on both hosts.
+- Changed 2026-10-09: parallel tool calls, as in Codex. Implementation
+  turns and their continuations send `parallel_tool_calls: true` (other
+  request paths keep `false`). When one response makes several calls,
+  consecutive parallel-safe calls (`exec_command`, `write_stdin`,
+  `read_file` under the thread's grant, `list_agents`, `inspect_agent`)
+  run at the same time; anything else (patches, `run_command`, approvals,
+  `spawn_agent`, ledger and permission calls) runs alone, after the calls
+  before it. The continuation waits for the last result and lists every
+  call and output in the order the model made them, not the order they
+  finished. Request manifests record the flag. Live, luna/low: two
+  3-second commands in one response finished in 3.2 s. Gate:
+  `npm run direct:parallel-tool-calls` (Linux and Windows Node).
+- Changed 2026-10-09 (owner's call): no per-turn sub-agent policy
+  preflight. Every Workbench turn used to start with a separate model call
+  (`gpt-5.3-codex-spark` by preference) that classified the message for
+  standing sub-agent policy changes. Now the thread's model gets
+  `update_sub_agent_policy` (offered with `spawn_agent`; same fields as the
+  router's update action: role bindings, child cap, one-time authority,
+  thread or project scope) and calls it when the user sets such a rule. The
+  owner confirms each change through the user-input prompt (Apply / Don't
+  apply), with the change described in plain words; only then does
+  `admitConfirmedUpdate` admit it (provenance
+  `operator_confirmed_proposal`), so text in a file or tool output can't
+  change the policy on its own. A project-scoped change may proceed while
+  its own turn runs. The policy editor still uses the semantic router.
+  Also fixed: a continuation refused tools added after composition
+  (`request_permissions`, `update_sub_agent_policy`) as
+  `undeclared_tool_call`. Live, luna/low: the model called the tool, the
+  owner applied it; a new project's first turn spent 4.6 s before its first
+  request (6.8 and 9.2 s in two earlier runs with the preflight). Gate:
+  `npm run direct:sub-agent-policy-tool`.
+- Changed 2026-10-09: Ultra turns delegate proactively, as in Codex. When
+  the chosen effort is Ultra (sent as the model's multi-agent effort) and
+  the turn can spawn agents, its input ends with Codex's multi-agent mode
+  message ("Proactive multi-agent delegation is active…", naming
+  `spawn_agent` and `wait_agent`); continuations keep it, and
+  `requestShape.proactiveDelegation` records it. Other efforts don't get
+  it. Live, luna Ultra (sent as max): the turn completed and, for a
+  trivial two-part question, answered without spawning. Gate:
+  `npm run direct:proactive-delegation`.
+- Changed 2026-10-09: context compaction, as in Codex. Before, a long
+  thread silently dropped its oldest turns past 60,000 characters, and a
+  long turn grew until its request failed.
+  - Limit: 90% of the model's context window (`context_window` from the
+    account's model list), or the model's `auto_compact_token_limit` if
+    lower; tokens estimated as bytes/4 like Codex. With a known limit the
+    history keeps every turn since the last checkpoint (outputs still
+    capped at 2,000 characters) instead of the fixed 60,000-character
+    budget, which remains the fallback.
+  - Before a turn whose request would reach the limit, the earlier history
+    is compacted the way Codex does it for ChatGPT accounts: the same
+    instructions and tools with the history ending in a
+    `compaction_trigger` item; the response's one `compaction` item
+    (encrypted) plus the newest user messages (up to 64,000 tokens) becomes
+    the thread's checkpoint (`sessions/<id>/compaction.json`, not the
+    session file). Later turns start from the checkpoint, then the turns
+    after it (a checkpoint whose last turn was rolled back is ignored).
+  - If the remote form fails, the model writes a handoff summary with
+    Codex's compaction prompt (no tools); the summary, behind Codex's
+    summary prefix, replaces the history with the newest user messages up
+    to 20,000 tokens, and Codex's "Long threads and multiple compactions"
+    warning is shown. If both fail, older turns are dropped as before, with
+    a warning.
+  - Mid-turn: a continuation that would reach the limit first compacts the
+    turn's input and results so far (`turn.turnCompaction`); later
+    continuations carry that checkpoint, the turn's developer notes, and
+    the results after it.
+  - Manual: the Workbench header's Compact button
+    (`thread/compact/start`, Codex's `/compact`), available between turns.
+  - The transcript shows "Context compacted for this thread." (Codex's
+    `contextCompaction` item) while the app is open; it isn't kept in the
+    saved transcript yet. Compaction requests aren't counted in the turn's
+    usage rows yet.
+  - Live, luna/low, manual compaction: remote form accepted (1,352 → 605
+    estimated tokens); asked afterwards, the model gave a number that
+    appeared only in a compacted command output. (When the user had said
+    nothing about the number, the checkpoint left it out; that's the
+    backend's summary, as in Codex.) Gate: `npm run direct:context-compaction`.
 - Added 2026-10-08: Windows commands start in an already-running
   PowerShell. The local process backend (also used natively by the
   Windows executor) keeps one idle shell per launch shape (sandbox
@@ -1304,8 +1382,9 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   owner's login environment there, `fullEnvironment`); agents' executor
   sessions still get the minimal one.
 
-- Every Workbench implementation turn first runs a separate model call for the
-  sub-agent policy preflight (latency and quota).
+- Since 2026-10-09 Workbench turns no longer run a separate sub-agent
+  policy model call first (see `update_sub_agent_policy` under Findings).
+  The sub-agent policy editor still uses the semantic router.
 - Continuations work as in Codex since the post-track continuation fix:
   every continuation (after a file read, patch, command, process session,
   self-constitution check, agent tool, or human decision) declares the

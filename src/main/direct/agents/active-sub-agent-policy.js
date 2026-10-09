@@ -815,7 +815,9 @@ function mergeRoleBindings(currentPolicy, patches = []) {
   return [...existing.values()];
 }
 
-function semanticToolSchemas() {
+// Parameters of a policy update, shared by the router's update action and
+// the thread model's update_sub_agent_policy tool.
+function subAgentPolicyUpdateParameters() {
   const semanticBinding = {
     type: "object",
     properties: {
@@ -866,6 +868,42 @@ function semanticToolSchemas() {
     required: ["role_id"],
     additionalProperties: false,
   };
+  return {
+    type: "object",
+    properties: {
+      scope_kind: {
+        type: "string",
+        enum: [...POLICY_SCOPE_KINDS],
+      },
+      role_bindings: {
+        type: "array",
+        items: semanticBinding,
+        minItems: 1,
+      },
+      max_active_children: {
+        type: "integer",
+        minimum: 0,
+        maximum: 64,
+        description:
+          "Scope-relative child cap. Zero delegates the cap to the native runtime.",
+      },
+      one_time_authority: {
+        type: "string",
+        enum: [...ONE_TIME_AUTHORITIES],
+      },
+      summary: { type: "string" },
+      rationale: { type: "string" },
+    },
+    required: [
+      "scope_kind",
+      "summary",
+      "rationale",
+    ],
+    additionalProperties: false,
+  };
+}
+
+function semanticToolSchemas() {
   return [
     {
       type: "function",
@@ -886,39 +924,7 @@ function semanticToolSchemas() {
       name: POLICY_UPDATE_TOOL,
       description:
         "Use when the user semantically establishes or revises active sub-agent policy. Include only dimensions actually settled by the utterance; the harness preserves other dimensions.",
-      parameters: {
-        type: "object",
-        properties: {
-          scope_kind: {
-            type: "string",
-            enum: [...POLICY_SCOPE_KINDS],
-          },
-          role_bindings: {
-            type: "array",
-            items: semanticBinding,
-            minItems: 1,
-          },
-          max_active_children: {
-            type: "integer",
-            minimum: 0,
-            maximum: 64,
-            description:
-              "Scope-relative child cap. Zero delegates the cap to the native runtime.",
-          },
-          one_time_authority: {
-            type: "string",
-            enum: [...ONE_TIME_AUTHORITIES],
-          },
-          summary: { type: "string" },
-          rationale: { type: "string" },
-        },
-        required: [
-          "scope_kind",
-          "summary",
-          "rationale",
-        ],
-        additionalProperties: false,
-      },
+      parameters: subAgentPolicyUpdateParameters(),
     },
     {
       type: "function",
@@ -1540,50 +1546,16 @@ class DirectActiveSubAgentPolicyService {
     let admittedPolicy = null;
     let state = "no_change";
     if (action.name === POLICY_UPDATE_TOOL) {
-      if (this.admissionGuard) {
-        await this.admissionGuard({
-          scope,
-          projectId,
-          threadId,
-          clientRequestId: input.clientRequestId,
-        });
-      }
-      const exactCurrent = this.store.exact(scope);
-      admittedPolicy = this.store.admit({
+      admittedPolicy = await this.admitUpdateAction({
         scope,
-        expectedRevision: Number(exactCurrent?.revision || 0),
-        roleBindings: mergeRoleBindings(
-          exactCurrent,
-          action.args.role_bindings,
-        ),
-        maxActiveChildren:
-          Object.prototype.hasOwnProperty.call(
-            action.args,
-            "max_active_children",
-          )
-            ? Number(action.args.max_active_children)
-            : Number(exactCurrent?.maxActiveChildren || 0),
-        deviationRule: {
-          ...(exactCurrent?.deviationRule || {}),
-          ...(action.args.one_time_authority
-            ? {
-                oneTimeAuthority:
-                  action.args.one_time_authority,
-              }
-            : {}),
-        },
-        provenance: {
-          authorityKind: "operator_semantic_admission",
-          actorId: "operator",
-          sourceRef: {
-            kind: "direct_user_policy_utterance",
-            id: normalizeString(input.clientRequestId, ""),
-            digest: activationDigest,
-          },
-          semanticSettlementRef: null,
-        },
+        projectId,
+        threadId,
+        clientRequestId: input.clientRequestId,
+        args: action.args,
+        authorityKind: "operator_semantic_admission",
+        sourceKind: "direct_user_policy_utterance",
+        activationDigest,
         createdAt,
-        updatedAt: createdAt,
       });
       state = "policy_admitted";
     } else if (action.name === POLICY_CLARIFICATION_TOOL) {
@@ -1623,6 +1595,116 @@ class DirectActiveSubAgentPolicyService {
       realizationPolicyRef:
         metaRoleInvocation.realizationPolicyRef,
       telemetry: result.telemetry,
+      admittedPolicyRef: policyRef(admittedPolicy),
+      createdAt,
+    });
+    this.store.recordSemanticSettlement(settlement);
+    return {
+      settlement,
+      admittedPolicy: safePolicySummary(admittedPolicy),
+      projection: this.store.projection(projectId, threadId),
+    };
+  }
+
+  async admitUpdateAction(input = {}) {
+    if (this.admissionGuard) {
+      await this.admissionGuard({
+        scope: input.scope,
+        projectId: input.projectId,
+        threadId: input.threadId,
+        clientRequestId: input.clientRequestId,
+        ...(input.ownTurnId ? { ownTurnId: input.ownTurnId } : {}),
+      });
+    }
+    const args = input.args || {};
+    const exactCurrent = this.store.exact(input.scope);
+    return this.store.admit({
+      scope: input.scope,
+      expectedRevision: Number(exactCurrent?.revision || 0),
+      roleBindings: mergeRoleBindings(
+        exactCurrent,
+        args.role_bindings,
+      ),
+      maxActiveChildren:
+        Object.prototype.hasOwnProperty.call(
+          args,
+          "max_active_children",
+        )
+          ? Number(args.max_active_children)
+          : Number(exactCurrent?.maxActiveChildren || 0),
+      deviationRule: {
+        ...(exactCurrent?.deviationRule || {}),
+        ...(args.one_time_authority
+          ? {
+              oneTimeAuthority:
+                args.one_time_authority,
+            }
+          : {}),
+      },
+      provenance: {
+        authorityKind: input.authorityKind,
+        actorId: "operator",
+        sourceRef: {
+          kind: input.sourceKind,
+          id: normalizeString(input.clientRequestId, ""),
+          digest: input.activationDigest,
+        },
+        semanticSettlementRef: null,
+      },
+      createdAt: input.createdAt,
+      updatedAt: input.createdAt,
+    });
+  }
+
+  // The thread's model proposes a change with its update_sub_agent_policy
+  // tool and the owner confirms it; the confirmation is the authority, as
+  // the owner's own words are for semanticPreflight.
+  async admitConfirmedUpdate(input = {}) {
+    const projectId = safeId(input.projectId, "project_id");
+    const threadId = safeId(input.threadId, "thread_id");
+    const action = parseActionCall({
+      name: POLICY_UPDATE_TOOL,
+      argumentsJson: JSON.stringify(isPlainObject(input.args) ? input.args : {}),
+    });
+    const createdAt = new Date(this.now()).toISOString();
+    const activationDigest = digestFor(
+      "direct-active-sub-agent-policy-owner-confirmation@1",
+      {
+        projectId,
+        threadId,
+        clientRequestId: input.clientRequestId,
+        args: action.args,
+      },
+    );
+    const scopeKind = POLICY_SCOPE_KINDS.has(normalizeString(action.args.scope_kind, "thread"))
+      ? normalizeString(action.args.scope_kind, "thread")
+      : "thread";
+    const scope = policyScope({ scopeKind, projectId, threadId });
+    const admittedPolicy = await this.admitUpdateAction({
+      scope,
+      projectId,
+      threadId,
+      clientRequestId: input.clientRequestId,
+      ownTurnId: normalizeString(input.turnId, ""),
+      args: action.args,
+      authorityKind: "operator_confirmed_proposal",
+      sourceKind: "direct_owner_confirmed_policy_proposal",
+      activationDigest,
+      createdAt,
+    });
+    const settlement = buildSemanticSettlement({
+      scope,
+      clientRequestId: input.clientRequestId,
+      actionName: POLICY_UPDATE_TOOL,
+      state: "policy_admitted",
+      summary: normalizeString(action.args.summary, "") ||
+        `Admitted active sub-agent policy fields for ${(
+          action.args.role_bindings || []
+        ).map((entry) => entry.role_id).filter(Boolean).join(", ") || "the bound scope"}.`,
+      rationale: "The owner confirmed the change the thread's model proposed.",
+      metaRoleInvocationRef: null,
+      realizationPolicyRef: null,
+      telemetry: { model: input.model, reasoningEffort: input.reasoningEffort },
       admittedPolicyRef: policyRef(admittedPolicy),
       createdAt,
     });
@@ -1686,6 +1768,7 @@ module.exports = {
   semanticInstructions,
   semanticPrompt,
   semanticToolSchemas,
+  subAgentPolicyUpdateParameters,
   validateActiveSubAgentPolicy,
   validateActiveSubAgentSpawnDecision,
 };
