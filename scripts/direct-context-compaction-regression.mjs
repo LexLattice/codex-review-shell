@@ -275,7 +275,28 @@ try {
     assert(Buffer.byteLength(both.map(textOf).join(""), "utf8") <= 8_000 + 64, "older messages fill only what's left");
   }
 
-  console.log(JSON.stringify({ ok: true, cases: ["pre_turn", "local_fallback", "mid_turn", "manual", "utf8_budget"] }));
+  // 6. A low limit: the history over the budget still reaches the
+  // compactor (it once compacted only the turns that fit, while the
+  // checkpoint covered all of them, so the older ones were lost).
+  {
+    const h = await harness(root, "complete_history");
+    try {
+      h.setRespond(() => ({ text: "Noted." }));
+      await h.runTurn("Unique older requirement: never change the billing rules.", "one");
+      await h.runTurn(LONG_PROMPT, "two");
+      h.controller.autoCompactTokenLimit = 1000;
+      h.setRespond((body) => isCompactionRequest(body) ? { compaction: "ENC_COMPLETE" } : { text: "Third answer." });
+      const third = await h.runTurn("Continue with the task.", "three");
+      const compactionBody = third.bodies.find(isCompactionRequest);
+      assert(compactionBody, "compacted");
+      assert(JSON.stringify(compactionBody.input).includes("never change the billing rules"), "the oldest turn reached the compactor");
+      assert(JSON.stringify(compactionBody.input).includes(LONG_PROMPT.slice(0, 60)));
+    } finally {
+      await h.close();
+    }
+  }
+
+  console.log(JSON.stringify({ ok: true, cases: ["pre_turn", "local_fallback", "mid_turn", "manual", "utf8_budget", "complete_history"] }));
 } finally {
   await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

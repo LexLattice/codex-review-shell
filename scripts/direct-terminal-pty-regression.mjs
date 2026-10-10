@@ -8,7 +8,7 @@
 // The environment that isn't the host's own is reached through its executor,
 // as in the app.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -33,6 +33,53 @@ const { DirectTerminalService, MAX_TERMINALS_PER_PROJECT } = require("../src/mai
 const { EXECUTOR_METHODS, describeExecutionEnvironment } = require("../src/shared/executor-protocol.js");
 const { LocalSurfaceServer } = require("../src/main/local-surface-server.js");
 const { WorkspaceBackendManager, workspaceRoot } = require("../src/main/workspace-backend.js");
+
+async function initialPtySize({ delayParent = false } = {}) {
+  const delayedFork = [
+    "import pty, runpy, sys, time",
+    "original_fork = pty.fork",
+    "def delayed_fork():",
+    "    pid, master = original_fork()",
+    "    if pid: time.sleep(0.1)",
+    "    return pid, master",
+    "pty.fork = delayed_fork",
+    "sys.argv = sys.argv[1:]",
+    "runpy.run_path(sys.argv[0], run_name='__main__')",
+  ].join("\n");
+  const args = [
+    ...(delayParent ? ["-c", delayedFork] : []),
+    PTY_HELPER_PATH, "20", "70", "--", "/bin/stty", "size",
+  ];
+  return new Promise((resolve, reject) => {
+    const child = spawn("python3", args, { stdio: ["pipe", "pipe", "pipe"] });
+    let output = "", stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("initial PTY size timed out"));
+    }, 10_000);
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => { clearTimeout(timer); reject(error); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      try {
+        assert.equal(code, 0, stderr);
+        assert.equal(output.trim(), "20 70", delayParent ? "child runs before parent resumes" : "initial PTY size");
+        resolve();
+      } catch (error) { reject(error); }
+    });
+  });
+}
+
+if (process.argv.includes("--initial-size-only")) {
+  assert.equal(process.platform, "linux", "the Python PTY helper runs on Linux");
+  await initialPtySize({ delayParent: true });
+  for (let batch = 0; batch < 5; batch++) {
+    await Promise.all(Array.from({ length: 10 }, () => initialPtySize()));
+  }
+  console.log(JSON.stringify({ schema: "direct_terminal_pty_initial_size_regression@1", status: "passed", runs: 51 }));
+  process.exit(0);
+}
 
 const onWindows = process.platform === "win32";
 const distro = onWindows ? (process.env.DIRECT_WSL_DISTRO || "Ubuntu") : (process.env.WSL_DISTRO_NAME || "");
@@ -117,6 +164,9 @@ function bindingFor(project, kind, accessProfile) {
 }
 
 try {
+  if (!onWindows) {
+    await check("the PTY child sees its initial size before the parent resumes", () => initialPtySize({ delayParent: true }));
+  }
   await check("frames, sizes, and the EOF key", () => {
     assert.deepEqual([...encodePtyFrame("d", "hi")], [0x64, 0, 0, 0, 2, 0x68, 0x69]);
     assert.deepEqual([...encodePtyResize(30, 120)], [0x72, 0, 0, 0, 4, 0, 30, 0, 120]);

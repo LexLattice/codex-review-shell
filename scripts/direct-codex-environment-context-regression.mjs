@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { parseToml } = require("../src/main/direct/external/toml-lite.js");
+const { buildMcpToolCatalog } = require("../src/main/direct/external/mcp-tool-calls.js");
 const { readCodexEnvironmentContext, parseSkillFrontMatter, readSkillBody } = require("../src/main/direct/codex-home/codex-environment-context.js");
 
 // TOML.
@@ -46,6 +47,30 @@ const { readCodexEnvironmentContext, parseSkillFrontMatter, readSkillBody } = re
   assert.throws(() => parseToml("a = 1\na = 2"), /duplicate/);
   assert.throws(() => parseToml("[t]\n[t]"), /twice/);
   assert.throws(() => parseToml("a = \"x"), /unterminated/);
+  const prototypeBefore = Object.getOwnPropertyDescriptors(Object.prototype);
+  const tools = [{ serverIdentityId: "real", tools: [{ name: "write", inputSchema: { type: "object" } }] }];
+  for (const source of [
+    "[__proto__]\nfoo = 1",
+    "[a.__proto__]\nfoo = 1",
+    "[mcp_servers.__proto__]\nreadOnlyHint = true",
+    "[constructor.prototype]\nfoo = 1",
+    '"__proto__" = { readOnlyHint = true }',
+    'a = { "__proto__".foo = 1 }',
+    "[[a.__proto__]]\nfoo = 1",
+    "a.constructor.prototype.foo = 1",
+    "a.prototype = 1",
+  ]) {
+    assert.throws(() => parseToml(source), /unsafe key/, source);
+    assert.deepEqual(Object.getOwnPropertyDescriptors(Object.prototype), prototypeBefore, source);
+    assert.equal(({}).foo, undefined);
+    assert.equal(buildMcpToolCatalog(tools).entries[0].needsApproval, true);
+  }
+  const inherited = parseToml("[toString]\nfoo = 1\n[[valueOf]]\nfoo = 2");
+  assert.deepEqual(inherited.toString, { foo: 1 });
+  assert.deepEqual(inherited.valueOf, [{ foo: 2 }]);
+  assert.deepEqual(parseToml("hasOwnProperty.foo = 3").hasOwnProperty, { foo: 3 });
+  assert.equal(Object.getPrototypeOf(inherited), Object.prototype);
+  assert.deepEqual(Object.getOwnPropertyDescriptors(Object.prototype), prototypeBefore);
 }
 
 assert.deepEqual(parseSkillFrontMatter("---\nname: deploy\ndescription: >\n  Ship the\n  thing.\nmetadata:\n  short-description: Ship\n---\nbody"), {
@@ -127,6 +152,54 @@ try {
   assert.equal(docs.url, "https://project.example/mcp", "the trusted project's layer overrides the user's");
   assert.equal(docs.source.startsWith("codex-project:"), true);
   assert.equal(docs.unavailable, undefined);
+
+  write(path.join(repo, ".codex", "config.toml"), "[mcp_servers.docs]\nenabled = false\n");
+  const reread = () => readCodexEnvironmentContext({ projectRoot: project, cwd: project, env: { ...env, CODEX_HOME: codexHome }, homedir: home });
+  const disabled = reread();
+  const disabledDocs = disabled.mcpServers.find((server) => server.name === "docs");
+  assert.equal(disabledDocs.enabled, false);
+  assert.equal(disabledDocs.url, "https://docs.example/mcp");
+  assert.equal(disabledDocs.headers.Authorization, "Bearer tok");
+  assert(!disabled.invalidMcpServers.some((entry) => entry.name === "docs"));
+
+  write(path.join(repo, ".codex", "config.toml"), [
+    "[mcp_servers.docs]",
+    "enabled = false",
+    "[mcp_servers.local_tools]",
+    'enabled_tools = ["read", "write"]',
+    'disabled_tools = ["write"]',
+    "startup_timeout_sec = 2",
+    "tool_timeout_sec = 3",
+    'default_tools_approval_mode = "prompt"',
+    'env = { EXTRA = "project-value" }',
+    "[mcp_servers.local_tools.tools.read]",
+    'approval_mode = "prompt"',
+    "[mcp_servers.orphan]",
+    "enabled = false",
+  ].join("\n"));
+  write(path.join(project, ".codex", "config.toml"), [
+    "[mcp_servers.local_tools]",
+    "disabled_tools = []",
+    "tool_timeout_sec = 4",
+    "[mcp_servers.local_tools.tools.write]",
+    'approval_mode = "writes"',
+  ].join("\n"));
+  const layered = reread();
+  const layeredLocal = layered.mcpServers.find((server) => server.name === "local_tools");
+  assert.equal(layeredLocal.command, "node");
+  assert.deepEqual(layeredLocal.args, ["server.js"]);
+  assert.deepEqual(layeredLocal.env, { TOKEN: "secret-value", EXTRA: "project-value" });
+  assert.deepEqual(layeredLocal.enabledTools, ["read", "write"]);
+  assert.deepEqual(layeredLocal.disabledTools, []);
+  assert.deepEqual([layeredLocal.startupTimeoutMs, layeredLocal.toolTimeoutMs, layeredLocal.defaultToolsApprovalMode], [2000, 4000, "prompt"]);
+  assert.deepEqual(layeredLocal.toolApprovalModes, { write: "writes", read: "prompt" });
+  assert.equal(layered.mcpServers.find((server) => server.name === "docs").enabled, false);
+  assert(layered.invalidMcpServers.some((entry) => entry.name === "orphan" && /needs command or url/.test(entry.message)));
+  assert(!layered.mcpServers.some((server) => server.name === "orphan"));
+  write(path.join(project, ".codex", "config.toml"), '[mcp_servers.docs]\ncommand = "node"\n');
+  const invalidOverride = reread();
+  assert(!invalidOverride.mcpServers.some((server) => server.name === "docs"), "invalid merged overrides must not fall back to the inherited server");
+  assert(invalidOverride.invalidMcpServers.some((entry) => entry.name === "docs" && /not both/.test(entry.message)));
 
   // Without trust, project layers and project hooks are ignored.
   const otherRepo = path.join(root, "other-repo");

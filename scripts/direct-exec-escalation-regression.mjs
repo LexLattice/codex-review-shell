@@ -34,6 +34,17 @@ const allowGit = [{ decision: "allow", pattern: ["git", "status"] }];
 assert(rules.ruleMatches(["/usr/bin/git", "status", "-s"], ["git", "status"]));
 assert(!rules.ruleMatches(["git", "stash"], ["git", "status"]));
 assert(rules.ruleMatches(["GIT.EXE", "status"], ["git", "status"], "powershell"));
+assert(rules.ruleMatches(["C:\\Tools\\Git.EXE", "branch", "-d", "topic"], ["git", "branch", "-d"], "powershell"));
+assert(!rules.ruleMatches(["Git", "branch", "-D", "topic"], ["git", "branch", "-d"], "powershell"), "native option case must not broaden a rule");
+assert(!rules.ruleMatches(["git", "branch", "-d", "Topic"], ["git", "branch", "-d", "topic"], "powershell"), "native argument values keep their case");
+assert(!rules.ruleMatches(["git", "STATUS"], ["git", "status"], "powershell"));
+assert(!rules.ruleMatches(["NODE.EXE", "-e", "write('A')"], ["node", "-e", "write('a')"], "powershell"), "native source text is case-sensitive");
+assert(rules.ruleMatches(["get-childitem", "-Recurse"], ["Get-ChildItem", "-Recurse"], "powershell"), "cmdlet command names still ignore case");
+assert(!rules.ruleMatches(["GIT", "status"], ["git", "status"], "bash"), "Bash command names stay case-sensitive");
+const allowDelete = [{ decision: "allow", pattern: ["git", "branch", "-d"] }];
+const forceDelete = rules.commandSegments("GIT.EXE branch -D topic", "powershell");
+assert.equal(rules.evaluateCommandRules(forceDelete, allowDelete, "powershell").allAllowed, false);
+assert.deepEqual(rules.proposeCommandRule(forceDelete, allowDelete, ["git", "branch", "-d"], "powershell"), ["GIT.EXE", "branch", "-D", "topic"], "a proposal must not substitute a differently cased option");
 assert.equal(rules.evaluateCommandRules([["git", "status"], ["rm", "-rf", "x"]], allowGit).allAllowed, false, "every part must be allowed");
 assert.equal(rules.evaluateCommandRules(null, allowGit).allAllowed, false, "an opaque command matches nothing");
 // Proposals: the model's prefix when reasonable and covering, else the whole

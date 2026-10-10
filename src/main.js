@@ -12628,16 +12628,52 @@ function foregroundDisplayedThreadId() {
   return normalizeString(session?.activeThreadId, "");
 }
 
+// What each surface's sidebar asked to see beyond the recent threads: the
+// projects whose list it expanded, and every thread while it searches.
+const workbenchOverviewViewOptions = new Map();
+
+function workbenchOverviewViewOptionsFor(contents) {
+  return (contents && workbenchOverviewViewOptions.get(contents.id)) || { expandedProjectIds: [], allThreads: false };
+}
+
+function rememberWorkbenchOverviewViewOptions(contents, payload = {}) {
+  if (!contents || contents.isDestroyed?.()) return workbenchOverviewViewOptionsFor(null);
+  const options = {
+    expandedProjectIds: (Array.isArray(payload.expandedProjectIds) ? payload.expandedProjectIds : [])
+      .map((id) => normalizeString(id, ""))
+      .filter(Boolean)
+      .slice(0, 200),
+    allThreads: payload.allThreads === true,
+  };
+  if (!workbenchOverviewViewOptions.has(contents.id)) {
+    contents.once?.("destroyed", () => workbenchOverviewViewOptions.delete(contents.id));
+  }
+  workbenchOverviewViewOptions.set(contents.id, options);
+  return options;
+}
+
+// Appserver projects' threads live in the Appserver, not the Direct session
+// index; the sidebar lists them from the surface's own thread list.
+function workbenchAppServerProjectIds(projects = []) {
+  return projects
+    .filter((project) => normalizeDirectRuntimeModeForStatus(project?.surfaceBinding?.codex?.runtimeMode) === "legacy-app-server")
+    .map((project) => project.id);
+}
+
 async function directWorkbenchThreadOverview(options = {}) {
-  const config = await loadConfig();
+  const config = options.config || await loadConfig();
   const sessions = options.sessions || readDirectSessionIndexEntries();
+  const view = options.view || {};
   return buildDirectWorkbenchThreadOverview({
     projects: config.projects,
     selectedProjectId: config.selectedProjectId,
     sessions,
-    pendingRequests: directWorkbenchPendingOwnerRequests(),
+    pendingRequests: options.pendingRequests || directWorkbenchPendingOwnerRequests(),
     liveProjectIds: [...workbenchProjectViews.keys()],
     presentation: ensureWorkbenchThreadPresentation().all(),
+    appServerProjectIds: workbenchAppServerProjectIds(config.projects),
+    expandedProjectIds: view.expandedProjectIds || [],
+    allThreads: view.allThreads === true,
   });
 }
 
@@ -12729,14 +12765,22 @@ function scheduleWorkbenchThreadOverviewBroadcast(delayMs = 200) {
   workbenchOverviewTimer = setTimeout(async () => {
     workbenchOverviewTimer = null;
     let overview = null;
+    let shared = null;
     try {
       const sessions = readDirectSessionIndexEntries();
       settleWorkbenchThreadActivity(sessions);
-      overview = await directWorkbenchThreadOverview({ sessions });
+      shared = { sessions, config: await loadConfig(), pendingRequests: directWorkbenchPendingOwnerRequests() };
+      overview = await directWorkbenchThreadOverview(shared);
     } catch {
       return;
     }
-    for (const contents of workbenchSurfaceContents()) contents.send("direct-workbench:thread-overview-event", overview);
+    for (const contents of workbenchSurfaceContents()) {
+      const view = workbenchOverviewViewOptionsFor(contents);
+      const own = view.allThreads || view.expandedProjectIds.length
+        ? await directWorkbenchThreadOverview({ ...shared, view }).catch(() => overview)
+        : overview;
+      if (!contents.isDestroyed()) contents.send("direct-workbench:thread-overview-event", own);
+    }
     if (overview.projects.some((project) => project.runningCount > 0 || project.needsYouCount > 0)) {
       scheduleWorkbenchThreadOverviewBroadcast(4000);
     }
@@ -14872,10 +14916,13 @@ ipcMain.handle("direct-workbench:activate-project", async (event, payload) => {
 
 // Every project with its recent threads and what they need, for the
 // sidebar.
-ipcMain.handle("direct-workbench:thread-overview", async (event) => {
+ipcMain.handle("direct-workbench:thread-overview", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "direct-workbench:thread-overview");
   requireDirectWorkbenchExperience("direct-workbench:thread-overview");
-  return directWorkbenchThreadOverview();
+  const view = payload && typeof payload === "object"
+    ? rememberWorkbenchOverviewViewOptions(event.sender, payload)
+    : workbenchOverviewViewOptionsFor(event.sender);
+  return directWorkbenchThreadOverview({ view });
 });
 
 // Opens a thread (or, without one, a project) from the sidebar: in the

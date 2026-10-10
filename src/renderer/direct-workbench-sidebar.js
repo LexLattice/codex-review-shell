@@ -133,8 +133,49 @@
   // Threads to show for a project: the recent ones plus anything that needs
   // attention, in the overview's order (frozen while the pointer is over
   // the list).
+  // An Appserver project's threads come from the surface's own thread list
+  // while the project is in front; null when it isn't (nothing lists them
+  // then).
+  function appServerThreads(row) {
+    if (!isFront(row)) return null;
+    const waiting = row.waitingThreads || {};
+    return (surface()?.threadRows?.() || []).map((thread) => {
+      const needsYou = Number(waiting[thread.threadId] || 0);
+      return {
+        threadId: String(thread.threadId || ""),
+        title: String(thread.title || "Untitled thread"),
+        updatedAt: String(thread.updatedAt || ""),
+        state: needsYou ? "needs_you" : thread.running ? "running" : "idle",
+        running: thread.running === true,
+        unread: false,
+        needsYouCount: needsYou,
+        renamable: false,
+      };
+    }).filter((thread) => thread.threadId);
+  }
+
+  function rowThreads(row) {
+    if (row.threadSource === "app-server") return appServerThreads(row);
+    return Array.isArray(row.threads) ? row.threads : [];
+  }
+
+  // Main counts an Appserver project's waiting requests but not its runs
+  // (they are the Appserver's); the surface's list has those.
+  function rowRunningCount(row) {
+    if (row.threadSource !== "app-server") return Number(row.runningCount || 0);
+    return (appServerThreads(row) || []).filter((thread) => thread.running).length;
+  }
+
+  // An Appserver project's list is partial until the surface pages through
+  // it.
+  function rowListPartial(row) {
+    return row.threadSource === "app-server" && isFront(row) && surface()?.threadListPartial?.() === true;
+  }
+
   function visibleThreads(row) {
-    let threads = Array.isArray(row.threads) ? row.threads.slice() : [];
+    const listed = rowThreads(row);
+    if (!listed) return { threads: [], hidden: 0, unlisted: true };
+    let threads = listed.slice();
     const frozen = view.frozenOrder.get(row.projectId);
     if (view.pointerInside && frozen) {
       const position = new Map(frozen.map((id, index) => [id, index]));
@@ -156,6 +197,7 @@
     button.dataset.threadId = thread.threadId;
     button.dataset.projectId = row.projectId;
     button.dataset.state = thread.state;
+    if (thread.renamable === false) button.dataset.renamable = "false";
     button.title = thread.title;
     if (selected) button.setAttribute("aria-current", "true");
     button.append(mark(thread.state));
@@ -186,7 +228,7 @@
     button.addEventListener("click", () => openThread(row, thread));
     button.addEventListener("dblclick", (event) => {
       event.preventDefault();
-      startRename(thread.threadId);
+      if (thread.renamable !== false) startRename(thread.threadId);
     });
     button.addEventListener("contextmenu", (event) => {
       event.preventDefault();
@@ -196,7 +238,7 @@
   }
 
   function projectGroup(row) {
-    const { threads, hidden } = visibleThreads(row);
+    const { threads, hidden, unlisted } = visibleThreads(row);
     if (view.query && !threads.length) return null;
     const collapsed = !view.query && view.collapsed.has(row.projectId);
     const group = el("section", `wb-project${isFront(row) ? " front" : ""}`);
@@ -211,7 +253,8 @@
     header.append(toggle);
     const badges = el("span", "wb-project-badges");
     if (collapsed && row.needsYouCount) badges.append(pill("needs-you", row.needsYouCount > 1 ? `${row.needsYouCount} need you` : "needs you"));
-    if (collapsed && row.runningCount) badges.append(pill("running", `${row.runningCount} running`));
+    const runningCount = rowRunningCount(row);
+    if (collapsed && runningCount) badges.append(pill("running", `${runningCount} running`));
     badges.append(environmentChip(row));
     header.append(badges);
     const more = el("button", "wb-project-more", "⋯");
@@ -232,18 +275,27 @@
     if (!collapsed) {
       const list = el("div", "wb-threads");
       for (const thread of threads) list.append(threadRow(row, thread));
-      if (!threads.length) {
+      if (unlisted) {
+        // An Appserver project's threads are listed once it is open.
+        const open = el("button", "wb-empty-start", row.needsYouCount ? "Waiting for you · Open to see its threads" : "Open to see its threads");
+        open.type = "button";
+        open.addEventListener("click", () => run("open", () => bridge.openDirectWorkbenchThread({ projectId: row.projectId, threadId: "" })));
+        list.append(open);
+      } else if (!threads.length) {
         const start = el("button", "wb-empty-start", "No threads yet · Start one");
         start.type = "button";
         start.addEventListener("click", () => newThread(row));
         list.append(start);
       }
       if (hidden > 0) {
-        const expand = el("button", "wb-show-more", `Show ${hidden} more`);
+        const expand = el("button", "wb-show-more", `Show ${hidden}${rowListPartial(row) ? "+" : ""} more`);
         expand.type = "button";
         expand.addEventListener("click", () => {
           view.showAll.add(row.projectId);
           render();
+          // Main sends only the recent threads until a list is expanded, and
+          // the surface lists only an Appserver's recent ones.
+          if (Number(row.moreThreadCount || 0) > 0 || row.threadSource === "app-server") refresh();
         });
         list.append(expand);
       } else if (view.showAll.has(row.projectId) && !view.query) {
@@ -252,6 +304,7 @@
         less.addEventListener("click", () => {
           view.showAll.delete(row.projectId);
           render();
+          refresh();
         });
         list.append(less);
       }
@@ -267,7 +320,7 @@
     tile.dataset.environmentKind = environmentBadge(row).kind;
     tile.title = `${row.displayName} · ${environmentBadge(row).text}`;
     if (row.needsYouCount) tile.append(el("span", "wb-tile-dot needs-you"));
-    else if (row.runningCount) tile.append(el("span", "wb-tile-dot running"));
+    else if (rowRunningCount(row)) tile.append(el("span", "wb-tile-dot running"));
     tile.addEventListener("mouseenter", () => showFlyout(row.projectId));
     tile.addEventListener("focus", () => showFlyout(row.projectId));
     tile.addEventListener("click", () => showFlyout(row.projectId, true));
@@ -285,9 +338,9 @@
     const head = el("div", "wb-flyout-head");
     head.append(el("span", "wb-project-name", row.displayName), environmentChip(row));
     flyout.append(head);
-    const { threads } = visibleThreads(row);
+    const { threads, unlisted } = visibleThreads(row);
     for (const thread of threads) flyout.append(threadRow(row, thread));
-    const start = el("button", "wb-empty-start", threads.length ? "New thread here" : "No threads yet · Start one");
+    const start = el("button", "wb-empty-start", threads.length || unlisted ? "New thread here" : "No threads yet · Start one");
     start.type = "button";
     start.addEventListener("click", () => newThread(row));
     flyout.append(start);
@@ -468,7 +521,9 @@
   function threadMenuItems(row, thread) {
     return [
       { label: "Open", action: () => openThread(row, thread) },
-      { label: "Rename…", action: () => startRename(thread.threadId) },
+      thread.renamable === false
+        ? { label: "Rename…", disabled: true, title: "Appserver threads keep the Appserver's names." }
+        : { label: "Rename…", action: () => startRename(thread.threadId) },
     ];
   }
 
@@ -528,13 +583,14 @@
     if (overview?.schema !== "direct_workbench_thread_overview@1") return;
     view.overview = overview;
     const front = (overview.projects || []).find((row) => isFront(row));
-    waiting = new Map((front?.threads || []).filter((thread) => thread.state === "needs_you").map((thread) => [thread.threadId, thread.needsYouCount]));
+    waiting = new Map((rowThreads(front || {}) || []).filter((thread) => thread.state === "needs_you").map((thread) => [thread.threadId, thread.needsYouCount]));
     if (!view.pointerInside) {
-      view.frozenOrder = new Map((overview.projects || []).map((row) => [row.projectId, (row.threads || []).map((thread) => thread.threadId)]));
+      view.frozenOrder = new Map((overview.projects || []).map((row) => [row.projectId, (rowThreads(row) || []).map((thread) => thread.threadId)]));
     }
     // Only a real change redraws (overviews arrive every few seconds while
-    // work runs); the selected thread is part of it.
-    const next = JSON.stringify([overview.projects, currentThreadId()]);
+    // work runs); the selected thread and an Appserver project's list are
+    // part of it.
+    const next = JSON.stringify([overview.projects, currentThreadId(), front?.threadSource === "app-server" ? [rowThreads(front), rowListPartial(front)] : null]);
     if (next !== signature && !view.renaming) {
       signature = next;
       render();
@@ -542,9 +598,16 @@
     renderFooter();
   }
 
+  // Main sends each project's recent threads; an expanded list, or a search,
+  // asks it for all of them.
   async function refresh() {
+    const own = String(surface()?.projectId?.() || "");
+    surface()?.expandThreadList?.(Boolean(view.query) || view.showAll.has(own));
     try {
-      apply(await bridge.readDirectWorkbenchThreadOverview());
+      apply(await bridge.readDirectWorkbenchThreadOverview({
+        expandedProjectIds: [...view.showAll],
+        allThreads: Boolean(view.query),
+      }));
     } catch {
       // The last overview stays; the next event refreshes it.
     }
@@ -559,7 +622,7 @@
       event.preventDefault();
       const next = rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))];
       next?.focus();
-    } else if (event.key === "F2" && document.activeElement?.classList?.contains("wb-thread")) {
+    } else if (event.key === "F2" && document.activeElement?.classList?.contains("wb-thread") && document.activeElement.dataset.renamable !== "false") {
       event.preventDefault();
       startRename(document.activeElement.dataset.threadId);
     }
@@ -575,14 +638,18 @@
   });
 
   search?.addEventListener("input", () => {
+    const wasSearching = Boolean(view.query);
     view.query = search.value.trim();
     render();
+    if (wasSearching !== Boolean(view.query)) refresh();
   });
   search?.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      const wasSearching = Boolean(view.query);
       search.value = "";
       view.query = "";
       render();
+      if (wasSearching) refresh();
       search.blur();
     } else if (event.key === "Enter") {
       tree.querySelector(".wb-thread")?.click();
@@ -673,6 +740,11 @@
   // project): redraw the selection.
   window.addEventListener("direct-workbench-thread-shown", () => {
     signature = "";
+    if (view.overview) apply(view.overview);
+  });
+  // An Appserver project's thread list is the surface's; apply redraws only
+  // when it actually changed.
+  window.addEventListener("direct-workbench-surface-threads-changed", () => {
     if (view.overview) apply(view.overview);
   });
   setInterval(() => {
