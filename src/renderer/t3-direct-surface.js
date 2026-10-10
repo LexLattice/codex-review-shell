@@ -65,8 +65,8 @@
     if (!shell) return;
     shell.dataset.t3Sidebar = expanded ? "expanded" : "collapsed";
     sidebarToggle?.setAttribute("aria-expanded", expanded ? "true" : "false");
-    sidebarToggle?.setAttribute("aria-label", expanded ? "Collapse thread sidebar" : "Expand thread sidebar");
-    if (sidebarToggle) sidebarToggle.textContent = expanded ? "‹" : "›";
+    sidebarToggle?.setAttribute("aria-label", expanded ? "Collapse sidebar" : "Expand sidebar");
+    if (sidebarToggle) sidebarToggle.textContent = expanded ? "⇤" : "⇥";
     storageSet(SIDEBAR_KEY, expanded ? "expanded" : "collapsed");
   }
 

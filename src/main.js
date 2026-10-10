@@ -188,6 +188,7 @@ const {
   validateDirectWorkbenchProjectActivation,
 } = require("./main/direct/project/project-directory");
 const { buildDirectWorkbenchThreadOverview } = require("./main/direct/project/workbench-thread-overview");
+const { WorkbenchThreadPresentationStore, cleanThreadTitle } = require("./main/direct/project/workbench-thread-presentation");
 const {
   buildDirectImplementationLaneUiStatus,
   buildDirectPolicyReadOnlyView,
@@ -540,6 +541,9 @@ const workbenchProjectViews = new Map();
 const codexSurfaceContexts = new Map();
 let workbenchOverviewTimer = null;
 let workbenchOverviewDueAt = 0;
+let workbenchThreadPresentation = null;
+const workbenchThreadsRunning = new Set();
+const workbenchThreadsNaming = new Set();
 const WORKBENCH_OVERVIEW_NOTIFICATIONS = new Set([
   "turn/started", "turn/completed", "thread/started", "thread/name/updated", "thread/status/changed",
 ]);
@@ -8286,6 +8290,7 @@ async function performDirectWorkbenchProjectActivation(operation = {}) {
     const opened = await openWorkbenchProjectView(savedTarget, {
       surfaceOptions: codexSurfaceOptionsForBinding(activationBinding),
       threadId: operation.threadId,
+      newThread: operation.newThread === true,
       reason: "direct-workbench-project-activation",
     });
     if (!opened.reused) createdTargetEntry = opened.entry;
@@ -12412,6 +12417,8 @@ function showWorkbenchView(entry) {
   const context = codexSurfaceContexts.get(entry.view.webContents.id);
   if (context) activeCodexSurfaceConnection = context.connection;
   if (mainWindow && !mainWindow.isDestroyed?.() && mainWindow.isFocused?.()) entry.view.webContents.focus();
+  // Its sidebar last heard about the projects while it was in the back.
+  scheduleWorkbenchThreadOverviewBroadcast(0);
 }
 
 // A surface that isn't Direct (a Codex app-server or URL surface) shares
@@ -12479,6 +12486,13 @@ async function openWorkbenchProjectView(project, options = {}) {
     const contents = live.view.webContents;
     const context = codexSurfaceContexts.get(contents.id);
     if (context) context.project = project;
+    // The thread on screen now (asked for, or the one this surface shows)
+    // is no longer unread; its place in the list stays.
+    const shownThreadId = threadId || foregroundDisplayedThreadId();
+    if (shownThreadId && ensureWorkbenchThreadPresentation().get(shownThreadId)?.unreadAt) {
+      ensureWorkbenchThreadPresentation().update(shownThreadId, { unreadAt: undefined });
+    }
+    if (options.newThread) contents.send("codex-surface:event", { type: "workbench-new-thread" });
     if (threadId) {
       contents.send("codex-surface:event", {
         type: "open-thread-request",
@@ -12495,10 +12509,12 @@ async function openWorkbenchProjectView(project, options = {}) {
   const entry = createWorkbenchCodexView(project.id);
   showWorkbenchView(entry);
   const surfaceOptions = { ...(options.surfaceOptions || {}) };
-  if (threadId) {
+  if (threadId || options.newThread) {
+    // A fresh surface without a thread to restore is a new thread.
     surfaceOptions.initialThreadId = threadId;
     surfaceOptions.initialThreadSourceHome = "";
     surfaceOptions.initialThreadSessionFilePath = "";
+    surfaceOptions.initialThreadTitle = "";
   }
   const result = await loadCodexSurface(project, {
     ...surfaceOptions,
@@ -12584,21 +12600,111 @@ function directWorkbenchPendingOwnerRequests() {
   return requests;
 }
 
-async function directWorkbenchThreadOverview() {
-  const config = await loadConfig();
-  let sessions = [];
+function ensureWorkbenchThreadPresentation() {
+  workbenchThreadPresentation ||= new WorkbenchThreadPresentationStore({
+    filePath: path.join(directSessionRootDir(), "workbench-threads.json"),
+  });
+  return workbenchThreadPresentation;
+}
+
+function readDirectSessionIndexEntries() {
   try {
-    sessions = ensureDirectSessionStore().readIndex()?.sessions || [];
+    return ensureDirectSessionStore().readIndex()?.sessions || [];
   } catch {
-    sessions = [];
+    return [];
   }
+}
+
+// The thread shown in the surface in front, if any.
+function foregroundDisplayedThreadId() {
+  const contents = codexView?.webContents;
+  const session = contents && !contents.isDestroyed() ? codexSurfaceSessions?.get(contents.id) : null;
+  return normalizeString(session?.activeThreadId, "");
+}
+
+async function directWorkbenchThreadOverview(options = {}) {
+  const config = await loadConfig();
+  const sessions = options.sessions || readDirectSessionIndexEntries();
   return buildDirectWorkbenchThreadOverview({
     projects: config.projects,
     selectedProjectId: config.selectedProjectId,
     sessions,
     pendingRequests: directWorkbenchPendingOwnerRequests(),
     liveProjectIds: [...workbenchProjectViews.keys()],
+    presentation: ensureWorkbenchThreadPresentation().all(),
   });
+}
+
+// Threads the default way (a new thread's placeholder name), which the
+// model names after their first turn; delegated and sub-agent threads keep
+// the titles they were given.
+function threadHasPlaceholderTitle(entry = {}) {
+  if (normalizeString(entry.agentKind, "") || entry.delegatedFrom) return false;
+  const title = normalizeString(entry.title, "");
+  return !title || /direct session$/i.test(title) || title === "Direct live text session";
+}
+
+// Bookkeeping on each overview: a turn that finished off screen marks its
+// thread unread; a thread whose first turn finished gets a model-written
+// title; an owner or model title a turn's stale session write replaced is
+// put back.
+function settleWorkbenchThreadActivity(sessions = []) {
+  const presentation = ensureWorkbenchThreadPresentation();
+  const displayed = foregroundDisplayedThreadId();
+  let changed = false;
+  for (const entry of sessions) {
+    const threadId = normalizeString(entry?.sessionId, "");
+    if (!threadId || normalizeString(entry.agentKind, "")) continue;
+    const running = Number(entry.activeTurnCount || 0) > 0;
+    const wasRunning = workbenchThreadsRunning.has(threadId);
+    if (running) workbenchThreadsRunning.add(threadId);
+    else workbenchThreadsRunning.delete(threadId);
+    if (wasRunning && !running && threadId !== displayed) {
+      presentation.markUnread(threadId);
+      changed = true;
+    }
+    if (running) continue;
+    const presented = presentation.get(threadId) || {};
+    if (presented.title && normalizeString(entry.title, "") !== presented.title) {
+      ensureDirectLiveTextController().setThreadTitle(threadId, presented.title, presented.titleSource);
+      continue;
+    }
+    // Only a turn that just finished: threads from before this feature keep
+    // their names rather than costing a request each on the first launch.
+    const justFinished = (wasRunning && !running)
+      || (Number(entry.turnCount || 0) === 1 && Date.now() - (Date.parse(entry.updatedAt || "") || 0) < 15 * 60_000);
+    if (justFinished && !presented.title && Number(entry.turnCount || 0) > 0 && threadHasPlaceholderTitle(entry) && !workbenchThreadsNaming.has(threadId)) {
+      workbenchThreadsNaming.add(threadId);
+      nameWorkbenchThread(entry).catch(() => {});
+    }
+  }
+  return changed;
+}
+
+async function nameWorkbenchThread(entry = {}) {
+  const threadId = normalizeString(entry.sessionId, "");
+  const suggested = cleanThreadTitle(await ensureDirectLiveTextController().suggestThreadTitle(threadId));
+  if (!suggested) return;
+  // The owner may have renamed it while the model was writing.
+  if (ensureWorkbenchThreadPresentation().get(threadId)?.title) return;
+  applyWorkbenchThreadTitle(entry, suggested, "model");
+}
+
+function applyWorkbenchThreadTitle(entry = {}, title = "", source = "owner") {
+  const threadId = normalizeString(entry.sessionId, "");
+  const saved = ensureWorkbenchThreadPresentation().setTitle(threadId, title, source);
+  if (!saved) return null;
+  if (Number(entry.activeTurnCount || 0) === 0) {
+    ensureDirectLiveTextController().setThreadTitle(threadId, saved.title, source);
+  }
+  const contents = codexSurfaceContentsForProject(normalizeString(entry.projectId, ""));
+  contents?.send("codex-surface:event", {
+    type: "rpc-notification",
+    method: "thread/name/updated",
+    params: { threadId, threadName: saved.title },
+  });
+  scheduleWorkbenchThreadOverviewBroadcast();
+  return saved;
 }
 
 // Sends every open surface the overview (debounced). While anything runs it
@@ -12614,7 +12720,9 @@ function scheduleWorkbenchThreadOverviewBroadcast(delayMs = 200) {
     workbenchOverviewTimer = null;
     let overview = null;
     try {
-      overview = await directWorkbenchThreadOverview();
+      const sessions = readDirectSessionIndexEntries();
+      settleWorkbenchThreadActivity(sessions);
+      overview = await directWorkbenchThreadOverview({ sessions });
     } catch {
       return;
     }
@@ -13633,6 +13741,11 @@ ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
   }
   rememberCodexThreadRestoreTarget(state);
   emitToShell("surface:event", state);
+  // The sidebar orders threads by when the owner last opened them.
+  if (DIRECT_WORKBENCH_MODE && state.status === "attached_live" && state.threadId && isForegroundCodexSurface(event.sender)) {
+    ensureWorkbenchThreadPresentation().markOpened(state.threadId);
+    scheduleWorkbenchThreadOverviewBroadcast();
+  }
   return { ok: true };
 });
 
@@ -14801,6 +14914,82 @@ ipcMain.handle("direct-workbench:open-thread", async (event, payload) => {
   }, { threadId });
 });
 
+// A new thread in any project from the sidebar: in the project in front it
+// starts one there; another project comes to the front with a new thread.
+ipcMain.handle("direct-workbench:new-thread", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:new-thread");
+  requireDirectWorkbenchExperience("direct-workbench:new-thread");
+  const projectId = normalizeString(payload?.projectId, "");
+  const config = await loadConfig();
+  if (!config.projects.some((project) => project.id === projectId)) {
+    const error = new Error("The project no longer exists.");
+    error.code = "project_activation_target_unknown";
+    throw error;
+  }
+  if (projectId === config.selectedProjectId) {
+    if (isForegroundCodexSurface(event.sender)) event.sender.send("codex-surface:event", { type: "workbench-new-thread" });
+    return { ok: true, status: "completed", projectId, sameProject: true };
+  }
+  const directory = await directWorkbenchProjectDirectoryForSender(event.sender, {
+    config,
+    activeProjectId: normalizeString(authority.projectId, ""),
+  });
+  return beginDirectWorkbenchProjectActivation(event.sender, authority, {
+    clientActivationId: `new_thread_${crypto.randomUUID()}`,
+    sourceProjectId: normalizeString(authority.projectId, ""),
+    targetProjectId: projectId,
+    expectedCatalogRevision: directory.catalogRevision,
+  }, { newThread: true });
+});
+
+// The owner's name for a thread (sidebar rename). The model's name, given
+// after the first turn, is replaced and never comes back.
+ipcMain.handle("direct-workbench:rename-thread", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "direct-workbench:rename-thread");
+  requireDirectWorkbenchExperience("direct-workbench:rename-thread");
+  const threadId = normalizeString(payload?.threadId, "");
+  const title = cleanThreadTitle(payload?.title);
+  if (!title) {
+    const error = new Error("A thread needs a name.");
+    error.code = "thread_title_required";
+    throw error;
+  }
+  const entry = readDirectSessionIndexEntries().find((session) => session.sessionId === threadId);
+  if (!entry || normalizeString(entry.agentKind, "")) {
+    const error = new Error("That thread can't be renamed here.");
+    error.code = "thread_not_found";
+    throw error;
+  }
+  const saved = applyWorkbenchThreadTitle(entry, title, "owner");
+  return { ok: true, threadId, title: saved?.title || title };
+});
+
+// Opens a project's folder in the system file manager: a WSL folder from a
+// Windows host through \\wsl.localhost.
+ipcMain.handle("direct-workbench:open-project-folder", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "direct-workbench:open-project-folder");
+  requireDirectWorkbenchExperience("direct-workbench:open-project-folder");
+  const config = await loadConfig();
+  const project = config.projects.find((entry) => entry.id === normalizeString(payload?.projectId, ""));
+  if (!project) {
+    const error = new Error("The project no longer exists.");
+    error.code = "project_activation_target_unknown";
+    throw error;
+  }
+  const workspace = project.workspace || {};
+  let folder = "";
+  if (workspace.kind === "windows") folder = process.platform === "win32" ? workspace.windowsPath : "";
+  else if (workspace.kind === "local") folder = workspace.localPath;
+  else if (workspace.kind === "wsl") {
+    folder = process.platform === "win32"
+      ? `\\\\wsl.localhost\\${workspace.distro || "Ubuntu"}${String(workspace.linuxPath || "").replace(/\//g, "\\")}`
+      : workspace.linuxPath;
+  }
+  if (!folder) return { ok: false, reason: "folder_not_reachable_from_this_host" };
+  const failure = await shell.openPath(folder);
+  return failure ? { ok: false, reason: "open_failed", message: failure } : { ok: true };
+});
+
 async function beginDirectWorkbenchProjectActivation(sender, authority, payload = {}, extras = {}) {
   const sourceProjectId = normalizeString(payload?.sourceProjectId, "");
   const targetProjectId = normalizeString(payload?.targetProjectId, "");
@@ -14840,6 +15029,7 @@ async function beginDirectWorkbenchProjectActivation(sender, authority, payload 
   const operation = {
     ...validateDirectWorkbenchProjectActivation(directory, payload || {}),
     threadId: normalizeString(extras.threadId, ""),
+    newThread: extras.newThread === true,
   };
   const acceptedAt = nowIso();
   directWorkbenchProjectTransition = {

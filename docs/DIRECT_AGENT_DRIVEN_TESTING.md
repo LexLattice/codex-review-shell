@@ -109,18 +109,26 @@ one in WSL, and one on Windows (Windows host) or in a local folder (Linux).
 The window is hidden: under xvfb on Linux (even where WSLg sets `DISPLAY`),
 and through `DIRECT_TEST_CONTROL=1` on Windows. It checks that:
 
-- a slow command's turn runs in the WSL project;
-- switching to the other project from the sidebar opens that project's
-  own surface, and the WSL one stays open with its turn running (sidebar
-  badge);
+- a slow command's turn runs in a WSL thread, and another thread in the
+  same project opens and runs while it does;
+- going back to the running thread replays its turn so far, and the turn
+  goes on live on screen;
+- switching to the other project from the sidebar while a WSL turn runs
+  opens that project's own surface; the WSL one stays open behind it;
 - a turn runs in the other project while the WSL turn finishes in the
-  background;
-- switching back reuses the WSL surface, and the reply is there;
+  background; the finished thread is marked unread, and the model names it;
+- switching back reuses the WSL surface, the reply is there, and the
+  thread is no longer unread;
 - a `request_user_input` question in the WSL project shows "needs you" in
-  the other project's sidebar, and can be answered after switching back.
+  the other project's sidebar, and can be answered after switching back;
+- a thread renamed from the sidebar keeps its name; the project menu,
+  search, the collapsed tiles, and the narrow drawer work;
+- a runtime transition that finishes for a background project doesn't land
+  in the surface in front.
 
-It writes screenshots to its temp folder and uses about six luna/low
-requests. Run it on both hosts (from the Windows test mirror on Windows).
+It writes screenshots to its temp folder and uses about ten luna/low
+requests (the model's thread names are one small request each). Run it on
+both hosts (from the Windows test mirror on Windows).
 
 ## Notes
 

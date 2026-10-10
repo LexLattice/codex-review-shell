@@ -1578,6 +1578,29 @@ async function runLocalCompactionRequest(options = {}) {
   });
 }
 
+// A short title for a thread after its first turn, as Codex names threads:
+// the model reads the owner's first message and the start of the reply.
+const THREAD_TITLE_INSTRUCTIONS = [
+  "You name conversations between a user and a coding agent.",
+  "Reply with only a title for the conversation below: at most six words, sentence case, no quotes, no trailing punctuation.",
+  "Name the task, not the agent, in the user's language.",
+].join(" ");
+
+async function runThreadTitleRequest(options = {}) {
+  const userText = String(options.userText || "").slice(0, 4000);
+  const replyText = String(options.replyText || "").slice(0, 1500);
+  const excerpt = [`User: ${userText}`, replyText ? `Agent: ${replyText}` : ""].filter(Boolean).join("\n\n");
+  const requestBody = {
+    ...compactionRequestBase({ ...options, instructions: THREAD_TITLE_INSTRUCTIONS }),
+    parallel_tool_calls: false,
+    input: [{ role: "user", content: [{ type: "input_text", text: excerpt }] }],
+  };
+  return runDirectCodexStreamingRequest({ ...options, includeReasoningContent: false }, requestBody, {
+    schema: DIRECT_TEXT_PROBE_RESULT_SCHEMA,
+    kind: "thread_title",
+  });
+}
+
 function declaredToolNamesFromTools(tools) {
   return (Array.isArray(tools) ? tools : [])
     .map((tool) => normalizeString(tool?.name || tool?.function?.name, ""))
@@ -2019,6 +2042,7 @@ module.exports = {
   runDirectCodexStreamingRequest,
   runRemoteCompactionRequest,
   runLocalCompactionRequest,
+  runThreadTitleRequest,
   COMPACTION_PROMPT,
   COMPACTION_SUMMARY_PREFIX,
   runImplementationToolInitialProbe,

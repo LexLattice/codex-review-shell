@@ -14,19 +14,13 @@
   </head>
   <body data-direct-gui="direct-workbench" data-app-experience="direct-workbench" data-control-plane="direct-thread">
     <main id="codexShell" class="codex-shell t3-direct-shell" data-t3-sidebar="expanded" data-morphic-region="bounded-direct-workbench">
-      <aside class="t3-project-sidebar" aria-label="Project and Direct threads">
-        <header class="t3-sidebar-header">
-          <div class="t3-product-mark" aria-hidden="true">D</div>
-          <button id="t3ProjectSwitcher" class="t3-project-switcher" type="button" aria-label="Open project directory" aria-expanded="false">
-            <span class="t3-sidebar-identity">
-              <span class="t3-sidebar-kicker">Direct Workbench</span>
-              <strong id="projectName">Codex session</strong>
-              <span id="repoPath" class="t3-sidebar-repo">Resolving workspace…</span>
-            </span>
-            <span class="t3-project-switcher-chevron" aria-hidden="true">⌄</span>
-          </button>
-          <button id="t3SidebarToggle" class="t3-sidebar-toggle" type="button" aria-label="Collapse thread sidebar" aria-expanded="true">‹</button>
-        </header>
+      <aside class="t3-project-sidebar wb-sidebar" aria-label="Projects and threads">
+        <div class="wb-sidebar-top">
+          <button id="wbNewThread" class="wb-new-thread" type="button" title="New thread in the project in front (Ctrl+N)"><span aria-hidden="true">✎</span><span class="wb-label">New thread</span><kbd>Ctrl N</kbd></button>
+          <button id="t3SidebarToggle" class="t3-sidebar-toggle wb-collapse" type="button" aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar (Ctrl+B)">⇤</button>
+          <label class="wb-search" title="Search threads in every project (Ctrl+K)"><span aria-hidden="true">⌕</span><input id="wbThreadSearch" type="search" placeholder="Search threads" aria-label="Search threads" autocomplete="off" spellcheck="false" /><kbd>Ctrl K</kbd></label>
+        </div>
+        <nav id="wbProjectTree" class="wb-tree" aria-label="Projects and threads"></nav>
         <section id="directProjectDirectory" class="direct-project-directory" hidden aria-label="Configured Direct projects" data-morphic-region="project-directory" data-morphic-state-surface="configured-project-evidence">
           <header class="direct-project-directory-header">
             <div>
@@ -43,29 +37,31 @@
           <div id="directProjectDirectoryList" class="direct-project-directory-list" data-morphic-action-cluster="project-activation"></div>
           <button id="directProjectArchivedToggle" class="direct-project-archived-toggle" type="button" aria-pressed="false" hidden>Show archived (0)</button>
         </section>
-        <div class="t3-sidebar-section-label">
-          <span>Threads</span>
-          <button id="t3SidebarNewThread" type="button" aria-label="Start a new Direct thread">+</button>
-        </div>
-        <section id="morphicThreadRail" class="morphic-thread-rail" hidden aria-label="Direct thread directory" data-morphic-region="direct-thread-rail">
-          <div id="morphicThreadRailList" class="morphic-thread-rail-list"></div>
-          <div class="morphic-thread-rail-actions">
-            <span id="morphicThreadDirectoryStatus" class="morphic-thread-directory-status">Directory idle</span>
-            <button id="morphicThreadDirectoryButton" class="morphic-rail-action" type="button">Refresh directory</button>
-          </div>
-          <section id="workbenchOtherProjects" class="workbench-other-projects" hidden aria-label="Other projects and their threads" data-morphic-region="workbench-other-projects">
-            <div class="t3-sidebar-section-label workbench-other-projects-label"><span>Other projects</span></div>
-            <div id="workbenchOtherProjectsList" class="workbench-other-projects-list"></div>
-          </section>
-        </section>
-        <p class="t3-sidebar-empty">The thread directory becomes available when the selected runtime exposes project-scoped thread listing.</p>
-        <footer class="t3-sidebar-footer">
-          <span class="t3-runtime-owner-dot" aria-hidden="true"></span>
-          <span id="t3ExperienceWitness">Direct thread control plane</span>
+        <footer class="wb-sidebar-footer">
+          <span id="wbAccountAvatar" class="wb-avatar" aria-hidden="true">·</span>
+          <span id="wbAccountLabel" class="wb-account">Signed in</span>
+          <span id="wbQuota" class="wb-quota"></span>
+          <button id="wbSettings" class="wb-icon-button" type="button" aria-label="Settings" title="Settings">⚙</button>
         </footer>
+        <!-- Kept for code that still reads them (the thread list the
+             surface maintains, its title fields); the tree above replaces
+             them on screen. -->
+        <div class="wb-legacy" aria-hidden="true">
+          <span id="t3ProjectSwitcher"></span>
+          <strong id="projectName">Codex session</strong>
+          <span id="repoPath">Resolving workspace…</span>
+          <button id="t3SidebarNewThread" type="button" tabindex="-1">+</button>
+          <section id="morphicThreadRail" class="morphic-thread-rail" hidden data-morphic-region="direct-thread-rail">
+            <div id="morphicThreadRailList" class="morphic-thread-rail-list"></div>
+            <span id="morphicThreadDirectoryStatus">Directory idle</span>
+            <button id="morphicThreadDirectoryButton" type="button" tabindex="-1">Refresh directory</button>
+          </section>
+          <span id="t3ExperienceWitness">Direct thread control plane</span>
+        </div>
       </aside>
 
       <header id="morphicCockpitBar" class="compact-thread-bar" aria-label="Active Direct thread" data-morphic-region="compact-thread-bar">
+        <button id="wbDrawerToggle" class="wb-drawer-toggle" type="button" aria-label="Show projects and threads" title="Projects and threads">☰</button>
         <div class="compact-thread-title-block">
           <p class="eyebrow">Active Direct thread</p>
           <h1 id="morphicThreadTitle" data-context-target="thread_title">Codex session</h1>
@@ -422,7 +418,7 @@
     <script src="./codex-surface.js"></script>
     <script src="./t3-direct-surface.js"></script>
     <script src="./direct-project-directory-surface.js"></script>
-    <script src="./direct-workbench-overview-surface.js"></script>
+    <script src="./direct-workbench-sidebar.js"></script>
     <script src="/vendor/xterm/xterm.js"></script>
     <script src="/vendor/xterm/addon-fit.js"></script>
     <script src="./direct-terminal-panel.js"></script>

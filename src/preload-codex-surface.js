@@ -388,6 +388,12 @@ if (directWorkbenchPreload) {
       ipcRenderer.invoke("direct-workbench:thread-overview"),
     openDirectWorkbenchThread: (payload = {}) =>
       ipcRenderer.invoke("direct-workbench:open-thread", payload),
+    newDirectWorkbenchThread: (payload = {}) =>
+      ipcRenderer.invoke("direct-workbench:new-thread", payload),
+    renameDirectWorkbenchThread: (payload = {}) =>
+      ipcRenderer.invoke("direct-workbench:rename-thread", payload),
+    openDirectWorkbenchProjectFolder: (payload = {}) =>
+      ipcRenderer.invoke("direct-workbench:open-project-folder", payload),
     onDirectWorkbenchThreadOverviewEvent: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("direct-workbench:thread-overview-event", listener);
