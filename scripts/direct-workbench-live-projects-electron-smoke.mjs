@@ -137,7 +137,7 @@ async function waitFor(label, check, timeoutMs = 120_000) {
 }
 
 async function send(page, text) {
-  await page.locator("#morphicNewThreadButton").click();
+  await page.locator("#wbNewThread").click();
   await sleep(800);
   await page.locator("#composerInput").fill(text);
   await page.locator("#sendButton").click();
@@ -149,59 +149,109 @@ async function shot(page, name) {
   report.screenshots.push(file);
 }
 
+const group = (projectId) => `.wb-project[data-project-id="${projectId}"]`;
+const threadRowSelector = (projectId, threadId) => `${group(projectId)} .wb-thread[data-thread-id="${threadId}"]`;
+const transcriptText = (page) => page.evaluate(() => document.getElementById("transcript")?.innerText || document.body.innerText);
+const threadIn = async (page, projectId, predicate) => ((await rowFor(page, projectId))?.threads || []).find(predicate);
+// Brings a project forward from a sidebar: one of its threads, or "Start one".
+async function goToProject(page, projectId, threadId = "") {
+  const row = threadId
+    ? page.locator(threadRowSelector(projectId, threadId))
+    : page.locator(`${group(projectId)} .wb-thread, ${group(projectId)} .wb-empty-start`).first();
+  await row.click();
+}
+
 try {
   const pageWsl = await app.firstWindow();
   await verified(pageWsl);
-  const slowCommand = "sleep 20; echo done-in-wsl";
-  await send(pageWsl, `Run this shell command once with exec_command and wait for it: \`${slowCommand}\`. Then reply with only its output.`);
-  await waitFor("the WSL turn to run", async () => (await rowFor(pageWsl, wslProject.id))?.runningCount > 0, 60_000);
+  // Thread A: a slow command, for switching threads inside the project.
+  // Long enough that thread B's turn (slower under load) ends first.
+  const slowCommand = "sleep 30; echo done-in-wsl";
+  const slowPrompt = (command) => `Run this shell command once with exec_command: \`${command}\`. While it is still running, wait for it with write_stdin (empty input). Then reply with only its output.`;
+  const turnEnd = (text) => ((text.match(/done-in-wsl/g) || []).length >= 2 ? "reply" : /Codex error|Stopped:/.test(text) ? "error" : "");
+  await send(pageWsl, slowPrompt(slowCommand));
+  const threadA = await waitFor("the WSL turn to run", () => threadIn(pageWsl, wslProject.id, (thread) => thread.running), 60_000);
   report.checks.push("wsl_turn_running");
 
-  // Switch while it runs: the other project's own surface opens; the WSL
-  // one stays alive behind it.
+  // Thread B in the same project while A runs (it used to be locked out).
+  await send(pageWsl, "Reply with only the word pong.");
+  await waitFor("thread B's reply", async () => ((await transcriptText(pageWsl)).match(/\bpong\b/gi) || []).length >= 2, 120_000);
+  assert.equal((await transcriptText(pageWsl)).includes("done-in-wsl"), false, "A's output doesn't land in B");
+  assert.equal((await threadIn(pageWsl, wslProject.id, (thread) => thread.threadId === threadA.threadId))?.running, true, "A still runs");
+  report.checks.push("second_thread_while_first_runs");
+
+  // Back to A while it still runs: its turn so far is replayed (thread/read
+  // has finished turns only), then it goes on live on screen.
+  await pageWsl.locator(threadRowSelector(wslProject.id, threadA.threadId)).click();
+  await waitFor("thread A on screen", () => pageWsl.evaluate((id) => window.DirectWorkbenchSurface.currentThreadId() === id, threadA.threadId), 15_000);
+  assert.equal((await threadIn(pageWsl, wslProject.id, (thread) => thread.threadId === threadA.threadId))?.running, true, "A was still running when shown again");
+  await waitFor("A's running turn replayed", async () => (await transcriptText(pageWsl)).includes("sleep 30"), 10_000);
+  await sleep(1500);
+  report.returnedState = await pageWsl.evaluate(() => ({
+    turnActive: window.DirectWorkbenchSurface.turnActive(),
+    chip: document.getElementById("morphicTurnChip")?.textContent || "",
+  }));
+  assert.equal(report.returnedState.turnActive, true, `A shows as running after the replay: ${JSON.stringify(report.returnedState)}`);
+  assert.match(report.returnedState.chip, /Working/);
+  assert.doesNotMatch(await transcriptText(pageWsl), /\bpong\b/i, "B's turn isn't in A");
+  report.checks.push("running_turn_replayed_on_return");
+  const endOnScreen = await waitFor("A's turn to end on screen", async () => turnEnd(await transcriptText(pageWsl)), 120_000);
+  report.replayedTurnEnd = endOnScreen;
+  report.checks.push("replayed_turn_continued_live");
+
+  // Thread D, then straight to the other project while D runs: its own
+  // surface opens; the WSL one stays alive behind it, D shown running.
+  await send(pageWsl, slowPrompt("sleep 20; echo done-in-wsl"));
+  const threadD = await waitFor("D to run", () => threadIn(pageWsl, wslProject.id, (thread) => thread.running), 60_000);
   const opened = app.waitForEvent("window", { timeout: 60_000 });
-  await pageWsl.locator(`#workbenchOtherProjects .workbench-project-group[data-project-id="${otherProject.id}"] .workbench-project-header`).click();
+  await goToProject(pageWsl, otherProject.id);
   const pageOther = await opened;
   await verified(pageOther);
   assert.equal(pageWsl.isClosed(), false, "the WSL surface stays open");
-  const wslWhileAway = await rowFor(pageOther, wslProject.id);
-  assert.equal(wslWhileAway.runningCount, 1, "the WSL turn keeps running in the background");
-  await pageOther.waitForSelector(`#workbenchOtherProjects .workbench-project-group[data-project-id="${wslProject.id}"] .workbench-state-badge.running`, { timeout: 10_000 });
+  await pageOther.waitForSelector(`${threadRowSelector(wslProject.id, threadD.threadId)}.running`, { timeout: 15_000 });
   await shot(pageOther, "other-project-in-front-wsl-running");
-  report.checks.push("switched_while_running");
+  report.checks.push("switched_project_while_running");
 
   await send(pageOther, "Reply with only the word pong.");
-  // The prompt has the word once; the reply adds it.
-  await waitFor("the reply in the other project", () => pageOther.evaluate(() => (document.body.innerText.match(/\bpong\b/gi) || []).length >= 2), 120_000);
+  await waitFor("the reply in the other project", async () => ((await transcriptText(pageOther)).match(/\bpong\b/gi) || []).length >= 2, 120_000);
   report.checks.push("other_project_turn");
 
-  await waitFor("the WSL turn to finish in the background", async () => (await rowFor(pageOther, wslProject.id))?.runningCount === 0, 180_000);
-  report.checks.push("background_turn_finished");
+  await waitFor("D to finish in the background", async () => (await threadIn(pageOther, wslProject.id, (thread) => thread.threadId === threadD.threadId))?.running === false, 180_000);
+  await waitFor("D marked unread", async () => (await threadIn(pageOther, wslProject.id, (thread) => thread.threadId === threadD.threadId))?.unread === true, 15_000);
+  report.checks.push("finished_in_background_marked_unread");
+  const named = await waitFor("the model's title for A", async () => {
+    const thread = await threadIn(pageOther, wslProject.id, (entry) => entry.threadId === threadA.threadId);
+    return thread && !/direct session$/i.test(thread.title) ? thread.title : null;
+  }, 60_000);
+  report.modelTitle = named;
+  report.checks.push("model_named_thread");
 
-  // Back to WSL: no new surface, and its reply is already there.
+  // Back to D: no new surface, the end of its turn is there, and it isn't
+  // unread any more.
   let reopened = false;
   app.once("window", () => { reopened = true; });
-  await pageOther.locator(`#workbenchOtherProjects .workbench-project-group[data-project-id="${wslProject.id}"] .workbench-project-header`).click();
+  await goToProject(pageOther, wslProject.id, threadD.threadId);
   await waitFor("the WSL surface in front", async () => (await overview(pageWsl)).selectedProjectId === wslProject.id, 30_000);
   await sleep(1000);
   assert.equal(reopened, false, "switching back reuses the live surface");
-  assert.equal(await pageWsl.evaluate(() => document.body.innerText.includes("done-in-wsl")), true, "the background turn's reply is in its transcript");
+  report.backgroundTurnEnd = turnEnd(await transcriptText(pageWsl));
+  assert(report.backgroundTurnEnd, "the end of D's turn is in its transcript");
+  await waitFor("D no longer unread", async () => (await threadIn(pageWsl, wslProject.id, (thread) => thread.threadId === threadD.threadId))?.unread === false, 10_000);
   await shot(pageWsl, "wsl-project-back-in-front");
   report.checks.push("switched_back_without_reload");
 
-  // A question to the owner while the project is in the background: the
-  // sidebar says it needs you; answering it back in front finishes the turn.
-  const otherHeader = (page) => page.locator(`#workbenchOtherProjects .workbench-project-group[data-project-id="${otherProject.id}"] .workbench-project-header`);
-  const wslHeader = (page) => page.locator(`#workbenchOtherProjects .workbench-project-group[data-project-id="${wslProject.id}"] .workbench-project-header`);
+  // A question while the project is in the background: "needs you" in the
+  // other project's sidebar; answered after switching back.
   await send(pageWsl, "Use request_user_input to ask me whether to proceed (yes or no). Then reply with only my answer, in upper case.");
-  await waitFor("the question to reach the owner", async () => (await rowFor(pageWsl, wslProject.id))?.needsYouCount > 0, 120_000);
-  await pageWsl.waitForSelector("#morphicThreadRailList .morphic-thread-tab.needs-you", { timeout: 10_000 });
-  await otherHeader(pageWsl).click();
+  const asking = await waitFor("the question to reach the owner", () => threadIn(pageWsl, wslProject.id, (thread) => thread.state === "needs_you"), 120_000);
+  await pageWsl.waitForSelector(`${threadRowSelector(wslProject.id, asking.threadId)}.needs-you`, { timeout: 10_000 });
+  const otherThread = (await rowFor(pageWsl, otherProject.id)).threads[0];
+  await goToProject(pageWsl, otherProject.id, otherThread.threadId);
   await waitFor("the other project in front", async () => (await overview(pageOther)).selectedProjectId === otherProject.id, 30_000);
-  await pageOther.waitForSelector(`#workbenchOtherProjects .workbench-project-group[data-project-id="${wslProject.id}"] .workbench-state-badge.needs-you`, { timeout: 10_000 });
+  await pageOther.waitForSelector(`${threadRowSelector(wslProject.id, asking.threadId)}.needs-you`, { timeout: 10_000 });
   await shot(pageOther, "wsl-question-waiting-in-background");
   report.checks.push("needs_you_badge_in_background");
-  await wslHeader(pageOther).click();
+  await goToProject(pageOther, wslProject.id, asking.threadId);
   await waitFor("the WSL surface in front again", async () => (await overview(pageWsl)).selectedProjectId === wslProject.id, 30_000);
   const field = pageWsl.locator(".codex-request-form [data-question-id]").last();
   await field.waitFor({ timeout: 10_000 });
@@ -211,9 +261,51 @@ try {
     await field.fill("yes");
   }
   await pageWsl.getByRole("button", { name: "Submit answers" }).last().click();
-  await waitFor("the answered turn's reply", () => pageWsl.evaluate(() => /\bYES\b/.test(document.body.innerText)), 120_000);
+  await waitFor("the answered turn's reply", async () => /\bYES\b/.test(await transcriptText(pageWsl)), 120_000);
   await waitFor("the badge to clear", async () => (await rowFor(pageWsl, wslProject.id))?.needsYouCount === 0, 30_000);
   report.checks.push("answered_after_switching_back");
+
+  // Rename A from the sidebar.
+  await pageWsl.locator(`${threadRowSelector(wslProject.id, threadA.threadId)} .wb-thread-title`).dblclick();
+  const rename = pageWsl.locator(`${threadRowSelector(wslProject.id, threadA.threadId)} .wb-rename`);
+  await rename.fill("Renamed by the live check");
+  await rename.press("Enter");
+  await waitFor("the new name", async () => (await threadIn(pageWsl, wslProject.id, (thread) => thread.threadId === threadA.threadId))?.title === "Renamed by the live check", 10_000);
+  await waitFor("the new name in the sidebar", async () => (await pageWsl.locator(`${threadRowSelector(wslProject.id, threadA.threadId)} .wb-thread-title`).innerText()) === "Renamed by the live check", 10_000);
+  await shot(pageWsl, "sidebar-after-rename");
+  report.checks.push("renamed_from_sidebar");
+
+  // The project menu, search, the collapsed tiles, the narrow drawer.
+  await pageWsl.locator(`${group(wslProject.id)} .wb-project-header`).hover();
+  await pageWsl.locator(`${group(wslProject.id)} .wb-project-more`).click();
+  await pageWsl.waitForSelector(".wb-menu .wb-menu-item", { timeout: 5_000 });
+  assert.deepEqual(await pageWsl.locator(".wb-menu .wb-menu-item").allInnerTexts(), ["New thread here", "Open folder", "Edit project…", "Hide threads", "Archive project…"]);
+  assert.equal(await pageWsl.locator(".wb-menu .wb-menu-item", { hasText: "Archive project…" }).isDisabled(), true, "the project in front can't be archived from here");
+  await shot(pageWsl, "project-menu");
+  await pageWsl.keyboard.press("Escape");
+  await pageWsl.locator("#wbThreadSearch").fill("pong");
+  const matches = await pageWsl.locator(".wb-thread .wb-thread-title").allInnerTexts();
+  assert(matches.length >= 2 && matches.every((title) => /pong/i.test(title)), `search keeps only matching threads: ${matches.join(" | ")}`);
+  await shot(pageWsl, "search");
+  await pageWsl.locator("#wbThreadSearch").press("Escape");
+  await pageWsl.locator("#t3SidebarToggle").click();
+  await pageWsl.waitForSelector(".wb-tree.tiles .wb-tile", { timeout: 5_000 });
+  assert.equal(await pageWsl.locator(".wb-tree.tiles .wb-tile").count(), 2);
+  await pageWsl.locator(`.wb-tile[data-project-id="${otherProject.id}"]`).hover();
+  await pageWsl.waitForSelector(".wb-flyout .wb-thread", { timeout: 5_000 });
+  await shot(pageWsl, "collapsed-flyout");
+  await pageWsl.locator("#t3SidebarToggle").click();
+  await pageWsl.waitForSelector(".wb-project", { timeout: 5_000 });
+  const fullSize = await pageWsl.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  await pageWsl.setViewportSize({ width: 700, height: 900 });
+  await pageWsl.locator("#wbDrawerToggle").click();
+  await pageWsl.waitForFunction(() => document.getElementById("codexShell")?.dataset.wbDrawer === "open");
+  await sleep(300);
+  await shot(pageWsl, "narrow-drawer");
+  await pageWsl.evaluate(() => { document.getElementById("codexShell").dataset.wbDrawer = "closed"; });
+  await pageWsl.setViewportSize(fullSize);
+  await pageWsl.waitForFunction((width) => window.innerWidth >= width - 1, fullSize.width);
+  report.checks.push("menu_search_collapsed_drawer");
 
   // A runtime transition for the WSL project that finishes while the
   // project is in the background (here a switch to Appserver, run from its
@@ -221,7 +313,7 @@ try {
   // project's idle surface is retired instead and reopens with the new
   // binding when shown.
   const surfaceProjectId = (page) => JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8")).project.id;
-  await otherHeader(pageWsl).click();
+  await goToProject(pageWsl, otherProject.id, otherThread.threadId);
   await waitFor("the other project in front", async () => (await overview(pageOther)).selectedProjectId === otherProject.id, 30_000);
   const otherUrl = pageOther.url();
   pageWsl.evaluate((projectId) => {

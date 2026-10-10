@@ -950,6 +950,13 @@
     render();
   });
 
+  // The sidebar's project menu and "New project" open these panels.
+  window.DirectProjectDirectory = Object.freeze({
+    createProject: () => openBindingEditor(),
+    editProject: (projectId) => openBindingEditor(projectId),
+    openLifecycle: (projectId) => openLifecyclePanel(projectId),
+  });
+
   render();
   renderBindingEditor();
   renderLifecyclePanel();

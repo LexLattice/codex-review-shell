@@ -74,6 +74,15 @@ const ACTIVE_TURN_STATUS_SET = new Set([
   "open",
   "active",
   "interrupting",
+  // Direct's own states for a turn still running, as thread/read reports
+  // them (session-store.js DIRECT_ACTIVE_TURN_STATES).
+  "request_built",
+  "streaming",
+  "tool_waiting",
+  "authority_waiting",
+  "continuation_ready",
+  "continuation_sent",
+  "streaming_continuation",
 ]);
 const THOUGHT_ASSISTANT_PHASES = new Set([
   // Canonical Codex phase for interim assistant preamble/progress text.
@@ -3477,9 +3486,39 @@ function directComposerButtonText() {
   ].filter(Boolean).join(" ");
 }
 
-// The Workbench overview (direct-workbench-overview-surface.js) knows which
+// The Workbench overview (direct-workbench-sidebar.js) knows which
 // threads wait for the owner; the rail redraws when that changes.
 globalThis.addEventListener?.("direct-workbench-overview-changed", () => renderMorphicThreadRail());
+
+// What the Workbench sidebar (direct-workbench-sidebar.js) drives in the
+// project in front: which thread is shown, opening one, starting one.
+globalThis.DirectWorkbenchSurface = Object.freeze({
+  projectId: () => String(project?.id || ""),
+  currentThreadId: () => String(state.threadId || ""),
+  turnActive: () => turnIsActive(),
+  openThread: (threadId) => (isDirectRuntimeSurface()
+    ? openDirectThread(threadId)
+    : openThreadHybrid(threadId, "", "", "", { requireProviderAttach: true })),
+  newThread: () => startNewThread(),
+  focusComposer: () => els.composerInput?.focus?.(),
+  // The sidebar footer: who is signed in and the quota left.
+  account: () => {
+    // "plan · email"; parts the runtime doesn't know are left out.
+    const parts = String(state.accountState?.label || "").split("·").map((part) => part.trim())
+      .filter((part) => part && !/unknown|^direct-|^account$/i.test(part));
+    const email = parts.find((part) => part.includes("@")) || "";
+    let quota = "";
+    try {
+      const witness = isDirectLiveTextSurface() ? directComposerWitness() : null;
+      quota = String(witness?.quotaLabel || "").trim();
+    } catch {}
+    return {
+      label: email || parts[0] || "Signed in",
+      initial: (email.match(/[a-z0-9]/i) || ["·"])[0],
+      quota: quota && !/unknown|unavailable/.test(quota) ? quota : "",
+    };
+  },
+});
 
 // The project editor's "Model for new threads" reads the same list.
 globalThis.DirectModelCatalog = Object.freeze({
@@ -6346,6 +6385,13 @@ function openThreadFromEvent(event) {
     return;
   }
   if (String(event.threadId) === String(state.threadId) && (state.liveAttached || state.historyData)) return;
+  // A Direct thread opens as from the thread list: read, then its live turn.
+  if (isDirectRuntimeSurface()) {
+    openDirectThread(event.threadId).catch((error) => {
+      addSystemMessage(`Unable to open thread ${event.threadId || ""}: ${error.message}`);
+    });
+    return;
+  }
   reportThreadState("dispatched", {
     threadId: event.threadId,
     sourceHome: event.sourceHome || "",
@@ -6387,6 +6433,83 @@ function threadIdFromNotification(params = {}) {
     params.item?.thread_id ||
     "",
   );
+}
+
+// Switching threads while a turn runs. thread/read returns finished turns
+// only, so every thread-scoped notification of a turn still running is kept
+// here, per thread, and replayed when the owner comes back to it. Threads
+// opened in this surface and not on screen don't draw into the one that is
+// (sub-agent threads, never opened here, still do, as before).
+const LIVE_TURN_LOG_LIMIT = 20000;
+const THREAD_SCOPED_NOTIFICATION = /^(item\/|turn\/|thread\/tokenUsage\/updated$|warning$|error$)/;
+const liveTurnLogs = new Map();
+const threadsOpenedHere = new Set();
+// Turns finished per thread: one that finishes while the thread is being
+// opened is in neither the read (taken before) nor the log (dropped).
+const threadTurnCompletions = new Map();
+let replayingLiveTurn = false;
+
+function notificationThreadId(params = {}) {
+  return threadIdFromNotification(params) || String(params.sessionId || "");
+}
+
+function recordLiveTurnNotification(method, params = {}) {
+  if (replayingLiveTurn || !THREAD_SCOPED_NOTIFICATION.test(String(method || ""))) return;
+  const threadId = notificationThreadId(params);
+  if (!threadId) return;
+  const turnId = String(params.turnId || params.turn?.id || "");
+  if (method === "turn/completed") threadTurnCompletions.set(threadId, (threadTurnCompletions.get(threadId) || 0) + 1);
+  // Direct sends turn/started again for each continuation of the same turn;
+  // only a new turn starts a new log.
+  if (method === "turn/started" && liveTurnLogs.get(threadId)?.turnId !== turnId) {
+    liveTurnLogs.set(threadId, { turnId, events: [], truncated: false });
+  }
+  const log = liveTurnLogs.get(threadId);
+  if (!log || (turnId && log.turnId && turnId !== log.turnId)) return;
+  if (method === "turn/completed") {
+    liveTurnLogs.delete(threadId);
+    return;
+  }
+  if (log.events.length >= LIVE_TURN_LOG_LIMIT) {
+    log.truncated = true;
+    return;
+  }
+  log.events.push({ method, params });
+}
+
+function threadIsOffScreen(threadId) {
+  const id = String(threadId || "");
+  return Boolean(id && state.threadId && id !== String(state.threadId) && threadsOpenedHere.has(id));
+}
+
+function notificationIsOffScreen(method, params = {}) {
+  return THREAD_SCOPED_NOTIFICATION.test(String(method || "")) && threadIsOffScreen(notificationThreadId(params));
+}
+
+function requestThreadId(request = {}) {
+  return String(request.params?.threadId || request.params?.sessionId || "");
+}
+
+// After a thread is shown again: its running turn from the log, its open
+// requests, and anything queued for it.
+function restoreThreadLiveState(threadId) {
+  const id = String(threadId || "");
+  if (!id || String(state.threadId || "") !== id) return;
+  const log = liveTurnLogs.get(id);
+  if (log?.events?.length) {
+    replayingLiveTurn = true;
+    try {
+      for (const event of log.events) handleNotification(event.method, event.params || {});
+    } finally {
+      replayingLiveTurn = false;
+    }
+    if (log.truncated) addSystemMessage("This turn's output so far is longer than can be replayed; the rest appears as it arrives.");
+  }
+  for (const request of state.serverRequests.values()) {
+    if (request?.status === "pending" && requestThreadId(request) === id) renderServerRequest(request);
+  }
+  renderRuntimeConstitution();
+  if (!turnIsActive()) scheduleQueuedPromptDrain("thread-opened");
 }
 
 function notificationMatchesPrimaryThread(params = {}) {
@@ -6870,11 +6993,15 @@ function threadDirectoryBlockerLabel(code) {
 }
 
 function threadFocusPosture(row) {
+  // A Direct thread's running turn and open requests carry on while another
+  // thread is shown (its log replays on return), so they don't block
+  // switching there; app-server threads still do.
+  const direct = isDirectRuntimeSurface();
   return threadDirectoryModel.resolveThreadFocusPosture(row, {
     activeThreadId: state.threadId,
     activeThreadAttached: state.liveAttached,
-    currentTurnActive: turnIsActive(),
-    pendingProviderRequestCount: pendingProviderRequestCount(),
+    currentTurnActive: direct ? false : turnIsActive(),
+    pendingProviderRequestCount: direct ? 0 : pendingProviderRequestCount(),
     transitionState: state.directThreadFocusTransition.state,
     transitionTargetThreadId: state.directThreadFocusTransition.targetThreadId,
     directoryStatus: state.directThreadListStatus,
@@ -7369,8 +7496,14 @@ async function openDirectThread(threadId) {
   if (requestedThreadId === String(state.threadId || "") && state.liveAttached) return;
   const openRequestId = state.directThreadOpenRequestId + 1;
   state.directThreadOpenRequestId = openRequestId;
+  let completions = threadTurnCompletions.get(requestedThreadId) || 0;
   let result = await readThreadById(requestedThreadId);
   if (result?.taskBinding?.current !== true && await selectPreferredAccessForThread(requestedThreadId)) {
+    completions = threadTurnCompletions.get(requestedThreadId) || 0;
+    result = await readThreadById(requestedThreadId);
+  }
+  for (let retry = 0; retry < 3 && (threadTurnCompletions.get(requestedThreadId) || 0) !== completions; retry += 1) {
+    completions = threadTurnCompletions.get(requestedThreadId) || 0;
     result = await readThreadById(requestedThreadId);
   }
   if (state.directThreadOpenRequestId !== openRequestId) return;
@@ -7378,6 +7511,7 @@ async function openDirectThread(threadId) {
   state.sourceHome = "";
   state.sessionFilePath = "";
   applyLiveThreadResult(result);
+  restoreThreadLiveState(requestedThreadId);
   await loadRuntimePreferences({
     applyThread: true,
     threadId: requestedThreadId,
@@ -8133,6 +8267,8 @@ function renderServerRequest(request) {
   state.serverRequests.set(request.key, request);
   renderRuntimeConstitution();
   renderDirectThreadList();
+  // Another thread's request waits for it to be shown again.
+  if (threadIsOffScreen(requestThreadId(request))) return;
   const node = ensureMessage(requestMessageId(request), "system", request.title || "Codex request");
   node.dataset.requestKey = request.key;
   const bubble = node.querySelector(".bubble");
@@ -8857,6 +8993,7 @@ function bindThread(thread, modelName = "", options = {}) {
     state.environmentRuntimeStatus = appServerEvidence.normalizeEnvironmentState({ threadId: nextThreadId });
   }
   state.threadId = nextThreadId;
+  if (nextThreadId) threadsOpenedHere.add(String(nextThreadId));
   state.threadDirectInput = appServerEvidence.normalizeThreadDirectInput(thread || {});
   setActiveThreadMeta(threadAgentMeta(thread || {}));
   if (!state.threadMeta?.isSubagent && options.resetAgentGraph !== false) ensureAgentGraph(state.threadId);
@@ -8884,6 +9021,7 @@ function bindThread(thread, modelName = "", options = {}) {
   reconcileTurnStateFromLiveThread(thread);
   renderDirectThreadList();
   refreshAppEvidence({ threadId: state.threadId }).catch(() => {});
+  window.dispatchEvent?.(new CustomEvent("direct-workbench-thread-shown", { detail: { threadId: state.threadId } }));
 }
 
 function isThoughtItem(item) {
@@ -10182,6 +10320,12 @@ async function startNewThread() {
       await refreshDirectSurfaceProjection({ render: false });
       await refreshDirectThreadList({ showErrors: false });
       renderRuntimeConstitution();
+      // Main orders the sidebar by this and tells it the thread exists.
+      await reportThreadState("attached_live", {
+        threadId: result.thread.id || result.thread.threadId,
+        title: result.thread.title || result.thread.name || "",
+        evidence: "direct-new-thread",
+      });
       return;
     }
     const blockers = Array.isArray(result?.draft?.blockerCodes) ? result.draft.blockerCodes.filter(Boolean).join(", ") : "";
@@ -10224,6 +10368,13 @@ async function startNewThread() {
   await persistRuntimePreferences("thread-model");
   await refreshDirectSurfaceProjection({ render: false });
   await refreshDirectThreadList({ showErrors: false });
+  if (isDirectRuntimeSurface() && result?.thread?.id) {
+    await reportThreadState("attached_live", {
+      threadId: result.thread.id,
+      title: result.thread.title || result.thread.name || "",
+      evidence: "direct-new-thread",
+    });
+  }
 }
 
 async function startCodexTurn(text, options = {}) {
@@ -10278,8 +10429,12 @@ async function startCodexTurn(text, options = {}) {
   if (isDirectLiveTextSurface()) params.daybreakEnabled = state.runtimeOverrides.daybreakEnabled === true;
   const sandboxPolicy = sandboxPolicyForMode(state.runtimeOverrides.sandboxMode);
   if (sandboxPolicy) params.sandboxPolicy = sandboxPolicy;
+  const originThreadId = String(state.threadId || "");
   const result = await rpc("turn/start", params);
   const turnId = String(result?.turn?.id || "");
+  // The owner switched threads while the turn started: its state is
+  // rebuilt from the turn's log when they come back.
+  if (String(state.threadId || "") !== originThreadId) return result;
   if (turnId) {
     state.activeTurnId = turnId;
     state.turnId = turnId;
@@ -10312,11 +10467,12 @@ async function sendPrompt(text, options = {}) {
   }
   state.turnPending = true;
   renderRuntimeConstitution();
+  const originThreadId = String(state.threadId || "");
   try {
     await startCodexTurn(text, options);
-    if (options.clearComposer !== false) clearComposerDraft();
+    if (options.clearComposer !== false && String(state.threadId || "") === originThreadId) clearComposerDraft();
   } catch (error) {
-    clearPrimaryTurnActivityState();
+    if (String(state.threadId || "") === originThreadId) clearPrimaryTurnActivityState();
     renderRuntimeConstitution();
     throw error;
   }
@@ -10767,6 +10923,17 @@ function handleBridgeEvent(event) {
     openThreadFromEvent(event);
     return;
   }
+  if (event.type === "workbench-new-thread") {
+    startNewThread().catch((error) => addSystemMessage(`New thread failed: ${error.message}`));
+    return;
+  }
+  if (event.type === "rpc-notification" && event.method === "thread/name/updated" && String(event.params?.threadId || "") === String(state.threadId || "")) {
+    const name = String(event.params?.threadName || event.params?.name || "").trim();
+    if (name) {
+      state.threadTitle = name;
+      updateSurfaceHeader(name, workspaceText());
+    }
+  }
   if (event.type === "external-composer-message") {
     handleExternalComposerMessage(event).catch((error) => {
       addSystemMessage(`External composer message failed: ${error.message}`);
@@ -10890,6 +11057,9 @@ function handleBridgeEvent(event) {
     return;
   }
   if (event.type === "rpc-notification") {
+    recordLiveTurnNotification(event.method, event.params || {});
+    // Another thread's turn, kept in its log for when the owner returns.
+    if (notificationIsOffScreen(event.method, event.params || {})) return;
     state.lastAppServerNotificationEvidence = {
       method: event.method,
       emittedAtMs: event.emittedAtMs ?? null,
@@ -11099,6 +11269,8 @@ async function connect() {
         addSystemMessage(`Unable to open startup thread ${payload.initialThreadId}: ${error.message}`);
         await loadExistingThreadOrStartNew();
       }
+    } else if (payload.startNewThread === true) {
+      await startNewThread();
     } else {
       await loadExistingThreadOrStartNew();
     }

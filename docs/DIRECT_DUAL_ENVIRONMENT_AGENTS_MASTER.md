@@ -1229,6 +1229,98 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   - **Not done:** OS notifications (owner's call: badges only), a split
     view, and merging the WSL test app's projects into the Windows app.
 
+### Turn 13: the Workbench left panel
+
+- Status: done (owner's own check in the daily app pending)
+- Scope: the owner asked for a redesign of the left panel after turn 12.
+  The panel had a banner, three different forms of a project (the current
+  one, the others below its rail, the directory), threads all named
+  "<project> direct session", rows about 78 px high carrying plumbing
+  (runtime path, source, counts), and threads locked while a turn ran.
+  Owner decisions, from a mockup: one stable tree of every project;
+  short model-written titles after a thread's first turn; switching
+  threads freely while a turn runs; threads ordered by when they were
+  last opened or created.
+- Outcome:
+  - **One tree** (`src/renderer/direct-workbench-sidebar.js`, which
+    replaces `direct-workbench-overview-surface.js`). Every active project
+    in the catalog's order, its threads nested under it. One line per
+    thread: a state mark (running, needs you, unread), its title, and the
+    time or what it needs. The project in front is highlighted where it
+    is, so nothing moves when another one comes forward. Five recent
+    threads a project plus anything that needs attention, then "Show N
+    more". New thread (Ctrl+N), search across every project's titles
+    (Ctrl+K), rename by double-click or F2, a ⋯ menu per project (new
+    thread here, open folder, edit, hide threads, archive), New project,
+    and a footer with the account and quota. Collapsed (Ctrl+B), the
+    panel is a column of project tiles with a flyout of threads; below
+    720 px it is a drawer behind a ☰ in the header. The width can be
+    dragged (220–420 px) and is remembered. The order is frozen while the
+    pointer is over the list, so a row never moves under it. The old
+    rail's elements stay in the page, hidden, for code that reads them.
+  - **Order, unread, and names** (`workbench-thread-presentation.js`, a
+    small `workbench-threads.json` next to the session store, kept apart
+    from it because many writers rewrite whole sessions). It records when
+    the owner last opened each thread, whether a turn finished while the
+    thread wasn't on screen, and the thread's title once the model or the
+    owner named it. The overview orders by the later of created and last
+    opened, so background work never moves a thread; its mark changes
+    instead. The overview now lists up to 50 threads a project.
+  - **Model-written titles.** When a thread with a placeholder title
+    finishes its first turn, main asks the model for a short title (one
+    small request, `runThreadTitleRequest`) and saves it. Threads from
+    before this change keep their names, so the first launch doesn't
+    cost a request per old thread. An owner's
+    rename always wins, also over a title still being written. A title a
+    turn's stale session write replaced is put back.
+  - **Threads switch while a turn runs** (Direct threads only;
+    app-server threads keep their old locks). The surface keeps a live
+    log per thread of the turn in progress. Notifications and owner
+    requests for a thread not on screen are kept, not drawn, and
+    replayed, with the pending requests, when it is shown again
+    (`thread/read` returns finished turns only). Sends and turn starts
+    check that the thread they began on is still the one on screen.
+  - **New IPC** (Workbench surfaces only, full bridge):
+    `direct-workbench:new-thread` (in the project in front, or another
+    project brought forward through the checked activation),
+    `direct-workbench:rename-thread`, and
+    `direct-workbench:open-project-folder` (a WSL folder from a Windows
+    host through `\\wsl.localhost`).
+  - **Found by the checks:** a new thread didn't appear in the sidebar
+    until its first turn, since nothing reported it; the surface now
+    reports it like an opened thread. The tree once highlighted a project
+    from an overview that arrived while its surface was in the back; each
+    surface now uses its own project, and main resends the overview when a
+    surface comes to the front.
+  - **Review fixes:** "New thread here" for a project with no open surface
+    restored the project's latest thread instead of starting one; the new
+    surface now gets an explicit `startNewThread` (the T3 GUI smoke covers
+    it and fails without the fix). A failed title request kept its thread
+    from ever being named; it is retried on a later pass, up to 3 times.
+  - **Found while checking those:** coming back to a thread whose turn was
+    still running sometimes showed it "Idle". The surface didn't count
+    Direct's own running states (`tool_waiting`, `streaming`, and the
+    rest of `DIRECT_ACTIVE_TURN_STATES`) as active when `thread/read`
+    reported them. Direct also re-sends `turn/started` for each
+    continuation, which wiped the thread's log of the turn so far; only a
+    new turn ID starts a new log now.
+  - **Checks:**
+    - `direct-workbench-live-projects-regression` (both hosts) rewritten:
+      the overview's order, unread, and titles; the presentation store;
+      the new sidebar in a fake DOM (tree, opening, new thread, menu,
+      rename, search, frozen order, tiles and flyout, resize); and the
+      main-process contracts for the new channels.
+    - `direct-t3-alternate-gui-electron-smoke` updated for the tree,
+      tiles, and drawer; it now also checks that a new thread shows up at
+      once.
+    - The live `direct-workbench-live-projects-electron-smoke` grew to 14
+      checks: switching threads inside a project while one runs, the
+      running turn replayed and continuing live, unread after finishing in
+      the background, a model-written title, rename, menu, search, tiles,
+      and drawer. It passes on both hosts.
+  - **Not done:** pinning or archiving single threads, drag-to-reorder
+    projects, and lifting the switching locks for app-server threads.
+
 ## Baseline and prerequisites
 
 | Item | State |
@@ -2028,6 +2120,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-09 | MCP server tools are callable as in Codex; approval follows Codex's annotation rule (none in Full access), with "for this thread" and "always" per project; server forms go to the owner; Full access accepts an empty confirmation | Owner's call. Server forms almost always come from tool calls, so forms without tool calls would have been nearly unused. |
 | 2026-10-09 | Sandboxed threads get Codex's per-command escalation; saved allow rules (global or per project and environment) run matching commands outside the sandbox without asking; Codex's own rules files are not read | Owner's call. Prompt-only rules would have added nothing: sandboxed profiles never prompt per command. |
 | 2026-10-10 | Direct Workbench keeps a live surface per open project (up to 4, only idle ones close) instead of one surface that switches | Owner's call. Switching then never interrupts or blocks work in another environment, and it reuses the existing single-project surface; a multi-project rewrite of the 11k-line Codex surface would take far longer and risk more. Each surface costs a renderer, hence the cap. |
+| 2026-10-10 | The Workbench left panel is one stable tree of every project; threads are named by the model after their first turn and ordered by last opened or created; Direct threads switch freely while a turn runs | Owner's call, from a mockup. A tree that never reorders projects and never moves a thread for background work keeps every row where the owner last saw it; the model's title costs one small request per thread. |
 | 2026-10-08 | `request_permissions` raises the thread's Access profile for the turn or the thread; it doesn't grant per-path or network-only permissions | Owner's call. It reuses Direct's grants and sandboxes as they are; Codex's path-scoped form would mean widening bubblewrap binds and Windows labels per request. |
 | 2026-10-08 | Every request carries the thread ID as `prompt_cache_key` and `session-id`/`thread-id` headers; continuation guidance is a trailing developer message, not an instructions suffix | Matches the Codex CLI's cache identity. The backend's cache matches exact prefixes, so a turn's instructions and tools must not change between its requests. |
 | 2026-10-08 | `exec_command` waits up to 10 s (`yield_time_ms`, max 30 s, at most half the idle timeout) for the command to finish; `write_stdin` waits 250 ms, or 5 s for an empty poll (supersedes the 100 ms first yield in the 2026-10-06 rows) | Codex's defaults. A 100 ms wait turned every command longer than that into an extra provider round trip, measured live at up to 19 s, and a write to the exited process then failed the turn. |

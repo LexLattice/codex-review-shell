@@ -189,7 +189,9 @@ try {
   assert.equal(await page.title(), "Direct Workbench");
   assert.match(page.url(), /\/t3-direct-surface\.html/);
   assert.equal(await page.locator(".t3-utility-rail button:disabled").count(), 3);
-  assert.match(await page.locator(".t3-sidebar-footer").innerText(), /Direct thread control plane/);
+  assert.match(await page.locator("#t3ExperienceWitness").textContent(), /Direct thread control plane/);
+  assert.equal(await page.locator(".wb-sidebar-footer").isVisible(), true);
+  const frontThreads = ".wb-project.front .wb-thread";
 
   // Terminal panel: opening it with no terminals starts a real shell in the project's environment.
   await page.locator("#t3TerminalButton").click();
@@ -223,11 +225,16 @@ try {
   assert.equal(persistedConfig.projects[0].lastActiveBindingId, "binding_direct_workbench_startup");
   assert.match(persistedConfig.projects[0].laneBindings[0].lastActivatedAt, /^\d{4}-\d{2}-\d{2}T/);
 
-  await page.waitForFunction(() => document.querySelectorAll("#morphicThreadRailList .morphic-thread-tab").length === 1);
-  assert.equal(await page.locator("#morphicThreadRail").isVisible(), true);
-  assert.match(await page.locator("#morphicThreadDirectoryStatus").innerText(), /1 thread/);
-  const firstProjectThreadId = await page.locator("#morphicThreadRailList .morphic-thread-tab").getAttribute("data-thread-id");
+  // The sidebar is one tree of every project; the one in front holds its
+  // thread, selected. (The surface's own thread list still runs, off screen,
+  // and stays runtime-neutral.)
+  await page.waitForFunction((selector) => document.querySelectorAll(selector).length === 1, frontThreads);
+  assert.equal(await page.locator(".wb-project").count(), 2, "both projects are in the sidebar");
+  assert.equal(await page.locator(".wb-project.front").getAttribute("data-project-id"), "project_t3_gui_fixture");
+  const firstProjectThreadId = await page.locator(frontThreads).getAttribute("data-thread-id");
   assert.ok(firstProjectThreadId);
+  await page.waitForFunction(() => document.querySelectorAll("#morphicThreadRailList .morphic-thread-tab").length === 1);
+  assert.equal(await page.locator("#morphicThreadRail").isVisible(), false, "the old rail is off screen");
   assert.equal(
     await page.locator("#morphicThreadRailList .morphic-thread-tab").getAttribute("data-runtime-path"),
     "direct-fixture",
@@ -236,23 +243,26 @@ try {
     await page.locator("#morphicThreadRailList .morphic-thread-tab").getAttribute("data-source-kind"),
     "direct",
   );
-  assert.equal(await page.locator("#morphicThreadRailList .morphic-thread-tab.active").count(), 1);
+  await page.waitForFunction((selector) => document.querySelectorAll(`${selector}.selected`).length === 1, frontThreads);
   const initialThreadGeometry = await page.evaluate(() => {
-    const label = document.querySelector(".t3-sidebar-section-label")?.getBoundingClientRect();
-    const row = document.querySelector("#morphicThreadRailList .morphic-thread-tab")?.getBoundingClientRect();
+    const header = document.querySelector(".wb-project.front .wb-project-header")?.getBoundingClientRect();
+    const row = document.querySelector(".wb-project.front .wb-thread")?.getBoundingClientRect();
     return {
-      labelBottom: label?.bottom || 0,
+      headerBottom: header?.bottom || 0,
       rowTop: row?.top || 0,
     };
   });
-  const initialThreadGap = initialThreadGeometry.rowTop - initialThreadGeometry.labelBottom;
+  const initialThreadGap = initialThreadGeometry.rowTop - initialThreadGeometry.headerBottom;
   assert.ok(
     initialThreadGap >= 0 && initialThreadGap < 24,
-    `Thread directory rows drifted away from their heading: ${JSON.stringify(initialThreadGeometry)}`,
+    `Thread rows drifted away from their project: ${JSON.stringify(initialThreadGeometry)}`,
   );
-  await page.locator("#t3SidebarNewThread").click();
-  await page.waitForFunction(() => document.querySelectorAll("#morphicThreadRailList .morphic-thread-tab").length === 2);
-  const secondProjectThreadId = await page.locator("#morphicThreadRailList .morphic-thread-tab.active").getAttribute("data-thread-id");
+  // A new thread shows up in the tree at once, selected (it once waited for
+  // its first turn: nothing told the sidebar it existed).
+  await page.locator("#wbNewThread").click();
+  await page.waitForFunction((selector) => document.querySelectorAll(selector).length === 2, frontThreads, { timeout: 10_000 });
+  await page.waitForFunction((selector) => document.querySelector(`${selector}.selected`)?.dataset?.threadId, frontThreads);
+  const secondProjectThreadId = await page.locator(`${frontThreads}.selected`).getAttribute("data-thread-id");
   assert.ok(secondProjectThreadId);
   assert.notEqual(secondProjectThreadId, firstProjectThreadId);
   const taskRuntimeBindingResult = await page.evaluate(async ({ projectId, threadId }) =>
@@ -285,9 +295,9 @@ try {
   assert.equal(taskRuntimePreferenceRead.threadMatch, "direct-session");
   assert.equal(taskRuntimePreferenceRead.threadDefaults.model, "gpt-5.6-sol");
   assert.equal(taskRuntimePreferenceRead.threadDefaults.reasoningEffort, "xhigh");
-  await page.locator(`#morphicThreadRailList .morphic-thread-tab[data-thread-id="${firstProjectThreadId}"]`).click();
+  await page.locator(`.wb-thread[data-thread-id="${firstProjectThreadId}"]`).click();
   await page.waitForFunction(
-    (threadId) => document.querySelector("#morphicThreadRailList .morphic-thread-tab.active")?.dataset?.threadId === threadId,
+    (threadId) => document.querySelector(".wb-project.front .wb-thread.selected")?.dataset?.threadId === threadId,
     firstProjectThreadId,
   );
   await page.screenshot({ path: threadDirectoryScreenshotPath, fullPage: true });
@@ -631,7 +641,7 @@ try {
   await page.locator("#directProjectBindingName").fill("Windows Direct GUI Fixture Edited");
   await page.locator("#directProjectBindingCommit").click();
   await page.locator("#directProjectBindingEditor").waitFor({ state: "hidden" });
-  await page.waitForFunction(() => document.querySelector('[data-project-id="project_t3_windows_fixture"]')?.textContent?.includes("Edited"));
+  await page.waitForFunction(() => document.querySelector('.direct-project-row[data-project-id="project_t3_windows_fixture"]')?.textContent?.includes("Edited"));
   // Same environment: the project's own label is kept.
   const editedConfig = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
   assert.equal(editedConfig.projects.find((entry) => entry.id === "project_t3_windows_fixture")?.workspace?.label, "Windows native workspace");
@@ -653,12 +663,20 @@ try {
   assert.equal(switchedBootstrapPayload.project.id, "project_t3_windows_fixture");
   assert.equal(switchedBootstrapPayload.initialThreadId, "thread_direct_workbench_windows");
   assert.equal(switchedBootstrapPayload.initialThreadTitle, "Windows bound thread");
-  await page.waitForFunction(() => document.querySelectorAll("#morphicThreadRailList .morphic-thread-tab").length === 1);
-  const windowsThreadId = await page.locator("#morphicThreadRailList .morphic-thread-tab").getAttribute("data-thread-id");
+  // The tree is the same, with the highlight on the Windows project; the
+  // first project's threads stay listed under it.
+  await page.waitForFunction(() => document.querySelector(".wb-project.front")?.dataset?.projectId === "project_t3_windows_fixture");
+  await page.waitForFunction((selector) => document.querySelectorAll(selector).length === 1, frontThreads);
+  const windowsThreadId = await page.locator(frontThreads).getAttribute("data-thread-id");
   assert.ok(windowsThreadId);
   assert.notEqual(windowsThreadId, firstProjectThreadId);
   assert.notEqual(windowsThreadId, secondProjectThreadId);
-  assert.equal(await page.locator(`#morphicThreadRailList .morphic-thread-tab[data-thread-id="${firstProjectThreadId}"]`).count(), 0);
+  assert.deepEqual(
+    await page.locator('.wb-project').evaluateAll((groups) => groups.map((group) => group.dataset.projectId)),
+    ["project_t3_gui_fixture", "project_t3_windows_fixture"],
+    "the projects keep their places",
+  );
+  assert.equal(await page.locator(`.wb-project[data-project-id="project_t3_gui_fixture"] .wb-thread`).count(), 2);
 
   await page.locator('.t3-utility-rail [data-t3-action="projects"]').click();
   await page.locator("#directProjectDirectory:not([hidden])").waitFor({ state: "visible" });
@@ -680,7 +698,7 @@ try {
   await page.waitForSelector('body[data-direct-gui="direct-workbench"][data-experience-state="verified"]', { timeout: 30_000 });
   const activeEditBootstrapPayload = JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8"));
   assert.equal(activeEditBootstrapPayload.project.name, "Windows Direct GUI Fixture Active");
-  await page.waitForFunction(() => document.querySelectorAll("#morphicThreadRailList .morphic-thread-tab").length === 1);
+  await page.waitForFunction((selector) => document.querySelectorAll(selector).length === 1, frontThreads);
 
   const switchedConfig = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
   assert.equal(switchedConfig.selectedProjectId, "project_t3_windows_fixture");
@@ -689,18 +707,26 @@ try {
 
   await page.locator("#t3SidebarToggle").click();
   assert.equal(await page.locator("#codexShell").getAttribute("data-t3-sidebar"), "collapsed");
+  // Collapsed: a tile per project.
+  await page.waitForFunction(() => document.querySelectorAll(".wb-tile").length === 2);
+  assert.equal(await page.locator(".wb-tile.front").getAttribute("data-project-id"), "project_t3_windows_fixture");
   await page.locator('.t3-utility-rail [data-t3-action="threads"]').click();
   assert.equal(await page.locator("#codexShell").getAttribute("data-t3-sidebar"), "expanded");
+  await page.waitForFunction(() => document.querySelectorAll(".wb-project").length === 2);
 
+  // Narrow: the sidebar is a drawer behind the header's ☰.
   const originalViewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
   await page.setViewportSize({ width: 700, height: 900 });
   await page.waitForFunction(() => window.innerWidth <= 720);
-  assert.equal(await page.locator("#morphicThreadRail").isVisible(), true);
-  assert.equal(
-    await page.locator("#morphicThreadRailList").evaluate((element) => getComputedStyle(element).flexDirection),
-    "row",
-  );
-  assert.equal(await page.locator("#morphicThreadRailList .morphic-thread-tab").count(), 1);
+  assert.equal(await page.locator("#wbDrawerToggle").isVisible(), true);
+  const sidebarRight = () => page.evaluate(() => document.querySelector(".wb-sidebar").getBoundingClientRect().right);
+  await page.waitForFunction(() => document.querySelector(".wb-sidebar").getBoundingClientRect().right <= 1);
+  await page.locator("#wbDrawerToggle").click();
+  await page.waitForFunction(() => document.querySelector(".wb-sidebar").getBoundingClientRect().left >= -1);
+  assert.ok((await sidebarRight()) > 200, "the drawer opens over the transcript");
+  assert.equal(await page.locator(frontThreads).count(), 1);
+  await page.locator(frontThreads).click();
+  await page.waitForFunction(() => document.getElementById("codexShell")?.dataset?.wbDrawer === "closed");
   const narrowHeaderGeometry = await page.evaluate(() => {
     const header = document.querySelector("#morphicCockpitBar")?.getBoundingClientRect();
     const actions = document.querySelector("#morphicCockpitBar .compact-thread-actions")?.getBoundingClientRect();
@@ -713,6 +739,36 @@ try {
   await page.screenshot({ path: narrowThreadDirectoryScreenshotPath, fullPage: true });
   await page.setViewportSize(originalViewport);
   await page.waitForFunction(() => window.innerWidth > 720);
+
+  // "New thread here" for a project with no open surface starts a new
+  // thread there (it once restored the project's latest thread instead).
+  // Editing the background WSL project closes its surface first.
+  await page.locator('.t3-utility-rail [data-t3-action="projects"]').click();
+  await page.locator("#directProjectDirectory:not([hidden])").waitFor({ state: "visible" });
+  await page.locator('[data-project-binding-target="project_t3_gui_fixture"]').click();
+  await page.locator("#directProjectBindingEditor:not([hidden])").waitFor({ state: "visible" });
+  await page.locator("#directProjectBindingName").fill("WSL Direct GUI Fixture Edited");
+  await page.locator("#directProjectBindingCommit").click();
+  await page.locator("#directProjectBindingEditor").waitFor({ state: "hidden" });
+  for (let waited = 0; !sourcePage.isClosed() && waited < 10_000; waited += 250) await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(sourcePage.isClosed(), true, "the edited background project's surface closed");
+  await page.locator("#directProjectDirectoryClose").click();
+  const wslGroup = '.wb-project[data-project-id="project_t3_gui_fixture"]';
+  await page.waitForFunction((selector) => document.querySelectorAll(`${selector} .wb-thread`).length === 2, wslGroup);
+  const wslThreadsBefore = await page.locator(`${wslGroup} .wb-thread`).evaluateAll((rows) => rows.map((row) => row.dataset.threadId));
+  const coldSurface = app.waitForEvent("window", { timeout: 30_000 });
+  await page.locator(`${wslGroup} .wb-project-header`).hover();
+  await page.locator(`${wslGroup} .wb-project-more`).click();
+  await page.locator(".wb-menu .wb-menu-item", { hasText: "New thread here" }).click();
+  page = await coldSurface;
+  page.on("pageerror", (error) => rendererErrors.push(`page:${error.message}`));
+  await page.waitForSelector('body[data-direct-gui="direct-workbench"][data-experience-state="verified"]', { timeout: 30_000 });
+  assert.equal(JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8")).startNewThread, true);
+  await page.waitForFunction(() => document.querySelector(".wb-project.front")?.dataset?.projectId === "project_t3_gui_fixture");
+  await page.waitForFunction((selector) => document.querySelectorAll(selector).length === 3, frontThreads, { timeout: 15_000 });
+  const coldThreadId = await page.evaluate(() => window.DirectWorkbenchSurface.currentThreadId());
+  assert.ok(coldThreadId);
+  assert.equal(wslThreadsBefore.includes(coldThreadId), false, "the thread on screen is the new one, not the latest old one");
 
   await page.screenshot({ path: screenshotPath, fullPage: true });
   assert.deepEqual(rendererErrors, [], rendererErrors.join("\n"));

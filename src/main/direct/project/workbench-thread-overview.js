@@ -7,7 +7,7 @@
 // carries names and states only, never paths.
 
 const DIRECT_WORKBENCH_THREAD_OVERVIEW_SCHEMA = "direct_workbench_thread_overview@1";
-const DEFAULT_THREADS_PER_PROJECT = 6;
+const DEFAULT_THREADS_PER_PROJECT = 50;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -17,9 +17,15 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function updatedMs(entry = {}) {
-  const parsed = Date.parse(normalizeString(entry.updatedAt, normalizeString(entry.createdAt, "")));
+function timeMs(value) {
+  const parsed = Date.parse(normalizeString(value, ""));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+// The sidebar's order: when the owner last opened the thread, or created it.
+// Background work doesn't move a thread; its state mark changes instead.
+function orderMs(entry = {}, presented = {}) {
+  return Math.max(timeMs(entry.createdAt), timeMs(presented.openedAt));
 }
 
 function workspaceBadge(project = {}) {
@@ -33,13 +39,15 @@ function workspaceBadge(project = {}) {
 }
 
 // pendingRequests: [{ projectId, threadId }] for every owner request still
-// open in a surface. sessions: the session index entries.
+// open in a surface. sessions: the session index entries. presentation:
+// threadId -> { openedAt, unreadAt, title } (workbench-thread-presentation.js).
 function buildDirectWorkbenchThreadOverview(input = {}) {
+  const presentation = input.presentation && typeof input.presentation === "object" ? input.presentation : {};
   const projects = (Array.isArray(input.projects) ? input.projects : [])
     .filter((project) => isPlainObject(project) && project.lifecycle?.state !== "archived");
   const selectedProjectId = normalizeString(input.selectedProjectId, "");
   const liveProjectIds = input.liveProjectIds instanceof Set ? input.liveProjectIds : new Set(input.liveProjectIds || []);
-  const perProject = Math.max(1, Math.min(40, Number(input.threadsPerProject) || DEFAULT_THREADS_PER_PROJECT));
+  const perProject = Math.max(1, Math.min(200, Number(input.threadsPerProject) || DEFAULT_THREADS_PER_PROJECT));
   const waiting = new Map();
   for (const request of Array.isArray(input.pendingRequests) ? input.pendingRequests : []) {
     const projectId = normalizeString(request?.projectId, "");
@@ -58,17 +66,23 @@ function buildDirectWorkbenchThreadOverview(input = {}) {
   }
   const rows = projects.map((project) => {
     const projectId = normalizeString(project.id, "");
-    const entries = (sessionsByProject.get(projectId) || []).slice().sort((left, right) => updatedMs(right) - updatedMs(left));
+    const presented = (entry) => presentation[normalizeString(entry.sessionId, "")] || {};
+    const entries = (sessionsByProject.get(projectId) || []).slice()
+      .sort((left, right) => orderMs(right, presented(right)) - orderMs(left, presented(left)));
     const threads = entries.map((entry) => {
       const threadId = normalizeString(entry.sessionId, "");
+      const shown = presented(entry);
       const needsYou = waiting.get(`${projectId}\u0000${threadId}`) || 0;
       const running = Number(entry.activeTurnCount || 0) > 0;
+      // Finished while it wasn't on screen, and not opened since.
+      const unread = Boolean(shown.unreadAt) && !running && !needsYou;
       return {
         threadId,
-        title: normalizeString(entry.title, "Untitled thread").slice(0, 160),
+        title: normalizeString(shown.title, normalizeString(entry.title, "Untitled thread")).slice(0, 160),
         updatedAt: normalizeString(entry.updatedAt, normalizeString(entry.createdAt, "")),
-        state: needsYou ? "needs_you" : running ? "running" : "idle",
+        state: needsYou ? "needs_you" : running ? "running" : unread ? "unread" : "idle",
         running,
+        unread,
         needsYouCount: needsYou,
       };
     });
@@ -82,6 +96,7 @@ function buildDirectWorkbenchThreadOverview(input = {}) {
     }
     const needsYouCount = threads.reduce((sum, thread) => sum + thread.needsYouCount, 0) + unattributed;
     const runningCount = threads.filter((thread) => thread.running).length;
+    const unreadCount = threads.filter((thread) => thread.unread).length;
     // Recent threads, plus any older one that is running or waiting.
     const shown = threads.slice(0, perProject);
     for (const thread of threads.slice(perProject)) {
@@ -95,6 +110,7 @@ function buildDirectWorkbenchThreadOverview(input = {}) {
       live: liveProjectIds.has(projectId),
       runningCount,
       needsYouCount,
+      unreadCount,
       threadCount: threads.length,
       threads: shown,
       moreThreadCount: Math.max(0, threads.length - shown.length),

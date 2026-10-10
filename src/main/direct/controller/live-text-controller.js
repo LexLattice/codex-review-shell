@@ -19,6 +19,7 @@ const {
   runReadOnlyToolContinuationProbe,
   runRemoteCompactionRequest,
   runTextOnlyDirectProbe,
+  runThreadTitleRequest,
   terminalStateFromNormalizedEvents,
 } = require("../transport/codex-responses-transport");
 const {
@@ -4639,6 +4640,47 @@ class DirectLiveTextController {
       capabilities: projection.capabilities,
       taskBinding: projection.taskBinding,
     };
+  }
+
+  // A short title for a thread, written by the model from its first
+  // exchange (Codex names threads this way). "" when there's nothing to go
+  // on or the request fails; the thread keeps its title then.
+  async suggestThreadTitle(sessionId) {
+    const session = this.sessionStore.readSession(normalizeString(sessionId, ""));
+    if (!session) return "";
+    const items = (Array.isArray(session.messages) ? session.messages : [])
+      .flatMap((message) => (Array.isArray(message?.items) ? message.items : []));
+    const itemText = (item) => normalizeString(item?.text, "") ||
+      (Array.isArray(item?.content) ? item.content.map((part) => normalizeString(part?.text, "")).filter(Boolean).join("\n") : "");
+    const userText = itemText(items.find((item) => item?.type === "userMessage" && item.control !== "steer"));
+    if (!userText) return "";
+    const replyText = itemText(items.find((item) => item?.type === "agentMessage"));
+    try {
+      const result = await runThreadTitleRequest({
+        endpoint: this.endpoint || undefined,
+        authStore: this.currentAuthStore(),
+        refreshCredentials: this.refreshCredentials,
+        profileDoc: this.profileDoc,
+        model: normalizeString(session.model, ""),
+        reasoningEffort: "low",
+        fetchImpl: this.fetchImpl || undefined,
+        userText,
+        replyText,
+      });
+      return result?.ok ? assistantTextFromDirectEvents(result.normalizedEvents) : "";
+    } catch {
+      return "";
+    }
+  }
+
+  // A thread's title in its session (the transcript header and thread list
+  // read it there). Its order doesn't change: renaming isn't activity.
+  setThreadTitle(sessionId, title, source = "owner") {
+    const session = this.sessionStore.readSession(normalizeString(sessionId, ""));
+    const next = normalizeString(title, "");
+    if (!session || !next) return null;
+    this.sessionStore.writeSession({ ...session, title: next, titleSource: source === "model" ? "model" : "owner" });
+    return { threadId: session.sessionId, title: next };
   }
 
   listThreads(params = {}, context = {}) {
