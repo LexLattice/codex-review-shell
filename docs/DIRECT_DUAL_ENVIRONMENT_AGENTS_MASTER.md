@@ -1292,6 +1292,18 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
     from an overview that arrived while its surface was in the back; each
     surface now uses its own project, and main resends the overview when a
     surface comes to the front.
+  - **Review fixes:** "New thread here" for a project with no open surface
+    restored the project's latest thread instead of starting one; the new
+    surface now gets an explicit `startNewThread` (the T3 GUI smoke covers
+    it and fails without the fix). A failed title request kept its thread
+    from ever being named; it is retried on a later pass, up to 3 times.
+  - **Found while checking those:** coming back to a thread whose turn was
+    still running sometimes showed it "Idle". The surface didn't count
+    Direct's own running states (`tool_waiting`, `streaming`, and the
+    rest of `DIRECT_ACTIVE_TURN_STATES`) as active when `thread/read`
+    reported them. Direct also re-sends `turn/started` for each
+    continuation, which wiped the thread's log of the turn so far; only a
+    new turn ID starts a new log now.
   - **Checks:**
     - `direct-workbench-live-projects-regression` (both hosts) rewritten:
       the overview's order, unread, and titles; the presentation store;
