@@ -176,7 +176,7 @@ assertIncludes(mainSource, "runtimeCapabilities = input.runtimeCapabilities || b
 assertIncludes(mainSource, "recordDirectEmbarkLiveProbe", "main process Direct embark probe transition");
 assertIncludes(mainSource, "activeDirectTurnCountForProject", "main process active direct turn guard");
 assertIncludes(mainSource, "bindingForDirectRuntimePath", "main process persisted binding update");
-assertIncludes(mainSource, "loadCodexSurface(savedProject", "main process reload after switch");
+assertIncludes(mainSource, "reloadCodexSurfaceAfterRuntimeTransition(savedProject", "main process reload after switch");
 assertIncludes(mainSource, "connectionRef: newId(\"direct_codex_conn\")", "direct local surface connection identity");
 assertIncludes(mainSource, "setManagedCodexSurfaceAuthority(project, localUrl, \"direct-local-ready\")", "direct local surface authority registration");
 assertIncludes(mainSource, "switchActiveCodexRuntimePath", "main process active-only runtime switch");

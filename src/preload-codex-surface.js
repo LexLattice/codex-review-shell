@@ -382,6 +382,17 @@ if (directWorkbenchPreload) {
       ipcRenderer.on("direct-workbench:project-directory-event", listener);
       return () => ipcRenderer.removeListener("direct-workbench:project-directory-event", listener);
     },
+    // Every project and its recent threads, with what they need; opening a
+    // thread in another project brings that project to the front.
+    readDirectWorkbenchThreadOverview: () =>
+      ipcRenderer.invoke("direct-workbench:thread-overview"),
+    openDirectWorkbenchThread: (payload = {}) =>
+      ipcRenderer.invoke("direct-workbench:open-thread", payload),
+    onDirectWorkbenchThreadOverviewEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("direct-workbench:thread-overview-event", listener);
+      return () => ipcRenderer.removeListener("direct-workbench:thread-overview-event", listener);
+    },
     // Terminal panel: the owner's shells in the active project, and agents'
     // terminal sessions (read-only).
     listDirectTerminals: () => ipcRenderer.invoke("direct-terminal:list"),

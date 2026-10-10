@@ -72,7 +72,7 @@ assert.match(mainSource, /appExperience: publicAppExperience\(APP_EXPERIENCE\)/)
 assert.match(mainSource, /function requireWorldManagerStudioExperience/);
 assert.match(mainSource, /function requireDirectWorkbenchExperience/);
 assert.match(mainSource, /direct-workbench:activate-project/);
-const activationHandlerSource = mainSource.slice(mainSource.indexOf('ipcMain.handle("direct-workbench:activate-project"'));
+const activationHandlerSource = mainSource.slice(mainSource.indexOf("async function beginDirectWorkbenchProjectActivation("));
 assert(
   activationHandlerSource.indexOf("resolveDirectWorkbenchProjectActivationReplay") <
     activationHandlerSource.indexOf("const config = await loadConfig()"),
@@ -82,7 +82,7 @@ assert.match(mainSource, /async function createDirectWorkbenchWindow/);
 assert.match(mainSource, /if \(DIRECT_WORKBENCH_MODE\)/);
 assert.match(
   mainSource,
-  /const activation = applyProjectActivationBinding\(selectedProject\);[\s\S]*\.\.\.codexSurfaceOptionsForBinding\(activationBinding\)/,
+  /const activation = applyProjectActivationBinding\(selectedProject\);[\s\S]*surfaceOptions: codexSurfaceOptionsForBinding\(activationBinding\)/,
 );
 assert.match(directHtml, /data-app-experience="direct-workbench"/);
 assert.match(directHtml, /Direct thread control plane/);

@@ -53,6 +53,10 @@
             <span id="morphicThreadDirectoryStatus" class="morphic-thread-directory-status">Directory idle</span>
             <button id="morphicThreadDirectoryButton" class="morphic-rail-action" type="button">Refresh directory</button>
           </div>
+          <section id="workbenchOtherProjects" class="workbench-other-projects" hidden aria-label="Other projects and their threads" data-morphic-region="workbench-other-projects">
+            <div class="t3-sidebar-section-label workbench-other-projects-label"><span>Other projects</span></div>
+            <div id="workbenchOtherProjectsList" class="workbench-other-projects-list"></div>
+          </section>
         </section>
         <p class="t3-sidebar-empty">The thread directory becomes available when the selected runtime exposes project-scoped thread listing.</p>
         <footer class="t3-sidebar-footer">
@@ -418,6 +422,7 @@
     <script src="./codex-surface.js"></script>
     <script src="./t3-direct-surface.js"></script>
     <script src="./direct-project-directory-surface.js"></script>
+    <script src="./direct-workbench-overview-surface.js"></script>
     <script src="/vendor/xterm/xterm.js"></script>
     <script src="/vendor/xterm/addon-fit.js"></script>
     <script src="./direct-terminal-panel.js"></script>

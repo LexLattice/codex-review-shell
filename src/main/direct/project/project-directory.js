@@ -416,7 +416,6 @@ function buildDirectWorkbenchProjectDirectory(config = {}, options = {}) {
   );
   const transition = normalizedTransition(options.transition);
   const activeTurns = options.activeTurnCounts || {};
-  const currentActiveTurnCount = activeTurnCount(activeTurns, activeProjectId);
   const activeProjectCount = projects.filter((project) => projectLifecycleState(project) === "active").length;
   const archivedProjectCount = projects.length - activeProjectCount;
   const rows = projects.map((project) => {
@@ -427,8 +426,9 @@ function buildDirectWorkbenchProjectDirectory(config = {}, options = {}) {
     const targetActiveTurnCount = activeTurnCount(activeTurns, projectId);
     const blockerCodes = [];
     if (!selected && transition.state === "activating") blockerCodes.push("project_activation_in_progress");
-    if (!selected && currentActiveTurnCount > 0) blockerCodes.push("active_turn_in_current_project");
-    if (!selected && targetActiveTurnCount > 0) blockerCodes.push("active_turn_in_target_project");
+    // Running work doesn't block switching: each open project keeps its own
+    // live surface, so a turn goes on (and can ask the owner) in the
+    // background.
     if (archived) blockerCodes.push("project_binding_archived");
     const substrate = substrateProjection(project);
     const runtime = runtimeProjection(project);
@@ -472,12 +472,14 @@ function buildDirectWorkbenchProjectDirectory(config = {}, options = {}) {
       displayName: row.displayName,
       selected: row.selected,
       selectable: row.selectable,
-      blockerCodes: row.blockerCodes,
-      activeTurnCount: row.activeTurnCount,
+      // Turn counts change all the time while work runs in the background;
+      // they are not part of the revision, or every activation would race
+      // them. Main rechecks active work where it matters (edits, lifecycle),
+      // so lifecycle eligibility (which follows the counts) is left out too.
       substrate: row.substrate,
       runtime: row.runtime,
       restore: row.restore,
-      lifecycle: row.lifecycle,
+      lifecycle: { state: row.lifecycle.state, archivedAt: row.lifecycle.archivedAt },
       activationAuthorityDigest: activationAuthorityDigest(projectsById.get(row.projectId)),
     })),
   };

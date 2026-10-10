@@ -98,6 +98,30 @@ and `--effort` override luna/low. A failure prints the `report` command for
 its turn. Run it on both hosts (Windows Node over the UNC path for the
 Windows app). A full run costs about 25 provider requests.
 
+## Projects open at once (Workbench UI)
+
+The control port drives turns without the Workbench's surfaces, so it can't
+show what the owner sees when switching projects.
+`node scripts/direct-workbench-live-projects-electron-smoke.mjs`
+(`npm run direct:workbench-live-projects:electron`) drives the real
+Workbench UI through Playwright with an isolated profile and two projects:
+one in WSL, and one on Windows (Windows host) or in a local folder (Linux).
+The window is hidden: under xvfb on Linux (even where WSLg sets `DISPLAY`),
+and through `DIRECT_TEST_CONTROL=1` on Windows. It checks that:
+
+- a slow command's turn runs in the WSL project;
+- switching to the other project from the sidebar opens that project's
+  own surface, and the WSL one stays open with its turn running (sidebar
+  badge);
+- a turn runs in the other project while the WSL turn finishes in the
+  background;
+- switching back reuses the WSL surface, and the reply is there;
+- a `request_user_input` question in the WSL project shows "needs you" in
+  the other project's sidebar, and can be answered after switching back.
+
+It writes screenshots to its temp folder and uses about six luna/low
+requests. Run it on both hosts (from the Windows test mirror on Windows).
+
 ## Notes
 
 - The control port listens on 127.0.0.1 only, needs the token in

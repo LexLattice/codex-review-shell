@@ -70,7 +70,11 @@ Invariants:
 - the active project, target substrate, and target runtime are visible before
   activation;
 - unknown, stale, blocked, activating, failed, and active are distinct states;
-- an active turn or unresolved provider request blocks project switching;
+- an active turn or unresolved provider request no longer blocks project
+  switching (since 2026-10-10): each open project keeps its own live surface,
+  so its work goes on in the background (see turn 12 of
+  `DIRECT_DUAL_ENVIRONMENT_AGENTS_MASTER.md`); edits and archive/delete
+  still wait for a project's turns;
 - renderer project selection cannot mint runtime or workspace authority;
 - raw workspace locators, auth material, and provider connection details do not
   enter the project-directory projection;

@@ -858,7 +858,8 @@
       if (receipt.status !== "accepted" && receipt.status !== "completed") {
         throw Object.assign(new Error(receipt.status || "project_activation_failed"), { code: receipt.status });
       }
-      // The main process now owns the transition. A successful activation reloads this document.
+      // The main process now owns the transition: it brings the project's
+      // own surface to the front, and this one stays open behind it.
     } catch (error) {
       view.working = false;
       view.localTargetProjectId = "";
@@ -943,6 +944,9 @@
     view.working = false;
     view.localTargetProjectId = "";
     view.error = event?.receipt?.ok === false ? event.receipt.reason || "project_activation_failed" : "";
+    // The other project's surface is in front now; this one stays open
+    // behind it (its turns keep running), with the directory closed.
+    if (event?.receipt?.ok && event.receipt.status === "completed" && projectDirectoryOpen()) setProjectDirectoryOpen(false);
     render();
   });
 
