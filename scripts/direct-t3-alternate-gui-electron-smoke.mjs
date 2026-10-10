@@ -740,6 +740,36 @@ try {
   await page.setViewportSize(originalViewport);
   await page.waitForFunction(() => window.innerWidth > 720);
 
+  // "New thread here" for a project with no open surface starts a new
+  // thread there (it once restored the project's latest thread instead).
+  // Editing the background WSL project closes its surface first.
+  await page.locator('.t3-utility-rail [data-t3-action="projects"]').click();
+  await page.locator("#directProjectDirectory:not([hidden])").waitFor({ state: "visible" });
+  await page.locator('[data-project-binding-target="project_t3_gui_fixture"]').click();
+  await page.locator("#directProjectBindingEditor:not([hidden])").waitFor({ state: "visible" });
+  await page.locator("#directProjectBindingName").fill("WSL Direct GUI Fixture Edited");
+  await page.locator("#directProjectBindingCommit").click();
+  await page.locator("#directProjectBindingEditor").waitFor({ state: "hidden" });
+  for (let waited = 0; !sourcePage.isClosed() && waited < 10_000; waited += 250) await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(sourcePage.isClosed(), true, "the edited background project's surface closed");
+  await page.locator("#directProjectDirectoryClose").click();
+  const wslGroup = '.wb-project[data-project-id="project_t3_gui_fixture"]';
+  await page.waitForFunction((selector) => document.querySelectorAll(`${selector} .wb-thread`).length === 2, wslGroup);
+  const wslThreadsBefore = await page.locator(`${wslGroup} .wb-thread`).evaluateAll((rows) => rows.map((row) => row.dataset.threadId));
+  const coldSurface = app.waitForEvent("window", { timeout: 30_000 });
+  await page.locator(`${wslGroup} .wb-project-header`).hover();
+  await page.locator(`${wslGroup} .wb-project-more`).click();
+  await page.locator(".wb-menu .wb-menu-item", { hasText: "New thread here" }).click();
+  page = await coldSurface;
+  page.on("pageerror", (error) => rendererErrors.push(`page:${error.message}`));
+  await page.waitForSelector('body[data-direct-gui="direct-workbench"][data-experience-state="verified"]', { timeout: 30_000 });
+  assert.equal(JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8")).startNewThread, true);
+  await page.waitForFunction(() => document.querySelector(".wb-project.front")?.dataset?.projectId === "project_t3_gui_fixture");
+  await page.waitForFunction((selector) => document.querySelectorAll(selector).length === 3, frontThreads, { timeout: 15_000 });
+  const coldThreadId = await page.evaluate(() => window.DirectWorkbenchSurface.currentThreadId());
+  assert.ok(coldThreadId);
+  assert.equal(wslThreadsBefore.includes(coldThreadId), false, "the thread on screen is the new one, not the latest old one");
+
   await page.screenshot({ path: screenshotPath, fullPage: true });
   assert.deepEqual(rendererErrors, [], rendererErrors.join("\n"));
 

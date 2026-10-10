@@ -544,6 +544,8 @@ let workbenchOverviewDueAt = 0;
 let workbenchThreadPresentation = null;
 const workbenchThreadsRunning = new Set();
 const workbenchThreadsNaming = new Set();
+const workbenchThreadNamingAttempts = new Map();
+const WORKBENCH_THREAD_NAMING_ATTEMPTS = 3;
 const WORKBENCH_OVERVIEW_NOTIFICATIONS = new Set([
   "turn/started", "turn/completed", "thread/started", "thread/name/updated", "thread/status/changed",
 ]);
@@ -8769,6 +8771,7 @@ function encodeCodexSurfacePayload(project, extra = {}) {
     initialThreadSourceHome: normalizeString(extra.initialThreadSourceHome, ""),
     initialThreadSessionFilePath: normalizeString(extra.initialThreadSessionFilePath, ""),
     initialThreadTitle: normalizeString(extra.initialThreadTitle, ""),
+    startNewThread: extra.startNewThread === true,
     error: normalizeString(extra.error, ""),
     runtimeStartupPending: Boolean(extra.runtimeStartupPending),
     runtimeStartupMessage: normalizeString(extra.runtimeStartupMessage, ""),
@@ -8805,6 +8808,7 @@ function codexSurfaceThreadExtras(options = {}) {
     initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
     initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
     initialThreadTitle: normalizeString(options.initialThreadTitle, ""),
+    startNewThread: options.startNewThread === true,
   };
 }
 
@@ -12510,11 +12514,13 @@ async function openWorkbenchProjectView(project, options = {}) {
   showWorkbenchView(entry);
   const surfaceOptions = { ...(options.surfaceOptions || {}) };
   if (threadId || options.newThread) {
-    // A fresh surface without a thread to restore is a new thread.
     surfaceOptions.initialThreadId = threadId;
     surfaceOptions.initialThreadSourceHome = "";
     surfaceOptions.initialThreadSessionFilePath = "";
     surfaceOptions.initialThreadTitle = "";
+    // Without it, a surface with no thread to open restores the project's
+    // most recent one.
+    surfaceOptions.startNewThread = !threadId && options.newThread === true;
   }
   const result = await loadCodexSurface(project, {
     ...surfaceOptions,
@@ -12673,9 +12679,13 @@ function settleWorkbenchThreadActivity(sessions = []) {
     // their names rather than costing a request each on the first launch.
     const justFinished = (wasRunning && !running)
       || (Number(entry.turnCount || 0) === 1 && Date.now() - (Date.parse(entry.updatedAt || "") || 0) < 15 * 60_000);
-    if (justFinished && !presented.title && Number(entry.turnCount || 0) > 0 && threadHasPlaceholderTitle(entry) && !workbenchThreadsNaming.has(threadId)) {
+    const attempts = workbenchThreadNamingAttempts.get(threadId) || 0;
+    if (justFinished && !presented.title && Number(entry.turnCount || 0) > 0 && threadHasPlaceholderTitle(entry)
+      && !workbenchThreadsNaming.has(threadId) && attempts < WORKBENCH_THREAD_NAMING_ATTEMPTS) {
       workbenchThreadsNaming.add(threadId);
-      nameWorkbenchThread(entry).catch(() => {});
+      workbenchThreadNamingAttempts.set(threadId, attempts + 1);
+      // A failed or empty answer is retried on a later pass, a few times.
+      nameWorkbenchThread(entry).catch(() => {}).finally(() => workbenchThreadsNaming.delete(threadId));
     }
   }
   return changed;

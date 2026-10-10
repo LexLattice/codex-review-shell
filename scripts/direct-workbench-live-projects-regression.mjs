@@ -440,6 +440,14 @@ assert.match(surfaceSource, /function recordLiveTurnNotification\(/);
 assert.match(surfaceSource, /function restoreThreadLiveState\(/);
 assert.match(surfaceSource, /globalThis\.DirectWorkbenchSurface = /);
 assert.match(surfaceSource, /"direct-workbench-thread-shown"/);
+// A running Direct turn, as thread/read reports it, counts as running (it
+// once showed "Idle" when the owner came back to it), and a continuation's
+// turn/started doesn't wipe the turn's log so far.
+const activeStates = surfaceSource.slice(surfaceSource.indexOf("const ACTIVE_TURN_STATUS_SET"), surfaceSource.indexOf("const THOUGHT_ASSISTANT_PHASES"));
+const { DIRECT_ACTIVE_TURN_STATES } = require("../src/main/direct/session/session-store");
+for (const directState of DIRECT_ACTIVE_TURN_STATES) assert(activeStates.includes(`"${directState}"`), `${directState} is a running turn in the surface`);
+const recordSource = surfaceSource.slice(surfaceSource.indexOf("function recordLiveTurnNotification"), surfaceSource.indexOf("function threadIsOffScreen"));
+assert.match(recordSource, /method === "turn\/started" && liveTurnLogs\.get\(threadId\)\?\.turnId !== turnId/);
 const openDirect = surfaceSource.slice(surfaceSource.indexOf("async function openDirectThread("), surfaceSource.indexOf("async function focusWorkbenchThread("));
 assert.match(openDirect, /threadTurnCompletions\.get\(requestedThreadId\)/, "a turn that ends while its thread opens is read again");
 const newThreadSource = surfaceSource.slice(surfaceSource.indexOf("async function startNewThread("), surfaceSource.indexOf("async function startCodexTurn("));
@@ -481,6 +489,16 @@ const settleActivity = mainSource.slice(mainSource.indexOf("function settleWorkb
 assert.match(settleActivity, /wasRunning && !running && threadId !== displayed/, "a turn finishing off screen leaves its thread unread");
 assert.match(settleActivity, /threadHasPlaceholderTitle\(entry\)/, "only placeholder titles are model-named");
 assert.match(settleActivity, /justFinished && !presented\.title/, "and only after a turn that just finished, not every old thread on first launch");
+assert.match(settleActivity, /\.finally\(\(\) => workbenchThreadsNaming\.delete\(threadId\)\)/, "a failed title request is released for a retry");
+assert.match(settleActivity, /attempts < WORKBENCH_THREAD_NAMING_ATTEMPTS/, "retries are bounded");
+// "New thread here" for a project without an open surface starts a new
+// thread there instead of restoring the project's latest one.
+const openView = mainSource.slice(mainSource.indexOf("async function openWorkbenchProjectView"), mainSource.indexOf("function rememberCodexSurfaceContext"));
+assert.match(openView, /surfaceOptions\.startNewThread = !threadId && options\.newThread === true;/);
+assert.match(mainSource, /startNewThread: options\.startNewThread === true,/, "it reaches the surface's thread extras");
+assert.match(mainSource, /startNewThread: extra\.startNewThread === true,/, "and its bootstrap payload");
+const startup = surfaceSource.slice(surfaceSource.indexOf("state.readyForThreadOpen = true;"), surfaceSource.indexOf("enforceDirectLiveTextStartupReadiness();"));
+assert.match(startup, /else if \(payload\.startNewThread === true\) \{\s*await startNewThread\(\);\s*\} else \{\s*await loadExistingThreadOrStartNew\(\);/);
 const naming = mainSource.slice(mainSource.indexOf("async function nameWorkbenchThread"), mainSource.indexOf("function applyWorkbenchThreadTitle"));
 assert.match(naming, /get\(threadId\)\?\.title\) return/, "an owner's rename while the model writes wins");
 // Requests from a background surface resolve against its own project.

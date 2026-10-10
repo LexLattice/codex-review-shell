@@ -74,6 +74,15 @@ const ACTIVE_TURN_STATUS_SET = new Set([
   "open",
   "active",
   "interrupting",
+  // Direct's own states for a turn still running, as thread/read reports
+  // them (session-store.js DIRECT_ACTIVE_TURN_STATES).
+  "request_built",
+  "streaming",
+  "tool_waiting",
+  "authority_waiting",
+  "continuation_ready",
+  "continuation_sent",
+  "streaming_continuation",
 ]);
 const THOUGHT_ASSISTANT_PHASES = new Set([
   // Canonical Codex phase for interim assistant preamble/progress text.
@@ -6450,7 +6459,9 @@ function recordLiveTurnNotification(method, params = {}) {
   if (!threadId) return;
   const turnId = String(params.turnId || params.turn?.id || "");
   if (method === "turn/completed") threadTurnCompletions.set(threadId, (threadTurnCompletions.get(threadId) || 0) + 1);
-  if (method === "turn/started") {
+  // Direct sends turn/started again for each continuation of the same turn;
+  // only a new turn starts a new log.
+  if (method === "turn/started" && liveTurnLogs.get(threadId)?.turnId !== turnId) {
     liveTurnLogs.set(threadId, { turnId, events: [], truncated: false });
   }
   const log = liveTurnLogs.get(threadId);
@@ -11258,6 +11269,8 @@ async function connect() {
         addSystemMessage(`Unable to open startup thread ${payload.initialThreadId}: ${error.message}`);
         await loadExistingThreadOrStartNew();
       }
+    } else if (payload.startNewThread === true) {
+      await startNewThread();
     } else {
       await loadExistingThreadOrStartNew();
     }
