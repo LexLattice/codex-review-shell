@@ -215,6 +215,30 @@ try {
   await waitFor("the badge to clear", async () => (await rowFor(pageWsl, wslProject.id))?.needsYouCount === 0, 30_000);
   report.checks.push("answered_after_switching_back");
 
+  // A runtime transition for the WSL project that finishes while the
+  // project is in the background (here a switch to Appserver, run from its
+  // own background surface) must not land in the surface in front: the WSL
+  // project's idle surface is retired instead and reopens with the new
+  // binding when shown.
+  const surfaceProjectId = (page) => JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8")).project.id;
+  await otherHeader(pageWsl).click();
+  await waitFor("the other project in front", async () => (await overview(pageOther)).selectedProjectId === otherProject.id, 30_000);
+  const otherUrl = pageOther.url();
+  pageWsl.evaluate((projectId) => {
+    window.codexSurfaceBridge.setDirectWorkbenchRuntimePath(projectId, "app-server").catch(() => {});
+  }, wslProject.id).catch(() => {});
+  // Until the background surface closes, or the transition lands somewhere.
+  await waitFor("the transition to settle", async () => pageWsl.isClosed() || pageOther.url() !== otherUrl, 15_000).catch(() => {});
+  await sleep(1000);
+  assert.equal(pageOther.url(), otherUrl, "the surface in front wasn't reloaded with the WSL project");
+  assert.equal(surfaceProjectId(pageOther), otherProject.id, "the surface in front still shows its own project");
+  assert.equal((await overview(pageOther)).selectedProjectId, otherProject.id, "the transition didn't take the front");
+  assert.equal(pageWsl.isClosed(), true, "the background WSL surface is retired");
+  const savedConfig = JSON.parse(fs.readFileSync(path.join(profile, "workspace-config.json"), "utf8"));
+  assert.equal(savedConfig.selectedProjectId, otherProject.id);
+  assert.equal(savedConfig.projects.find((entry) => entry.id === wslProject.id)?.surfaceBinding?.codex?.runtimeMode, "legacy-app-server", "the transition itself was saved");
+  report.checks.push("background_transition_kept_apart");
+
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ ok: true, ...report }, null, 2));
 } catch (error) {

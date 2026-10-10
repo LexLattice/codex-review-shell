@@ -1214,6 +1214,18 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
       the Workbench Electron smoke were updated: switching now opens the
       other project's surface, and the first one stays loaded and isn't
       reloaded.
+  - **Review fix (runtime transitions racing a switch):** the runtime-path,
+    activation, rollback, and runtime-reload flows await auth and probes
+    before reloading. If the owner switched projects meanwhile, they set
+    `currentProject` back to their project and reloaded whatever surface was
+    in front with it. Now only the project in front becomes current
+    (`adoptTransitionedProject`). A reload for a background project retires
+    that project's surface instead: it closes if idle, or reloads the next
+    time it is shown. An in-flight load that sees the front surface change
+    stops (`targetView`). The live check runs a switch to Appserver from
+    the background WSL surface. With the old code the surface in front was
+    reloaded with the WSL project; with the fix it keeps its own project,
+    the WSL surface is retired, and the transition is saved.
   - **Not done:** OS notifications (owner's call: badges only), a split
     view, and merging the WSL test app's projects into the Windows app.
 

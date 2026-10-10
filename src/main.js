@@ -6963,6 +6963,12 @@ function projectWithCodexBinding(project, codexBinding) {
 }
 
 async function reloadCodexSurfaceAfterRuntimeTransition(project, reason, options = {}) {
+  // Not in front any more: no new epoch (it would make the load of the
+  // surface in front stale); loadCodexSurface retires the background one.
+  if (DIRECT_WORKBENCH_MODE && !workbenchProjectInFront(project)) {
+    await loadCodexSurface(project, {});
+    return { deferred: false, activationEpoch: 0, background: true };
+  }
   const activationEpoch = nextSurfaceActivationEpoch(reason);
   if (options.deferSurfaceReload === true) {
     setTimeout(() => {
@@ -6987,7 +6993,7 @@ async function switchActiveCodexRuntimePath(project, runtimePath, reason = "acti
   }
   const nextBinding = bindingForDirectRuntimePath(project.surfaceBinding?.codex || {}, runtimePath);
   const activeProject = projectWithCodexBinding(project, nextBinding);
-  currentProject = activeProject;
+  adoptTransitionedProject(activeProject);
   await reloadCodexSurfaceAfterRuntimeTransition(activeProject, reason);
   emitDirectRuntimeStatus(activeProject);
   return {
@@ -7017,7 +7023,7 @@ async function selectOrdinaryDirectRuntime(payload = {}) {
     const nextProjects = config.projects.map((item) => item.id === projectId ? nextProject : item);
     const saved = await saveConfig({ ...config, projects: nextProjects });
     const savedProject = saved.projects.find((item) => item.id === projectId) || nextProject;
-    currentProject = savedProject;
+    adoptTransitionedProject(savedProject);
     await reloadCodexSurfaceAfterRuntimeTransition(savedProject, "runtime-path-direct", payload);
     emitDirectRuntimeStatus(savedProject);
     return {
@@ -7086,7 +7092,7 @@ async function enableDirectExperimentalProject(payload = {}) {
         throw new Error("Direct experimental activation binding digest mismatch.");
       }
       committed = store.markActivationCommitted(pending);
-      currentProject = savedProject;
+      adoptTransitionedProject(savedProject);
       await reloadCodexSurfaceAfterRuntimeTransition(savedProject, "direct-activation", payload);
       const status = buildDirectRuntimeStatusForProject(savedProject).activation;
       emitDirectRuntimeStatus(savedProject);
@@ -7176,7 +7182,7 @@ async function selectDirectTextOnlyRuntime(payload = {}) {
         throw new Error("Direct text-only runtime binding digest mismatch.");
       }
       committed = store.markRuntimeSelectionCommitted(pending);
-      currentProject = savedProject;
+      adoptTransitionedProject(savedProject);
       await reloadCodexSurfaceAfterRuntimeTransition(savedProject, "direct-text-only-selection", payload);
       const status = buildDirectRuntimeStatusForProject(savedProject).directTextOnly;
       emitDirectRuntimeStatus(savedProject);
@@ -7615,7 +7621,7 @@ async function setCodexRuntimePath(payload = {}) {
     );
     const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
     const savedProject = saved.projects.find((item) => item.id === projectId) || latestProject;
-    currentProject = savedProject;
+    adoptTransitionedProject(savedProject);
     await reloadCodexSurfaceAfterRuntimeTransition(savedProject, "runtime-path-app-server", payload);
     emitDirectRuntimeStatus(savedProject);
     return {
@@ -7673,8 +7679,8 @@ async function rollbackDirectExperimentalProject(payload = {}) {
       const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
       const committed = store.markRollbackCommitted(pending, null);
       const savedProject = saved.projects.find((item) => item.id === projectId) || project;
-      currentProject = savedProject;
-      await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-rollback") });
+      adoptTransitionedProject(savedProject);
+      await reloadCodexSurfaceAfterRuntimeTransition(savedProject, "direct-rollback");
       emitDirectRuntimeStatus(savedProject);
       return { ok: true, rollback: committed, project: savedProject, config: saved, status: buildDirectRuntimeStatusForProject(savedProject).activation };
     }
@@ -7692,8 +7698,8 @@ async function rollbackDirectExperimentalProject(payload = {}) {
       throw error;
     }
     const committed = store.markRollbackCommitted(pending, activation);
-    currentProject = savedProject;
-    await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-rollback") });
+    adoptTransitionedProject(savedProject);
+    await reloadCodexSurfaceAfterRuntimeTransition(savedProject, "direct-rollback");
     emitDirectRuntimeStatus(savedProject);
     return { ok: true, rollback: committed, project: savedProject, config: saved, status: buildDirectRuntimeStatusForProject(savedProject).activation };
   });
@@ -8798,28 +8804,71 @@ function codexSurfaceThreadExtras(options = {}) {
 }
 
 async function loadCodexSurface(project, options = {}) {
+  // In the Workbench a reload is for the project in front. One for another
+  // project (a runtime transition that finished after the owner switched
+  // away) only retires that project's background surface.
+  if (DIRECT_WORKBENCH_MODE && !workbenchProjectInFront(project)) {
+    await retireBackgroundWorkbenchSurface(project?.id, "The project's runtime changed while it was in the background.");
+    return { skipped: true, background: true };
+  }
   const contents = codexView?.webContents;
   const result = await loadCodexSurfaceIntoView(project, options);
   if (contents && !contents.isDestroyed() && !result?.skipped && codexView?.webContents === contents) {
     rememberCodexSurfaceContext(contents, project, activeCodexSurfaceConnection);
   }
+  // The owner switched away while it loaded: that surface is half updated.
+  if (DIRECT_WORKBENCH_MODE && result?.skipped && contents && codexView?.webContents !== contents) {
+    const entry = [...workbenchProjectViews.values()].find((candidate) => candidate.view?.webContents === contents);
+    if (entry) await retireBackgroundWorkbenchSurface(entry.projectId, "The project's surface was replaced while it loaded.");
+  }
   scheduleWorkbenchThreadOverviewBroadcast();
   return result;
 }
 
+function workbenchProjectInFront(project) {
+  return Boolean(project?.id) && normalizeString(currentProject?.id, "") === normalizeString(project.id, "");
+}
+
+// Only the project in front becomes currentProject. A runtime transition
+// awaits auth and probes, and the owner may switch projects meanwhile;
+// returns whether the project is the one in front.
+function adoptTransitionedProject(project) {
+  if (!DIRECT_WORKBENCH_MODE || !currentProject || workbenchProjectInFront(project)) {
+    currentProject = project;
+    return true;
+  }
+  return false;
+}
+
+// A background surface whose project changed: closed now if idle, else
+// reloaded the next time it is shown (closing it would cut off its turn's
+// requests).
+async function retireBackgroundWorkbenchSurface(projectId, reason) {
+  const entry = workbenchViewEntry(projectId);
+  if (!entry || entry.view === codexView) return;
+  if (workbenchViewIdle(entry)) await closeWorkbenchView(entry, reason);
+  else entry.reloadWhenShown = true;
+}
+
 async function loadCodexSurfaceIntoView(project, options = {}) {
   if (!codexView || codexView.webContents.isDestroyed()) return;
-  if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+  // Stale when a newer activation started or, in the Workbench, another
+  // project's surface came to the front while this one awaited auth or
+  // metadata: this load must not land in that surface.
+  const targetView = codexView;
+  const stale = () => isStaleSurfaceActivationEpoch(options.activationEpoch) || codexView !== targetView;
+  if (stale()) return { skipped: true, stale: true };
   await disposeCodexSurfaceSession();
   const codex = project.surfaceBinding.codex;
   const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
-  if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+  if (stale()) return { skipped: true, stale: true };
   const threadExtras = codexSurfaceThreadExtras(options);
   const runtimeMode = normalizeDirectRuntimeModeForStatus(codex.runtimeMode);
   if (runtimeMode !== "legacy-app-server") {
     await disposeCodexAppServerManager();
     const directAuthPreflight = await preflightDirectRuntimeAuth("direct-surface-load");
     const directProviderMetadata = await refreshDirectProviderMetadataForProject(project);
+    if (stale()) return { skipped: true, stale: true };
     const runtimeStatus = buildDirectRuntimeStatusForProject(project);
     const directTransport = normalizeDirectExperimentalTransport(codex.directTransport);
     const isLiveText = directTransport === "live-text";
@@ -8883,7 +8932,7 @@ async function loadCodexSurfaceIntoView(project, options = {}) {
       at: nowIso(),
     });
     emitDirectRuntimeStatus(project);
-    if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+    if (stale()) return { skipped: true, stale: true };
     setManagedCodexSurfaceAuthority(project, localUrl, "direct-local-ready");
     await codexView.webContents.loadURL(localUrl);
     return;
@@ -8893,7 +8942,7 @@ async function loadCodexSurfaceIntoView(project, options = {}) {
     activeCodexSurfaceConnection = null;
     const target = safeLoadableUrl(codex.target, "codex");
     if (target) {
-      if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+      if (stale()) return { skipped: true, stale: true };
       setExternalCodexSurfaceAuthority(project, target, "configured-codex-url");
       await codexView.webContents.loadURL(target);
       return;
@@ -8911,7 +8960,7 @@ async function loadCodexSurfaceIntoView(project, options = {}) {
           runtimeStartupPending: true,
           runtimeStartupMessage: "Starting Codex app-server…",
         });
-        if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+        if (stale()) return { skipped: true, stale: true };
         setManagedCodexSurfaceAuthority(project, startingUrl, "managed-local-starting");
         await codexView.webContents.loadURL(startingUrl);
       }
@@ -8921,7 +8970,7 @@ async function loadCodexSurfaceIntoView(project, options = {}) {
           project,
           requestedCodexHome ? { codexHome: requestedCodexHome } : {},
         );
-      if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+      if (stale()) return { skipped: true, stale: true };
       const connectionAuthority = createCodexSurfaceConnectionAuthority(project, session, {
         activationEpoch: Number(options.activationEpoch) || 0,
       });
@@ -8931,7 +8980,7 @@ async function loadCodexSurfaceIntoView(project, options = {}) {
         workspaceStatus,
         ...threadExtras,
       });
-      if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+      if (stale()) return { skipped: true, stale: true };
       setManagedCodexSurfaceAuthority(project, localUrl, "managed-local-ready");
       await codexView.webContents.loadURL(localUrl);
       return;
@@ -8948,7 +8997,7 @@ async function loadCodexSurfaceIntoView(project, options = {}) {
         workspaceStatus,
         error: error.message,
       });
-      if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+      if (stale()) return { skipped: true, stale: true };
       setManagedCodexSurfaceAuthority(project, degradedUrl, "managed-local-degraded");
       await codexView.webContents.loadURL(degradedUrl);
       return;
@@ -8957,7 +9006,7 @@ async function loadCodexSurfaceIntoView(project, options = {}) {
   await disposeCodexAppServerManager();
   activeCodexSurfaceConnection = null;
   const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, threadExtras);
-  if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+  if (stale()) return { skipped: true, stale: true };
   setManagedCodexSurfaceAuthority(project, localUrl, "fallback-local-surface");
   await codexView.webContents.loadURL(localUrl);
 }
@@ -9003,6 +9052,11 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
   }
   let project = currentProject?.id === persistedProject?.id ? currentProject : persistedProject;
   if (!project) return { ok: false, error: "No project is selected." };
+  // The surface in front belongs to another project; the Workbench opens
+  // another project's thread through direct-workbench:open-thread.
+  if (DIRECT_WORKBENCH_MODE && !workbenchProjectInFront(project)) {
+    return { ok: false, error: "That project isn't in front; open the thread from its project.", code: "project_not_in_front" };
+  }
 
   let session = null;
   let sessionStartupError = "";
@@ -9159,7 +9213,10 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
 async function reloadCodexRuntime(options = {}) {
   const requestedProjectId = normalizeString(options?.projectId || currentProject?.id, "");
   const project = await getProjectById(requestedProjectId);
-  currentProject = project;
+  if (!adoptTransitionedProject(project)) {
+    await retireBackgroundWorkbenchSurface(project.id, "The project's runtime restarted while it was in the background.");
+    return { ok: true, restarted: false, background: true, projectId: project.id };
+  }
   const restoreTarget = chooseCodexThreadRestoreTarget(project, options?.restoreTarget || options) || null;
   const activationEpoch = nextSurfaceActivationEpoch();
   const mode = normalizeString(project?.surfaceBinding?.codex?.mode, "fallback");
@@ -12412,7 +12469,11 @@ async function evictWorkbenchViews() {
 // opens in it.
 async function openWorkbenchProjectView(project, options = {}) {
   const threadId = normalizeString(options.threadId, "");
-  const live = workbenchViewEntry(project.id);
+  let live = workbenchViewEntry(project.id);
+  if (live?.reloadWhenShown && workbenchViewIdle(live)) {
+    await closeWorkbenchView(live, "The project's runtime changed while it was in the background.");
+    live = null;
+  }
   if (live) {
     showWorkbenchView(live);
     const contents = live.view.webContents;

@@ -233,6 +233,20 @@ for (const fn of ["function createCodexSurfaceSession", "function refreshActiveD
   assert.match(body, /codexSurfaceContextFor\(/, `${fn} uses the sender's own context`);
 }
 assert.match(mainSource, /codexSurfaceRequestAuthorizationCapabilities\(event\.sender\)/);
+// A reload for a project that isn't in front (a runtime transition that
+// finished after the owner switched away) never lands in the surface in
+// front, and transitions don't make a background project current.
+const wrapper = mainSource.slice(mainSource.indexOf("async function loadCodexSurface("), mainSource.indexOf("async function loadCodexSurfaceIntoView("));
+assert(wrapper.indexOf("workbenchProjectInFront(project)") > 0 && wrapper.indexOf("workbenchProjectInFront(project)") < wrapper.indexOf("loadCodexSurfaceIntoView(project"), "checked before loading");
+assert.match(wrapper, /retireBackgroundWorkbenchSurface\(/);
+const intoView = mainSource.slice(mainSource.indexOf("async function loadCodexSurfaceIntoView("), mainSource.indexOf("async function loadChatgptSurface("));
+assert.match(intoView, /const targetView = codexView;/);
+assert.doesNotMatch(intoView, /isStaleSurfaceActivationEpoch\(options\.activationEpoch\)\) return/, "every check also notices the surface in front changing");
+assert.doesNotMatch(mainSource, /currentProject = savedProject;/, "transitions adopt only the project in front");
+const transitionReload = mainSource.slice(mainSource.indexOf("async function reloadCodexSurfaceAfterRuntimeTransition"), mainSource.indexOf("async function switchActiveCodexRuntimePath"));
+assert(transitionReload.indexOf("workbenchProjectInFront") < transitionReload.indexOf("nextSurfaceActivationEpoch"), "a background transition takes no epoch");
+const reloadRuntime = mainSource.slice(mainSource.indexOf("async function reloadCodexRuntime"), mainSource.indexOf("async function reloadCodexRuntime") + 700);
+assert.match(reloadRuntime, /adoptTransitionedProject\(project\)/);
 assert.match(mainSource, /isStaleSurfaceEpochFor\(event\.sender, payload\?\.activationEpoch\)/);
 const workbenchBlock = preload.slice(preload.indexOf("if (directWorkbenchPreload)"));
 assert.match(workbenchBlock, /readDirectWorkbenchThreadOverview: \(\) =>\s*ipcRenderer\.invoke\("direct-workbench:thread-overview"\)/);
