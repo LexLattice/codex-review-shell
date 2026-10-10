@@ -1379,6 +1379,13 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
       `thread/list`) and keep the Appserver's names (no rename). In the
       background they offer "Open to see its threads", because main has no
       list of them. They used to show the project's old Direct sessions.
+    - From the Codex review of #321: the surface lists an Appserver's 40
+      most recent threads. "Show more" or a search now has it page through
+      `thread/list` (100 a page, up to 1,000), and "Show N+ more" marks a
+      list that has more. The project's header and tile count its runs
+      from the surface's list; main had none, so a running Appserver
+      project looked idle when its threads were hidden. A background
+      Appserver project shows no runs because its surface isn't kept.
 - **Checks:** `validate`; Linux sweep 314 passed, 0 failed, 10 skipped
   (the Windows-only ones). Windows sweep (4 jobs) 307 passed, 13 skipped,
   4 failed: the two that fail on `main` too (below, under findings) and

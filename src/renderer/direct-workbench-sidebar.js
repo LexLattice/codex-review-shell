@@ -159,6 +159,19 @@
     return Array.isArray(row.threads) ? row.threads : [];
   }
 
+  // Main counts an Appserver project's waiting requests but not its runs
+  // (they are the Appserver's); the surface's list has those.
+  function rowRunningCount(row) {
+    if (row.threadSource !== "app-server") return Number(row.runningCount || 0);
+    return (appServerThreads(row) || []).filter((thread) => thread.running).length;
+  }
+
+  // An Appserver project's list is partial until the surface pages through
+  // it.
+  function rowListPartial(row) {
+    return row.threadSource === "app-server" && isFront(row) && surface()?.threadListPartial?.() === true;
+  }
+
   function visibleThreads(row) {
     const listed = rowThreads(row);
     if (!listed) return { threads: [], hidden: 0, unlisted: true };
@@ -240,7 +253,8 @@
     header.append(toggle);
     const badges = el("span", "wb-project-badges");
     if (collapsed && row.needsYouCount) badges.append(pill("needs-you", row.needsYouCount > 1 ? `${row.needsYouCount} need you` : "needs you"));
-    if (collapsed && row.runningCount) badges.append(pill("running", `${row.runningCount} running`));
+    const runningCount = rowRunningCount(row);
+    if (collapsed && runningCount) badges.append(pill("running", `${runningCount} running`));
     badges.append(environmentChip(row));
     header.append(badges);
     const more = el("button", "wb-project-more", "⋯");
@@ -274,13 +288,14 @@
         list.append(start);
       }
       if (hidden > 0) {
-        const expand = el("button", "wb-show-more", `Show ${hidden} more`);
+        const expand = el("button", "wb-show-more", `Show ${hidden}${rowListPartial(row) ? "+" : ""} more`);
         expand.type = "button";
         expand.addEventListener("click", () => {
           view.showAll.add(row.projectId);
           render();
-          // Main sends only the recent threads until a list is expanded.
-          if (Number(row.moreThreadCount || 0) > 0) refresh();
+          // Main sends only the recent threads until a list is expanded, and
+          // the surface lists only an Appserver's recent ones.
+          if (Number(row.moreThreadCount || 0) > 0 || row.threadSource === "app-server") refresh();
         });
         list.append(expand);
       } else if (view.showAll.has(row.projectId) && !view.query) {
@@ -305,7 +320,7 @@
     tile.dataset.environmentKind = environmentBadge(row).kind;
     tile.title = `${row.displayName} · ${environmentBadge(row).text}`;
     if (row.needsYouCount) tile.append(el("span", "wb-tile-dot needs-you"));
-    else if (row.runningCount) tile.append(el("span", "wb-tile-dot running"));
+    else if (rowRunningCount(row)) tile.append(el("span", "wb-tile-dot running"));
     tile.addEventListener("mouseenter", () => showFlyout(row.projectId));
     tile.addEventListener("focus", () => showFlyout(row.projectId));
     tile.addEventListener("click", () => showFlyout(row.projectId, true));
@@ -575,7 +590,7 @@
     // Only a real change redraws (overviews arrive every few seconds while
     // work runs); the selected thread and an Appserver project's list are
     // part of it.
-    const next = JSON.stringify([overview.projects, currentThreadId(), front?.threadSource === "app-server" ? rowThreads(front) : null]);
+    const next = JSON.stringify([overview.projects, currentThreadId(), front?.threadSource === "app-server" ? [rowThreads(front), rowListPartial(front)] : null]);
     if (next !== signature && !view.renaming) {
       signature = next;
       render();
@@ -586,6 +601,8 @@
   // Main sends each project's recent threads; an expanded list, or a search,
   // asks it for all of them.
   async function refresh() {
+    const own = String(surface()?.projectId?.() || "");
+    surface()?.expandThreadList?.(Boolean(view.query) || view.showAll.has(own));
     try {
       apply(await bridge.readDirectWorkbenchThreadOverview({
         expandedProjectIds: [...view.showAll],

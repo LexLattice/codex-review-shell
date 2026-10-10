@@ -264,6 +264,8 @@ let overviewListener = null;
 let currentOverview = null;
 let respond = null;
 let surfaceThreadRows = [];
+let surfaceListPartial = false;
+const surfaceExpandCalls = [];
 const overviewFor = (extra = {}) => buildDirectWorkbenchThreadOverview({
   projects,
   selectedProjectId: frontProjectId,
@@ -296,6 +298,8 @@ const fakeWindow = {
     openThread: async (threadId) => { surfaceCalls.open.push(threadId); },
     newThread: async () => { surfaceCalls.newThread += 1; },
     threadRows: () => surfaceThreadRows,
+    threadListPartial: () => surfaceListPartial,
+    expandThreadList: (expanded) => { surfaceExpandCalls.push(expanded); },
     focusComposer: () => { surfaceCalls.focus += 1; },
     account: () => ({ label: "rose@example.test", initial: "r", quota: "5h 24%" }),
   },
@@ -527,6 +531,37 @@ surfaceThreadRows = [...surfaceThreadRows, { threadId: "app_thread_3", title: "A
 fakeWindow.dispatchEvent({ type: "direct-workbench-surface-threads-changed" });
 appGroup = groupsOf().find((group) => group.dataset.projectId === "p_wsl");
 assert.equal(rowsOf(appGroup).length, 3, "the sidebar follows the surface's thread list");
+// Its runs count on the project's header, though main has none.
+descendants(appGroup).find((node) => node.classList.contains("wb-project-toggle")).click();
+assert.match(text(groupsOf().find((group) => group.dataset.projectId === "p_wsl")), /1 running/);
+descendants(groupsOf().find((group) => group.dataset.projectId === "p_wsl")).find((node) => node.classList.contains("wb-project-toggle")).click();
+// The surface lists the Appserver's recent threads; "Show more" has it
+// page through all of them (they once stopped at 40).
+surfaceThreadRows = Array.from({ length: 7 }, (_, index) => ({ threadId: `app_page_${index}`, title: `Appserver page ${index}`, updatedAt: at(50 - index), running: false }));
+surfaceListPartial = true;
+surfaceExpandCalls.length = 0;
+fakeWindow.dispatchEvent({ type: "direct-workbench-surface-threads-changed" });
+appGroup = groupsOf().find((group) => group.dataset.projectId === "p_wsl");
+const appMore = descendants(appGroup).find((node) => node.classList.contains("wb-show-more"));
+assert.equal(appMore?.textContent, "Show 2+ more", "more than the surface listed");
+appMore.click();
+await settle();
+assert.deepEqual(surfaceExpandCalls, [true], "the surface is asked for every thread");
+surfaceThreadRows = Array.from({ length: 12 }, (_, index) => ({ threadId: `app_page_${index}`, title: `Appserver page ${index}`, updatedAt: at(50 - index), running: false }));
+surfaceListPartial = false;
+fakeWindow.dispatchEvent({ type: "direct-workbench-surface-threads-changed" });
+appGroup = groupsOf().find((group) => group.dataset.projectId === "p_wsl");
+assert.equal(rowsOf(appGroup).length, 12);
+descendants(appGroup).find((node) => node.textContent === "Show less").click();
+await settle();
+assert.deepEqual(surfaceExpandCalls, [true, false]);
+search.value = "page 11";
+search.dispatch("input");
+await settle();
+assert.equal(surfaceExpandCalls.at(-1), true, "a search has it list every thread too");
+search.dispatch("keydown", { key: "Escape" });
+await settle();
+assert.equal(surfaceExpandCalls.at(-1), false);
 frontProjectId = "p_win";
 shownThreadId = "t_n0";
 fakeWindow.dispatchEvent({ type: "direct-workbench-thread-shown" });
@@ -592,6 +627,50 @@ assert.equal((newThreadSource.match(/reportThreadState\("attached_live"/g) || []
   const sendPromptSource = surfaceSource.slice(surfaceSource.indexOf("async function sendPrompt("), surfaceSource.indexOf("async function steerCurrentTurn("));
   assert(sendPromptSource.indexOf("const originThreadId") < sendPromptSource.indexOf("await attachLiveThread"), "sendPrompt takes the thread before attaching");
   assert.match(sendPromptSource, /startCodexTurn\(text, \{ \.\.\.options, originThreadId \}\)/);
+}
+// An Appserver surface lists 40 threads; expanded, it pages through all of
+// them (the sidebar's "Show more" once stopped there).
+{
+  const listSource = surfaceSource.slice(surfaceSource.indexOf("async function refreshDirectThreadList("), surfaceSource.indexOf("function scheduleThreadDirectoryRefresh("));
+  const listCalls = [];
+  const all = Array.from({ length: 230 }, (_, index) => ({ id: `app_${index}`, name: `Appserver ${index}`, updatedAt: 1_800_000_000 - index, status: { type: index === 3 ? "active" : "idle" } }));
+  const listState = { directThreadListRequestId: 0, directThreadListExpanded: false };
+  const listContext = vm.createContext({
+    state: listState,
+    project: { id: "p_app" },
+    connection: null,
+    EXPANDED_THREAD_LIST_PAGE_SIZE: 100,
+    EXPANDED_THREAD_LIST_PAGE_LIMIT: 10,
+    threadDirectoryModel: require("../src/renderer/direct-thread-directory-model"),
+    threadDirectoryEnabled: () => true,
+    isDirectWorkbenchExperience: () => true,
+    isDirectRuntimeSurface: () => false,
+    threadDirectoryRuntimePath: () => "app-server",
+    capabilityArea: () => ({ canRead: true }),
+    workspaceRootText: () => "/work",
+    activeModelId: () => "",
+    requestedReasoningEffort: () => "",
+    renderDirectThreadList() {},
+    addSystemMessage() {},
+    rpc: async (method, params) => {
+      listCalls.push({ limit: params.limit, cursor: params.cursor ?? null });
+      const start = Number(params.cursor || 0);
+      const data = all.slice(start, start + params.limit);
+      return { data, nextCursor: start + params.limit < all.length ? String(start + params.limit) : null };
+    },
+  });
+  vm.runInContext(listSource, listContext);
+  await listContext.refreshDirectThreadList({ showErrors: false });
+  assert.deepEqual([listCalls.length, listState.directThreadDirectory.rows.length, listState.directThreadDirectory.partial], [1, 40, true]);
+  listCalls.length = 0;
+  listState.directThreadListExpanded = true;
+  await listContext.refreshDirectThreadList({ showErrors: false });
+  assert.deepEqual(listCalls, [{ limit: 100, cursor: null }, { limit: 100, cursor: "100" }, { limit: 100, cursor: "200" }]);
+  assert.deepEqual([listState.directThreadDirectory.rows.length, listState.directThreadDirectory.partial], [230, false]);
+  assert.equal(listState.directThreadDirectory.rows.find((row) => row.threadId === "app_3").activeTurnCount, 1);
+  const surfaceApi = surfaceSource.slice(surfaceSource.indexOf("globalThis.DirectWorkbenchSurface = "), surfaceSource.indexOf("globalThis.DirectModelCatalog = "));
+  assert.match(surfaceApi, /threadListPartial: \(\) => !isDirectRuntimeSurface\(\) && state\.directThreadDirectory\?\.partial === true/);
+  assert.match(surfaceApi, /expandThreadList: \(expanded\) =>/);
 }
 checks.push("surface_contracts");
 

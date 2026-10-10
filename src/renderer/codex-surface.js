@@ -44,6 +44,10 @@ const APPROVAL_POLICY_OPTIONS = ["", "untrusted", "on-failure", "on-request", "n
 const SANDBOX_MODE_OPTIONS = ["", "read-only", "workspace-write", "danger-full-access"];
 const MODEL_LIST_PAGE_LIMIT = 100;
 const MODEL_LIST_PAGE_SIZE = 100;
+// An Appserver thread list the Workbench sidebar expanded or searches:
+// every thread, paged, up to the sidebar's own bound.
+const EXPANDED_THREAD_LIST_PAGE_SIZE = 100;
+const EXPANDED_THREAD_LIST_PAGE_LIMIT = 10;
 const RATE_LIMIT_STALE_MS = 5 * 60 * 1000;
 const CONTEXT_BASELINE_TOKENS = 12000;
 const THOUGHT_ITEM_TYPES = new Set([
@@ -233,6 +237,7 @@ const state = {
   directThreadListStatus: "idle",
   directThreadListError: "",
   directThreadListRequestId: 0,
+  directThreadListExpanded: false,
   directThreadOpenRequestId: 0,
   directThreadFocusTransition: {
     state: "idle",
@@ -3510,6 +3515,15 @@ globalThis.DirectWorkbenchSurface = Object.freeze({
       updatedAt: String(row.updatedAt || ""),
       running: Number(row.activeTurnCount || 0) > 0,
     })).filter((row) => row.threadId)),
+  // The Appserver has more threads than the surface listed.
+  threadListPartial: () => !isDirectRuntimeSurface() && state.directThreadDirectory?.partial === true,
+  // The sidebar expanded this project's list, or searches: list them all.
+  expandThreadList: (expanded) => {
+    const next = Boolean(expanded) && !isDirectRuntimeSurface();
+    if (next === state.directThreadListExpanded) return;
+    state.directThreadListExpanded = next;
+    refreshDirectThreadList({ showErrors: false }).catch(() => {});
+  },
   focusComposer: () => els.composerInput?.focus?.(),
   // The sidebar footer: who is signed in and the quota left.
   account: () => {
@@ -7459,14 +7473,35 @@ async function refreshDirectThreadList(options = {}) {
   state.directThreadListError = "";
   renderDirectThreadList();
   try {
-    const result = await rpc("thread/list", {
+    const params = {
       limit: options.limit || 40,
       sortKey: "updated_at",
       sortDirection: "desc",
       cwd: workspaceRootText() || null,
       defaultModel: activeModelId() || null,
       defaultReasoningEffort: requestedReasoningEffort() || null,
-    });
+    };
+    let result = null;
+    if (state.directThreadListExpanded && !isDirectRuntimeSurface()) {
+      const threads = [];
+      const seenCursors = new Set();
+      let cursor = null;
+      for (let page = 0; page < EXPANDED_THREAD_LIST_PAGE_LIMIT; page += 1) {
+        if (cursor) {
+          if (seenCursors.has(cursor)) break;
+          seenCursors.add(cursor);
+        }
+        const response = await rpc("thread/list", { ...params, limit: EXPANDED_THREAD_LIST_PAGE_SIZE, cursor });
+        if (requestId !== state.directThreadListRequestId) return;
+        threads.push(...(Array.isArray(response?.data) ? response.data : Array.isArray(response?.threads) ? response.threads : []));
+        result = response;
+        cursor = response?.nextCursor || null;
+        if (!cursor) break;
+      }
+      result = { ...(result || {}), data: threads, threads: undefined, nextCursor: cursor };
+    } else {
+      result = await rpc("thread/list", params);
+    }
     if (requestId !== state.directThreadListRequestId) return;
     const runtimeThreads = (Array.isArray(result?.threads)
       ? result.threads
