@@ -200,20 +200,24 @@ assert.throws(
   (error) => error?.code === "project_activation_target_unknown",
 );
 
+// Running work no longer blocks switching (each open project keeps its own
+// live surface), and turn counts aren't part of the revision, so a turn
+// starting or ending doesn't make an activation stale.
 const busyDirectory = buildDirectWorkbenchProjectDirectory(config, {
-  activeTurnCounts: { project_wsl: 1 },
+  activeTurnCounts: { project_wsl: 1, project_windows: 2 },
 });
-assert.equal(busyDirectory.projects[1].selectable, false);
-assert(busyDirectory.projects[1].blockerCodes.includes("active_turn_in_current_project"));
-assert.throws(
-  () => validateDirectWorkbenchProjectActivation(busyDirectory, {
-    clientActivationId: "client_busy",
-    sourceProjectId: "project_wsl",
-    targetProjectId: "project_windows",
-    expectedCatalogRevision: busyDirectory.catalogRevision,
-  }),
-  (error) => error?.code === "active_turn_in_current_project",
-);
+assert.equal(busyDirectory.projects[1].selectable, true);
+assert.equal(busyDirectory.projects[1].activeTurnCount, 2);
+assert(!busyDirectory.projects[1].blockerCodes.some((code) => code.startsWith("active_turn")));
+assert.equal(busyDirectory.catalogRevision, directory.catalogRevision);
+assert.equal(validateDirectWorkbenchProjectActivation(busyDirectory, {
+  clientActivationId: "client_busy",
+  sourceProjectId: "project_wsl",
+  targetProjectId: "project_windows",
+  expectedCatalogRevision: directory.catalogRevision,
+}).targetProjectId, "project_windows");
+// Archiving a project with a running turn stays blocked.
+assert(busyDirectory.projects[1].lifecycle.blockerCodes.includes("active_turn_in_target_project"));
 
 const transitioningDirectory = buildDirectWorkbenchProjectDirectory(config, {
   transition: {

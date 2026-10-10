@@ -179,7 +179,7 @@ const app = await electron.launch({
 });
 
 try {
-  const page = await app.firstWindow();
+  let page = await app.firstWindow();
   page.on("pageerror", (error) => rendererErrors.push(`page:${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") rendererErrors.push(`console:${message.text()}`);
@@ -636,10 +636,17 @@ try {
   const editedConfig = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
   assert.equal(editedConfig.projects.find((entry) => entry.id === "project_t3_windows_fixture")?.workspace?.label, "Windows native workspace");
 
+  // Switching projects opens the other project's own surface; this one stays
+  // loaded behind it (its turns would keep running).
+  const sourcePage = page;
   const sourcePageUrl = page.url();
+  const switchedSurface = app.waitForEvent("window", { timeout: 30_000 });
   await page.locator('[data-project-activation-target="project_t3_windows_fixture"]').click();
-  await page.waitForFunction((url) => window.location.href !== url, sourcePageUrl, { timeout: 30_000 });
+  page = await switchedSurface;
+  page.on("pageerror", (error) => rendererErrors.push(`page:${error.message}`));
   await page.waitForSelector('body[data-direct-gui="direct-workbench"][data-experience-state="verified"]', { timeout: 30_000 });
+  assert.equal(sourcePage.isClosed(), false, "the first project's surface stays open");
+  assert.equal(sourcePage.url(), sourcePageUrl, "and isn't reloaded");
   await page.waitForFunction(() => document.getElementById("projectName")?.textContent?.includes("Windows Direct GUI Fixture Edited"));
   assert.match(page.url(), /\/t3-direct-surface\.html/);
   const switchedBootstrapPayload = JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8"));

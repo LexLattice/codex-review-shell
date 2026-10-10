@@ -3477,6 +3477,10 @@ function directComposerButtonText() {
   ].filter(Boolean).join(" ");
 }
 
+// The Workbench overview (direct-workbench-overview-surface.js) knows which
+// threads wait for the owner; the rail redraws when that changes.
+globalThis.addEventListener?.("direct-workbench-overview-changed", () => renderMorphicThreadRail());
+
 // The project editor's "Model for new threads" reads the same list.
 globalThis.DirectModelCatalog = Object.freeze({
   pickerModels: () => directPickerModels().map((model) => ({ model: model.model, displayName: directModelName(model) })),
@@ -7172,9 +7176,16 @@ function renderMorphicThreadRail() {
       }
       const stateLabel = document.createElement("span");
       stateLabel.className = "morphic-thread-tab-state";
+      // Waiting for the owner (an approval, a question, a form), as the
+      // Workbench overview sees it across every open surface.
+      const needsYou = Number(globalThis.DirectWorkbenchOverview?.needsYouCount?.(threadId) || 0);
+      if (needsYou) {
+        button.classList.add("needs-you");
+        stateLabel.classList.add("needs-you");
+      }
       stateLabel.textContent = posture.state === "opening"
         ? "opening"
-        : posture.selected ? "active" : isRunning ? "running" : row.lifecycleLabel || "available";
+        : needsYou ? "needs you" : posture.selected ? "active" : isRunning ? "running" : row.lifecycleLabel || "available";
       button.append(copy, stateLabel);
       button.addEventListener("click", () => {
         focusWorkbenchThread(row).catch((openError) => addSystemMessage(`Unable to focus thread: ${openError.message}`));

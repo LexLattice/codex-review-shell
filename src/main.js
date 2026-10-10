@@ -187,6 +187,7 @@ const {
   validateDirectWorkbenchProjectLifecycleMutation,
   validateDirectWorkbenchProjectActivation,
 } = require("./main/direct/project/project-directory");
+const { buildDirectWorkbenchThreadOverview } = require("./main/direct/project/workbench-thread-overview");
 const {
   buildDirectImplementationLaneUiStatus,
   buildDirectPolicyReadOnlyView,
@@ -532,6 +533,16 @@ let configCache = null;
 let chatgptThreadCache = null;
 let currentProject = null;
 let activeCodexSurfaceConnection = null;
+// Direct Workbench: projectId -> { view, projectId, lastShownAt }, and per
+// surface webContents id -> { projectId, project, connection }.
+const WORKBENCH_LIVE_VIEW_LIMIT = 4;
+const workbenchProjectViews = new Map();
+const codexSurfaceContexts = new Map();
+let workbenchOverviewTimer = null;
+let workbenchOverviewDueAt = 0;
+const WORKBENCH_OVERVIEW_NOTIFICATIONS = new Set([
+  "turn/started", "turn/completed", "thread/started", "thread/name/updated", "thread/status/changed",
+]);
 let layoutPingTimer = null;
 let geometrySyncTimer = null;
 let workspaceBackends = null;
@@ -3240,6 +3251,11 @@ function setNativePlaneZoom(plane, factor) {
   nativePlaneZoomFactors[normalizedPlane] = zoomFactor;
   const view = viewForZoomPlane(normalizedPlane);
   if (view?.webContents && !view.webContents.isDestroyed()) view.webContents.setZoomFactor(zoomFactor);
+  if (normalizedPlane === "codex") {
+    for (const entry of workbenchProjectViews.values()) {
+      if (entry.view !== view && entry.view?.webContents && !entry.view.webContents.isDestroyed()) entry.view.webContents.setZoomFactor(zoomFactor);
+    }
+  }
   emitShellEvent({
     type: "plane-zoom-state",
     plane: normalizedPlane,
@@ -3265,6 +3281,17 @@ function nextSurfaceActivationEpoch() {
 
 function isStaleSurfaceActivationEpoch(epoch) {
   return Number.isFinite(Number(epoch)) && Number(epoch) > 0 && Number(epoch) !== surfaceActivationEpoch;
+}
+
+// A report from a surface is current when it carries the epoch that surface
+// was loaded with. With one live surface per Workbench project, the global
+// epoch moves on whenever another project's surface loads.
+function isStaleSurfaceEpochFor(sender, epoch) {
+  const context = DIRECT_WORKBENCH_MODE && sender?.id ? codexSurfaceContexts.get(sender.id) : null;
+  if (context && Number(context.activationEpoch) > 0) {
+    return Number.isFinite(Number(epoch)) && Number(epoch) > 0 && Number(epoch) !== Number(context.activationEpoch);
+  }
+  return isStaleSurfaceActivationEpoch(epoch);
 }
 
 const CODEX_THREAD_RESTORE_SUCCESS_STATUSES = new Set(["rendered_stored", "attached_live"]);
@@ -3386,13 +3413,12 @@ function ensureWorkspaceBackendManager() {
   workspaceBackends.on("status", (payload) => {
     emitShellEvent({ type: "backend-status", ...payload });
     const projectId = payload?.session?.projectId || "";
+    const contents = projectId ? codexSurfaceContentsForProject(projectId) : null;
     if (
-      projectId &&
-      currentProject?.id === projectId &&
-      codexView?.webContents &&
-      !codexView.webContents.isDestroyed()
+      contents &&
+      (workbenchViewEntry(projectId) || currentProject?.id === projectId)
     ) {
-      codexView.webContents.send("codex-surface:event", {
+      contents.send("codex-surface:event", {
         type: "workspace-status",
         session: payload.session,
         at: payload.at || nowIso(),
@@ -4835,7 +4861,9 @@ let directEnvironmentExecutorBackend = null;
 let directTerminalService = null;
 
 function sendDirectTerminalEvent(payload = {}) {
-  const contents = codexView?.webContents;
+  const contents = payload.projectId && DIRECT_WORKBENCH_MODE
+    ? codexSurfaceContentsForProject(payload.projectId)
+    : codexView?.webContents;
   if (!contents || contents.isDestroyed()) return;
   contents.send("direct-terminal:event", payload);
 }
@@ -7902,10 +7930,13 @@ function rememberDirectWorkbenchProjectActivation(clientActivationId, record) {
   return record;
 }
 
+// Every open surface hears it: a surface in the background may have sent
+// the request (it was in front then) and is waiting for the receipt.
 function emitDirectWorkbenchProjectDirectoryEvent(payload = {}) {
-  if (!codexView?.webContents || codexView.webContents.isDestroyed()) return false;
-  codexView.webContents.send("direct-workbench:project-directory-event", payload);
-  return true;
+  const targets = workbenchSurfaceContents();
+  for (const contents of targets) contents.send("direct-workbench:project-directory-event", payload);
+  scheduleWorkbenchThreadOverviewBroadcast();
+  return targets.length > 0;
 }
 
 function rememberDirectWorkbenchProjectBindingMutation(clientMutationId, record) {
@@ -8051,6 +8082,11 @@ async function performDirectWorkbenchProjectBindingMutation(operation = {}) {
     }
 
     const saved = await saveConfig({ ...config, projects });
+    // An edited project open in the background reopens with its new binding
+    // when it is next shown (edits wait for its turns to end).
+    if (operation.mode === "edit" && !reboundProject) {
+      await closeWorkbenchView(workbenchViewEntry(operation.projectId), "The project's binding changed.");
+    }
     if (reboundProject) {
       const selected = saved.projects.find((project) => project.id === sourceProjectId);
       const binding = reboundBinding?.id
@@ -8168,6 +8204,9 @@ async function performDirectWorkbenchProjectLifecycleMutation(operation = {}) {
 
     const saved = await saveConfig({ ...config, projects });
     persistedConfig = saved;
+    if (operation.action !== "restore") {
+      await closeWorkbenchView(workbenchViewEntry(operation.projectId), "The project was archived or deleted.");
+    }
     const receipt = buildDirectWorkbenchProjectLifecycleReceipt({
       ...operation,
       ok: true,
@@ -8207,6 +8246,7 @@ async function performDirectWorkbenchProjectActivation(operation = {}) {
   const sourceProjectId = normalizeString(operation.sourceProjectId, "");
   const targetProjectId = normalizeString(operation.targetProjectId, "");
   let sourceConfig = null;
+  let createdTargetEntry = null;
   try {
     const config = await loadConfig();
     sourceConfig = config;
@@ -8234,11 +8274,25 @@ async function performDirectWorkbenchProjectActivation(operation = {}) {
     const activationBinding = activation.binding?.id
       ? savedTarget?.laneBindings?.find((binding) => binding.id === activation.binding.id) || activation.binding
       : null;
+    const sourceEntry = workbenchViewEntry(sourceProjectId);
+    snapshotForegroundSurfaceContext();
     currentProject = savedTarget;
-    await loadCodexSurface(savedTarget, {
-      ...codexSurfaceOptionsForBinding(activationBinding),
-      activationEpoch: nextSurfaceActivationEpoch("direct-workbench-project-activation"),
+    const opened = await openWorkbenchProjectView(savedTarget, {
+      surfaceOptions: codexSurfaceOptionsForBinding(activationBinding),
+      threadId: operation.threadId,
+      reason: "direct-workbench-project-activation",
     });
+    if (!opened.reused) createdTargetEntry = opened.entry;
+    if (opened.skipped) {
+      const error = new Error("A newer activation replaced this one.");
+      error.code = "project_activation_superseded";
+      throw error;
+    }
+    // A non-Direct surface can't stay open behind another one.
+    if (sourceEntry && sourceEntry.view !== codexView && !workbenchViewPoolable(sourceEntry)) {
+      await closeWorkbenchView(sourceEntry, "Direct Workbench switched away from a non-Direct surface.");
+    }
+    await evictWorkbenchViews();
     const completedAt = nowIso();
     directWorkbenchProjectTransition = {
       state: "completed",
@@ -8284,11 +8338,14 @@ async function performDirectWorkbenchProjectActivation(operation = {}) {
         restored = await saveConfig({ ...sourceConfig, selectedProjectId: sourceProjectId });
         const sourceProject = restored.projects.find((project) => project.id === sourceProjectId);
         if (sourceProject) {
+          // The target's half-open surface goes; the source's own surface
+          // (still live) comes back to the front.
+          if (createdTargetEntry) await closeWorkbenchView(createdTargetEntry, "Project activation failed.");
           currentProject = sourceProject;
           const activation = applyProjectActivationBinding(sourceProject);
-          await loadCodexSurface(sourceProject, {
-            ...codexSurfaceOptionsForBinding(activation.binding),
-            activationEpoch: nextSurfaceActivationEpoch("direct-workbench-project-activation-rollback"),
+          await openWorkbenchProjectView(sourceProject, {
+            surfaceOptions: codexSurfaceOptionsForBinding(activation.binding),
+            reason: "direct-workbench-project-activation-rollback",
           });
         }
       }
@@ -8346,7 +8403,11 @@ function setExternalCodexSurfaceAuthority(project, targetUrl, reason) {
 }
 
 function isCodexSurfaceSender(sender) {
-  return Boolean(codexView?.webContents && !codexView.webContents.isDestroyed() && sender.id === codexView.webContents.id);
+  if (codexView?.webContents && !codexView.webContents.isDestroyed() && sender.id === codexView.webContents.id) return true;
+  for (const entry of workbenchProjectViews.values()) {
+    if (entry.view?.webContents && !entry.view.webContents.isDestroyed() && entry.view.webContents.id === sender.id) return true;
+  }
+  return false;
 }
 
 function codexSurfaceSessionKindForConnection(connection = {}) {
@@ -8358,16 +8419,17 @@ function codexSurfaceSessionKindForConnection(connection = {}) {
 
 function createCodexSurfaceSession(sender, connection = {}) {
   const kind = codexSurfaceSessionKindForConnection(connection);
+  const project = codexSurfaceContextFor(sender).project;
   if (kind === DIRECT_FIXTURE_SURFACE_TRANSPORT) {
     return new DirectFixtureSurfaceSession(sender, {
       controller: ensureDirectFixtureController(),
-      project: currentProject,
+      project,
     });
   }
   if (kind === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) {
     return new DirectLiveTextSurfaceSession(sender, {
       controller: ensureDirectLiveTextController(),
-      project: currentProject,
+      project,
     });
   }
   const usageLedger = new UsageLedgerCollector({
@@ -8386,19 +8448,23 @@ function createCodexSurfaceSession(sender, connection = {}) {
   return session;
 }
 
-function refreshActiveDirectCodexSurfaceCapabilities() {
-  const transport = normalizeString(activeCodexSurfaceConnection?.transport, "");
+// Capabilities of a surface's connection (the one in front without a
+// sender), refreshed from its project and focused thread.
+function refreshActiveDirectCodexSurfaceCapabilities(sender = null) {
+  const target = sender || codexView?.webContents || null;
+  const { project, connection } = codexSurfaceContextFor(target);
+  const transport = normalizeString(connection?.transport, "");
   if (transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) {
-    const surfaceSession = codexView?.webContents?.id && codexSurfaceSessions?.get(codexView.webContents.id);
+    const surfaceSession = target?.id && codexSurfaceSessions?.get(target.id);
     const activeThreadId = normalizeString(
-      surfaceSession?.activeThreadId || activeCodexSurfaceConnection?.taskBinding?.taskId,
+      surfaceSession?.activeThreadId || connection?.taskBinding?.taskId,
       "",
     );
-    const taskProjection = currentProject && activeThreadId && ensureDirectLiveTextController().capabilitiesForTask
-      ? ensureDirectLiveTextController().capabilitiesForTask(currentProject, activeThreadId)
+    const taskProjection = project && activeThreadId && ensureDirectLiveTextController().capabilitiesForTask
+      ? ensureDirectLiveTextController().capabilitiesForTask(project, activeThreadId)
       : null;
-    const liveTextStatus = taskProjection?.directLiveText || (currentProject
-      ? ensureDirectLiveTextController().statusForProject(currentProject)
+    const liveTextStatus = taskProjection?.directLiveText || (project
+      ? ensureDirectLiveTextController().statusForProject(project)
       : null);
     if (surfaceSession && taskProjection) {
       surfaceSession.taskCapabilityProjection = taskProjection;
@@ -8409,22 +8475,21 @@ function refreshActiveDirectCodexSurfaceCapabilities() {
         taskBinding: taskProjection.taskBinding,
       };
     }
-    activeCodexSurfaceConnection = {
-      ...activeCodexSurfaceConnection,
+    const next = {
+      ...connection,
       capabilities: taskProjection?.capabilities || buildDirectLiveTextCapabilities(liveTextStatus || {}),
       directLiveText: liveTextStatus || null,
-      taskBinding: taskProjection?.taskBinding || activeCodexSurfaceConnection?.taskBinding || null,
+      taskBinding: taskProjection?.taskBinding || connection?.taskBinding || null,
     };
-    return activeCodexSurfaceConnection.capabilities;
+    updateCodexSurfaceConnection(target, next);
+    return next.capabilities;
   }
   if (transport === DIRECT_FIXTURE_SURFACE_TRANSPORT) {
-    activeCodexSurfaceConnection = {
-      ...activeCodexSurfaceConnection,
-      capabilities: buildDirectFixtureCapabilities(),
-    };
-    return activeCodexSurfaceConnection.capabilities;
+    const next = { ...connection, capabilities: buildDirectFixtureCapabilities() };
+    updateCodexSurfaceConnection(target, next);
+    return next.capabilities;
   }
-  return activeCodexSurfaceConnection?.capabilities || {};
+  return connection?.capabilities || {};
 }
 
 function directLiveTextAuthorizationCapabilities(capabilities = {}) {
@@ -8457,9 +8522,9 @@ function directLiveTextAuthorizationCapabilities(capabilities = {}) {
   return clone;
 }
 
-function codexSurfaceRequestAuthorizationCapabilities() {
-  const capabilities = refreshActiveDirectCodexSurfaceCapabilities();
-  const transport = normalizeString(activeCodexSurfaceConnection?.transport, "");
+function codexSurfaceRequestAuthorizationCapabilities(sender = null) {
+  const capabilities = refreshActiveDirectCodexSurfaceCapabilities(sender);
+  const transport = normalizeString(codexSurfaceContextFor(sender || codexView?.webContents || null).connection?.transport, "");
   if (transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) {
     return directLiveTextAuthorizationCapabilities(capabilities);
   }
@@ -8480,6 +8545,12 @@ function codexSurfaceSessionFor(sender, options = {}) {
   }
   const session = createCodexSurfaceSession(sender, options.connection || {});
   session.on("event", (payload) => {
+    if (payload?.type === "rpc-request" || payload?.type === "rpc-request-updated") scheduleWorkbenchThreadOverviewBroadcast();
+    if (payload?.type === "rpc-notification" && WORKBENCH_OVERVIEW_NOTIFICATIONS.has(payload.method)) {
+      scheduleWorkbenchThreadOverviewBroadcast();
+      // The session index settles a moment after a turn ends.
+      if (payload.method === "turn/completed") setTimeout(() => scheduleWorkbenchThreadOverviewBroadcast(), 1200);
+    }
     if (payload?.type === "rpc-request" || payload?.type === "rpc-request-updated") {
       emitShellEvent({
         type: "codex-request-updated",
@@ -8727,6 +8798,16 @@ function codexSurfaceThreadExtras(options = {}) {
 }
 
 async function loadCodexSurface(project, options = {}) {
+  const contents = codexView?.webContents;
+  const result = await loadCodexSurfaceIntoView(project, options);
+  if (contents && !contents.isDestroyed() && !result?.skipped && codexView?.webContents === contents) {
+    rememberCodexSurfaceContext(contents, project, activeCodexSurfaceConnection);
+  }
+  scheduleWorkbenchThreadOverviewBroadcast();
+  return result;
+}
+
+async function loadCodexSurfaceIntoView(project, options = {}) {
   if (!codexView || codexView.webContents.isDestroyed()) return;
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
   await disposeCodexSurfaceSession();
@@ -8779,6 +8860,8 @@ async function loadCodexSurface(project, options = {}) {
       },
     };
     activeCodexSurfaceConnection = directConnection;
+    // The renderer connects while it loads, before loadURL settles.
+    rememberCodexSurfaceContext(codexView.webContents, project, directConnection);
     const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
       codexConnection: directConnection,
       directSurfaceProjection,
@@ -12142,40 +12225,14 @@ async function createDirectWorkbenchWindow() {
     show: !DIRECT_TEST_CONTROL_HIDDEN,
   });
   installOrderedWorkspaceWorkerWindowClose(mainWindow, "Direct Workbench window close requested.");
-  codexView = new WebContentsView({
-    webPreferences: {
-      preload: codexSurfacePreloadPath,
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false,
-      partition: CODEX_PARTITION,
-      devTools: true,
-    },
-  });
-  registerWebContentsAuthority(codexView, {
-    surfaceName: "codex",
-    surfaceRole: SURFACE_ROLES.EXTERNAL_CODEX_URL,
-    codexTrustProfile: CODEX_SURFACE_TRUST_PROFILES.UNKNOWN,
-    codexBridgeProfile: CODEX_SURFACE_BRIDGE_PROFILES.NONE,
-    reason: "direct-workbench-surface-not-loaded",
-  });
-  mainWindow.contentView.addChildView(codexView);
-
+  workbenchProjectViews.clear();
+  codexSurfaceContexts.clear();
   const applyBounds = () => {
-    if (!mainWindow || !codexView || codexView.webContents.isDestroyed()) return;
-    const bounds = mainWindow.getContentBounds();
-    codexView.setBounds({
-      x: 0,
-      y: 0,
-      width: Math.max(1, bounds.width),
-      height: Math.max(1, bounds.height),
-    });
+    for (const entry of workbenchProjectViews.values()) applyWorkbenchViewBounds(entry.view);
   };
-  applyBounds();
   for (const eventName of ["resize", "resized", "maximize", "unmaximize", "enter-full-screen", "leave-full-screen", "restore"]) {
     mainWindow.on(eventName, applyBounds);
   }
-  configureGuestSurface("codex", codexView);
 
   mainWindow.on("closed", () => {
     codexAppServer?.dispose();
@@ -12208,7 +12265,11 @@ async function createDirectWorkbenchWindow() {
     directAgentRegistryBackfillStateByProject.clear();
     middleWebHost?.dispose();
     middleWebHost = null;
-    closeView(codexView);
+    for (const entry of workbenchProjectViews.values()) closeView(entry.view);
+    workbenchProjectViews.clear();
+    codexSurfaceContexts.clear();
+    clearTimeout(workbenchOverviewTimer);
+    workbenchOverviewTimer = null;
     codexView = null;
     mainWindow = null;
   });
@@ -12225,10 +12286,282 @@ async function createDirectWorkbenchWindow() {
   const activationBinding = activation.binding?.id
     ? currentProject?.laneBindings?.find((item) => item.id === activation.binding.id) || activation.binding
     : null;
-  await loadCodexSurface(currentProject, {
-    ...codexSurfaceOptionsForBinding(activationBinding),
-    activationEpoch: nextSurfaceActivationEpoch(),
+  await openWorkbenchProjectView(currentProject, {
+    surfaceOptions: codexSurfaceOptionsForBinding(activationBinding),
+    reason: "direct-workbench-launch",
   });
+}
+
+// Direct Workbench keeps one live surface per open project (up to
+// WORKBENCH_LIVE_VIEW_LIMIT), so switching projects shows another surface
+// instead of tearing this one down: a turn in a WSL project goes on, and can
+// ask the owner, while a Windows project is in front. `codexView` is the
+// surface in front.
+function workbenchViewEntry(projectId) {
+  const entry = workbenchProjectViews.get(normalizeString(projectId, ""));
+  if (!entry) return null;
+  if (!entry.view?.webContents || entry.view.webContents.isDestroyed()) {
+    workbenchProjectViews.delete(entry.projectId);
+    return null;
+  }
+  return entry;
+}
+
+function applyWorkbenchViewBounds(view) {
+  if (!mainWindow || !view?.webContents || view.webContents.isDestroyed()) return;
+  const bounds = mainWindow.getContentBounds();
+  view.setBounds({ x: 0, y: 0, width: Math.max(1, bounds.width), height: Math.max(1, bounds.height) });
+}
+
+function createWorkbenchCodexView(projectId) {
+  const view = new WebContentsView({
+    webPreferences: {
+      preload: codexSurfacePreloadPath,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+      partition: CODEX_PARTITION,
+      devTools: true,
+    },
+  });
+  registerWebContentsAuthority(view, {
+    surfaceName: "codex",
+    surfaceRole: SURFACE_ROLES.EXTERNAL_CODEX_URL,
+    codexTrustProfile: CODEX_SURFACE_TRUST_PROFILES.UNKNOWN,
+    codexBridgeProfile: CODEX_SURFACE_BRIDGE_PROFILES.NONE,
+    reason: "direct-workbench-surface-not-loaded",
+  });
+  mainWindow.contentView.addChildView(view);
+  applyWorkbenchViewBounds(view);
+  configureGuestSurface("codex", view);
+  const contentsId = view.webContents.id;
+  view.webContents.once("destroyed", () => {
+    codexSurfaceContexts.delete(contentsId);
+    if (workbenchProjectViews.get(projectId)?.view === view) workbenchProjectViews.delete(projectId);
+  });
+  const entry = { view, projectId, lastShownAt: Date.now() };
+  workbenchProjectViews.set(projectId, entry);
+  return entry;
+}
+
+function showWorkbenchView(entry) {
+  if (codexView && codexView !== entry.view) snapshotForegroundSurfaceContext();
+  for (const other of workbenchProjectViews.values()) {
+    if (other !== entry && other.view?.webContents && !other.view.webContents.isDestroyed()) other.view.setVisible(false);
+  }
+  entry.view.setVisible(true);
+  entry.lastShownAt = Date.now();
+  codexView = entry.view;
+  const context = codexSurfaceContexts.get(entry.view.webContents.id);
+  if (context) activeCodexSurfaceConnection = context.connection;
+  if (mainWindow && !mainWindow.isDestroyed?.() && mainWindow.isFocused?.()) entry.view.webContents.focus();
+}
+
+// A surface that isn't Direct (a Codex app-server or URL surface) shares
+// process-wide runtime state with whatever loads next, so it isn't kept.
+function workbenchViewPoolable(entry) {
+  const context = entry?.view?.webContents ? codexSurfaceContexts.get(entry.view.webContents.id) : null;
+  const transport = normalizeString(context?.connection?.transport, "");
+  return transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT || transport === DIRECT_FIXTURE_SURFACE_TRANSPORT;
+}
+
+function workbenchViewPendingRequestCount(entry) {
+  const session = entry?.view?.webContents ? codexSurfaceSessions?.get(entry.view.webContents.id) : null;
+  return [...(session?.serverRequests?.values?.() || [])]
+    .filter((record) => ["pending", "responding"].includes(normalizeString(record?.status, "pending")))
+    .length;
+}
+
+function workbenchViewIdle(entry) {
+  if (activeDirectTurnCountForProject(ensureDirectSessionStore(), entry.projectId) > 0) return false;
+  return workbenchViewPendingRequestCount(entry) === 0;
+}
+
+async function closeWorkbenchView(entry, reason = "Direct Workbench surface closed.") {
+  if (!entry) return;
+  if (workbenchProjectViews.get(entry.projectId) === entry) workbenchProjectViews.delete(entry.projectId);
+  const contents = entry.view?.webContents;
+  if (!contents || contents.isDestroyed()) return;
+  const session = codexSurfaceSessions?.get(contents.id);
+  if (session) {
+    codexSurfaceSessions.delete(contents.id);
+    if (session.destroyedListener) contents.removeListener("destroyed", session.destroyedListener);
+    await session.dispose({ silent: true, reason }).catch(() => {});
+  }
+  codexSurfaceContexts.delete(contents.id);
+  try { mainWindow?.contentView?.removeChildView(entry.view); } catch {}
+  closeView(entry.view);
+}
+
+// Over the limit, the least recently shown idle surfaces close; one with a
+// running turn or an open request stays, even past the limit.
+async function evictWorkbenchViews() {
+  const candidates = [...workbenchProjectViews.values()]
+    .filter((entry) => entry.view !== codexView)
+    .sort((left, right) => left.lastShownAt - right.lastShownAt);
+  let excess = workbenchProjectViews.size - WORKBENCH_LIVE_VIEW_LIMIT;
+  for (const entry of candidates) {
+    if (excess <= 0) break;
+    if (!workbenchViewIdle(entry)) continue;
+    await closeWorkbenchView(entry, "Direct Workbench surface closed to stay under the open-project limit.");
+    excess -= 1;
+  }
+}
+
+// Shows a project's live surface, or opens one. With threadId, that thread
+// opens in it.
+async function openWorkbenchProjectView(project, options = {}) {
+  const threadId = normalizeString(options.threadId, "");
+  const live = workbenchViewEntry(project.id);
+  if (live) {
+    showWorkbenchView(live);
+    const contents = live.view.webContents;
+    const context = codexSurfaceContexts.get(contents.id);
+    if (context) context.project = project;
+    if (threadId) {
+      contents.send("codex-surface:event", {
+        type: "open-thread-request",
+        threadId,
+        sourceHome: "",
+        sessionFilePath: "",
+        title: "",
+        projectId: project.id,
+        at: nowIso(),
+      });
+    }
+    return { reused: true, entry: live };
+  }
+  const entry = createWorkbenchCodexView(project.id);
+  showWorkbenchView(entry);
+  const surfaceOptions = { ...(options.surfaceOptions || {}) };
+  if (threadId) {
+    surfaceOptions.initialThreadId = threadId;
+    surfaceOptions.initialThreadSourceHome = "";
+    surfaceOptions.initialThreadSessionFilePath = "";
+  }
+  const result = await loadCodexSurface(project, {
+    ...surfaceOptions,
+    activationEpoch: nextSurfaceActivationEpoch(options.reason || "direct-workbench-project-view"),
+  });
+  if (result?.skipped) {
+    await closeWorkbenchView(entry, "A newer activation replaced this surface before it loaded.");
+    return { reused: false, skipped: true, entry: null };
+  }
+  return { reused: false, entry };
+}
+
+// Main-process context of a Codex surface: which project it was loaded for
+// and its connection. The surface in front uses currentProject and
+// activeCodexSurfaceConnection, as before; a background surface resolves
+// against its own project and connection, saved when it went back.
+function rememberCodexSurfaceContext(contents, project, connection) {
+  if (!contents || contents.isDestroyed?.()) return;
+  codexSurfaceContexts.set(contents.id, {
+    projectId: normalizeString(project?.id, ""),
+    project,
+    connection: connection || null,
+    activationEpoch: Number(connection?.activationEpoch) || 0,
+  });
+}
+
+function isForegroundCodexSurface(sender) {
+  return Boolean(sender?.id && codexView?.webContents && !codexView.webContents.isDestroyed() && sender.id === codexView.webContents.id);
+}
+
+function snapshotForegroundSurfaceContext() {
+  const contents = codexView?.webContents;
+  const context = contents && !contents.isDestroyed() ? codexSurfaceContexts.get(contents.id) : null;
+  if (!context) return;
+  if (normalizeString(currentProject?.id, "") === context.projectId) context.project = currentProject;
+  context.connection = activeCodexSurfaceConnection;
+}
+
+function codexSurfaceContextFor(sender) {
+  if (!sender || isForegroundCodexSurface(sender)) {
+    return { projectId: normalizeString(currentProject?.id, ""), project: currentProject, connection: activeCodexSurfaceConnection };
+  }
+  return codexSurfaceContexts.get(sender.id) || { projectId: "", project: null, connection: null };
+}
+
+function updateCodexSurfaceConnection(sender, connection) {
+  if (!sender || isForegroundCodexSurface(sender)) activeCodexSurfaceConnection = connection;
+  const context = sender?.id ? codexSurfaceContexts.get(sender.id) : null;
+  if (context) context.connection = connection;
+}
+
+function workbenchSurfaceContents() {
+  const contents = [];
+  for (const entry of workbenchProjectViews.values()) {
+    if (entry.view?.webContents && !entry.view.webContents.isDestroyed()) contents.push(entry.view.webContents);
+  }
+  if (!contents.length && codexView?.webContents && !codexView.webContents.isDestroyed()) contents.push(codexView.webContents);
+  return contents;
+}
+
+// The surface showing a project, else the one in front.
+function codexSurfaceContentsForProject(projectId) {
+  const entry = workbenchViewEntry(projectId);
+  if (entry) return entry.view.webContents;
+  if (!codexView?.webContents || codexView.webContents.isDestroyed()) return null;
+  return normalizeString(currentProject?.id, "") === normalizeString(projectId, "") || !DIRECT_WORKBENCH_MODE
+    ? codexView.webContents
+    : null;
+}
+
+function directWorkbenchPendingOwnerRequests() {
+  const requests = [];
+  for (const session of codexSurfaceSessions?.values() || []) {
+    const projectId = normalizeString(session?.project?.id || session?.connection?.projectId, "");
+    for (const record of session?.serverRequests?.values?.() || []) {
+      if (normalizeString(record?.status, "") !== "pending") continue;
+      requests.push({
+        projectId,
+        threadId: normalizeString(record.params?.threadId || record.params?.sessionId, normalizeString(session.activeThreadId, "")),
+      });
+    }
+  }
+  return requests;
+}
+
+async function directWorkbenchThreadOverview() {
+  const config = await loadConfig();
+  let sessions = [];
+  try {
+    sessions = ensureDirectSessionStore().readIndex()?.sessions || [];
+  } catch {
+    sessions = [];
+  }
+  return buildDirectWorkbenchThreadOverview({
+    projects: config.projects,
+    selectedProjectId: config.selectedProjectId,
+    sessions,
+    pendingRequests: directWorkbenchPendingOwnerRequests(),
+    liveProjectIds: [...workbenchProjectViews.keys()],
+  });
+}
+
+// Sends every open surface the overview (debounced). While anything runs it
+// refreshes every few seconds: delegated and test-driven turns have no
+// surface of their own to report through.
+function scheduleWorkbenchThreadOverviewBroadcast(delayMs = 200) {
+  if (!DIRECT_WORKBENCH_MODE || !mainWindow) return;
+  const dueAt = Date.now() + delayMs;
+  if (workbenchOverviewTimer && workbenchOverviewDueAt <= dueAt) return;
+  clearTimeout(workbenchOverviewTimer);
+  workbenchOverviewDueAt = dueAt;
+  workbenchOverviewTimer = setTimeout(async () => {
+    workbenchOverviewTimer = null;
+    let overview = null;
+    try {
+      overview = await directWorkbenchThreadOverview();
+    } catch {
+      return;
+    }
+    for (const contents of workbenchSurfaceContents()) contents.send("direct-workbench:thread-overview-event", overview);
+    if (overview.projects.some((project) => project.runningCount > 0 || project.needsYouCount > 0)) {
+      scheduleWorkbenchThreadOverviewBroadcast(4000);
+    }
+  }, delayMs);
 }
 
 async function createWorldManagerWindow() {
@@ -13092,7 +13425,8 @@ ipcMain.handle("codex:reload-runtime", async (_event, options) => {
 ipcMain.handle("codex-surface:connect", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:connect");
   const requestedConnection = payload?.connection || null;
-  const activeTransport = normalizeString(activeCodexSurfaceConnection?.transport, "");
+  const surfaceConnection = codexSurfaceContextFor(event.sender).connection;
+  const activeTransport = normalizeString(surfaceConnection?.transport, "");
   const requestedTransport = normalizeString(requestedConnection?.transport, "");
   const directTransport =
     activeTransport === DIRECT_FIXTURE_SURFACE_TRANSPORT ||
@@ -13100,12 +13434,12 @@ ipcMain.handle("codex-surface:connect", async (event, payload) => {
   const connection = directTransport
     ? (
         requestedTransport === activeTransport
-          ? { ...activeCodexSurfaceConnection, remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" } }
+          ? { ...surfaceConnection, remoteAuth: surfaceConnection.remoteAuth || { mode: "none" } }
           : null
       )
     : {
-        ...validateCodexSurfaceConnectionRequest(activeCodexSurfaceConnection, requestedConnection),
-        remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" },
+        ...validateCodexSurfaceConnectionRequest(surfaceConnection, requestedConnection),
+        remoteAuth: surfaceConnection?.remoteAuth || { mode: "none" },
       };
   if (!connection) throw new Error("Renderer-supplied direct Codex connection ref is stale or invalid.");
   const session = codexSurfaceSessionFor(event.sender, { connection });
@@ -13153,7 +13487,7 @@ ipcMain.handle("codex-surface:direct-projection", async (event, payload) => {
 ipcMain.handle("codex-surface:request", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:request");
   const method = normalizeString(payload?.method, "");
-  const capabilities = codexSurfaceRequestAuthorizationCapabilities();
+  const capabilities = codexSurfaceRequestAuthorizationCapabilities(event.sender);
   const decision = codexClientRequestDecision(method, capabilities);
   if (!decision.ok) {
     throw new Error(`Codex app-server request method is not authorized: ${method || "<empty>"} (${decision.reason})`);
@@ -13172,7 +13506,7 @@ ipcMain.handle("codex-surface:request", async (event, payload) => {
 ipcMain.handle("codex-surface:notify", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:notify");
   const method = normalizeString(payload?.method, "");
-  const capabilities = codexSurfaceRequestAuthorizationCapabilities();
+  const capabilities = codexSurfaceRequestAuthorizationCapabilities(event.sender);
   const decision = codexClientNotificationDecision(method, capabilities);
   if (!decision.ok) {
     throw new Error(`Codex app-server notification method is not authorized: ${method || "<empty>"} (${decision.reason})`);
@@ -13209,7 +13543,7 @@ ipcMain.handle("codex-surface:respond", async (event, payload) => {
 
 ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:thread-state");
-  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  if (isStaleSurfaceEpochFor(event.sender, payload?.activationEpoch)) return { ok: false, stale: true };
   const session = codexSurfaceSessionFor(event.sender);
   const state = {
     surface: "codex",
@@ -13242,7 +13576,7 @@ ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
 });
 
 ipcMain.handle("codex-surface:context-management-evidence", async (event, payload) => {
-  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  if (isStaleSurfaceEpochFor(event.sender, payload?.activationEpoch)) return { ok: false, stale: true };
   const session = codexSurfaceSessionFor(event.sender);
   const evidence = recordContextManagementEvidence({
     projectId: normalizeString(payload?.projectId, ""),
@@ -13270,7 +13604,7 @@ ipcMain.handle("codex-surface:context-management-evidence", async (event, payloa
 
 ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:agent-graph");
-  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  if (isStaleSurfaceEpochFor(event.sender, payload?.activationEpoch)) return { ok: false, stale: true };
   const session = codexSurfaceSessionFor(event.sender);
   const state = {
     surface: "codex",
@@ -13297,7 +13631,7 @@ ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
 
 ipcMain.handle("codex-surface:focus-sub-agent", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:focus-sub-agent");
-  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  if (isStaleSurfaceEpochFor(event.sender, payload?.activationEpoch)) return { ok: false, stale: true };
   const state = {
     surface: "codex",
     type: "focus-sub-agent",
@@ -14349,6 +14683,64 @@ ipcMain.handle("direct-workbench:mutate-project-lifecycle", async (event, payloa
 ipcMain.handle("direct-workbench:activate-project", async (event, payload) => {
   const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:activate-project");
   requireDirectWorkbenchExperience("direct-workbench:activate-project");
+  return beginDirectWorkbenchProjectActivation(event.sender, authority, payload || {});
+});
+
+// Every project with its recent threads and what they need, for the
+// sidebar.
+ipcMain.handle("direct-workbench:thread-overview", async (event) => {
+  requireFullCodexSurfaceBridge(event.sender, "direct-workbench:thread-overview");
+  requireDirectWorkbenchExperience("direct-workbench:thread-overview");
+  return directWorkbenchThreadOverview();
+});
+
+// Opens a thread (or, without one, a project) from the sidebar: in the
+// project in front it focuses the thread; for another project it brings that
+// project's surface to the front, opening one if needed, through the same
+// checked activation as the project directory.
+ipcMain.handle("direct-workbench:open-thread", async (event, payload) => {
+  const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:open-thread");
+  requireDirectWorkbenchExperience("direct-workbench:open-thread");
+  const projectId = normalizeString(payload?.projectId, "");
+  const threadId = normalizeString(payload?.threadId, "");
+  const config = await loadConfig();
+  if (!config.projects.some((project) => project.id === projectId)) {
+    const error = new Error("The project no longer exists.");
+    error.code = "project_activation_target_unknown";
+    throw error;
+  }
+  if (threadId) {
+    let entry = null;
+    try {
+      entry = (ensureDirectSessionStore().readIndex()?.sessions || []).find((session) => session.sessionId === threadId);
+    } catch {}
+    if (!entry || normalizeString(entry.projectId, "") !== projectId) {
+      const error = new Error("The thread isn't in that project.");
+      error.code = "thread_not_in_project";
+      throw error;
+    }
+  }
+  if (projectId === config.selectedProjectId) {
+    if (threadId && isForegroundCodexSurface(event.sender)) {
+      event.sender.send("codex-surface:event", {
+        type: "open-thread-request", threadId, sourceHome: "", sessionFilePath: "", title: "", projectId, at: nowIso(),
+      });
+    }
+    return { ok: true, status: "completed", projectId, threadId, sameProject: true };
+  }
+  const directory = await directWorkbenchProjectDirectoryForSender(event.sender, {
+    config,
+    activeProjectId: normalizeString(authority.projectId, ""),
+  });
+  return beginDirectWorkbenchProjectActivation(event.sender, authority, {
+    clientActivationId: `open_thread_${crypto.randomUUID()}`,
+    sourceProjectId: normalizeString(authority.projectId, ""),
+    targetProjectId: projectId,
+    expectedCatalogRevision: directory.catalogRevision,
+  }, { threadId });
+});
+
+async function beginDirectWorkbenchProjectActivation(sender, authority, payload = {}, extras = {}) {
   const sourceProjectId = normalizeString(payload?.sourceProjectId, "");
   const targetProjectId = normalizeString(payload?.targetProjectId, "");
   const clientActivationId = normalizeString(payload?.clientActivationId, "");
@@ -14364,7 +14756,7 @@ ipcMain.handle("direct-workbench:activate-project", async (event, payload) => {
     error.code = "project_activation_source_stale";
     throw error;
   }
-  const directory = await directWorkbenchProjectDirectoryForSender(event.sender, {
+  const directory = await directWorkbenchProjectDirectoryForSender(sender, {
     config,
     activeProjectId: sourceProjectId,
   });
@@ -14384,7 +14776,10 @@ ipcMain.handle("direct-workbench:activate-project", async (event, payload) => {
     error.code = "project_binding_mutation_in_progress";
     throw error;
   }
-  const operation = validateDirectWorkbenchProjectActivation(directory, payload || {});
+  const operation = {
+    ...validateDirectWorkbenchProjectActivation(directory, payload || {}),
+    threadId: normalizeString(extras.threadId, ""),
+  };
   const acceptedAt = nowIso();
   directWorkbenchProjectTransition = {
     state: "activating",
@@ -14405,7 +14800,7 @@ ipcMain.handle("direct-workbench:activate-project", async (event, payload) => {
     performDirectWorkbenchProjectActivation(operation).catch(() => {});
   }, 0);
   return receipt;
-});
+}
 
 ipcMain.handle("direct-thread-workbench:snapshot", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);

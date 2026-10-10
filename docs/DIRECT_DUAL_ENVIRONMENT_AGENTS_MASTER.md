@@ -1145,6 +1145,78 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
     - The Windows Low-label cross-project write risk is recorded, not fixed.
     - The owner's Electron check is pending.
 
+### Turn 12: Windows and WSL projects open at the same time
+
+- Status: done (owner's own check in the daily app pending)
+- Scope: the owner's call after the MCP/skills/hooks PR: "having to switch
+  between them defeats the entire goal". Owner decisions: an all-projects
+  sidebar where any thread opens at once and other projects keep running
+  in the background with badges; one live surface per open project (capped)
+  rather than a rewrite of the Codex surface; sidebar badges only, no
+  notifications; the WSL app stays for testing, and the Windows app is the
+  daily app.
+- What blocked it before: the Workbench had one surface. Selecting another
+  project tore it down and loaded a new one, switching was refused while
+  either project had a running turn or an open request, and the thread rail
+  listed only the selected project.
+- Outcome:
+  - **A live surface per open project** (`src/main.js`). Direct Workbench
+    keeps up to 4 project surfaces (`WORKBENCH_LIVE_VIEW_LIMIT`) as hidden
+    `WebContentsView`s. Opening a project shows its surface if it is open,
+    or opens one. Past the limit, the least recently shown surfaces close,
+    but only idle ones (no running turn, no open request). Surfaces for
+    projects that aren't Direct (app-server, URL) aren't kept, since they
+    share process-wide state with whatever loads next.
+  - **Requests from a background surface use its own project.** Each
+    surface remembers its project, connection, and load epoch
+    (`codexSurfaceContexts`). Session creation, `codex-surface:connect`,
+    request authorization, capability refresh, and the epoch checks on
+    thread-state reports all resolve per sender. The surface in front still
+    uses `currentProject` and `activeCodexSurfaceConnection`, so nothing
+    changes for it. Workspace status and terminal events go to the
+    surface showing that project; zoom applies to all.
+  - **Switching isn't blocked by running work.** The directory's
+    `active_turn_in_*` activation blockers are gone. Turn counts left the
+    catalog revision, or every activation would race a turn starting or
+    ending. Edits and archive/delete still wait for a project's turns; an
+    edited or archived project's background surface closes.
+  - **All projects in the sidebar.** New `direct-workbench:thread-overview`
+    (`workbench-thread-overview.js`) lists each active project with its
+    recent threads (six, plus any older one that is running or waiting) and
+    states: running, from the session index, and needs you, from every open
+    surface's pending owner requests. Main pushes it to every surface when
+    a request opens or closes or a turn starts or ends, and every 4 s
+    while anything runs (delegated and test-driven turns have no surface to
+    report through). The sidebar shows the other projects under the rail
+    with environment badges, and the rail in front marks its own waiting
+    threads "needs you". `direct-workbench:open-thread` opens a thread in
+    the project in front, or brings its project forward through the same
+    checked activation as the directory and opens the thread there. The
+    thread must belong to that project.
+  - **Found by the live check:** the rail redraws often, and the first
+    version added its "needs you" badge after each redraw, so the rows
+    below kept moving and a click couldn't land (on Windows). The rail now
+    draws the mark itself as its state label, and the sidebar redraws only
+    when the overview changes.
+  - **Checks:**
+    - New `direct-workbench-live-projects-regression` (both hosts): the
+      overview model, the sidebar renderer in a fake DOM, and the
+      main-process contracts.
+    - New live `direct-workbench-live-projects-electron-smoke`
+      (Playwright, the real UI, real provider at luna/low, hidden window)
+      passes on both hosts. On Windows it ran with a WSL project and a
+      Windows project. A slow WSL command's turn keeps running while the
+      Windows project is in front and a turn runs there. The WSL turn
+      finishes in the background, and switching back reuses its surface
+      with the reply in it. A WSL question shows "needs you" in the
+      Windows project's sidebar and is answered after switching back.
+    - `direct-workbench-project-directory`, `direct-experience-split`, and
+      the Workbench Electron smoke were updated: switching now opens the
+      other project's surface, and the first one stays loaded and isn't
+      reloaded.
+  - **Not done:** OS notifications (owner's call: badges only), a split
+    view, and merging the WSL test app's projects into the Windows app.
+
 ## Baseline and prerequisites
 
 | Item | State |
@@ -1943,6 +2015,7 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-09 | Workspace patch writes run inside the sandbox; Workspace and Read only reads are identity-checked after opening | Owner's call after the security review. Node has no directory-relative file calls, so the host can't close a symlink race on its own; the sandbox can't reach outside however a path resolves. This is how Codex runs apply_patch. |
 | 2026-10-09 | MCP server tools are callable as in Codex; approval follows Codex's annotation rule (none in Full access), with "for this thread" and "always" per project; server forms go to the owner; Full access accepts an empty confirmation | Owner's call. Server forms almost always come from tool calls, so forms without tool calls would have been nearly unused. |
 | 2026-10-09 | Sandboxed threads get Codex's per-command escalation; saved allow rules (global or per project and environment) run matching commands outside the sandbox without asking; Codex's own rules files are not read | Owner's call. Prompt-only rules would have added nothing: sandboxed profiles never prompt per command. |
+| 2026-10-10 | Direct Workbench keeps a live surface per open project (up to 4, only idle ones close) instead of one surface that switches | Owner's call. Switching then never interrupts or blocks work in another environment, and it reuses the existing single-project surface; a multi-project rewrite of the 11k-line Codex surface would take far longer and risk more. Each surface costs a renderer, hence the cap. |
 | 2026-10-08 | `request_permissions` raises the thread's Access profile for the turn or the thread; it doesn't grant per-path or network-only permissions | Owner's call. It reuses Direct's grants and sandboxes as they are; Codex's path-scoped form would mean widening bubblewrap binds and Windows labels per request. |
 | 2026-10-08 | Every request carries the thread ID as `prompt_cache_key` and `session-id`/`thread-id` headers; continuation guidance is a trailing developer message, not an instructions suffix | Matches the Codex CLI's cache identity. The backend's cache matches exact prefixes, so a turn's instructions and tools must not change between its requests. |
 | 2026-10-08 | `exec_command` waits up to 10 s (`yield_time_ms`, max 30 s, at most half the idle timeout) for the command to finish; `write_stdin` waits 250 ms, or 5 s for an empty poll (supersedes the 100 ms first yield in the 2026-10-06 rows) | Codex's defaults. A 100 ms wait turned every command longer than that into an extra provider round trip, measured live at up to 19 s, and a write to the exited process then failed the turn. |
