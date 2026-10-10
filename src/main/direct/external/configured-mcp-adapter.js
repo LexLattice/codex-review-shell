@@ -310,7 +310,13 @@ function normalizeRunsIn(input) {
 const codexConfigServers = new Map();
 
 function codexServerIdentityId(name) {
-  return `codex_${String(name).replace(/[^A-Za-z0-9_-]/g, "_")}`.slice(0, 180);
+  const original = String(name);
+  const sanitized = original.replace(/[^A-Za-z0-9_-]/g, "_");
+  const readable = `codex_${sanitized}`;
+  if (original === sanitized && readable.length <= 180) return readable;
+  // A dot keeps hashed identities distinct from unchanged legacy names.
+  const suffix = `.${sha256(original).slice(0, 24)}`;
+  return `${readable.slice(0, 180 - suffix.length)}${suffix}`;
 }
 
 // A Codex [mcp_servers.<name>] entry as a Direct server: it runs where the
@@ -538,6 +544,7 @@ async function queryConfiguredServer(server, method, params, options = {}) {
       onElicitation: options.onElicitation,
       fetchImpl: options.fetchImpl,
       placementKey: "host",
+      projectId: projectIdFor(options),
       identityKey: server.serverIdentityId,
     });
   }
@@ -568,6 +575,7 @@ async function queryConfiguredServer(server, method, params, options = {}) {
     return (options.mcpSessionPool || hostMcpSessions).request(server, method, params, {
       ...transportOptions,
       placementKey: "host",
+      projectId: projectIdFor(options),
       identityKey: server.serverIdentityId,
     });
   }
@@ -727,8 +735,9 @@ async function requestViaExecutor(placement, server, method, params, options = {
           // Literal values (Codex's env); in memory only, for the server.
           envValues: { ...(server.envValues || {}) },
           startupTimeoutMs: server.startupTimeoutMs || undefined,
-          // Lets the executor replace this server's session on a config change.
-          serverIdentityId: server.serverIdentityId,
+          // Executor pools are shared by projects; this transport-only identity
+          // scopes replacements without changing the public approval identity.
+          serverIdentityId: `project_mcp_${sha256(JSON.stringify([projectIdFor(options), server.serverIdentityId]))}`,
         },
         method,
         params,

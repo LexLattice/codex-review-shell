@@ -62,11 +62,11 @@ def main(argv):
     pid, master = pty.fork()
     if pid == 0:
         try:
+            set_size(0, rows, cols)
             os.execvp(command[0], command)
         except OSError as error:
             sys.stderr.write("direct-pty-helper: cannot run %s: %s\n" % (command[0], error.strerror))
         os._exit(127)
-    set_size(master, rows, cols)
     stdin_open = True
     pending = b""
     while True:

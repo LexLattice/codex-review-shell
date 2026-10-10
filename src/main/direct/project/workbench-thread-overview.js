@@ -8,6 +8,9 @@
 
 const DIRECT_WORKBENCH_THREAD_OVERVIEW_SCHEMA = "direct_workbench_thread_overview@1";
 const DEFAULT_THREADS_PER_PROJECT = 50;
+// A project whose list the owner expanded, or every project while they
+// search: all its threads, up to this bound.
+const EXPANDED_THREADS_PER_PROJECT = 1000;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -48,6 +51,8 @@ function buildDirectWorkbenchThreadOverview(input = {}) {
   const selectedProjectId = normalizeString(input.selectedProjectId, "");
   const liveProjectIds = input.liveProjectIds instanceof Set ? input.liveProjectIds : new Set(input.liveProjectIds || []);
   const perProject = Math.max(1, Math.min(200, Number(input.threadsPerProject) || DEFAULT_THREADS_PER_PROJECT));
+  const expandedProjectIds = new Set(Array.isArray(input.expandedProjectIds) ? input.expandedProjectIds : []);
+  const appServerProjectIds = new Set(Array.isArray(input.appServerProjectIds) ? input.appServerProjectIds : []);
   const waiting = new Map();
   for (const request of Array.isArray(input.pendingRequests) ? input.pendingRequests : []) {
     const projectId = normalizeString(request?.projectId, "");
@@ -67,7 +72,10 @@ function buildDirectWorkbenchThreadOverview(input = {}) {
   const rows = projects.map((project) => {
     const projectId = normalizeString(project.id, "");
     const presented = (entry) => presentation[normalizeString(entry.sessionId, "")] || {};
-    const entries = (sessionsByProject.get(projectId) || []).slice()
+    // An Appserver project's threads are in the Appserver: Direct sessions
+    // it had before it switched aren't its threads now.
+    const appServer = appServerProjectIds.has(projectId);
+    const entries = (appServer ? [] : sessionsByProject.get(projectId) || []).slice()
       .sort((left, right) => orderMs(right, presented(right)) - orderMs(left, presented(left)));
     const threads = entries.map((entry) => {
       const threadId = normalizeString(entry.sessionId, "");
@@ -90,16 +98,20 @@ function buildDirectWorkbenchThreadOverview(input = {}) {
     // counts for the project.
     const known = new Set(threads.map((thread) => thread.threadId));
     let unattributed = 0;
+    const waitingThreads = {};
     for (const [key, count] of waiting) {
       const [requestProjectId, threadId] = key.split("\u0000");
-      if (requestProjectId === projectId && !known.has(threadId)) unattributed += count;
+      if (requestProjectId !== projectId || known.has(threadId)) continue;
+      unattributed += count;
+      if (appServer && threadId) waitingThreads[threadId] = count;
     }
     const needsYouCount = threads.reduce((sum, thread) => sum + thread.needsYouCount, 0) + unattributed;
     const runningCount = threads.filter((thread) => thread.running).length;
     const unreadCount = threads.filter((thread) => thread.unread).length;
     // Recent threads, plus any older one that is running or waiting.
-    const shown = threads.slice(0, perProject);
-    for (const thread of threads.slice(perProject)) {
+    const limit = input.allThreads === true || expandedProjectIds.has(projectId) ? EXPANDED_THREADS_PER_PROJECT : perProject;
+    const shown = threads.slice(0, limit);
+    for (const thread of threads.slice(limit)) {
       if (thread.state !== "idle") shown.push(thread);
     }
     return {
@@ -114,6 +126,10 @@ function buildDirectWorkbenchThreadOverview(input = {}) {
       threadCount: threads.length,
       threads: shown,
       moreThreadCount: Math.max(0, threads.length - shown.length),
+      // "app-server": the surface showing the project lists its threads;
+      // waitingThreads marks which of them wait for the owner.
+      threadSource: appServer ? "app-server" : "direct",
+      ...(appServer ? { waitingThreads } : {}),
     };
   });
   return {

@@ -3500,6 +3500,16 @@ globalThis.DirectWorkbenchSurface = Object.freeze({
     ? openDirectThread(threadId)
     : openThreadHybrid(threadId, "", "", "", { requireProviderAttach: true })),
   newThread: () => startNewThread(),
+  // An Appserver project's threads live in its own runtime, not in main's
+  // Direct stores; the sidebar lists them from here.
+  threadRows: () => (isDirectRuntimeSurface()
+    ? []
+    : (state.directThreadDirectory?.rows || []).map((row) => ({
+      threadId: String(row.threadId || ""),
+      title: String(row.displayTitle || row.threadId || ""),
+      updatedAt: String(row.updatedAt || ""),
+      running: Number(row.activeTurnCount || 0) > 0,
+    })).filter((row) => row.threadId)),
   focusComposer: () => els.composerInput?.focus?.(),
   // The sidebar footer: who is signed in and the quota left.
   account: () => {
@@ -7344,6 +7354,7 @@ function renderMorphicThreadRail() {
 
 function renderDirectThreadList() {
   renderMorphicThreadRail();
+  globalThis.dispatchEvent?.(new Event("direct-workbench-surface-threads-changed"));
   if (!els.directThreadStrip || !els.directThreadList || !els.directThreadStatus) return;
   const enabled = isDirectLiveTextSurface();
   els.directThreadStrip.hidden = !enabled;
@@ -10377,7 +10388,16 @@ async function startNewThread() {
   }
 }
 
+function threadSwitchedBeforeSendError() {
+  const error = new Error("You switched threads before this message was sent, so it wasn't sent. It's still in the composer.");
+  error.code = "thread_switched_before_send";
+  return error;
+}
+
 async function startCodexTurn(text, options = {}) {
+  // Taken before any wait: everything below (and the turn) must be for the
+  // thread the owner sent from.
+  const originThreadId = String(options.originThreadId || state.threadId || "");
   assertThreadAcceptsDirectInput();
   await flushRuntimePreferenceWrites();
   if (isDirectLiveTextSurface()) {
@@ -10386,6 +10406,7 @@ async function startCodexTurn(text, options = {}) {
       throw new Error(directLiveTextBlockedMessage());
     }
   }
+  if (String(state.threadId || "") !== originThreadId) throw threadSwitchedBeforeSendError();
   if (!isDirectLiveTextSurface() && !hasCapability("turns", "canStart")) {
     throw new Error("Active Codex runtime does not expose turn/start capability.");
   }
@@ -10429,7 +10450,6 @@ async function startCodexTurn(text, options = {}) {
   if (isDirectLiveTextSurface()) params.daybreakEnabled = state.runtimeOverrides.daybreakEnabled === true;
   const sandboxPolicy = sandboxPolicyForMode(state.runtimeOverrides.sandboxMode);
   if (sandboxPolicy) params.sandboxPolicy = sandboxPolicy;
-  const originThreadId = String(state.threadId || "");
   const result = await rpc("turn/start", params);
   const turnId = String(result?.turn?.id || "");
   // The owner switched threads while the turn started: its state is
@@ -10457,19 +10477,20 @@ async function startCodexTurn(text, options = {}) {
 
 async function sendPrompt(text, options = {}) {
   if (!state.threadId) await startNewThread();
+  const originThreadId = String(state.threadId || "");
   if (!state.liveAttached && state.threadId) {
     const preserveStoredTranscript = Boolean(renderedStoredSnapshotForThread(state.threadId)?.presentationModel);
     const liveResult = await attachLiveThread(state.threadId, state.sessionFilePath, {
       excludeTurns: preserveStoredTranscript,
       skipReadFallback: preserveStoredTranscript,
     });
+    if (String(state.threadId || "") !== originThreadId) throw threadSwitchedBeforeSendError();
     applyLiveThreadResult(liveResult);
   }
   state.turnPending = true;
   renderRuntimeConstitution();
-  const originThreadId = String(state.threadId || "");
   try {
-    await startCodexTurn(text, options);
+    await startCodexTurn(text, { ...options, originThreadId });
     if (options.clearComposer !== false && String(state.threadId || "") === originThreadId) clearComposerDraft();
   } catch (error) {
     if (String(state.threadId || "") === originThreadId) clearPrimaryTurnActivityState();

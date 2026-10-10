@@ -161,7 +161,9 @@ function parseToml(source) {
     const parts = [];
     for (;;) {
       skipInlineSpace();
-      parts.push(parseKeyPart());
+      const part = parseKeyPart();
+      if (part === "__proto__" || part === "constructor" || part === "prototype") fail(`unsafe key "${part}"`);
+      parts.push(part);
       skipInlineSpace();
       if (peek() !== ".") return parts;
       advance();
@@ -260,7 +262,7 @@ function parseToml(source) {
   function assignPath(target, parts, value) {
     let node = target;
     for (const part of parts.slice(0, -1)) {
-      if (node[part] === undefined) node[part] = {};
+      if (!Object.hasOwn(node, part)) node[part] = {};
       else if (!isPlainObject(node[part])) fail(`key "${part}" is not a table`);
       node = node[part];
     }
@@ -274,14 +276,14 @@ function parseToml(source) {
     parts.forEach((part, index) => {
       const lastPart = index === parts.length - 1;
       if (lastPart && arrayOfTables) {
-        if (node[part] === undefined) node[part] = [];
+        if (!Object.hasOwn(node, part)) node[part] = [];
         if (!Array.isArray(node[part])) fail(`"${parts.join(".")}" is not an array of tables`);
         const entry = {};
         node[part].push(entry);
         node = entry;
         return;
       }
-      if (node[part] === undefined) node[part] = {};
+      if (!Object.hasOwn(node, part)) node[part] = {};
       const next = node[part];
       if (Array.isArray(next)) node = next[next.length - 1];
       else if (isPlainObject(next)) node = next;

@@ -384,8 +384,8 @@ if (directWorkbenchPreload) {
     },
     // Every project and its recent threads, with what they need; opening a
     // thread in another project brings that project to the front.
-    readDirectWorkbenchThreadOverview: () =>
-      ipcRenderer.invoke("direct-workbench:thread-overview"),
+    readDirectWorkbenchThreadOverview: (payload) =>
+      ipcRenderer.invoke("direct-workbench:thread-overview", payload),
     openDirectWorkbenchThread: (payload = {}) =>
       ipcRenderer.invoke("direct-workbench:open-thread", payload),
     newDirectWorkbenchThread: (payload = {}) =>

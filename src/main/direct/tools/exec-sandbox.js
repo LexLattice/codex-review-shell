@@ -10,12 +10,22 @@ const SANDBOX_HIDDEN_DIRECTORIES = Object.freeze(["/mnt", "/run/WSL"]);
 // Credential-store policy for the sandboxed profiles (Workspace, Read only):
 // commands and read_file must not reach the harness's own credentials. Full
 // access is deliberately unrestricted, like a native full-access agent.
-// Matches `<...>/.codex/auth.json` (Codex CLI) and
-// `<...>/direct-auth/auth.json` (Direct's auth store) on either OS.
-function isCredentialStorePath(target) {
+function credentialPathKey(target, options = {}) {
+  const fileSystem = options.fs || fs;
+  const windows = (options.platform || process.platform) === "win32";
+  const pathApi = windows ? path.win32 : path.posix;
+  let resolved = String(target || "");
+  try { resolved = fileSystem.realpathSync(resolved); } catch {}
+  const normalized = pathApi.resolve(resolved);
+  return windows ? normalized.toLowerCase() : normalized;
+}
+
+function isCredentialStorePath(target, options = {}) {
   const segments = String(target || "").split(/[\\/]+/).filter(Boolean).map((segment) => segment.toLowerCase());
-  if (segments.length < 2 || segments[segments.length - 1] !== "auth.json") return false;
-  return [".codex", "direct-auth"].includes(segments[segments.length - 2]);
+  if (segments.length >= 2 && segments[segments.length - 1] === "auth.json"
+    && [".codex", "direct-auth"].includes(segments[segments.length - 2])) return true;
+  const key = credentialPathKey(target, options);
+  return discoverCredentialStoreFiles(options).some((candidate) => credentialPathKey(candidate, options) === key);
 }
 
 function discoverCredentialStoreFiles(options = {}) {
@@ -23,12 +33,16 @@ function discoverCredentialStoreFiles(options = {}) {
   const env = options.env || process.env;
   const windows = (options.platform || process.platform) === "win32";
   const pathApi = windows ? path.win32 : path.posix;
-  const home = normalizeString(windows ? env.USERPROFILE || options.homedir : options.homedir, "");
+  const home = normalizeString(windows ? env.USERPROFILE || options.homedir : options.homedir, os.homedir());
   const isFile = (candidate) => {
     try { return fileSystem.statSync(candidate).isFile(); } catch { return false; }
   };
   const candidates = new Set();
   if (normalizeString(env.CODEX_HOME, "")) candidates.add(pathApi.join(env.CODEX_HOME, "auth.json"));
+  if (normalizeString(options.codexHome, "")) candidates.add(pathApi.join(options.codexHome, "auth.json"));
+  for (const candidate of [env.CODEX_DIRECT_CODEX_AUTH_FILE, env.CODEX_AUTH_FILE]) {
+    if (normalizeString(candidate, "")) candidates.add(candidate);
+  }
   if (home) {
     candidates.add(pathApi.join(home, ".codex", "auth.json"));
     // The auth store's own default outside Electron.
@@ -62,7 +76,7 @@ function discoverCredentialStoreFiles(options = {}) {
  */
 function sandboxedReadRefusal(target, options = {}) {
   const resolved = String(target || "");
-  if (isCredentialStorePath(resolved)) return "direct_access_profile_credential_store_hidden";
+  if (isCredentialStorePath(resolved, options)) return "direct_access_profile_credential_store_hidden";
   if ((options.platform || process.platform) === "win32") return "";
   const root = normalizeString(options.workspaceRoot, "");
   const insideWorkspace = Boolean(root) && (resolved === root || resolved.startsWith(`${root.replace(/\/+$/, "")}/`));
@@ -119,6 +133,7 @@ class BubblewrapExecSandbox {
     this.executable = normalizeString(options.executable, "");
     this.env = options.env || process.env;
     this.homedir = options.homedir || os.homedir();
+    this.codexHome = normalizeString(options.codexHome, "");
     this.fs = options.fs || fs;
     this.resolved = null;
   }
@@ -128,7 +143,8 @@ class BubblewrapExecSandbox {
   }
 
   credentialStoreFiles() {
-    return discoverCredentialStoreFiles({ platform: "linux", homedir: this.homedir, env: this.env, fs: this.fs });
+    const options = { platform: "linux", homedir: this.homedir, codexHome: this.codexHome, env: this.env, fs: this.fs };
+    return [...new Set(discoverCredentialStoreFiles(options).map((candidate) => credentialPathKey(candidate, options)))];
   }
 
   resolveExecutable() {
@@ -184,9 +200,6 @@ class BubblewrapExecSandbox {
     for (const hidden of SANDBOX_HIDDEN_DIRECTORIES) {
       if (this.directoryExists(hidden)) args.push("--tmpfs", hidden);
     }
-    for (const credentialFile of this.credentialStoreFiles()) {
-      args.push("--ro-bind", "/dev/null", credentialFile);
-    }
     // bwrap applies mounts in order: the workspace bind comes after /tmp so
     // a workspace that lives under /tmp stays visible in both modes.
     if (sandboxMode === "workspace-write") {
@@ -195,6 +208,10 @@ class BubblewrapExecSandbox {
     } else {
       args.push("--tmpfs", "/tmp");
       args.push("--ro-bind", root, root);
+    }
+    // Parent mounts would otherwise expose the original credential files again.
+    for (const credentialFile of this.credentialStoreFiles()) {
+      args.push("--ro-bind", "/dev/null", credentialFile);
     }
     args.push("--chdir", cwd, "--");
     const shellCommand = typeof spec.shellCommand === "string" ? spec.shellCommand : "";

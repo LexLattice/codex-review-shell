@@ -169,8 +169,9 @@ function commandSegments(cmd, shell = "bash") {
   return shell === "powershell" ? parsePowerShellSegments(cmd) : parseBashSegments(cmd);
 }
 
-function tokenEquals(a, b, shell) {
-  return shell === "powershell" ? a.toLowerCase() === b.toLowerCase() : a === b;
+function tokenEquals(a, b, shell, index = 0) {
+  // PowerShell command names ignore case, but native arguments need not.
+  return shell === "powershell" && index === 0 ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 // A rule naming a program matches it by its path too (`/usr/bin/git` for
@@ -178,7 +179,7 @@ function tokenEquals(a, b, shell) {
 function ruleMatches(argv = [], pattern = [], shell = "bash") {
   if (!Array.isArray(pattern) || !pattern.length || argv.length < pattern.length) return false;
   return pattern.every((token, index) => {
-    if (tokenEquals(argv[index], token, shell)) return true;
+    if (tokenEquals(argv[index], token, shell, index)) return true;
     if (index !== 0 || /[\\/]/.test(token)) return false;
     const api = shell === "powershell" ? path.win32 : path.posix;
     const base = api.basename(argv[0]);

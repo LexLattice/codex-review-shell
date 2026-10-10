@@ -739,12 +739,13 @@ class McpSessionPool {
 
   static keyFor(server, options = {}) {
     const env = isPlainObject(options.env) ? Object.entries(options.env).sort(([a], [b]) => a.localeCompare(b)) : [];
+    const scope = [String(options.placementKey || ""), String(options.projectId || ""), String(options.identityKey || "")];
     if (server.transportKind === "streamable_http") {
       const headers = isPlainObject(server.headers) ? Object.entries(server.headers).sort(([a], [b]) => a.localeCompare(b)) : [];
-      return JSON.stringify([String(options.placementKey || ""), "http", server.url, headers]);
+      return JSON.stringify([...scope, "http", server.url, headers]);
     }
     return JSON.stringify([
-      String(options.placementKey || ""),
+      ...scope,
       server.command,
       server.args || [],
       server.cwd || "",
@@ -761,7 +762,9 @@ class McpSessionPool {
       this.sessions.set(key, existing);
       return existing;
     }
-    const identityKey = options.identityKey ? `${options.placementKey || ""}::${options.identityKey}` : "";
+    const identityKey = options.identityKey
+      ? JSON.stringify([String(options.placementKey || ""), String(options.projectId || ""), options.identityKey])
+      : "";
     if (identityKey) {
       // The same server with a changed config: the old process goes.
       for (const session of [...this.sessions.values()]) {
