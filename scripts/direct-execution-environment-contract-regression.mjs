@@ -6,6 +6,8 @@
 // threads see PowerShell and Windows paths. Runs on Linux and Windows hosts.
 
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +23,7 @@ const {
   selfConstitutionEnvironmentProjection,
 } = require("../src/main/direct/runtime/execution-environment-contract");
 const { DirectThreadHarnessGrant } = require("../src/main/direct/authority/direct-thread-harness-grant");
+const { dedupedPath } = require("../src/main/direct/tools/exec-process-backends");
 const { DirectLiveTextController } = require("../src/main/direct/controller/live-text-controller");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 const { LocalChildProcessBackend } = require("../src/main/direct/tools/exec-process-backends");
@@ -125,7 +128,29 @@ async function main() {
   try {
     // 1. Native shell planning, per platform.
     const linuxBash = nativeShellCommand("echo hi", { platform: "linux", env: {}, fileExists: (file) => file === "/bin/bash" });
-    assert.deepEqual(linuxBash, { command: "/bin/bash", args: ["-c", "echo hi"], shell: "bash", flavor: "bash" });
+    assert.deepEqual(linuxBash, { command: "/bin/bash", args: ["--norc", "-c", "echo hi"], shell: "bash", flavor: "bash" });
+    // With stdin a socketpair (as Node's pipes are), plain `bash -c` would
+    // source ~/.bashrc; --norc keeps what it exports out of commands.
+    if (process.platform !== "win32" && fsSync.existsSync("/bin/bash")) {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "direct-norc-home-"));
+      await fs.writeFile(path.join(home, ".bashrc"), "export DIRECT_BASHRC_PROBE=sourced\n", "utf8");
+      const invocation = nativeShellCommand('echo "rc=${DIRECT_BASHRC_PROBE:-none}"', { platform: process.platform });
+      const output = await new Promise((resolve, reject) => {
+        const child = spawn(invocation.command, invocation.args, { stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin", HOME: home } });
+        let text = "";
+        child.stdout.on("data", (chunk) => { text += chunk; });
+        child.on("error", reject);
+        child.on("close", () => resolve(text.trim()));
+      });
+      await fs.rm(home, { recursive: true, force: true });
+      assert.equal(output, "rc=none", "a command doesn't source ~/.bashrc");
+    }
+    assert.equal(
+      dedupedPath("C:\\Program Files\\nodejs\\;C:\\Windows;c:\\program files\\nodejs;;C:\\Windows\\", "win32"),
+      "C:\\Program Files\\nodejs\\;C:\\Windows",
+      "Windows PATH repeats go, case- and trailing-slash-insensitively, first kept",
+    );
+    assert.equal(dedupedPath("/usr/bin:/bin:/usr/bin:/Bin", "linux"), "/usr/bin:/bin:/Bin");
     const linuxSh = nativeShellCommand("echo hi", { platform: "linux", env: {}, fileExists: () => false });
     assert.deepEqual(linuxSh, { command: "/bin/sh", args: ["-c", "echo hi"], shell: "sh", flavor: "sh" });
     const pwshPath = "C:\\Tools\\pwsh.exe";

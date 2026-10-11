@@ -7,6 +7,7 @@ const { StringDecoder } = require("node:string_decoder");
 const {
   BASE_COMMAND_ENVIRONMENT_KEYS,
   LocalChildProcessBackend,
+  dedupedPath,
   statefulExecError,
 } = require("./exec-process-backends");
 const { normalizePtySize } = require("./pty-frames");
@@ -574,6 +575,7 @@ function safeExecEnvironment(extra = {}) {
   for (const key of [...BASE_COMMAND_ENVIRONMENT_KEYS, "LANG", "LC_ALL"]) {
     if (process.env[key]) result[key] = process.env[key];
   }
+  if (result.PATH) result.PATH = dedupedPath(result.PATH);
   result.CI = "1";
   result.NO_COLOR = "1";
   if (!isPlainObject(extra)) return result;
@@ -1142,7 +1144,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
   exactRecord(input = {}) {
     const sessionId = normalizeString(input.sessionId || input.session_id || input.execSessionId, "");
     const record = sessionId ? this.sessions.get(sessionId) : null;
-    if (!record) throw statefulExecError("direct_stateful_exec_session_missing", "The requested stateful exec session is not known to this task.");
+    if (!record) throw statefulExecError("direct_stateful_exec_session_missing", "No command with this session_id is known to this task (it may have ended before a restart). Use the session_id from the latest exec_command result, or run the command again.");
     try {
       if (!sessionScopeMatches(record, input)) throw statefulExecError("direct_stateful_exec_scope_mismatch", "The requested stateful exec session belongs to a different task, project, or environment.");
     } catch (error) {
@@ -1165,7 +1167,7 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       });
     }
     if (!['running', 'stdin_waiting'].includes(record.sessionState) || !record.process?.stdinWritable()) {
-      throw statefulExecError("direct_stateful_exec_session_not_live", "write_stdin requires an exact live process session.");
+      throw statefulExecError("direct_stateful_exec_session_not_live", "This command has already ended, so it can't take input. Poll it with empty input for its final output, or run it again.");
     }
     if (text && record.stdinPolicy !== "line_input") {
       throw statefulExecError("direct_stateful_exec_stdin_policy_blocked", "The process command class does not permit literal stdin input.");
@@ -1428,6 +1430,9 @@ class DirectStatefulExecSessionManager extends EventEmitter {
       cancellationRequested: record.cancellationRequested === true,
       stdinPolicy: record.stdinPolicy || "blocked_until_policy",
       sandboxMode: record.sandboxMode || "danger-full-access",
+      // Which backend ran it and how it was contained, for comparing them.
+      executionBackend: record.backendId || "",
+      sandboxLauncher: normalizeString(record.process?.launcher, "") || record.sandboxLauncher || "",
       ...(record.escalation ? { escalated: true } : {}),
       // A remote handle learns the real value from the executor once the
       // process starts; the plan only guessed it.

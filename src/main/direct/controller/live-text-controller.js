@@ -184,6 +184,9 @@ const USER_ACTIONABLE_STATEFUL_EXEC_ERRORS = new Set([
   "direct_stateful_exec_command_not_admitted",
   "direct_stateful_exec_argument_invalid",
   "direct_stateful_exec_input_invalid",
+  "direct_stateful_exec_session_missing",
+  "direct_stateful_exec_session_not_live",
+  "direct_stateful_exec_stdin_policy_blocked",
 ]);
 
 function accessProfileCapabilityNames(profile, names = []) {
@@ -2634,7 +2637,11 @@ class DirectLiveTextController {
       error.code = "direct_thread_access_profile_turn_active";
       throw error;
     }
-    const grant = this.issueThreadAccessGrant(project, session, requestedProfile, { accessRevertAfterTurn: null });
+    // Re-selecting the same Access mid-turn keeps the grant: a new revision
+    // would supersede the one the running turn is bound to.
+    const grant = turnActive && currentGrant && currentProfile === requestedProfile
+      ? currentGrant
+      : this.issueThreadAccessGrant(project, session, requestedProfile, { accessRevertAfterTurn: null });
     const projection = this.capabilitiesForTask(project, session.sessionId);
     return {
       profile: requestedProfile,
@@ -7417,7 +7424,7 @@ class DirectLiveTextController {
       message: normalizeString(error?.message, "The command was not started.").slice(0, 600),
       accessProfile: normalizeString(grantAuthorization?.accessProfile, ""),
       sandboxMode: normalizeString(grantAuthorization?.sandboxMode, ""),
-      commandStarted: false,
+      ...(toolName === "write_stdin" ? { inputAccepted: false } : { commandStarted: false }),
     };
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       status: "stateful_exec_rejected",

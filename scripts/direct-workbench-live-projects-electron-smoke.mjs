@@ -165,8 +165,9 @@ try {
   const pageWsl = await app.firstWindow();
   await verified(pageWsl);
   // Thread A: a slow command, for switching threads inside the project.
-  // Long enough that thread B's turn (slower under load) ends first.
-  const slowCommand = "sleep 30; echo done-in-wsl";
+  // Long enough that thread B's turn (slower under load) ends first, and
+  // under the 30s idle timeout a silent command gets.
+  const slowCommand = "sleep 25; echo done-in-wsl";
   const slowPrompt = (command) => `Run this shell command once with exec_command: \`${command}\`. While it is still running, wait for it with write_stdin (empty input). Then reply with only its output.`;
   const turnEnd = (text) => ((text.match(/done-in-wsl/g) || []).length >= 2 ? "reply" : /Codex error|Stopped:/.test(text) ? "error" : "");
   await send(pageWsl, slowPrompt(slowCommand));
@@ -185,7 +186,7 @@ try {
   await pageWsl.locator(threadRowSelector(wslProject.id, threadA.threadId)).click();
   await waitFor("thread A on screen", () => pageWsl.evaluate((id) => window.DirectWorkbenchSurface.currentThreadId() === id, threadA.threadId), 15_000);
   assert.equal((await threadIn(pageWsl, wslProject.id, (thread) => thread.threadId === threadA.threadId))?.running, true, "A was still running when shown again");
-  await waitFor("A's running turn replayed", async () => (await transcriptText(pageWsl)).includes("sleep 30"), 10_000);
+  await waitFor("A's running turn replayed", async () => (await transcriptText(pageWsl)).includes(slowCommand), 10_000);
   await sleep(1500);
   report.returnedState = await pageWsl.evaluate(() => ({
     turnActive: window.DirectWorkbenchSurface.turnActive(),

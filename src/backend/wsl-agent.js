@@ -43,7 +43,7 @@ const {
   describeExecutionEnvironment,
   findExecutableOnPath,
 } = require("../shared/executor-protocol");
-const { BASE_COMMAND_ENVIRONMENT_KEYS, LocalChildProcessBackend } = require("../main/direct/tools/exec-process-backends");
+const { BASE_COMMAND_ENVIRONMENT_KEYS, LocalChildProcessBackend, dedupedPath } = require("../main/direct/tools/exec-process-backends");
 const { WINDOWS_JOB_LAUNCHER, WindowsJobSandbox } = require("../main/direct/tools/windows-job-runner");
 const { PtyChannel } = require("../main/direct/tools/pty-frames");
 const { readCodexEnvironmentContext, readSkillBody } = require("../main/direct/codex-home/codex-environment-context");
@@ -2815,6 +2815,7 @@ function minimalCommandEnv(extraEnv = {}) {
   for (const key of BASE_COMMAND_ENVIRONMENT_KEYS) {
     if (process.env[key]) base[key] = process.env[key];
   }
+  if (base.PATH) base.PATH = dedupedPath(base.PATH);
   base.CI = "1";
   base.NO_COLOR = "1";
   if (extraEnv && typeof extraEnv === "object") {

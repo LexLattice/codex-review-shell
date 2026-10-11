@@ -206,6 +206,9 @@ const state = {
   runtimeConstitution: null,
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
+  directExecutionBackend: null,
+  directExecutionBackendStatus: "idle",
+  directExecutionBackendError: "",
   runtimeObservationsByThread: new Map(),
   analyticsPanelOpen: localStorageGet("codex.threadAnalyticsPanel.open", "false") === "true",
   analyticsPanelDock: localStorageGet("codex.threadAnalyticsPanel.dock", "right"),
@@ -3022,6 +3025,68 @@ function openRuntimeDrawer(tab = "runtime") {
     refreshDirectImplementationUi();
   }
   if (state.runtimeDrawerTab === "epistemic") refreshDirectEpistemicProjection();
+  if (state.runtimeDrawerTab === "runtime") refreshDirectExecutionBackend();
+}
+
+async function refreshDirectExecutionBackend() {
+  if (typeof bridge?.getDirectExecutionBackend !== "function") return;
+  try {
+    state.directExecutionBackend = await bridge.getDirectExecutionBackend();
+    state.directExecutionBackendError = "";
+  } catch (error) {
+    state.directExecutionBackendError = error?.message || "unavailable";
+  }
+  if (state.runtimeDrawerOpen && state.runtimeDrawerTab === "runtime") renderRuntimeDrawer();
+}
+
+async function setDirectExecutionBackend(backend) {
+  if (typeof bridge?.setDirectExecutionBackend !== "function") return;
+  state.directExecutionBackendStatus = "saving";
+  renderRuntimeDrawer();
+  try {
+    state.directExecutionBackend = await bridge.setDirectExecutionBackend(backend);
+    state.directExecutionBackendError = "";
+  } catch (error) {
+    state.directExecutionBackendError = error?.message || "couldn't save";
+  }
+  state.directExecutionBackendStatus = "idle";
+  renderRuntimeDrawer();
+}
+
+// Which backend runs this Direct thread's commands and file tools.
+function directExecutionBackendSection(currentPath) {
+  if (currentPath !== "direct" || typeof bridge?.getDirectExecutionBackend !== "function") return null;
+  const info = state.directExecutionBackend;
+  const connections = info?.codexExecServer?.connections || [];
+  const lastErrors = Object.values(info?.codexExecServer?.lastErrors || {});
+  const section = drawerSection("Command execution", [
+    ["commands and files", !info ? "loading" : info.backend === "codex-exec-server" ? "Codex exec-server" : "Direct executor"],
+    ...(info?.environmentOverride ? [["set by", "CODEX_DIRECT_EXECUTION_BACKEND"]] : []),
+    ...connections.map((connection) => [
+      `exec-server (${connection.key})`,
+      [
+        connection.state,
+        connection.executorVersion,
+        connection.platformOs,
+        Number.isFinite(connection.startupMs) ? `started in ${connection.startupMs} ms` : "",
+      ].filter(Boolean).join(" · "),
+    ]),
+    ...(lastErrors.length ? [["last exec-server error", lastErrors[lastErrors.length - 1]]] : []),
+    ...(state.directExecutionBackendError ? [["error", state.directExecutionBackendError]] : []),
+  ]);
+  if (info && typeof bridge?.setDirectExecutionBackend === "function") {
+    section.appendChild(selectField(
+      "Run commands with",
+      info.configured,
+      info.options || [],
+      (value) => setDirectExecutionBackend(value),
+      {
+        disabled: state.directExecutionBackendStatus === "saving" || Boolean(info.environmentOverride),
+        description: "Direct executor is this app's own. Codex exec-server runs codex exec-server in the workspace's environment. Applies to all projects, for commands and file changes started after you switch.",
+      },
+    ));
+  }
+  return section;
 }
 
 function closeRuntimeDrawer() {
@@ -3089,6 +3154,7 @@ function renderRuntimeDrawer() {
       renderMorphicCockpit();
       if (["implementation", "history", "policy"].includes(id)) refreshDirectImplementationUi();
       if (id === "epistemic") refreshDirectEpistemicProjection();
+      if (id === "runtime") refreshDirectExecutionBackend();
     });
     els.runtimeDrawerTabs.appendChild(button);
   }
@@ -5073,8 +5139,10 @@ function runtimeDrawerSections(c, tab) {
         controlSection.appendChild(unsupportedControlNote(`Backend transition failed: ${state.runtimePathTransitionError}`));
       }
     }
+    const executionSection = directExecutionBackendSection(currentPath);
     return [
       controlSection,
+      ...(executionSection ? [executionSection] : []),
       runtimeSection,
       drawerSection("Account", [
         ["status", c.account.status],
@@ -8814,6 +8882,7 @@ function normalizeThreadReadResult(result, requestedThreadId) {
   return {
     thread: candidate,
     model: String(result.model || ""),
+    taskBinding: result.taskBinding && typeof result.taskBinding === "object" ? result.taskBinding : null,
   };
 }
 

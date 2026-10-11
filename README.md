@@ -232,6 +232,10 @@ Syntax check:
 npm run check:syntax
 ```
 
+The files each `check:*-syntax` script covers are listed in
+`scripts/syntax-check-groups.json` (`check:syntax` is group `all`); add a new
+file there, not to `package.json`.
+
 Full bounded validation path:
 
 ```bash

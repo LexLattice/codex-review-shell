@@ -126,9 +126,10 @@ class RelayBackend {
   }
 }
 
-// Drops identifiers and timestamps that legitimately differ between two runs.
+// Drops identifiers and timestamps that legitimately differ between two runs
+// (and the name of the backend, which is what differs on purpose).
 function comparable(result) {
-  const { sessionId, startedAt, completedAt, resultDigest, surface, outputFrames, grantId, taskId, threadId, executionEnvironmentDigest, recoveryClassification, ...rest } = result;
+  const { sessionId, startedAt, completedAt, resultDigest, surface, outputFrames, grantId, taskId, threadId, executionEnvironmentDigest, recoveryClassification, executionBackend, ...rest } = result;
   const { sessionId: _s, recoveryId, recoveryDigest, ...recovery } = recoveryClassification || {};
   return { ...rest, recoveryClassification: recovery };
 }

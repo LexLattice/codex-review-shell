@@ -20,6 +20,7 @@ const {
 const {
   recordReadOnlyToolContinuationRequest,
 } = require("../src/main/direct/tools/read-only-authority");
+const { dedupedPath } = require("../src/main/direct/tools/exec-process-backends");
 
 const MAX_STDIO_CAPTURE_CHARS = 64 * 1024;
 
@@ -134,6 +135,8 @@ function runCommand(command, args, options = {}) {
     const env = { ...process.env };
     for (const key of Object.keys(env)) {
       if (/OPENAI|CHATGPT|CODEX_DIRECT|CODEX_REVIEW|AUTH|TOKEN|SECRET|PASSWORD/i.test(key)) delete env[key];
+      // As commands get it: cmd.exe can't search a PATH past 8191 characters.
+      else if (/^path$/i.test(key)) env[key] = dedupedPath(env[key]);
     }
     const started = Date.now();
     // A .cmd shim cannot be spawned shell:false. Run the same npm CLI with Node instead.

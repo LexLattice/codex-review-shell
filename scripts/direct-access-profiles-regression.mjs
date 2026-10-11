@@ -195,6 +195,13 @@ async function main() {
       () => controller.selectTaskAccessProfile({ sessionId: "busy_thread", accessProfile: "full_access" }, { project }),
       (error) => error.code === "direct_thread_access_profile_turn_active",
     );
+    // Re-selecting the same Access (as opening the thread does) keeps the
+    // grant the running turn is bound to.
+    const busyGrantId = sessionStore.readSession("busy_thread").harnessGrantId;
+    const reselected = controller.selectTaskAccessProfile({ sessionId: "busy_thread", accessProfile: "workspace" }, { project });
+    assert.equal(reselected.grantId, busyGrantId);
+    assert.equal(sessionStore.readSession("busy_thread").harnessGrantId, busyGrantId);
+    assert.equal(reselected.capabilities.authority.taskGrantCurrent, true);
     report.checks.push("controller_profile_selection");
 
     // 4. Local file executor: Workspace writes stay inside the project folder.
@@ -273,7 +280,7 @@ async function main() {
       assert.match(spawned[1].command, /(pwsh|powershell)\.exe$/i, "full access runs cmd in the native shell without a sandbox");
     } else {
       assert.match(spawned[1].command, /\/bash$/, "full access runs cmd in the native shell without a sandbox");
-      assert.deepEqual(spawned[1].args, ["-c", "echo hi"]);
+      assert.deepEqual(spawned[1].args, ["--norc", "-c", "echo hi"]);
     }
     const noSandboxManager = new DirectStatefulExecSessionManager({
       workspaceRootResolver: () => workspaceRoot,
@@ -355,6 +362,35 @@ async function main() {
     assert.equal(continuedEnvelope.providerOutput.errorCode, "direct_stateful_exec_sandbox_unavailable");
     assert.equal(continuedEnvelope.providerOutput.commandStarted, false);
     assert.notEqual(sessionStore.readTurn(execSession.sessionId, execTurn.turnId).state, "failed");
+
+    // write_stdin to a session that isn't known (ended before a restart)
+    // also goes back to the model.
+    const stdinTurn = sessionStore.createTurn(execSession.sessionId, {
+      input: [{ role: "user", text: "poll it" }],
+      model: "gpt-5.6-sol",
+      requestShape: {
+        requestShapeClass: "direct_implementation_tool_initial@1",
+        tools: true,
+        declaredToolNames: ["exec_command", "write_stdin"],
+        directThreadHarnessGrantId: execGrant.grantId,
+      },
+    });
+    sessionStore.updateTurnState(execSession.sessionId, stdinTurn.turnId, "streaming", { responseId: "resp_missing_stdin" });
+    const stdinObligation = sessionStore.addToolObligations(execSession.sessionId, stdinTurn.turnId, [{
+      type: "tool_call_completed",
+      itemId: "item_missing_stdin",
+      callId: "call_missing_stdin",
+      name: "write_stdin",
+      toolType: "function_call",
+      argumentsJson: JSON.stringify({ session_id: "exec_session_gone", chars: "y\n" }),
+      responseId: "resp_missing_stdin",
+    }], { parentResponseId: "resp_missing_stdin", parentResponseSource: "native_direct_initial_stream", stepOrdinal: 1 }).obligations[0];
+    continuedEnvelope = null;
+    assert.equal(await rejectingController.emitStatefulExecRequest(null, execSession.sessionId, stdinTurn.turnId, stdinObligation, project), 1);
+    assert.equal(continuedEnvelope?.providerOutput.errorCode, "direct_stateful_exec_session_missing");
+    assert.equal(continuedEnvelope.providerOutput.inputAccepted, false);
+    assert.match(continuedEnvelope.providerOutput.message, /session_id/);
+    assert.notEqual(sessionStore.readTurn(execSession.sessionId, stdinTurn.turnId).state, "failed");
     report.checks.push("actionable_exec_error_returned_to_model");
 
     // 9. A turn makes no separate sub-agent policy model call (the model

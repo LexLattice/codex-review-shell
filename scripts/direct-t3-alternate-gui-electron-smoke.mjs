@@ -44,8 +44,12 @@ const epistemicScreenshotPath = screenshotPath.replace(/\.png$/i, "-epistemic.pn
 const usageScreenshotPath = screenshotPath.replace(/\.png$/i, "-usage.png");
 const terminalScreenshotPath = screenshotPath.replace(/\.png$/i, "-terminal.png");
 const localProjectRoot = path.join(testRoot, "local-fixture");
-const wslFixtureRoot = path.join(testRoot, "direct-gui-fixture");
-fs.mkdirSync(wslFixtureRoot, { recursive: true });
+const wslFixtureFolder = path.join(testRoot, "direct-gui-fixture");
+fs.mkdirSync(wslFixtureFolder, { recursive: true });
+// From Windows, the WSL project reaches the same folder through /mnt.
+const wslFixtureRoot = process.platform === "win32"
+  ? `/mnt/${wslFixtureFolder[0].toLowerCase()}${wslFixtureFolder.slice(2).replace(/\\/g, "/")}`
+  : wslFixtureFolder;
 const usageHome = path.join(testRoot, "usage-home");
 const localProjectSentinel = path.join(localProjectRoot, "workspace-preserved.txt");
 fs.mkdirSync(userDataRoot, { recursive: true, mode: 0o700 });
@@ -358,6 +362,35 @@ try {
     ["Direct", "Appserver"],
   );
   assert.equal(await page.getByRole("button", { name: "Apply backend" }).isDisabled(), true);
+
+  // Command execution: Direct's executor or Codex exec-server, saved in the
+  // config for every project.
+  const executionSelect = page.getByLabel("Run commands with");
+  await executionSelect.waitFor({ state: "visible" });
+  assert.equal(await executionSelect.inputValue(), "direct");
+  assert.deepEqual(
+    await executionSelect.locator("option").evaluateAll((options) => options.map((option) => option.textContent)),
+    ["Direct executor", "Codex exec-server"],
+  );
+  const executionSection = page.locator('[data-runtime-drawer-section="command-execution"]');
+  const waitForExecutionBackend = async (label) => {
+    try {
+      await page.waitForFunction(
+        // Field labels are uppercased by CSS, which innerText reflects.
+        (expected) => new RegExp(`commands and files\\s+${expected}`, "i").test(document.querySelector('[data-runtime-drawer-section="command-execution"]')?.innerText || ""),
+        label,
+        { timeout: 10_000 },
+      );
+    } catch (error) {
+      throw new Error(`Command execution never showed ${label}: ${await executionSection.innerText().catch(() => "(no section)")}`, { cause: error });
+    }
+  };
+  await executionSelect.selectOption("codex-exec-server");
+  await waitForExecutionBackend("Codex exec-server");
+  const executionConfig = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
+  assert.equal(executionConfig.runtimeDefaults?.direct?.executionBackend, "codex-exec-server");
+  await page.getByLabel("Run commands with").selectOption("direct");
+  await waitForExecutionBackend("Direct executor");
 
   await page.getByRole("button", { name: "Policy", exact: true }).click();
   await page.waitForFunction(() =>
