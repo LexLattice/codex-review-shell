@@ -36,6 +36,8 @@ const codexSurfaceApi = {
     ipcRenderer.invoke("direct-runtime:test-model", { projectId, threadId }),
   setDirectWorkbenchRuntimePath: (projectId, runtimePath, clientOperationId = "") =>
     ipcRenderer.invoke("direct-workbench:set-runtime-path", { projectId, runtimePath, clientOperationId }),
+  getDirectExecutionBackend: () => ipcRenderer.invoke("direct-execution-backend:get"),
+  setDirectExecutionBackend: (backend) => ipcRenderer.invoke("direct-execution-backend:set", { backend }),
   getDirectImplementationLaneUiStatus: (projectId) => ipcRenderer.invoke("direct-ui:implementation-status", { projectId }),
   readDirectImplementationOperationHistory: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-ui:operation-history", { ...options, projectId }),

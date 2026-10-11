@@ -159,7 +159,7 @@ function posixShellFor(fileExists) {
       path: bash,
       version: "",
       versionSource: "unprobed",
-      invocation: ["-c"],
+      invocation: ["--norc", "-c"],
     };
   }
   return {

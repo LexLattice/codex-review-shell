@@ -55,6 +55,25 @@ const BASE_COMMAND_ENVIRONMENT_KEYS = Object.freeze([
   "USERNAME", "USERDOMAIN", "COMPUTERNAME", "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS",
 ]);
 
+// PATH without repeated entries, first occurrence kept (so lookup order is
+// unchanged). cmd.exe stops searching a PATH longer than 8191 characters,
+// and npm prepends a node_modules\.bin per parent folder to it, so a long
+// PATH with repeats made `node` unfindable in npm scripts.
+function dedupedPath(value, platform = process.platform) {
+  if (typeof value !== "string" || !value) return value;
+  const windows = platform === "win32";
+  const seen = new Set();
+  const kept = [];
+  for (const entry of value.split(windows ? ";" : ":")) {
+    if (!entry) continue;
+    const key = windows ? entry.replace(/[\\/]+$/, "").toLowerCase() : entry;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(entry);
+  }
+  return kept.join(windows ? ";" : ":");
+}
+
 const PREWARM_IDLE_MS = 5 * 60_000;
 const PREWARM_MAX_SHAPES = 4;
 
@@ -462,6 +481,7 @@ class LocalChildProcessBackend {
 module.exports = {
   BASE_COMMAND_ENVIRONMENT_KEYS,
   LOCAL_CHILD_BACKEND_ID,
+  dedupedPath,
   LocalChildProcessBackend,
   LocalChildProcessHandle,
   LocalPtyProcessHandle,

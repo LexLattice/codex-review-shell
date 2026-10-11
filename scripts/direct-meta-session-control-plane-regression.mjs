@@ -960,8 +960,8 @@ await runCase("ledger_head_digest_chain_detects_reordered_events", () => {
 });
 
 await runCase("node_check_covers_every_new_meta_session_file", () => {
-  const packageJson = readJson(path.join(repoRoot, "package.json"));
-  const syntax = packageJson.scripts["check:direct-syntax"];
+  const { groups } = readJson(path.join(repoRoot, "scripts", "syntax-check-groups.json"));
+  const syntax = groups.direct;
   for (const file of [
     "constants.js",
     "digest.js",
@@ -979,7 +979,7 @@ await runCase("node_check_covers_every_new_meta_session_file", () => {
   ]) {
     assert(syntax.includes(`src/main/direct/meta-session/${file}`), `syntax missing ${file}`);
   }
-  assert(packageJson.scripts["check:script-syntax"].includes("scripts/direct-meta-session-control-plane-regression.mjs"), "script syntax missing regression");
+  assert(groups.script.includes("scripts/direct-meta-session-control-plane-regression.mjs"), "script syntax missing regression");
 });
 
 await runCase("validators_return_strict_booleans", () => {

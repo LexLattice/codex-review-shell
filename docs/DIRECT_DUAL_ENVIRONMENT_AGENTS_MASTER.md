@@ -1401,6 +1401,139 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   changes while it waits). T3 GUI and live left-panel Electron smokes pass
   on Linux; the live smoke passes on Windows too.
 
+### Codex exec-server as a second backend
+
+- Status: done (for comparison; Direct executor stays the default)
+- Scope: run agent commands (`exec_command`, `write_stdin`) and file tools
+  (`read_file`, `view_image`, `apply_patch`) through Codex's own
+  `codex exec-server` instead of Direct's executor, behind one global
+  setting, so the two can be compared on the same suite. The Terminal
+  panel's own shells, MCP servers, and workspace workers stay on Direct's
+  backends.
+- Outcome:
+  - **Switch.** Runtime drawer → Runtime → Command execution: "Direct
+    executor" or "Codex exec-server" (`runtimeDefaults.direct.executionBackend`
+    in the config, every project). `CODEX_DIRECT_EXECUTION_BACKEND` overrides
+    it. It is read per command, so a change applies to commands and file
+    changes started after it. Exec results carry `executionBackend` and
+    `sandboxLauncher` (`codex_exec_server:<sandboxType>`); `read_file`
+    reports `source: codex_exec_server`.
+  - **Placement.** One `codex exec-server --listen stdio` per environment,
+    started on first use (`src/main/direct/tools/codex-exec-server.js`):
+    on Windows the native `codex.exe` the npm shim wraps; in Linux or WSL a
+    login shell that finds `codex` (falling back to an interactive shell's
+    PATH, where nvm puts it) and starts it under `env -i` with only the
+    variables Direct gives commands; a WSL workspace from Windows through
+    `wsl.exe --exec`; a Windows workspace from WSL by running Windows'
+    `codex.exe` (found with `cmd.exe /c where codex`) through interop, with
+    Windows' own environment and no `WSLENV` sharing. Version 0.160.0 or
+    newer is required.
+  - **Policy stays on the host.** Grants, budgets, approvals, patch
+    planning, and the `read_file` profile checks are unchanged
+    (`codex-exec-server-backend.js` implements the same process backend
+    and file port contracts). Each Workspace or Read only request carries
+    an exec-server sandbox: read everything, write the project and temp
+    folders (Workspace), no network, and deny the credential stores, the
+    WSL interop socket, and `/mnt` (unless the project is on a drive).
+  - **exec-server gaps, as measured.** Terminals are always 80x24 (no
+    resize). A command's input can't be closed: EOF on a pipe fails with
+    `direct_stateful_exec_stdin_eof_unsupported` (a terminal gets ^D).
+    Signals are interrupt and terminate only. Writes are per file, not
+    atomic. Every sandboxed request starts a sandbox helper (about 0.1 s
+    on Linux), so the file port sends metadata and canonicalize requests
+    unsandboxed after the host checks and only the content request
+    sandboxed. On Windows only `restricted-token` works here: it refuses
+    any denied path ("requires the elevated Windows sandbox backend"), so
+    Workspace and Read only commands can read `~/.codex/auth.json` there;
+    `mxc` fails to start ("cannot locate required Windows platform
+    directory"). `elevated` (`CODEX_DIRECT_EXEC_SERVER_WINDOWS_SANDBOX`)
+    is set up on this machine, but Codex's setup refresh, run before every
+    elevated command, fails while the Codex desktop app runs: it can't
+    update the ACL of the app's own `node_repl.exe`, which the app holds
+    open (os error 32). It was left out of this change. Read only gets a
+    writable temp folder on Linux: a per-command `/tmp/codex-direct-ro-*`
+    (as `TMPDIR`), removed when the command ends; `/tmp` itself stays
+    read-only, where Direct's sandbox gives a private one. On Windows
+    `restricted-token` refuses a read-only profile with any writable folder
+    ("cannot enforce split writable root sets"), so Read only has none
+    there. Under `restricted-token`, PowerShell runs in constrained language
+    mode, so Direct's UTF-8 output prelude fails with a stderr line; the
+    command still runs.
+  - **Benchmark** (`npm run direct:exec-backend-benchmark`; `--target wsl`
+    from Windows, `--target windows` from WSL; 10 iterations, second run
+    of 2026-10-11, a busier machine than the first, so Direct is slower
+    too; Direct / exec-server):
+
+    | | Linux (WSL) local | Windows local | Windows → WSL | WSL → Windows |
+    |---|---|---|---|---|
+    | first command, cold | 15 / 2,995 ms | 430 / 555 ms | 1,329 / 1,512 ms | 1,938 / 677 ms |
+    | echo, Full access p50 | 5 / 23 ms | 349 / 456 ms | 8 / 13 ms | 323 / 323 ms |
+    | echo, Workspace p50 | 34 / 169 ms | 414 / 509 ms | 78 / 203 ms | 429 / 375 ms |
+    | 2 MB of output | 28 / 98 ms | 220 / 479 ms | 21 / 100 ms | 346 / 436 ms |
+    | `read_file`, Workspace p50 | 13 / 127 ms | 206 / 134 ms | 20 / 108 ms | 162 / 3 ms |
+    | `apply_patch` update p50 | 105 / 352 ms | 308 / 290 ms | 115 / 338 ms | 201 / 123 ms |
+    | terminal asked for 30x100 | 30x100 / 24x80 | 30x100 / 24x80 | 30x100 / 24x80 | 30x100 / 24x80 |
+    | stdin EOF | ok / unsupported | ok / unsupported | ok / unsupported | ok / unsupported |
+    | Read only: write temp folder | wrote / wrote | wrote / blocked | wrote / wrote | wrote / blocked |
+    | Workspace: read `~/.codex/auth.json` | blocked / blocked | blocked / **readable** | blocked / blocked | blocked / **readable** |
+
+    Writes outside the project, network, `/mnt`, and WSL interop were
+    blocked by both in every column; Full access read the credential file
+    in both. No command saw a secret-looking variable.
+  - **Fixed on the way (both backends).**
+    - Ubuntu's bash sources `~/.bashrc` for a non-interactive `bash -c`
+      whose stdin is a socket (its rshd heuristic), and Node's stdio pipes
+      are socketpairs, so every command inherited what `~/.bashrc` exports
+      (here three secret-named variables from `~/.config/codex/env.sh`).
+      Commands now run as `bash --norc -c`, which skips that path
+      (`nativeShellCommand`; the executor and exec-server plan through it
+      too). Hooks keep `bash -c`: they are the owner's own commands.
+    - `write_stdin` to a session that doesn't exist (ended before a
+      restart), has ended, or doesn't take input now goes back to the model
+      as a rejection with an actionable message instead of ending the turn.
+    - cmd.exe stops searching a PATH longer than 8191 characters, and npm
+      prepends a `node_modules\.bin` per parent folder to it. This machine's
+      PATH (7,956 characters, `nodejs` listed four times) went over, so
+      `node` wasn't found in npm scripts. Commands now get PATH without
+      repeated entries (first kept, order unchanged). That was why
+      `direct-command-tool-loop` and `direct-tool-continuation-repair-loop`
+      failed on Windows; their own command helper does the same now.
+    - The T3 GUI Electron smoke gave its WSL project a Windows temp path
+      on Windows; it now uses the same folder's `/mnt` path, and passes.
+    - Opening a thread re-selected its Access every time: the renderer's
+      thread-read result dropped `taskBinding`, so `openDirectThread` never
+      saw the grant as current. Re-selecting issued a new grant revision,
+      and a turn still running on that thread lost its grant
+      (`no_current_task_grant` on its next `write_stdin`). The read result
+      now keeps `taskBinding`, and re-selecting the same Access while a
+      turn runs keeps the current grant.
+    - The live Workbench smoke's silent `sleep 30` sat exactly on the 30 s
+      idle timeout; it now sleeps 25 s. exec-server restarts the idle timer
+      once the process has actually started, so launching the server
+      doesn't count against a command's quiet time.
+- **Checks:** new `direct-codex-exec-server-backend-regression` (scripted
+  exec-server: requests, sandbox mapping, the WSL → Windows launch, Read
+  only scratch folder, event and gap mapping, file port boundaries)
+  passes on Linux and Windows; the benchmark ran in all four placements.
+  `direct-access-profiles` covers keeping the grant on a same-Access
+  re-select mid-turn and the `write_stdin` rejection;
+  `direct-execution-environment-contract` covers `--norc` (a real bash
+  with a socket stdin and a probe `~/.bashrc`) and PATH de-duplication.
+  Sweep: Linux 314 passed, 0 failed, 11 skipped (the extra skip,
+  `direct-cross-environment-delegation`, was a WSL-to-Windows interop
+  timeout under load; alone it passes 10/10); Windows 311 passed, 0
+  failed, 14 skipped. The T3 GUI Electron smoke passes on Linux and
+  Windows. The live Workbench smoke passes on Linux with either backend;
+  on Windows it wasn't run (Direct's sign-in there had expired).
+  `npm run check:syntax` passes on Linux and Windows. It couldn't run on
+  Windows before: `check:direct-syntax` and `check:script-syntax` inlined
+  170 and 144 `node --check` calls, longer than cmd.exe's 8191-character
+  command line, and nested `npm run`s each grew PATH. The file lists now
+  live in `scripts/syntax-check-groups.json` (one group per former
+  script, the same files, checked once each, in parallel by
+  `scripts/check-syntax.mjs`), and the scripts and their callers point at
+  a group instead of carrying the list or nesting `npm run`.
+
 ## Baseline and prerequisites
 
 | Item | State |
@@ -2164,18 +2297,20 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   the PowerShell module cache) fail unless redirected, as they do under the
   Linux Workspace sandbox. Turn 7 may want to point well-known cache
   variables at the scratch directory.
-- Open, found during the #313–#320 review batch:
-  - `write_stdin` to an exec session that no longer exists ends the turn
-    instead of returning an error the model can act on. Its error code is
-    not in `USER_ACTIONABLE_STATEFUL_EXEC_ERRORS`.
-  - On Windows, `direct-command-tool-loop` and
-    `direct-tool-continuation-repair-loop` fail on `main` too: the npm
-    child they start can't find `node`. The T3 GUI Electron smoke fails on
-    Windows at its WSL terminal step, also on `main`.
-  - The live left-panel smoke depends on the model polling a 30-second
+- Found during the #313–#320 review batch:
+  - Fixed (see "Codex exec-server as a second backend"): `write_stdin` to
+    an exec session that no longer exists ended the turn; on Windows,
+    `direct-command-tool-loop` and `direct-tool-continuation-repair-loop`
+    failed because the npm child couldn't find `node` (cmd.exe's PATH
+    length limit); the T3 GUI Electron smoke failed on Windows at its WSL
+    terminal step (a Windows path given as the WSL project folder).
+  - The live left-panel smoke depends on the model polling a slow
     command to its end. Runs where the model stops polling early (Windows),
     or picks `run_command` and gets `command_class_deferred` (Linux), end
-    without the command's output. Rerunning passes.
+    without the command's output. Rerunning passes. Two causes were real
+    bugs and are fixed (see "Codex exec-server as a second backend"):
+    returning to the running thread re-issued its grant, and the silent
+    30-second command hit the 30 s idle timeout.
 
 ## Decisions
 
@@ -2215,6 +2350,9 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
 | 2026-10-10 | The Workbench left panel is one stable tree of every project; threads are named by the model after their first turn and ordered by last opened or created; Direct threads switch freely while a turn runs | Owner's call, from a mockup. A tree that never reorders projects and never moves a thread for background work keeps every row where the owner last saw it; the model's title costs one small request per thread. |
 | 2026-10-08 | `request_permissions` raises the thread's Access profile for the turn or the thread; it doesn't grant per-path or network-only permissions | Owner's call. It reuses Direct's grants and sandboxes as they are; Codex's path-scoped form would mean widening bubblewrap binds and Windows labels per request. |
 | 2026-10-08 | Every request carries the thread ID as `prompt_cache_key` and `session-id`/`thread-id` headers; continuation guidance is a trailing developer message, not an instructions suffix | Matches the Codex CLI's cache identity. The backend's cache matches exact prefixes, so a turn's instructions and tools must not change between its requests. |
+| 2026-10-11 | Codex exec-server runs as a second, switchable backend for agent commands and file tools; Direct's executor stays the default and unchanged | Owner's call, to compare the two on one suite before choosing. One global setting; host-side policy is shared, so only process and file operations differ. |
+| 2026-10-11 | Agent commands run as `bash --norc -c` | Bash's socket-stdin heuristic otherwise sources `~/.bashrc` into every command, secrets included, whatever environment the backend passed. Commands still get the login PATH from their executor. |
+| 2026-10-11 | exec-server's Windows `elevated` sandbox stays opt-in and untested here | Codex's setup refresh fails before every elevated command while the Codex desktop app holds its runtime open; owner chose to leave it out of this change. |
 | 2026-10-08 | `exec_command` waits up to 10 s (`yield_time_ms`, max 30 s, at most half the idle timeout) for the command to finish; `write_stdin` waits 250 ms, or 5 s for an empty poll (supersedes the 100 ms first yield in the 2026-10-06 rows) | Codex's defaults. A 100 ms wait turned every command longer than that into an extra provider round trip, measured live at up to 19 s, and a write to the exited process then failed the turn. |
 
 ## Plan changes

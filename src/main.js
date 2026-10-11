@@ -307,6 +307,11 @@ const {
   createEnvironmentExecBackendResolver,
 } = require("./main/direct/tools/executor-process-backend");
 const { ExecutorFilePort } = require("./main/direct/tools/executor-file-port");
+const { CodexExecServerManager } = require("./main/direct/tools/codex-exec-server");
+const {
+  CodexExecServerFilePort,
+  CodexExecServerProcessBackend,
+} = require("./main/direct/tools/codex-exec-server-backend");
 const {
   assertCodeModeExecutionLaneSafe,
   buildCodeModeExecutionLaneStatus,
@@ -2042,7 +2047,31 @@ function normalizeRuntimeDefaults(value) {
     worldManager: normalizeWorldManagerRuntimePreferences(
       raw.worldManager,
     ),
+    direct: {
+      executionBackend: normalizeDirectExecutionBackend(raw.direct?.executionBackend),
+    },
   };
+}
+
+// Which backend runs Direct agents' commands and file tools: Direct's own
+// executor, or Codex exec-server. One setting for every project; a
+// CODEX_DIRECT_EXECUTION_BACKEND environment variable overrides it.
+function directExecutionBackends() {
+  return ["direct", "codex-exec-server"];
+}
+
+function normalizeDirectExecutionBackend(value) {
+  const backend = normalizeString(value, "direct").toLowerCase();
+  return directExecutionBackends().includes(backend) ? backend : "direct";
+}
+
+function directExecutionBackendOverride() {
+  const value = normalizeString(process.env.CODEX_DIRECT_EXECUTION_BACKEND, "").toLowerCase();
+  return directExecutionBackends().includes(value) ? value : "";
+}
+
+function directExecutionBackend() {
+  return directExecutionBackendOverride() || normalizeDirectExecutionBackend(configCache?.runtimeDefaults?.direct?.executionBackend);
 }
 
 function codexThreadRuntimePreferenceKey(parts = {}) {
@@ -4865,6 +4894,25 @@ function resolveDirectWorkspaceWorkerDelegationPolicy(input = {}) {
 let directStatefulExecSessionManager = null;
 let directEnvironmentExecutorBackend = null;
 let directTerminalService = null;
+let directCodexExecServerManager = null;
+
+function ensureDirectCodexExecServerManager() {
+  directCodexExecServerManager ||= new CodexExecServerManager({ fallbackRoot: repoRoot });
+  return directCodexExecServerManager;
+}
+
+function directExecutionBackendState() {
+  return {
+    backend: directExecutionBackend(),
+    configured: normalizeDirectExecutionBackend(configCache?.runtimeDefaults?.direct?.executionBackend),
+    environmentOverride: directExecutionBackendOverride(),
+    options: [
+      { value: "direct", label: "Direct executor" },
+      { value: "codex-exec-server", label: "Codex exec-server" },
+    ],
+    codexExecServer: directCodexExecServerManager ? directCodexExecServerManager.status() : { connections: [], lastErrors: {} },
+  };
+}
 
 function sendDirectTerminalEvent(payload = {}) {
   const contents = payload.projectId && DIRECT_WORKBENCH_MODE
@@ -4919,13 +4967,20 @@ function ensureDirectLiveTextController() {
   const environmentExecutorBackend = new EnvironmentExecutorProcessBackend({
     workspaceBackends: environmentExecutors,
   });
+  const codexExecServerManager = ensureDirectCodexExecServerManager();
+  const codexExecServerBackend = new CodexExecServerProcessBackend({ manager: codexExecServerManager });
+  const codexExecServerFilePort = new CodexExecServerFilePort({ manager: codexExecServerManager });
+  // Read per command: a change applies to commands started after it.
+  const useCodexExecServer = () => directExecutionBackend() === "codex-exec-server";
   const statefulExecSessionManager = new DirectStatefulExecSessionManager({
     grantStore: directHarnessGrantStore,
     workspaceRootResolver: (input) => workspaceRoot(input?.project || input, repoRoot),
-    backendResolver: (input, grant) => createEnvironmentExecBackendResolver({
-      localBackend: statefulExecSessionManager.localBackend,
-      executorBackend: environmentExecutorBackend,
-    })(input, grant),
+    backendResolver: (input, grant) => (useCodexExecServer()
+      ? codexExecServerBackend
+      : createEnvironmentExecBackendResolver({
+        localBackend: statefulExecSessionManager.localBackend,
+        executorBackend: environmentExecutorBackend,
+      })(input, grant)),
   });
   // The Terminal panel's own shells use the same routing.
   directStatefulExecSessionManager = statefulExecSessionManager;
@@ -4934,6 +4989,7 @@ function ensureDirectLiveTextController() {
     grantStore: directHarnessGrantStore,
     workspaceRootResolver: (input) => workspaceRoot(input?.project || input, repoRoot),
     executorFilePort: new ExecutorFilePort({ workspaceBackends: environmentExecutors }),
+    filePortOverride: () => (useCodexExecServer() ? codexExecServerFilePort : null),
   });
   directLiveTextController = new DirectLiveTextController({
     sessionStore: ensureDirectSessionStore(),
@@ -14233,6 +14289,29 @@ ipcMain.handle("direct-terminal:replay", async (event, payload) => {
   return { terminalId, dataBase64: service.replay({ projectId, terminalId }).toString("base64") };
 });
 
+ipcMain.handle("direct-execution-backend:get", async (event) => {
+  requireFullCodexSurfaceBridge(event.sender, "direct-execution-backend:get");
+  await loadConfig();
+  return directExecutionBackendState();
+});
+
+ipcMain.handle("direct-execution-backend:set", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "direct-execution-backend:set");
+  const requested = normalizeString(payload?.backend, "").toLowerCase();
+  if (!directExecutionBackends().includes(requested)) {
+    const error = new Error("Command execution is either Direct executor or Codex exec-server.");
+    error.code = "direct_execution_backend_invalid";
+    throw error;
+  }
+  const config = await loadConfig();
+  const runtimeDefaults = normalizeRuntimeDefaults(config.runtimeDefaults);
+  await saveConfig({
+    ...config,
+    runtimeDefaults: { ...runtimeDefaults, direct: { ...runtimeDefaults.direct, executionBackend: requested } },
+  });
+  return directExecutionBackendState();
+});
+
 ipcMain.handle("direct-workbench:set-runtime-path", async (event, payload) => {
   const authority = requireFullCodexSurfaceBridge(event.sender, "direct-workbench:set-runtime-path");
   requireDirectWorkbenchExperience("direct-workbench:set-runtime-path");
@@ -15370,6 +15449,7 @@ function closeApplicationRuntimeAfterOrderedWorkspaceShutdown() {
   directCodexCliAuthStore = null;
   directFixtureController = null;
   closeDirectLiveTextController("Application quit.");
+  directCodexExecServerManager?.disposeAll();
   directLiveProbeEvidenceStore = null;
   directImplementationProofEvidenceStore = null;
   directActivationStore = null;

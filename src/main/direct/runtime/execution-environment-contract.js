@@ -63,7 +63,10 @@ function nativeShellCommand(shellCommand, options = {}) {
     return { command: powershell.command, args: [...args, script], shell: "powershell", flavor: powershell.flavor };
   }
   const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fileExists(candidate));
-  if (bash) return { command: bash, args: ["-c", shellCommand], shell: "bash", flavor: "bash" };
+  // bash sources ~/.bashrc for `bash -c` when stdin is a socket (its rshd
+  // heuristic), and Node's stdio pipes are socketpairs: without --norc every
+  // command would get whatever ~/.bashrc exports, secrets included.
+  if (bash) return { command: bash, args: ["--norc", "-c", shellCommand], shell: "bash", flavor: "bash" };
   return { command: "/bin/sh", args: ["-c", shellCommand], shell: "sh", flavor: "sh" };
 }
 

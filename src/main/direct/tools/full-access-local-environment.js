@@ -644,6 +644,9 @@ class DirectFullAccessLocalEnvironmentExecutor {
     this.grantStore = options.grantStore || null;
     this.localPort = new LocalFilePort({ workspaceRootResolver: options.workspaceRootResolver });
     this.executorFilePort = options.executorFilePort || null;
+    // Another backend chosen for every workspace (Codex exec-server), or
+    // null for the routing below.
+    this.filePortOverride = typeof options.filePortOverride === "function" ? options.filePortOverride : () => null;
     this.workspaceLocalityResolver = typeof options.workspaceLocalityResolver === "function"
       ? options.workspaceLocalityResolver
       : (kind, project) => workspaceExecutesLocally(kind, project);
@@ -652,6 +655,8 @@ class DirectFullAccessLocalEnvironmentExecutor {
   // The local port serves workspaces local to this host; a WSL or Windows
   // workspace opened from elsewhere is served by that environment's executor.
   portFor(grant, project = {}) {
+    const override = this.filePortOverride(grant, project);
+    if (override) return override;
     const kind = grant?.executionEnvironment?.kind;
     if (this.workspaceLocalityResolver(kind, project)) return this.localPort;
     if ((kind === "wsl" || kind === "windows") && this.executorFilePort) return this.executorFilePort;
@@ -693,7 +698,9 @@ class DirectFullAccessLocalEnvironmentExecutor {
       size,
       truncated: size > bytes.length,
       binary,
-      source: port.kind === "local" ? "direct_full_access_local_environment" : "direct_environment_executor",
+      source: port.kind === "local"
+        ? "direct_full_access_local_environment"
+        : port.kind === "codex-exec-server" ? "codex_exec_server" : "direct_environment_executor",
       grantId: grant.grantId,
       grantRevision: Number(grant.grantRevision),
       executionEnvironmentDigest: expected.executionEnvironmentDigest,
