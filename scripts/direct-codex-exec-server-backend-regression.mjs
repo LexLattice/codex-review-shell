@@ -13,6 +13,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const {
+  CodexExecServerManager,
   execServerEnvironmentFor,
   execServerLaunchSpec,
   execServerSandboxFor,
@@ -47,6 +48,10 @@ const ROOT = "/synthetic/ws";
 const project = { id: "exec_server_fixture", workspace: { kind: "local", localPath: ROOT } };
 const INFO = { executorVersion: "0.160.0", platformOs: "linux", userHomeDir: "file:///home/u", shell: { name: "bash", path: "/bin/bash" } };
 
+// A handler returning TIMEOUT makes the request time out; the late answer
+// can then be delivered through `late[method]`.
+const TIMEOUT = Symbol("timeout");
+
 class FakeConnection extends EventEmitter {
   constructor(handlers = {}) {
     super();
@@ -54,22 +59,36 @@ class FakeConnection extends EventEmitter {
     this.handlers = handlers;
     this.state = "ready";
     this.environmentInfo = INFO;
+    this.late = {};
+    this.closeCalls = 0;
   }
 
-  async request(method, params) {
+  async request(method, params, _timeoutMs, options = {}) {
     this.calls.push({ method, params: clone(params) });
     const handler = this.handlers[method];
     if (!handler) return {};
-    return handler(params, this);
+    const result = await handler(params, this);
+    if (result === TIMEOUT) {
+      if (options.onLate) this.late[method] = options.onLate;
+      throw Object.assign(new Error(`timed out: ${method}`), { code: "direct_codex_exec_server_timeout" });
+    }
+    return result;
+  }
+
+  close() {
+    this.closeCalls += 1;
   }
 }
 
 function fakeManager(connection) {
   const environment = execServerEnvironmentFor(project, { hostPlatform: "linux", env: {} });
+  const queuedScratch = [];
   return {
     environment,
+    queuedScratch,
     environmentFor: () => environment,
     connectionFor: async () => ({ connection, environment, info: INFO }),
+    queueScratchCleanup: (key, dir) => queuedScratch.push([key, dir]),
   };
 }
 
@@ -177,14 +196,14 @@ await check("commands get the host's additions; base variables come from exec-se
   assert.deepEqual(commandEnvironmentAdditions({ PATH: "/mine", CI: "1" }, { PATH: "/mine" }), { PATH: "/mine", CI: "1" });
 });
 
-function processFixture(handlers = {}) {
+function processFixture(handlers = {}, backendOptions = {}) {
   const connection = new FakeConnection({
     "process/start": () => ({ processId: "s", sandboxType: "linuxSeccomp" }),
     "process/write": () => ({ status: "accepted" }),
     ...handlers,
   });
   const manager = fakeManager(connection);
-  const backend = new CodexExecServerProcessBackend({ manager, env: {} });
+  const backend = new CodexExecServerProcessBackend({ manager, env: {}, ...backendOptions });
   return { connection, manager, backend };
 }
 
@@ -301,6 +320,93 @@ await check("Read only gets its own writable temp folder, removed when the comma
   await tick();
   await tick();
   assert.deepEqual(g.connection.calls.map((call) => call.method), ["process/start"], "Workspace already has the temp folders");
+});
+
+await check("a start that times out is stopped, even if it finishes later; a stuck exec-server is closed", async () => {
+  const sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay));
+  const timing = { startTimeoutMs: 5, startAbandonGraceMs: 30 };
+  const f = processFixture({ "process/start": () => TIMEOUT }, { timing });
+  const workspace = f.backend.resolveWorkspace({ project }, { sandboxMode: "danger-full-access" });
+  const plan = f.backend.planLaunch({ sandboxMode: "danger-full-access", workspace, shellCommand: "touch x" });
+  const handle = f.backend.launch(plan, { project, sessionId: "slow", env: {} });
+  const exits = [];
+  const errors = [];
+  handle.onClose((code, signal) => exits.push({ code, signal }));
+  handle.onError((error) => errors.push(error.code));
+  await sleep(5);
+  assert.deepEqual(errors, ["direct_codex_exec_server_timeout"]);
+  assert.deepEqual(exits, [{ code: null, signal: "" }]);
+  const terminates = () => f.connection.calls.filter((call) => call.method === "process/terminate" && call.params.processId === "slow").length;
+  assert.equal(terminates(), 1, "a timed-out start is told to stop right away");
+  f.connection.late["process/start"](null, { processId: "slow" });
+  await tick();
+  assert.equal(terminates(), 2, "a start that succeeds late is stopped");
+  await sleep(50);
+  assert.equal(f.connection.closeCalls, 0, "an exec-server that answered stays up");
+
+  const g = processFixture({ "process/start": () => TIMEOUT }, { timing });
+  g.backend.launch(plan, { project, sessionId: "stuck", env: {} });
+  await sleep(60);
+  assert.equal(g.connection.closeCalls, 1, "an exec-server that never answers the start is closed, which stops what it started");
+});
+
+await check("a lost exec-server's Read only scratch folder is queued for removal", async () => {
+  const f = processFixture();
+  const workspace = f.backend.resolveWorkspace({ project }, { sandboxMode: "read-only" });
+  const plan = f.backend.planLaunch({ sandboxMode: "read-only", workspace, shellCommand: "sleep 9" });
+  f.backend.launch(plan, { project, sessionId: "gone", env: {} });
+  await tick();
+  await tick();
+  await tick();
+  f.connection.state = "closed";
+  f.connection.emit("closed", {});
+  assert.deepEqual(f.manager.queuedScratch, [["local", "/tmp/codex-direct-ro-gone"]]);
+  assert.equal(f.connection.calls.some((call) => call.method === "fs/remove"), false, "nothing is sent to a closed connection");
+});
+
+await check("a new connection removes queued scratch folders and ones older than an hour", async () => {
+  const NOW = 10 * 60 * 60_000;
+  const ages = { "codex-direct-ro-old": 2 * 60 * 60_000, "codex-direct-ro-new": 5 * 60_000, "codex-direct-ro-link": 3 * 60 * 60_000 };
+  const connection = new FakeConnection({
+    "fs/readDirectory": () => ({
+      entries: [
+        ...Object.keys(ages).map((fileName) => ({ fileName, isDirectory: true, isFile: false })),
+        { fileName: "codex-direct-ro-queued", isDirectory: true, isFile: false },
+        { fileName: "codex-direct-ro-file", isDirectory: false, isFile: true },
+        { fileName: "someone-else", isDirectory: true, isFile: false },
+      ],
+    }),
+    "fs/getMetadata": ({ path: uri }) => {
+      const name = uri.split("/").pop();
+      return { isDirectory: true, isFile: false, isSymlink: name === "codex-direct-ro-link", size: 0, createdAtMs: 0, modifiedAtMs: NOW - ages[name] };
+    },
+  });
+  const manager = new CodexExecServerManager({ now: () => NOW });
+  manager.queueScratchCleanup("local", "/tmp/codex-direct-ro-queued");
+  await manager.reclaimScratch(connection, { key: "local", platform: "linux" });
+  const removed = connection.calls.filter((call) => call.method === "fs/remove").map((call) => call.params.path);
+  assert.deepEqual(removed, ["file:///tmp/codex-direct-ro-queued", "file:///tmp/codex-direct-ro-old"]);
+  assert.equal(manager.pendingScratch.size, 0);
+  const windows = new FakeConnection({});
+  await manager.reclaimScratch(windows, { key: "local", platform: "win32" });
+  assert.deepEqual(windows.calls, [], "Windows has no scratch folders");
+});
+
+await check("Windows Read only and Workspace commands need a sandbox that hides credential stores", async () => {
+  const windowsWorkspace = { root: "C:\\p", remote: true, platform: "win32", local: true, cwd: "C:\\p", cwdRelPath: "." };
+  const restricted = new CodexExecServerProcessBackend({ manager: fakeManager(new FakeConnection()), env: {} });
+  for (const sandboxMode of ["read-only", "workspace-write"]) {
+    assert.throws(
+      () => restricted.planLaunch({ sandboxMode, workspace: windowsWorkspace, shellCommand: "Get-Content $HOME\\.codex\\auth.json" }),
+      (error) => error.code === "direct_stateful_exec_sandbox_unavailable" && /can't hide credential stores/.test(error.message),
+    );
+  }
+  assert.equal(restricted.planLaunch({ sandboxMode: "danger-full-access", workspace: windowsWorkspace, shellCommand: "hi" }).sandboxMode, "danger-full-access");
+  const elevated = new CodexExecServerProcessBackend({ manager: fakeManager(new FakeConnection()), env: { CODEX_DIRECT_EXEC_SERVER_WINDOWS_SANDBOX: "elevated" } });
+  const plan = elevated.planLaunch({ sandboxMode: "workspace-write", workspace: windowsWorkspace, shellCommand: "hi" });
+  assert.equal(plan.windowsSandboxLevel, "elevated");
+  const linuxPlan = restricted.planLaunch({ sandboxMode: "read-only", workspace: { ...windowsWorkspace, platform: "linux", root: ROOT, cwd: ROOT }, shellCommand: "true" });
+  assert.equal(linuxPlan.sandboxMode, "read-only", "Linux sandboxes keep their denials");
 });
 
 await check("a kill before dispatch sends nothing; a lost exec-server reports the session lost", async () => {

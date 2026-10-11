@@ -27,6 +27,10 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const CONCURRENT_REQUESTS = 4;
 const STDERR_TAIL_CHARS = 2_000;
 const WINDOWS_SANDBOX_LEVELS = new Set(["restricted-token", "elevated", "mxc"]);
+// Read only commands' scratch folders (Linux): SCRATCH_PARENT/SCRATCH_PREFIX<session>.
+const SCRATCH_PARENT = "/tmp";
+const SCRATCH_PREFIX = "codex-direct-ro-";
+const STALE_SCRATCH_MS = 60 * 60_000;
 // What a command may inherit from exec-server's own environment, matching
 // what Direct's backends give commands.
 const COMMAND_ENVIRONMENT_KEYS = Object.freeze([...BASE_COMMAND_ENVIRONMENT_KEYS, "LANG", "LC_ALL"]);
@@ -313,8 +317,9 @@ function execServerSandboxFor(sandboxMode, environment, info = {}, options = {})
   }
   const level = normalizeString(options.windowsSandboxLevel, "restricted-token");
   // The restricted-token sandbox refuses any profile with denied paths
-  // ("requires the elevated Windows sandbox backend"), so there it can't hide
-  // credential stores; read_file still refuses them host-side.
+  // ("requires the elevated Windows sandbox backend"), so it can't hide
+  // credential stores. The backend refuses sandboxed commands at that level;
+  // file tools still use this profile and refuse credential paths host-side.
   const denials = !(platform === "win32" && level === "restricted-token");
   const deny = (target) => {
     if (denials) entries.push({ path: { type: "path", path: uri(target) }, access: "deny", missing_path_behavior: "skip" });
@@ -359,6 +364,7 @@ class CodexExecServerConnection extends EventEmitter {
     this.state = "starting";
     this.nextId = 1;
     this.pending = new Map();
+    this.late = new Map();
     this.stderrTail = "";
     this.environmentInfo = null;
     this.error = null;
@@ -419,6 +425,12 @@ class CodexExecServerConnection extends EventEmitter {
   handleLine(line) {
     let message;
     try { message = JSON.parse(line); } catch { return; }
+    if (message && message.id !== undefined && this.late.has(message.id)) {
+      const onLate = this.late.get(message.id);
+      this.late.delete(message.id);
+      onLate(message.error ? execServerError("direct_codex_exec_server_request_failed", normalizeString(message.error.message, "exec-server request failed")) : null, message.result);
+      return;
+    }
     if (message && message.id !== undefined && this.pending.has(message.id)) {
       const entry = this.pending.get(message.id);
       this.pending.delete(message.id);
@@ -449,10 +461,15 @@ class CodexExecServerConnection extends EventEmitter {
       entry.reject(this.error);
     }
     this.pending.clear();
+    // exec-server stops the processes it started when it exits, so a late
+    // answer has nothing left to act on.
+    this.late.clear();
     this.emit("closed", { error: this.error });
   }
 
-  request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  // `options.onLate(error, result)` gets the answer if it arrives after the
+  // request timed out (a JSON-RPC timeout doesn't cancel the server's work).
+  request(method, params = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, options = {}) {
     if (this.state === "closed" || !this.child?.stdin?.writable) {
       return Promise.reject(this.error || execServerError("direct_codex_exec_server_lost", "Codex exec-server isn't running."));
     }
@@ -460,6 +477,7 @@ class CodexExecServerConnection extends EventEmitter {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        if (typeof options.onLate === "function") this.late.set(id, options.onLate);
         reject(execServerError("direct_codex_exec_server_timeout", `Codex exec-server didn't answer ${method} in ${Math.round(timeoutMs / 1000)}s.`));
       }, timeoutMs);
       timer.unref?.();
@@ -510,6 +528,43 @@ class CodexExecServerManager {
     this.launchSpecFor = typeof options.launchSpecFor === "function" ? options.launchSpecFor : execServerLaunchSpec;
     this.connections = new Map();
     this.lastErrors = new Map();
+    this.pendingScratch = new Map();
+    this.now = typeof options.now === "function" ? options.now : Date.now;
+  }
+
+  // A Read only command's scratch folder whose exec-server died before it
+  // could be removed; removed once that environment has a connection again.
+  queueScratchCleanup(key, dir) {
+    if (!this.pendingScratch.has(key)) this.pendingScratch.set(key, new Set());
+    this.pendingScratch.get(key).add(dir);
+  }
+
+  // Removes queued scratch folders, and any left by an app that didn't get
+  // to (a crash, another instance): a command can't outlive the 10-minute
+  // hard timeout, so a folder untouched for an hour belongs to no command.
+  async reclaimScratch(connection, environment) {
+    if (environment.platform !== "linux") return;
+    const uri = (target) => pathToExecUri(target, "linux");
+    const queued = [...(this.pendingScratch.get(environment.key) || [])];
+    this.pendingScratch.delete(environment.key);
+    const stale = [];
+    try {
+      const listing = await connection.request("fs/readDirectory", { path: uri(SCRATCH_PARENT) });
+      for (const entry of Array.isArray(listing?.entries) ? listing.entries : []) {
+        const name = String(entry?.fileName || "");
+        if (!entry?.isDirectory || !name.startsWith(SCRATCH_PREFIX)) continue;
+        const dir = path.posix.join(SCRATCH_PARENT, name);
+        if (queued.includes(dir)) continue;
+        const metadata = await connection.request("fs/getMetadata", { path: uri(dir) }).catch(() => null);
+        if (!metadata || metadata.isSymlink || !metadata.isDirectory) continue;
+        if (this.now() - Number(metadata.modifiedAtMs || 0) > STALE_SCRATCH_MS) stale.push(dir);
+      }
+    } catch {
+      // Listing is best effort; the queued folders are still removed.
+    }
+    for (const dir of [...queued, ...stale]) {
+      await connection.request("fs/remove", { path: uri(dir), recursive: true, force: true }).catch(() => {});
+    }
   }
 
   environmentFor(project) {
@@ -529,6 +584,7 @@ class CodexExecServerManager {
       const ready = connection.start().then(
         () => {
           this.lastErrors.delete(environment.key);
+          this.reclaimScratch(connection, environment).catch(() => {});
           return connection;
         },
         (error) => {
@@ -567,6 +623,8 @@ module.exports = {
   CodexExecServerConnection,
   CodexExecServerManager,
   MIN_EXEC_SERVER_VERSION,
+  SCRATCH_PARENT,
+  SCRATCH_PREFIX,
   execServerEnvironmentFor,
   execServerError,
   execServerLaunchSpec,

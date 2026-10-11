@@ -18,6 +18,8 @@ const path = require("node:path");
 const {
   COMMAND_ENVIRONMENT_KEYS,
   CODEX_EXEC_SERVER_BACKEND_ID,
+  SCRATCH_PARENT,
+  SCRATCH_PREFIX,
   execServerSandboxFor,
   execUriToPath,
   isAbsoluteFor,
@@ -41,6 +43,8 @@ const { nativeInteractiveShell, nativeShellCommand } = require("../runtime/execu
 const { normalizePtySize } = require("./pty-frames");
 
 const PROCESS_START_TIMEOUT_MS = 30_000;
+const START_ABANDON_GRACE_MS = 30_000;
+const WINDOWS_LEVELS_WITH_DENIALS = new Set(["elevated", "mxc"]);
 const PROCESS_CONTROL_TIMEOUT_MS = 10_000;
 const FILE_REQUEST_TIMEOUT_MS = 30_000;
 // exec-server reports a process's exit before its output streams close; a
@@ -115,6 +119,8 @@ class CodexExecServerProcessHandle extends EventEmitter {
     this.killSignal = "";
     this.closeTimer = null;
     this.scratch = null;
+    this.startTimeoutMs = options.startTimeoutMs || PROCESS_START_TIMEOUT_MS;
+    this.startAbandonGraceMs = options.startAbandonGraceMs || START_ABANDON_GRACE_MS;
     this.writeSequence = 0;
     this.onNotification = (method, params) => this.handleNotification(method, params);
     this.onClosed = (payload) => this.handleConnectionClosed(payload);
@@ -134,8 +140,12 @@ class CodexExecServerProcessHandle extends EventEmitter {
 
   async begin() {
     if (this.state !== "starting") return;
+    let connection = null;
+    let startAnswered = false;
     try {
-      const { connection, environment, info } = await this.manager.connectionFor(this.project);
+      const resolved = await this.manager.connectionFor(this.project);
+      connection = resolved.connection;
+      const { environment, info } = resolved;
       if (this.state !== "starting") return;
       this.connection = connection;
       connection.on("notification", this.onNotification);
@@ -148,7 +158,7 @@ class CodexExecServerProcessHandle extends EventEmitter {
         return;
       }
       const sandbox = execServerSandboxFor(this.plan.sandboxMode, environment, info, {
-        windowsSandboxLevel: windowsSandboxLevel(),
+        windowsSandboxLevel: this.plan.windowsSandboxLevel || windowsSandboxLevel(),
         writableDirs: scratch ? [scratch] : [],
       });
       this.startDispatched = true;
@@ -162,7 +172,17 @@ class CodexExecServerProcessHandle extends EventEmitter {
         pipeStdin: !this.plan.tty,
         arg0: null,
         ...(sandbox ? { sandbox } : {}),
-      }, PROCESS_START_TIMEOUT_MS);
+      }, this.startTimeoutMs, {
+        // The start finished after this session reported it failed: stop
+        // the process, or the whole exec-server if it won't answer.
+        onLate: (error) => {
+          startAnswered = true;
+          if (error) return;
+          connection.request("process/terminate", { processId: this.sessionId }, PROCESS_CONTROL_TIMEOUT_MS)
+            .catch(() => connection.close());
+        },
+      });
+      startAnswered = true;
       if (this.state !== "starting") return;
       this.state = "running";
       const sandboxType = normalizeString(result?.sandboxType, "unknown");
@@ -176,6 +196,9 @@ class CodexExecServerProcessHandle extends EventEmitter {
       for (const signal of this.pendingSignals.splice(0)) this.sendSignal(signal);
       for (const pending of this.pendingStdin.splice(0)) this.sendStdin(pending);
     } catch (error) {
+      if (this.startDispatched && error?.code === "direct_codex_exec_server_timeout" && connection) {
+        this.abandonStart(connection, () => startAnswered);
+      }
       if (this.state !== "starting") return;
       this.state = "closed";
       this.detach();
@@ -185,20 +208,37 @@ class CodexExecServerProcessHandle extends EventEmitter {
     }
   }
 
+  // A start that timed out may still be running in exec-server. Ask it to
+  // stop now (a no-op if it never started); if the start still hasn't
+  // answered after a grace period, the exec-server is stuck, and closing it
+  // stops every process it started.
+  abandonStart(connection, answered) {
+    connection.request("process/terminate", { processId: this.sessionId }, PROCESS_CONTROL_TIMEOUT_MS).catch(() => {});
+    const guard = setTimeout(() => {
+      if (!answered()) connection.close();
+    }, this.startAbandonGraceMs);
+    guard.unref?.();
+  }
+
   // Read only writes nothing of the user's, but tools still expect a temp
   // folder (Direct's sandbox gives a private /tmp): one per command, removed
   // when it ends. Linux only; see execServerSandboxFor for Windows.
   async createScratch(connection, environment) {
-    const dir = path.posix.join("/tmp", `codex-direct-ro-${this.sessionId}`);
+    const dir = path.posix.join(SCRATCH_PARENT, `${SCRATCH_PREFIX}${this.sessionId}`);
+    // Recorded first: a create that fails half way is still cleaned up.
+    this.scratch = { connection, dir, platform: environment.platform, key: environment.key };
     await connection.request("fs/createDirectory", { path: pathToExecUri(dir, environment.platform), recursive: true }, FILE_REQUEST_TIMEOUT_MS);
-    this.scratch = { connection, dir, platform: environment.platform };
     return dir;
   }
 
   removeScratch() {
     const scratch = this.scratch;
     this.scratch = null;
-    if (!scratch || scratch.connection.state === "closed") return;
+    if (!scratch) return;
+    if (scratch.connection.state === "closed") {
+      this.manager?.queueScratchCleanup?.(scratch.key, scratch.dir);
+      return;
+    }
     scratch.connection.request("fs/remove", { path: pathToExecUri(scratch.dir, scratch.platform), recursive: true, force: true }, FILE_REQUEST_TIMEOUT_MS)
       .catch(() => {});
   }
@@ -245,6 +285,7 @@ class CodexExecServerProcessHandle extends EventEmitter {
     if (this.state === "closed") return;
     this.state = "closed";
     this.detach();
+    this.removeScratch();
     this.emit("lost", statefulExecError(
       "direct_stateful_exec_executor_lost",
       "Codex exec-server stopped; the process was not re-run.",
@@ -338,6 +379,8 @@ class CodexExecServerProcessBackend {
     this.id = CODEX_EXEC_SERVER_BACKEND_ID;
     this.manager = options.manager || null;
     this.env = options.env || process.env;
+    // Test hook: { startTimeoutMs, startAbandonGraceMs }.
+    this.timing = options.timing || {};
   }
 
   environment(input = {}) {
@@ -400,9 +443,20 @@ class CodexExecServerProcessBackend {
     if (!normalizeString(command, "")) {
       throw statefulExecError("direct_stateful_exec_command_invalid", "Stateful exec requires a command.");
     }
+    const level = windowsSandboxLevel(this.env);
+    // restricted-token can't deny any path, so a sandboxed command there could
+    // read the credential stores (read_file's host-side check doesn't cover
+    // shell commands). Only a level that keeps the denials may run them.
+    if (platform === "win32" && sandboxMode !== "danger-full-access" && !WINDOWS_LEVELS_WITH_DENIALS.has(level)) {
+      throw statefulExecError(
+        "direct_stateful_exec_sandbox_unavailable",
+        `Codex exec-server's Windows sandbox (${level}) can't hide credential stores, so it doesn't run Read only or Workspace commands. Switch Command execution to Direct executor in settings, or use Full access.`,
+      );
+    }
     return {
       remote: true,
       sandboxMode,
+      windowsSandboxLevel: level,
       argv: [command, ...args.map(String)],
       cwd: spec.workspace?.cwd || "",
       platform,
@@ -424,6 +478,7 @@ class CodexExecServerProcessBackend {
       sessionId: options.sessionId,
       plan,
       commandEnv: commandEnvironmentAdditions(options.env, options.requestedEnv),
+      ...this.timing,
     });
   }
 }

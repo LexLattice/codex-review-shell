@@ -1444,7 +1444,12 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
     unsandboxed after the host checks and only the content request
     sandboxed. On Windows only `restricted-token` works here: it refuses
     any denied path ("requires the elevated Windows sandbox backend"), so
-    Workspace and Read only commands can read `~/.codex/auth.json` there;
+    it can't keep a command away from `~/.codex/auth.json`. Workspace and
+    Read only commands on a Windows workspace are therefore refused under
+    `restricted-token` (`direct_stateful_exec_sandbox_unavailable`; the
+    message points to the Direct executor or Full access); only Full
+    access runs there.
+    File tools still work: `read_file` refuses credential paths host-side.
     `mxc` fails to start ("cannot locate required Windows platform
     directory"). `elevated` (`CODEX_DIRECT_EXEC_SERVER_WINDOWS_SANDBOX`)
     is set up on this machine, but Codex's setup refresh, run before every
@@ -1453,7 +1458,10 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
     open (os error 32). It was left out of this change. Read only gets a
     writable temp folder on Linux: a per-command `/tmp/codex-direct-ro-*`
     (as `TMPDIR`), removed when the command ends; `/tmp` itself stays
-    read-only, where Direct's sandbox gives a private one. On Windows
+    read-only, where Direct's sandbox gives a private one. If the
+    exec-server connection is lost first, the folder is queued and removed
+    when the next connection to that environment is ready, together with
+    any `codex-direct-ro-*` folder older than an hour (a crash). On Windows
     `restricted-token` refuses a read-only profile with any writable folder
     ("cannot enforce split writable root sets"), so Read only has none
     there. Under `restricted-token`, PowerShell runs in constrained language
@@ -1479,7 +1487,15 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
 
     Writes outside the project, network, `/mnt`, and WSL interop were
     blocked by both in every column; Full access read the credential file
-    in both. No command saw a secret-looking variable.
+    in both. No command saw a secret-looking variable. The two
+    **readable** cells were measured before Windows Workspace and Read
+    only commands were refused under `restricted-token`; those commands
+    don't run now.
+  - **A `process/start` that times out** (30 s) may still have started the
+    command. The connection remembers the request; if the start answers
+    late, the process is terminated at once. If it never answers within
+    another 30 s, the connection is closed, and exec-server kills the
+    processes it started when it exits (checked on Linux and Windows).
   - **Fixed on the way (both backends).**
     - Ubuntu's bash sources `~/.bashrc` for a non-interactive `bash -c`
       whose stdin is a socket (its rshd heuristic), and Node's stdio pipes
@@ -1513,8 +1529,10 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
       doesn't count against a command's quiet time.
 - **Checks:** new `direct-codex-exec-server-backend-regression` (scripted
   exec-server: requests, sandbox mapping, the WSL → Windows launch, Read
-  only scratch folder, event and gap mapping, file port boundaries)
-  passes on Linux and Windows; the benchmark ran in all four placements.
+  only scratch folder and its reclaim after a lost connection, a late or
+  missing `process/start` answer, the Windows `restricted-token` refusal,
+  event and gap mapping, file port boundaries; 16 checks) passes on Linux
+  and Windows; the benchmark ran in all four placements.
   `direct-access-profiles` covers keeping the grant on a same-Access
   re-select mid-turn and the `write_stdin` rejection;
   `direct-execution-environment-contract` covers `--norc` (a real bash
