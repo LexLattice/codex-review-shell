@@ -37,7 +37,7 @@ const toolNames = (body) => (body.tools || []).map((tool) => tool.name);
 const permissionsTool = (body) => (body.tools || []).find((tool) => tool.name === "request_permissions");
 const lastOutput = (body) => JSON.parse(body.input.filter((item) => item.type === "function_call_output").at(-1).output);
 
-async function runCase(root, name, { accessProfile, answer, ask = { access: "full_access", scope: "turn", reason: "needs the network" } }) {
+async function runCase(root, name, { accessProfile, answer, ask = { access: "full_access", scope: "turn", reason: "needs the network" }, asks = null }) {
   const workspace = path.join(root, name);
   await fs.mkdir(workspace, { recursive: true });
   const project = {
@@ -50,7 +50,7 @@ async function runCase(root, name, { accessProfile, answer, ask = { access: "ful
   const manager = new DirectStatefulExecSessionManager({ grantStore: grants, workspaceRootResolver: () => workspace });
   const threadStore = new DirectThreadStore({ rootDir: path.join(root, `${name}-threads`), mode: "index_only" });
   const bodies = [];
-  const steps = answer ? [{ name: "request_permissions", args: ask }, null] : [null];
+  const steps = answer ? [...(asks || [ask]).map((args) => ({ name: "request_permissions", args })), null] : [null];
   const controller = new DirectLiveTextController({
     sessionStore, directThreadStore: threadStore, harnessGrantStore: grants, statefulExecSessionManager: manager,
     profileDoc: { profile: { ontology: { models: [{ id: "gpt-5.6-sol", status: "accepted" }] } } },
@@ -130,6 +130,22 @@ try {
   assert.equal(lastOutput(denied.bodies[1]).status, "denied");
   assert.equal(denied.turn.state, "completed");
   assert.equal(denied.after.harnessAccessProfile, "read_only");
+
+  // Two raises in one turn (Read only to Workspace, then to Full access):
+  // the thread returns to Read only, not to the first raise's Workspace.
+  const nested = await runCase(root, "nested_turn", {
+    accessProfile: "read_only",
+    answer: "allow_turn",
+    asks: [
+      { access: "workspace", scope: "turn", reason: "edit a file" },
+      { access: "full_access", scope: "turn", reason: "fetch a dependency" },
+    ],
+  });
+  assert.equal(nested.questions.length, 2);
+  assert.equal(nested.turn.state, "completed", JSON.stringify(nested.turn.error));
+  assert.deepEqual([lastOutput(nested.bodies[1]).accessProfile, lastOutput(nested.bodies[2]).accessProfile], ["workspace", "full_access"]);
+  assert.equal(nested.after.harnessAccessProfile, "read_only", "a turn-only raise never outlives its turn");
+  assert.equal(nested.after.accessRevertAfterTurn, null);
 
   // Full access threads aren't offered the tool.
   const full = await runCase(root, "full_access", { accessProfile: "full_access" });

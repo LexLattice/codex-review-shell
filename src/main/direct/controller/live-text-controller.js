@@ -2684,8 +2684,13 @@ class DirectLiveTextController {
   // grant records the Access to return to when the turn ends.
   raiseAccessForTurn(project = {}, sessionId = "", turnId = "", profile = "", revertToProfile = "") {
     const session = this.sessionStore.readSession(sessionId) || {};
+    // A second raise in the same turn returns to the Access the turn
+    // started with, not the first raise's level.
+    const pending = isPlainObject(session.accessRevertAfterTurn) && session.accessRevertAfterTurn.turnId === turnId
+      ? session.accessRevertAfterTurn
+      : null;
     const grant = this.issueThreadAccessGrant(project, session, profile, {
-      accessRevertAfterTurn: revertToProfile ? { turnId, profile: revertToProfile } : null,
+      accessRevertAfterTurn: revertToProfile ? { turnId, profile: normalizeString(pending?.profile, "") || revertToProfile } : null,
     });
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
     const requestShape = isPlainObject(turn.requestShape) ? turn.requestShape : {};
@@ -12528,8 +12533,14 @@ class DirectLiveTextController {
         ? this.structuredHistoryInput(session.sessionId, turn.turnId, contextResult.contextPack, historyOptions)
         : null;
       let threadCompaction = null;
-      if (historyInput && compactLimit &&
-          estimateTokens({ instructions: requestBody.instructions, tools: requestBody.tools, input: historyInput.input }) >= compactLimit) {
+      // Compaction sees the complete history: the checkpoint replaces every
+      // turn up to the last one, so a turn the budget left out of the
+      // compactor's input would be lost for good.
+      const fullHistoryInput = historyInput && compactLimit
+        ? this.structuredHistoryInput(session.sessionId, turn.turnId, contextResult.contextPack, { budgetChars: Number.MAX_SAFE_INTEGER })
+        : null;
+      if (fullHistoryInput &&
+          estimateTokens({ instructions: requestBody.instructions, tools: requestBody.tools, input: fullHistoryInput.input }) >= compactLimit) {
         try {
           threadCompaction = await this.compactThreadHistory({
             sessionId: session.sessionId,
@@ -12541,8 +12552,8 @@ class DirectLiveTextController {
             cyberAccessProgram,
             instructions: requestBody.instructions,
             tools: requestBody.tools,
-            historyItems: historyInput.historyItems,
-            coversThroughTurnId: historyInput.lastTurnId,
+            historyItems: fullHistoryInput.historyItems,
+            coversThroughTurnId: fullHistoryInput.lastTurnId,
             trigger: "auto",
           });
           historyInput = this.structuredHistoryInput(session.sessionId, turn.turnId, contextResult.contextPack, historyOptions);

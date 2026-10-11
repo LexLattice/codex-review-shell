@@ -200,6 +200,34 @@ try {
   assert(await waitGone(changed.pid) && await waitGone(other.pid), "dispose stops every server");
   assert.equal(pool.sessions.size, 0);
 
+  const projectPool = new McpSessionPool({ idleMs: 60_000 });
+  try {
+    const projectAOptions = { ...options, projectId: "project-a" };
+    const projectBOptions = { ...options, projectId: "project-b" };
+    const projectA = await projectPool.request(server("project-a"), "whoami", {}, projectAOptions);
+    const slowA = projectPool.request(server("project-a"), "slow", {}, projectAOptions);
+    const settledA = slowA.then((value) => ({ value }), (error) => ({ error: error.code }));
+    await sleep(100);
+    const projectB = await projectPool.request(server("project-b"), "whoami", {}, projectBOptions);
+    assert(alive(projectA.pid), "another project's definition must not close a busy server");
+    assert.notEqual(projectB.pid, projectA.pid);
+    assert.deepEqual(await settledA, { value: { slow: true } });
+    assert.equal(projectPool.sessions.size, 2);
+    const changedA = await projectPool.request(server("project-a-changed"), "whoami", {}, projectAOptions);
+    assert(await waitGone(projectA.pid), "a changed definition still replaces the same project's server");
+    assert(alive(projectB.pid), "replacement is scoped to the project");
+
+    const sameConfigA = await projectPool.request(server("same-project-config"), "whoami", {}, projectAOptions);
+    const sameConfigB = await projectPool.request(server("same-project-config"), "whoami", {}, projectBOptions);
+    assert.notEqual(sameConfigA.pid, sameConfigB.pid, "identical definitions must not share a replaceable session across projects");
+    assert(await waitGone(changedA.pid));
+    await projectPool.request(server("changed-again"), "whoami", {}, projectAOptions);
+    assert(await waitGone(sameConfigA.pid));
+    assert(alive(sameConfigB.pid), "changing one formerly identical definition cannot stop the other project's session");
+  } finally {
+    await projectPool.dispose();
+  }
+
   // An idle server stops on its own.
   const idlePool = new McpSessionPool({ idleMs: 300 });
   const idle = await idlePool.request(server("idle"), "whoami", {}, options);

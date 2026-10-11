@@ -49,6 +49,7 @@ class ExecutorProcessHandle extends EventEmitter {
     this.requestedEnv = options.requestedEnv;
     this.child = null;
     this.state = "starting";
+    this.startDispatched = false;
     this.stdinEnded = false;
     this.pendingStdin = [];
     this.pendingSignals = [];
@@ -78,13 +79,15 @@ class ExecutorProcessHandle extends EventEmitter {
   onStarted(fn) { this.on("started", fn); }
 
   async begin() {
+    if (this.state !== "starting") return;
     try {
       const session = await this.workspaceBackends.ensureForProject(this.project);
+      if (this.state !== "starting") return;
       this.session = session;
       this.transport = session.transport;
       session.on("executor-process-event", this.onExecutorEvent);
       session.on("transport-closed", this.onTransportClosed);
-      if (this.state !== "starting") return;
+      this.startDispatched = true;
       const result = await this.transport.request(EXECUTOR_METHODS.processStart, {
         processSessionId: this.sessionId,
         // The environment executor resolves cwd and the sandbox against it.
@@ -197,6 +200,20 @@ class ExecutorProcessHandle extends EventEmitter {
   kill(signal = "SIGTERM") {
     if (this.state === "closed") return false;
     if (this.state === "starting") {
+      if (!this.startDispatched) {
+        this.state = "closed";
+        this.detach();
+        this.pendingSignals.length = 0;
+        this.resizePending = false;
+        const exitSignal = ["SIGTERM", "SIGKILL", "SIGINT"].includes(signal) ? signal : "SIGTERM";
+        // Close before rejecting queued input so cancellation isn't reported
+        // as a stdin failure by the session manager.
+        setImmediate(() => {
+          this.emit("close", null, exitSignal);
+          for (const pending of this.pendingStdin.splice(0)) this.sendStdin(pending);
+        });
+        return true;
+      }
       this.pendingSignals.push(signal);
       return true;
     }

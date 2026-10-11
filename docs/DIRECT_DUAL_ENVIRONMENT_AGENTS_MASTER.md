@@ -1321,6 +1321,86 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   - **Not done:** pinning or archiving single threads, drag-to-reorder
     projects, and lifting the switching locks for app-server threads.
 
+### Review batch for PRs #313–#320
+
+- Status: done
+- Scope: an outside review of `286007c` found 14 problems across PRs
+  #313–#320. Each was reproduced first, then fixed with a regression.
+- Outcome:
+  - **MCP.**
+    - `toml-lite` refuses `__proto__`, `constructor`, and `prototype` keys
+      and checks own properties only. `[mcp_servers.__proto__]` once
+      polluted every object, so tools without annotations skipped approval.
+    - A project's `.codex/config.toml` server table is merged into the
+      user's before it is validated, as in Codex (arrays replace). A
+      project layer with only `enabled = false` was rejected as invalid
+      and the user's server stayed on.
+    - A server name that has to be sanitized or shortened gets a hash
+      suffix in its identity, so `my.server` and `my_server` stay two
+      servers. Names that were already valid keep their identity.
+      Overlong names (over 180 characters) get a new one and must be
+      approved again.
+    - MCP session reuse and replacement are scoped by project. Project B's
+      server with the same name used to close project A's busy session.
+  - **Sandbox and command rules.**
+    - bubblewrap applies the credential masks after every workspace and
+      `/tmp` mount. A workspace that contained `~/.codex` mounted the real
+      `auth.json` over the mask.
+    - `read_file` shares the command sandbox's credential discovery
+      (`CODEX_HOME`, the auth file variables, Direct's stores), compared by
+      real path and, on Windows, without case. A custom `CODEX_HOME`
+      inside the workspace was readable.
+    - PowerShell command rules ignore case for the command name only.
+      `git branch -d` no longer allows `git branch -D`.
+  - **Executor and terminals.**
+    - A process cancelled before `process/start` was sent is never
+      started. It closes with the signal, and queued input fails with
+      `EPIPE`. A command cancelled during the executor's cold start used
+      to start anyway.
+    - `pty-helper.py` sets the window size on the child's terminal before
+      `exec`. A fast command (`stty size`) sometimes saw 0×0.
+  - **Turns.**
+    - A nested `request_permissions` raise in the same turn keeps the
+      original profile to return to. It once returned to the first raise's
+      profile (Workspace instead of Read only).
+    - Automatic compaction sends the compactor the whole history, as
+      manual compaction already did. It once compacted the budget-truncated
+      prompt, so older requirements were dropped from every later turn.
+    - A send captures its thread before any wait. If the owner switches
+      threads during the preference writes or the projection refresh,
+      nothing is sent (`thread_switched_before_send`). It used to send
+      thread A's message to thread B.
+  - **Left panel.**
+    - "Show more" past the 50 threads main sent asks main for the
+      project's whole list (up to 1,000), and a search asks for every
+      project's. Main remembers this per surface for the overviews it
+      pushes. Threads past the first 50 could not be reached or found.
+    - Appserver projects list the threads of their own surface (from
+      `thread/list`) and keep the Appserver's names (no rename). In the
+      background they offer "Open to see its threads", because main has no
+      list of them. They used to show the project's old Direct sessions.
+    - From the Codex review of #321: the surface lists an Appserver's 40
+      most recent threads. "Show more" or a search now has it page through
+      `thread/list` (100 a page, up to 1,000), and "Show N+ more" marks a
+      list that has more. The project's header and tile count its runs
+      from the surface's list; main had none, so a running Appserver
+      project looked idle when its threads were hidden. A background
+      Appserver project shows no runs because its surface isn't kept.
+- **Checks:** `validate`; Linux sweep 314 passed, 0 failed, 10 skipped
+  (the Windows-only ones). Windows sweep (4 jobs) 307 passed, 13 skipped,
+  4 failed: the two that fail on `main` too (below, under findings) and
+  two that pass when rerun alone (`direct-workspace-worker-lifecycle`,
+  `direct-wsl-executor-process`). New: `direct-sandbox-credentials-regression`
+  (real bubblewrap on Linux, file checks only on Windows) and
+  `direct-executor-process-start-regression`. Extended:
+  `direct-codex-environment-context`, `direct-mcp-http`,
+  `direct-mcp-session-pool`, `direct-exec-escalation`,
+  `direct-terminal-pty`, `direct-request-permissions`,
+  `direct-context-compaction`, and `direct-workbench-live-projects`
+  (expanded and search overviews, Appserver rows, and a send whose thread
+  changes while it waits). T3 GUI and live left-panel Electron smokes pass
+  on Linux; the live smoke passes on Windows too.
+
 ## Baseline and prerequisites
 
 | Item | State |
@@ -2084,6 +2164,18 @@ Discovered during planning; not in any turn's scope unless a turn adopts them.
   the PowerShell module cache) fail unless redirected, as they do under the
   Linux Workspace sandbox. Turn 7 may want to point well-known cache
   variables at the scratch directory.
+- Open, found during the #313–#320 review batch:
+  - `write_stdin` to an exec session that no longer exists ends the turn
+    instead of returning an error the model can act on. Its error code is
+    not in `USER_ACTIONABLE_STATEFUL_EXEC_ERRORS`.
+  - On Windows, `direct-command-tool-loop` and
+    `direct-tool-continuation-repair-loop` fail on `main` too: the npm
+    child they start can't find `node`. The T3 GUI Electron smoke fails on
+    Windows at its WSL terminal step, also on `main`.
+  - The live left-panel smoke depends on the model polling a 30-second
+    command to its end. Runs where the model stops polling early (Windows),
+    or picks `run_command` and gets `command_class_deferred` (Linux), end
+    without the command's output. Rerunning passes.
 
 ## Decisions
 

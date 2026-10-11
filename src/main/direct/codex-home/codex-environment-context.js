@@ -195,18 +195,32 @@ function normalizeCodexMcpServer(name, raw, source, env) {
   return server;
 }
 
+function mergeConfigTables(base, override) {
+  if (!isPlainObject(base) || !isPlainObject(override)) return override;
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    merged[key] = Object.hasOwn(base, key) ? mergeConfigTables(base[key], value) : value;
+  }
+  return merged;
+}
+
 function collectMcpServers(layers, env) {
   const byName = new Map();
   const invalid = [];
   for (const { config, source } of layers) {
     const servers = isPlainObject(config?.mcp_servers) ? config.mcp_servers : {};
     for (const [name, raw] of Object.entries(servers)) {
-      const server = normalizeCodexMcpServer(name, raw, source, env);
-      if (server.invalid) invalid.push({ name, source, message: server.invalid });
-      else byName.set(name, server);
+      const base = byName.get(name);
+      byName.set(name, { raw: base ? mergeConfigTables(base.raw, raw) : raw, source });
     }
   }
-  return { servers: [...byName.values()], invalid };
+  const servers = [];
+  for (const [name, { raw, source }] of byName) {
+    const server = normalizeCodexMcpServer(name, raw, source, env);
+    if (server.invalid) invalid.push({ name, source, message: server.invalid });
+    else servers.push(server);
+  }
+  return { servers, invalid };
 }
 
 function readInstructionsFile(dir, names) {

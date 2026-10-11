@@ -44,6 +44,10 @@ const APPROVAL_POLICY_OPTIONS = ["", "untrusted", "on-failure", "on-request", "n
 const SANDBOX_MODE_OPTIONS = ["", "read-only", "workspace-write", "danger-full-access"];
 const MODEL_LIST_PAGE_LIMIT = 100;
 const MODEL_LIST_PAGE_SIZE = 100;
+// An Appserver thread list the Workbench sidebar expanded or searches:
+// every thread, paged, up to the sidebar's own bound.
+const EXPANDED_THREAD_LIST_PAGE_SIZE = 100;
+const EXPANDED_THREAD_LIST_PAGE_LIMIT = 10;
 const RATE_LIMIT_STALE_MS = 5 * 60 * 1000;
 const CONTEXT_BASELINE_TOKENS = 12000;
 const THOUGHT_ITEM_TYPES = new Set([
@@ -233,6 +237,7 @@ const state = {
   directThreadListStatus: "idle",
   directThreadListError: "",
   directThreadListRequestId: 0,
+  directThreadListExpanded: false,
   directThreadOpenRequestId: 0,
   directThreadFocusTransition: {
     state: "idle",
@@ -3500,6 +3505,25 @@ globalThis.DirectWorkbenchSurface = Object.freeze({
     ? openDirectThread(threadId)
     : openThreadHybrid(threadId, "", "", "", { requireProviderAttach: true })),
   newThread: () => startNewThread(),
+  // An Appserver project's threads live in its own runtime, not in main's
+  // Direct stores; the sidebar lists them from here.
+  threadRows: () => (isDirectRuntimeSurface()
+    ? []
+    : (state.directThreadDirectory?.rows || []).map((row) => ({
+      threadId: String(row.threadId || ""),
+      title: String(row.displayTitle || row.threadId || ""),
+      updatedAt: String(row.updatedAt || ""),
+      running: Number(row.activeTurnCount || 0) > 0,
+    })).filter((row) => row.threadId)),
+  // The Appserver has more threads than the surface listed.
+  threadListPartial: () => !isDirectRuntimeSurface() && state.directThreadDirectory?.partial === true,
+  // The sidebar expanded this project's list, or searches: list them all.
+  expandThreadList: (expanded) => {
+    const next = Boolean(expanded) && !isDirectRuntimeSurface();
+    if (next === state.directThreadListExpanded) return;
+    state.directThreadListExpanded = next;
+    refreshDirectThreadList({ showErrors: false }).catch(() => {});
+  },
   focusComposer: () => els.composerInput?.focus?.(),
   // The sidebar footer: who is signed in and the quota left.
   account: () => {
@@ -7344,6 +7368,7 @@ function renderMorphicThreadRail() {
 
 function renderDirectThreadList() {
   renderMorphicThreadRail();
+  globalThis.dispatchEvent?.(new Event("direct-workbench-surface-threads-changed"));
   if (!els.directThreadStrip || !els.directThreadList || !els.directThreadStatus) return;
   const enabled = isDirectLiveTextSurface();
   els.directThreadStrip.hidden = !enabled;
@@ -7448,14 +7473,35 @@ async function refreshDirectThreadList(options = {}) {
   state.directThreadListError = "";
   renderDirectThreadList();
   try {
-    const result = await rpc("thread/list", {
+    const params = {
       limit: options.limit || 40,
       sortKey: "updated_at",
       sortDirection: "desc",
       cwd: workspaceRootText() || null,
       defaultModel: activeModelId() || null,
       defaultReasoningEffort: requestedReasoningEffort() || null,
-    });
+    };
+    let result = null;
+    if (state.directThreadListExpanded && !isDirectRuntimeSurface()) {
+      const threads = [];
+      const seenCursors = new Set();
+      let cursor = null;
+      for (let page = 0; page < EXPANDED_THREAD_LIST_PAGE_LIMIT; page += 1) {
+        if (cursor) {
+          if (seenCursors.has(cursor)) break;
+          seenCursors.add(cursor);
+        }
+        const response = await rpc("thread/list", { ...params, limit: EXPANDED_THREAD_LIST_PAGE_SIZE, cursor });
+        if (requestId !== state.directThreadListRequestId) return;
+        threads.push(...(Array.isArray(response?.data) ? response.data : Array.isArray(response?.threads) ? response.threads : []));
+        result = response;
+        cursor = response?.nextCursor || null;
+        if (!cursor) break;
+      }
+      result = { ...(result || {}), data: threads, threads: undefined, nextCursor: cursor };
+    } else {
+      result = await rpc("thread/list", params);
+    }
     if (requestId !== state.directThreadListRequestId) return;
     const runtimeThreads = (Array.isArray(result?.threads)
       ? result.threads
@@ -10377,7 +10423,16 @@ async function startNewThread() {
   }
 }
 
+function threadSwitchedBeforeSendError() {
+  const error = new Error("You switched threads before this message was sent, so it wasn't sent. It's still in the composer.");
+  error.code = "thread_switched_before_send";
+  return error;
+}
+
 async function startCodexTurn(text, options = {}) {
+  // Taken before any wait: everything below (and the turn) must be for the
+  // thread the owner sent from.
+  const originThreadId = String(options.originThreadId || state.threadId || "");
   assertThreadAcceptsDirectInput();
   await flushRuntimePreferenceWrites();
   if (isDirectLiveTextSurface()) {
@@ -10386,6 +10441,7 @@ async function startCodexTurn(text, options = {}) {
       throw new Error(directLiveTextBlockedMessage());
     }
   }
+  if (String(state.threadId || "") !== originThreadId) throw threadSwitchedBeforeSendError();
   if (!isDirectLiveTextSurface() && !hasCapability("turns", "canStart")) {
     throw new Error("Active Codex runtime does not expose turn/start capability.");
   }
@@ -10429,7 +10485,6 @@ async function startCodexTurn(text, options = {}) {
   if (isDirectLiveTextSurface()) params.daybreakEnabled = state.runtimeOverrides.daybreakEnabled === true;
   const sandboxPolicy = sandboxPolicyForMode(state.runtimeOverrides.sandboxMode);
   if (sandboxPolicy) params.sandboxPolicy = sandboxPolicy;
-  const originThreadId = String(state.threadId || "");
   const result = await rpc("turn/start", params);
   const turnId = String(result?.turn?.id || "");
   // The owner switched threads while the turn started: its state is
@@ -10457,19 +10512,20 @@ async function startCodexTurn(text, options = {}) {
 
 async function sendPrompt(text, options = {}) {
   if (!state.threadId) await startNewThread();
+  const originThreadId = String(state.threadId || "");
   if (!state.liveAttached && state.threadId) {
     const preserveStoredTranscript = Boolean(renderedStoredSnapshotForThread(state.threadId)?.presentationModel);
     const liveResult = await attachLiveThread(state.threadId, state.sessionFilePath, {
       excludeTurns: preserveStoredTranscript,
       skipReadFallback: preserveStoredTranscript,
     });
+    if (String(state.threadId || "") !== originThreadId) throw threadSwitchedBeforeSendError();
     applyLiveThreadResult(liveResult);
   }
   state.turnPending = true;
   renderRuntimeConstitution();
-  const originThreadId = String(state.threadId || "");
   try {
-    await startCodexTurn(text, options);
+    await startCodexTurn(text, { ...options, originThreadId });
     if (options.clearComposer !== false && String(state.threadId || "") === originThreadId) clearComposerDraft();
   } catch (error) {
     if (String(state.threadId || "") === originThreadId) clearPrimaryTurnActivityState();

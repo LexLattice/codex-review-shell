@@ -7,17 +7,25 @@
 // token), DELETE at the end, a 404 for the session means start over. Also:
 // Codex config.toml servers joining a project, with the owner's switch.
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { McpSessionPool } = require("../src/main/direct/external/mcp-stdio-transport.js");
 const {
   configuredMcpServersForProject,
+  configuredMcpServerIdentityInput,
+  callConfiguredMcpTool,
+  codexServerIdentityId,
   setCodexMcpServersForProject,
   normalizeConfiguredMcpServer,
 } = require("../src/main/direct/external/configured-mcp-adapter.js");
 const { normalizeCodexMcpServer } = require("../src/main/direct/codex-home/codex-environment-context.js");
+const { buildMcpToolCatalog } = require("../src/main/direct/external/mcp-tool-calls.js");
+const { DirectApprovalRuleStore } = require("../src/main/direct/authority/approval-rule-store.js");
 
 const log = [];
 const sessions = new Set();
@@ -145,6 +153,133 @@ try {
   assert.equal(servers.codex_remote.headers.Authorization, "Bearer secret-token");
   const switched = configuredMcpServersForProject({ ...project, mcpServerSettings: { codex_remote: { enabled: false } } });
   assert.equal(switched.find((entry) => entry.serverIdentityId === "codex_remote").enabledState, "disabled");
+
+  for (const name of ["my_server", "local-one", "UPPER_123", "a".repeat(174)]) {
+    assert.equal(codexServerIdentityId(name), `codex_${name}`, "unchanged names retain their persisted identity");
+  }
+  const distinctNames = ["my.server", "my_server", "my/server", "my:server", "my@server", "a".repeat(174) + "x", "a".repeat(174) + "y"];
+  const distinctIds = distinctNames.map(codexServerIdentityId);
+  assert.equal(new Set(distinctIds).size, distinctNames.length);
+  assert(distinctIds.every((id) => id.length <= 180));
+  const imports = distinctNames.map((name, index) => ({ name, command: `command-${index}` }));
+  setCodexMcpServersForProject("p_names", imports);
+  const imported = configuredMcpServersForProject({ id: "p_names" });
+  assert.equal(imported.length, distinctNames.length);
+  setCodexMcpServersForProject("p_names_reversed", [...imports].reverse());
+  const reversed = configuredMcpServersForProject({ id: "p_names_reversed" });
+  assert.deepEqual(
+    imported.map((entry) => [entry.serverIdentityId, entry.command]).sort(),
+    reversed.map((entry) => [entry.serverIdentityId, entry.command]).sort(),
+    "identity is independent of import order",
+  );
+  const namedTools = imported.map((entry) => ({ ...entry, tools: [{ name: "write", inputSchema: { type: "object" } }] }));
+  const catalog = buildMcpToolCatalog(namedTools);
+  assert.equal(catalog.entries.length, distinctNames.length);
+  assert.equal(new Set(catalog.entries.map((entry) => entry.functionName)).size, distinctNames.length);
+  assert(catalog.entries.every((entry) => entry.functionName.length <= 64 && /^[A-Za-z0-9_-]+$/.test(entry.functionName)));
+  const approvalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-mcp-name-approvals-"));
+  try {
+    const rules = new DirectApprovalRuleStore({ rootDir: approvalRoot });
+    rules.allowMcpTool("p_names", "codex_my_server", "write");
+    const reloaded = new DirectApprovalRuleStore({ rootDir: approvalRoot });
+    assert.equal(reloaded.isMcpToolAllowed("p_names", codexServerIdentityId("my_server"), "write"), true);
+    assert.equal(reloaded.isMcpToolAllowed("p_names", codexServerIdentityId("my.server"), "write"), false, "an old readable-name approval cannot authorize a different endpoint");
+    rules.allowMcpTool("p_names", codexServerIdentityId("my.server"), "write");
+    assert.equal(reloaded.isMcpToolAllowed("p_names", codexServerIdentityId("my.server"), "write"), true);
+    assert.equal(reloaded.isMcpToolAllowed("another-project", codexServerIdentityId("my.server"), "write"), false);
+  } finally {
+    fs.rmSync(approvalRoot, { recursive: true, force: true });
+  }
+
+  const scopedPool = new McpSessionPool();
+  let startedA;
+  const aStarted = new Promise((resolve) => { startedA = resolve; });
+  let completeA;
+  const fetchImpl = async (endpoint, request) => {
+    if (request.method === "DELETE") return new Response(null, { status: 200 });
+    const message = JSON.parse(request.body);
+    if (message.method === "initialize") return Response.json({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18" } });
+    if (message.method === "notifications/initialized") return new Response(null, { status: 202 });
+    if (endpoint === "http://project-a.invalid/mcp") {
+      startedA();
+      return new Promise((resolve, reject) => {
+        completeA = () => resolve(Response.json({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "A completed" }] } }));
+        request.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    }
+    return Response.json({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "B completed" }] } });
+  };
+  const scopedInput = (id, endpoint) => {
+    const project = { id, mcpServers: [{ serverIdentityId: "shared", transport: "streamable_http", url: endpoint }] };
+    const configured = configuredMcpServersForProject(project)[0];
+    return {
+      project, projectId: id, threadId: `thread_${id}`,
+      profile: { projectId: id, serverIdentities: [configuredMcpServerIdentityInput(configured)] },
+      serverIdentityId: "shared", toolName: "slow", mcpSessionPool: scopedPool, fetchImpl, timeoutMs: 5000,
+    };
+  };
+  try {
+    const pendingA = callConfiguredMcpTool(scopedInput("project-a", "http://project-a.invalid/mcp"))
+      .then((value) => ({ value }), (error) => ({ error: error.code }));
+    await aStarted;
+    const completedB = await callConfiguredMcpTool(scopedInput("project-b", "http://project-b.invalid/mcp"));
+    assert.equal(completedB.result.content[0].text, "B completed");
+    completeA();
+    const completedA = await pendingA;
+    assert.equal(completedA.error, undefined, "another project must not close the first project's active call");
+    assert.equal(completedA.value.result.content[0].text, "A completed");
+    assert.equal(scopedPool.sessions.size, 2);
+    await callConfiguredMcpTool(scopedInput("project-a", "http://project-a-changed.invalid/mcp"));
+    assert.equal(scopedPool.sessions.size, 2, "a definition change replaces only its project's session");
+  } finally {
+    await scopedPool.dispose();
+  }
+
+  const remotePool = new McpSessionPool();
+  const remoteIds = [];
+  const remoteAStarted = new Promise((resolve) => { startedA = resolve; });
+  const remoteInput = (id, endpoint) => {
+    const project = { id, workspace: { kind: "windows" }, mcpServers: [{ serverIdentityId: "shared", command: endpoint }] };
+    const configured = configuredMcpServersForProject(project)[0];
+    return {
+      project, projectId: id, threadId: `thread_${id}`,
+      profile: { projectId: id, serverIdentities: [configuredMcpServerIdentityInput(configured)] },
+      serverIdentityId: "shared", toolName: "slow", timeoutMs: 5000,
+      workspaceLocalityResolver: () => false,
+      mcpExecutors: {
+        requestForProject: async (_project, _method, request) => {
+          remoteIds.push(request.server.serverIdentityId);
+          // Match the shared executor's pool options, with HTTP as the fixture.
+          const result = await remotePool.request(
+            { transportKind: "streamable_http", url: request.server.command },
+            request.method, request.params,
+            { placementKey: "executor", identityKey: request.server.serverIdentityId, fetchImpl, timeoutMs: request.timeoutMs },
+          );
+          return { result };
+        },
+      },
+    };
+  };
+  try {
+    const pendingA = callConfiguredMcpTool(remoteInput("project-a", "http://project-a.invalid/mcp"))
+      .then((value) => ({ value }), (error) => ({ error: error.code }));
+    await remoteAStarted;
+    await callConfiguredMcpTool(remoteInput("project-b", "http://project-b.invalid/mcp"));
+    completeA();
+    const completedA = await pendingA;
+    assert.equal(completedA.error, undefined, "shared executor replacements are also project-scoped");
+    assert.equal(completedA.value.serverIdentityId, "shared", "the public approval identity stays unchanged");
+    await callConfiguredMcpTool(remoteInput("project-a", "http://project-a-changed.invalid/mcp"));
+    assert.equal(remotePool.sessions.size, 2, "same-project executor definitions still replace their previous session");
+    await callConfiguredMcpTool(remoteInput("project-b", "http://project-a-changed.invalid/mcp"));
+    assert.equal(remotePool.sessions.size, 2, "identical executor definitions cannot share a replaceable session across projects");
+    assert.notEqual(remoteIds[0], remoteIds[1]);
+    assert.equal(remoteIds[0], remoteIds[2], "the replacement identity does not depend on the server's definition");
+    assert.equal(remoteIds[1], remoteIds[3]);
+    assert(remoteIds.every((id) => id.length <= 200));
+  } finally {
+    await remotePool.dispose();
+  }
   console.log(JSON.stringify({ ok: true, requests: log.length }));
 } finally {
   await pool.dispose().catch(() => {});
