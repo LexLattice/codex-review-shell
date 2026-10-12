@@ -399,7 +399,8 @@ try {
     /addSystemMessage/,
     "neutral runtime observations must not enter the conversational transcript",
   );
-  assert.match(rendererSource, /\["observations", "Observations"\]/);
+  assert.match(rendererSource, /observations: \["diagnostics", "observations"\]/);
+  assert.match(rendererSource, /id: "observations",\s+title: "Observations"/);
   assert.match(rendererHtml, /id="morphicObservationsButton"/);
 
   console.log(JSON.stringify({

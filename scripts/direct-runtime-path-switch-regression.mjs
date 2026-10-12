@@ -240,10 +240,11 @@ assertIncludes(codexSurfaceSource, "hasGuardSourceHome", "runtime preference gua
 assertIncludes(codexSurfaceSource, "hasGuardSessionFilePath", "runtime preference guard distinguishes omitted session-file guard from explicit empty string");
 assertIncludes(codexSurfaceSource, "refreshModelsButton(\"Renew ChatGPT sign-in if needed and reload this account's model list, without changing backend.\")", "Direct runtime drawer exposes an in-place model list refresh");
 assertIncludes(codexSurfaceSource, "const test = refreshButton(\"Test model\", () => testDirectModel()", "Direct runtime drawer offers the optional model test");
-assertIncludes(codexSurfaceSource, "Changes the task backend. This is separate from refreshing models.", "backend transition remains distinct from the model list refresh");
+assertIncludes(codexSurfaceSource, "const section = drawerSection(\"Backend\");", "backend transition has its own Settings section");
+assertIncludes(codexSurfaceSource, "const modelSection = drawerSection(\"Models\");", "model list refresh stays separate from the backend transition");
 assertIncludes(codexSurfaceSource, "flushRuntimePreferenceWrites", "turn submission waits for the canonical task runtime binding");
 assertIncludes(codexSurfaceHtml, "runtime-preference-write-coordinator.js", "runtime preference coordinator loads before the Codex surface");
-assertIncludes(codexSurfaceSource, "The task binding is canonical for subsequent turns", "model controls explain task-level persistence");
+assertIncludes(codexSurfaceSource, "Model, effort and access are set from the composer.", "the inspector points model controls to the composer");
 assertIncludes(codexSurfaceSource, "function applyDirectSurfaceProjection", "renderer centralizes trusted Direct projection application");
 assertIncludes(codexSurfaceSource, "capabilities: hasMainOwnedCapabilities", "renderer replaces stale connection capabilities with the main-owned refreshed projection");
 assertIncludes(codexSurfaceSource, "if (!isDirectLiveTextSurface() && !hasCapability(\"turns\", \"canStart\"))", "Direct submission has one renderer readiness gate while app-server retains its capability gate");

@@ -19,6 +19,8 @@ const DIRECT_CAPTURED_TOOL_RESULT_SCHEMA = "direct_captured_tool_result@1";
 const MAX_NORMALIZED_EVENT_BYTES_PER_TURN = 4 * 1024 * 1024;
 const MAX_NORMALIZED_EVENT_COUNT_PER_TURN = 10_000;
 const NORMALIZED_EVENT_READ_CHUNK_BYTES = 64 * 1024;
+const DIRECT_RESTART_RECOVERY_MEMO_SCHEMA = "direct_session_restart_recovery_memo@1";
+const RESTART_RECOVERY_MEMO_SETTLE_MS = 5_000;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/;
 const DIRECT_TURN_STATES = new Set([
   "created",
@@ -650,6 +652,8 @@ class DirectSessionStore {
     );
     this._index = null;
     this._obligationRecoveryDone = false;
+    this._restartRecoveryMemo = null;
+    this._restartRecoveryTouched = new Set();
     this._epistemicObservers = new Set();
     if (typeof options.epistemicObserver === "function") {
       this._epistemicObservers.add(options.epistemicObserver);
@@ -1983,9 +1987,74 @@ class DirectSessionStore {
     }
   }
 
+  restartRecoveryMemoPath() {
+    return path.join(this.rootDir, "restart-recovery-memo.json");
+  }
+
+  // A memo entry says "restart recovery found nothing to do in exactly these
+  // files". Bump the schema whenever recovery's rules change.
+  restartRecoveryMemoKey() {
+    return `${DIRECT_RESTART_RECOVERY_MEMO_SCHEMA}:${this.maxNormalizedEventBytesPerTurn}:${this.maxNormalizedEventCountPerTurn}`;
+  }
+
+  readRestartRecoveryMemo() {
+    if (this._restartRecoveryMemo) return this._restartRecoveryMemo;
+    let memo = null;
+    try {
+      memo = readJsonFile(this.restartRecoveryMemoPath());
+    } catch {}
+    this._restartRecoveryMemo = memo?.key === this.restartRecoveryMemoKey() && isPlainObject(memo.sessions)
+      ? memo
+      : { key: this.restartRecoveryMemoKey(), sessions: {} };
+    return this._restartRecoveryMemo;
+  }
+
+  writeRestartRecoveryMemo(sessions) {
+    const previous = this.readRestartRecoveryMemo();
+    const memo = { schema: DIRECT_RESTART_RECOVERY_MEMO_SCHEMA, key: this.restartRecoveryMemoKey(), updatedAt: nowIso(), sessions };
+    this._restartRecoveryMemo = memo;
+    if (JSON.stringify(previous.sessions) === JSON.stringify(sessions)) return;
+    try {
+      writeJsonAtomic(this.restartRecoveryMemoPath(), memo);
+    } catch {}
+  }
+
+  // Size, mtime and inode of the session file and of each turn's record and
+  // event log. Recovery reads all of them on every launch; the stats are
+  // what lets an unchanged session skip that.
+  sessionFilesFingerprint(sessionId) {
+    let newestMtimeMs = 0;
+    const stamp = (filePath) => {
+      try {
+        const stat = fs.statSync(filePath, { bigint: true });
+        newestMtimeMs = Math.max(newestMtimeMs, Number(stat.mtimeMs));
+        return `${stat.size}:${stat.mtimeNs}:${stat.ino}`;
+      } catch (error) {
+        if (error?.code === "ENOENT") return "-";
+        throw error;
+      }
+    };
+    const parts = [stamp(this.sessionPath(sessionId))];
+    for (const turnId of this.listTurnIdsFromDisk(sessionId).sort()) {
+      parts.push(`${turnId}:${stamp(this.turnPath(sessionId, turnId))}:${stamp(this.eventPath(sessionId, turnId))}`);
+    }
+    return {
+      digest: crypto.createHash("sha256").update(parts.join("|")).digest("hex"),
+      // File times can be coarser than back-to-back writes (and inodes get
+      // reused), so files written moments ago aren't vouched for yet.
+      memoizable: newestMtimeMs > 0 && Date.now() - newestMtimeMs > RESTART_RECOVERY_MEMO_SETTLE_MS,
+    };
+  }
+
+  restartRecoveryUnchanged(sessionId, fingerprint) {
+    return !this._restartRecoveryTouched.has(sessionId) &&
+      this.readRestartRecoveryMemo().sessions[sessionId] === fingerprint.digest;
+  }
+
   recoverInterruptedToolClaims(options = {}) {
     let recoveredCount = 0;
     for (const sessionId of this.listSessionIdsFromDisk()) {
+      if (this.restartRecoveryUnchanged(sessionId, this.sessionFilesFingerprint(sessionId))) continue;
       const session = this.readSession(sessionId);
       if (!session) continue;
       const turnIds = new Set([
@@ -2062,6 +2131,7 @@ class DirectSessionStore {
               },
             },
           });
+          this._restartRecoveryTouched.add(sessionId);
           recoveredCount += 1;
         }
       }
@@ -2078,9 +2148,22 @@ class DirectSessionStore {
     this._obligationRecoveryDone = true;
     this.recoverInterruptedToolClaims(options);
     let recoveredTurnCount = 0;
+    const settledSessions = {};
     for (const sessionId of this.listSessionIdsFromDisk()) {
+      const fingerprint = this.sessionFilesFingerprint(sessionId);
+      if (this.restartRecoveryUnchanged(sessionId, fingerprint)) {
+        settledSessions[sessionId] = fingerprint.digest;
+        continue;
+      }
+      const settle = () => {
+        if (fingerprint.memoizable && !this._restartRecoveryTouched.has(sessionId)) settledSessions[sessionId] = fingerprint.digest;
+      };
       const session = this.readSession(sessionId);
-      if (!session || !Array.isArray(session.turns)) continue;
+      if (!session || !Array.isArray(session.turns)) {
+        settle();
+        continue;
+      }
+      let turnRewritten = false;
       const turnIds = new Set([
         ...session.turns.map((summary) => summary?.turnId).filter(isSafeId),
         ...this.listTurnIdsFromDisk(session.sessionId),
@@ -2123,7 +2206,10 @@ class DirectSessionStore {
                 eventLogRecovered: true,
               }
             : turn;
-          if (metadataDrift) this.writeTurn(reconciledTurn);
+          if (metadataDrift) {
+            this.writeTurn(reconciledTurn);
+            turnRewritten = true;
+          }
           const summary = summaryByTurnId.get(turnId);
           if (
             !summary ||
@@ -2280,7 +2366,10 @@ class DirectSessionStore {
         recoveredByTurnId.set(nextTurn.turnId, nextTurn);
         recoveredTurnCount += 1;
       }
-      if (!recoveredByTurnId.size) continue;
+      if (!recoveredByTurnId.size) {
+        if (!turnRewritten) settle();
+        continue;
+      }
       const existingTurnIds = new Set(session.turns.map((summary) => summary.turnId));
       const recoveredSummaries = [...recoveredByTurnId.values()]
         .filter((turn) => !existingTurnIds.has(turn.turnId))
@@ -2316,6 +2405,7 @@ class DirectSessionStore {
         turns: nextTurns,
       });
     }
+    this.writeRestartRecoveryMemo(settledSessions);
     return {
       recoveredAt,
       recoveredTurnCount,

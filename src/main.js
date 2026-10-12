@@ -8,13 +8,20 @@ const {
   Menu,
   clipboard,
   nativeTheme,
+  session: electronSession,
 } = require("electron");
 const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { CodexAppServerManager } = require("./main/codex-app-server");
-const { LocalSurfaceServer } = require("./main/local-surface-server");
+const { SURFACE_SCHEME, serveSurfaceScheme } = require("./main/local-surface-server");
+const {
+  DIRECT_WORKBENCH_BACKGROUND,
+  directTestControlFromEnv,
+  openWorkbenchWindow,
+  takeEarlyWorkbenchWindow,
+} = require("./main/workbench-launch");
 const { CodexSurfaceSession } = require("./main/codex-surface-session");
 const { MiddleWebHost } = require("./main/middle-web-host");
 const {
@@ -393,8 +400,8 @@ const {
   resolveAppExperience,
 } = require("./main/app-experience");
 
-const APP_TITLE = "Codex Review Shell";
-const CONFIG_FILE_NAME = "workspace-config.json";
+const { APP_TITLE, CONFIG_FILE_NAME, configureAppProfile } = require("./main/app-profile");
+const { appControlChannel, readSyncGeneration, startAppControlServer } = require("./main/app-control");
 const CHATGPT_THREAD_CACHE_FILE_NAME = "chatgpt-thread-cache.json";
 const MIDDLE_WEB_HISTORY_FILE_NAME = "middle-web-history.json";
 const CHATGPT_THREAD_CACHE_VERSION = 1;
@@ -410,9 +417,6 @@ const CHATGPT_PARTITION = "persist:codex-review-shell-chatgpt";
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
 const CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES = 500;
-const PROFILE_ENV_VAR = "CODEX_REVIEW_SHELL_PROFILE";
-const USER_DATA_DIR_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_DIR";
-const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
 const CHATGPT_DOWNLOAD_MACRO_REQUEST_TTL_MS = 60_000;
 const APP_EXPERIENCE = resolveAppExperience(process.env);
 const WORLD_MANAGER_SURFACE_MODE =
@@ -423,10 +427,10 @@ const WORLD_MANAGER_PRODUCTION_MODE =
   WORLD_MANAGER_SURFACE_MODE && APP_EXPERIENCE.variant === "production";
 const DIRECT_WORKBENCH_MODE =
   APP_EXPERIENCE.id === APP_EXPERIENCES.DIRECT_WORKBENCH;
-// Agent-driven testing (scripts/direct-drive.mjs): a local control port into
-// the real Direct runtime, with the window hidden unless asked for.
-const DIRECT_TEST_CONTROL_ENABLED = /^(1|true|yes)$/i.test(String(process.env.DIRECT_TEST_CONTROL || "").trim());
-const DIRECT_TEST_CONTROL_HIDDEN = DIRECT_TEST_CONTROL_ENABLED && process.env.DIRECT_TEST_CONTROL_SHOW !== "1";
+const {
+  enabled: DIRECT_TEST_CONTROL_ENABLED,
+  hidden: DIRECT_TEST_CONTROL_HIDDEN,
+} = directTestControlFromEnv(process.env);
 
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = appRoot;
@@ -448,85 +452,7 @@ function stableEvidenceKey(prefix, value) {
     : "";
 }
 
-function existingFileMtimeMs(targetPath) {
-  try {
-    return fsSync.statSync(targetPath).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
-
-function uniquePaths(values) {
-  const seen = new Set();
-  return values.filter((value) => {
-    const normalized = path.resolve(value);
-    const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function normalizeProfileName(value) {
-  const text = earlyNormalizeString(value, "");
-  if (!text || text === "default") return "";
-  return text.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
-}
-
-function configureAppProfile() {
-  app.setName(APP_TITLE);
-  const explicitUserDataDir = earlyNormalizeString(process.env[USER_DATA_DIR_ENV_VAR], "");
-  if (explicitUserDataDir) {
-    const userData = path.resolve(explicitUserDataDir);
-    app.setPath("userData", userData);
-    return {
-      profileName: "explicit",
-      isolated: true,
-      userData,
-    };
-  }
-  const profileName = normalizeProfileName(process.env[PROFILE_ENV_VAR]);
-  if (!profileName) {
-    const appDataPath = app.getPath("appData");
-    const canonicalUserDataPath = path.join(appDataPath, APP_TITLE);
-    const legacyUserDataPath = path.join(appDataPath, "codex-review-shell");
-    const formerDirectUserDataPath = path.join(appDataPath, "codex-review-shell-direct");
-    // A promoted installation may have been active on either former lineage.
-    // Keep using the profile with the newest persisted workspace configuration.
-    const candidates = uniquePaths([
-      canonicalUserDataPath,
-      legacyUserDataPath,
-      formerDirectUserDataPath,
-      app.getPath("userData"),
-    ]);
-    let selectedPath = canonicalUserDataPath;
-    let selectedMtime = 0;
-    for (const candidate of candidates) {
-      const mtime = existingFileMtimeMs(path.join(candidate, CONFIG_FILE_NAME));
-      if (mtime > selectedMtime) {
-        selectedPath = candidate;
-        selectedMtime = mtime;
-      }
-    }
-    app.setPath("userData", selectedPath);
-    return {
-      profileName: "default",
-      isolated: false,
-      userData: selectedPath,
-    };
-  }
-  const configuredRoot = earlyNormalizeString(process.env[USER_DATA_ROOT_ENV_VAR], "");
-  const profileRoot = configuredRoot || path.join(app.getPath("appData"), APP_TITLE);
-  const userData = path.join(profileRoot, profileName);
-  app.setPath("userData", userData);
-  return {
-    profileName,
-    isolated: true,
-    userData,
-  };
-}
-
-const activeAppProfile = configureAppProfile();
+const activeAppProfile = configureAppProfile(app);
 
 let mainWindow = null;
 let shellView = null;
@@ -558,7 +484,6 @@ let layoutPingTimer = null;
 let geometrySyncTimer = null;
 let workspaceBackends = null;
 let codexAppServer = null;
-let localSurfaceServer = null;
 let codexSurfaceSessions = null;
 let threadAnalyticsStore = null;
 let directAuthController = null;
@@ -3679,7 +3604,7 @@ function ensureDirectCodexContextService() {
 
 function ensureDirectCodexCliAuthStore() {
   if (directCodexCliAuthStore) return directCodexCliAuthStore;
-  directCodexCliAuthStore = createCodexCliAuthStore();
+  directCodexCliAuthStore = createCodexCliAuthStore({ cacheMs: 2000 });
   return directCodexCliAuthStore;
 }
 
@@ -7798,10 +7723,10 @@ async function disposeCodexAppServerManager() {
   await manager.dispose();
 }
 
-function ensureLocalSurfaceServer() {
-  if (localSurfaceServer) return localSurfaceServer;
-  localSurfaceServer = new LocalSurfaceServer(rendererRoot);
-  return localSurfaceServer;
+// The origin the surfaces load from (codex-surface://app), served to the
+// Codex partition only.
+function surfaceBaseUrl() {
+  return serveSurfaceScheme(electronSession.fromPartition(CODEX_PARTITION), rendererRoot);
 }
 
 function ensureCodexSurfaceSessions() {
@@ -7868,9 +7793,12 @@ function urlsShareCodexSurfaceDocument(left, right) {
       pathname.endsWith("/codex-surface.html") ||
       pathname.endsWith("/t3-direct-surface.html") ||
       pathname.endsWith("/world-manager-surface.html");
+    // Node gives every non-web scheme (codex-surface:// included) the origin
+    // "null", which would match any of them.
+    const originOf = (url) => `${url.protocol}//${url.host}`;
     return leftUrl.href === rightUrl.href ||
       (
-        leftUrl.origin === rightUrl.origin &&
+        originOf(leftUrl) === originOf(rightUrl) &&
         leftUrl.pathname === rightUrl.pathname &&
         managedSurfacePath(leftUrl.pathname)
       );
@@ -8925,14 +8853,20 @@ async function loadCodexSurfaceIntoView(project, options = {}) {
   if (stale()) return { skipped: true, stale: true };
   await disposeCodexSurfaceSession();
   const codex = project.surfaceBinding.codex;
-  const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
+  const localSurfaceBaseUrl = surfaceBaseUrl();
   if (stale()) return { skipped: true, stale: true };
   const threadExtras = codexSurfaceThreadExtras(options);
   const runtimeMode = normalizeDirectRuntimeModeForStatus(codex.runtimeMode);
   if (runtimeMode !== "legacy-app-server") {
     await disposeCodexAppServerManager();
     const directAuthPreflight = await preflightDirectRuntimeAuth("direct-surface-load");
-    const directProviderMetadata = await refreshDirectProviderMetadataForProject(project);
+    // The surface refetches the catalog as soon as it connects, so a cached
+    // one is enough to open on (the fetch held the page back ~1 s). Only a
+    // project without one waits for it.
+    const cachedProviderMetadata = directProviderMetadataStatusForProject(project);
+    const directProviderMetadata = cachedProviderMetadata?.cacheState === "missing"
+      ? await refreshDirectProviderMetadataForProject(project)
+      : cachedProviderMetadata;
     if (stale()) return { skipped: true, stale: true };
     const runtimeStatus = buildDirectRuntimeStatusForProject(project);
     const directTransport = normalizeDirectExperimentalTransport(codex.directTransport);
@@ -11147,6 +11081,7 @@ function isPermittedNavigationUrl(rawUrl, surfaceName) {
     const parsed = new URL(rawUrl);
     if (surfaceName === "codex") {
       if (parsed.protocol === "file:" || parsed.protocol === "https:") return true;
+      if (parsed.protocol === `${SURFACE_SCHEME}:`) return true;
       if (parsed.protocol === "http:") {
         const host = parsed.hostname.toLowerCase();
         return host === "localhost" || host === "127.0.0.1" || host === "::1";
@@ -12323,6 +12258,40 @@ async function listChatgptRecentThreads(limit = 40, options = {}) {
   }
 }
 
+// Shown with the launch animation (or, without it, once the first surface's
+// page is up): shown bare, the window sat unpainted (grey) while startup
+// held the main thread, then blank.
+const DIRECT_WORKBENCH_SHOW_FALLBACK_MS = 1500;
+// Ends the animation if the surface never says it painted.
+const DIRECT_WORKBENCH_SPLASH_MAX_MS = 20000;
+let workbenchWindowShowPending = false;
+let workbenchSplash = null;
+
+function showPendingWorkbenchWindow() {
+  if (!workbenchWindowShowPending) return;
+  workbenchWindowShowPending = false;
+  if (!mainWindow || mainWindow.isDestroyed?.()) return;
+  mainWindow.show();
+  workbenchSplash?.shown();
+  if (codexView?.webContents && !codexView.webContents.isDestroyed()) codexView.webContents.focus();
+}
+
+// The surface's DOM is ready; once it has painted a frame (it sits under
+// the animation), the animation dissolves into it.
+async function finishWorkbenchSplash(contents) {
+  const splash = workbenchSplash;
+  if (!splash?.active) return;
+  try {
+    await Promise.race([
+      contents.executeJavaScript("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))"),
+      new Promise((resolve) => setTimeout(resolve, 600)),
+    ]);
+  } catch {}
+  showPendingWorkbenchWindow();
+  await splash.finish();
+  if (workbenchSplash === splash) workbenchSplash = null;
+}
+
 async function createDirectWorkbenchWindow() {
   directWorkbenchProjectActivationOperations.clear();
   directWorkbenchProjectTransition = { state: "idle" };
@@ -12335,17 +12304,15 @@ async function createDirectWorkbenchWindow() {
       `controlPlane=${APP_EXPERIENCE.controlPlane} source=${APP_EXPERIENCE.source}`,
   );
   app.setName(APP_EXPERIENCE.label);
-  nativeTheme.themeSource = "dark";
 
-  mainWindow = new BaseWindow({
-    width: 1720,
-    height: 980,
-    minWidth: 720,
-    minHeight: 620,
-    title: APP_EXPERIENCE.label,
-    backgroundColor: "#090a0c",
-    show: !DIRECT_TEST_CONTROL_HIDDEN,
-  });
+  const launch = await takeEarlyWorkbenchWindow()
+    || await openWorkbenchWindow({ title: APP_EXPERIENCE.label, hidden: DIRECT_TEST_CONTROL_HIDDEN });
+  // Closed while it opened: the app quits with its last window.
+  if (launch.window.isDestroyed()) return;
+  mainWindow = launch.window;
+  workbenchSplash = launch.splash;
+  workbenchWindowShowPending = launch.showPending;
+  setTimeout(showPendingWorkbenchWindow, DIRECT_WORKBENCH_SHOW_FALLBACK_MS);
   installOrderedWorkspaceWorkerWindowClose(mainWindow, "Direct Workbench window close requested.");
   workbenchProjectViews.clear();
   codexSurfaceContexts.clear();
@@ -12363,8 +12330,6 @@ async function createDirectWorkbenchWindow() {
       session.dispose({ silent: true, reason: "Direct Workbench window closed." }).catch(() => {});
     }
     codexSurfaceSessions = null;
-    localSurfaceServer?.dispose();
-    localSurfaceServer = null;
     threadAnalyticsStore?.close();
     threadAnalyticsStore = null;
     directFixtureController = null;
@@ -12393,8 +12358,20 @@ async function createDirectWorkbenchWindow() {
     clearTimeout(workbenchOverviewTimer);
     workbenchOverviewTimer = null;
     codexView = null;
+    workbenchViewOnScreen = null;
+    workbenchSplash?.dispose();
+    workbenchSplash = null;
     mainWindow = null;
   });
+
+  if (workbenchSplash) {
+    const splash = workbenchSplash;
+    setTimeout(() => {
+      if (workbenchSplash !== splash) return;
+      splash.dispose();
+      workbenchSplash = null;
+    }, DIRECT_WORKBENCH_SPLASH_MAX_MS);
+  }
 
   const config = await loadConfig();
   const selectedProject = getSelectedProject(config);
@@ -12446,6 +12423,7 @@ function createWorkbenchCodexView(projectId) {
       devTools: true,
     },
   });
+  view.setBackgroundColor(DIRECT_WORKBENCH_BACKGROUND);
   registerWebContentsAuthority(view, {
     surfaceName: "codex",
     surfaceRole: SURFACE_ROLES.EXTERNAL_CODEX_URL,
@@ -12456,6 +12434,19 @@ function createWorkbenchCodexView(projectId) {
   mainWindow.contentView.addChildView(view);
   applyWorkbenchViewBounds(view);
   configureGuestSurface("codex", view);
+  if (workbenchSplash?.active) {
+    workbenchSplash.raise();
+    const finish = () => {
+      view.webContents.removeListener("dom-ready", finish);
+      view.webContents.removeListener("did-fail-load", finish);
+      finishWorkbenchSplash(view.webContents).catch(() => {});
+    };
+    view.webContents.once("dom-ready", finish);
+    view.webContents.once("did-fail-load", finish);
+  } else if (workbenchWindowShowPending) {
+    view.webContents.once("dom-ready", showPendingWorkbenchWindow);
+    view.webContents.once("did-fail-load", showPendingWorkbenchWindow);
+  }
   const contentsId = view.webContents.id;
   view.webContents.once("destroyed", () => {
     codexSurfaceContexts.delete(contentsId);
@@ -12466,12 +12457,32 @@ function createWorkbenchCodexView(projectId) {
   return entry;
 }
 
-function showWorkbenchView(entry) {
+// The view actually on screen. A surface that is still loading is in front
+// (codexView) before it is on screen; see revealWorkbenchViewWhenLoaded.
+let workbenchViewOnScreen = null;
+
+function liveView(view) {
+  return Boolean(view?.webContents && !view.webContents.isDestroyed());
+}
+
+// With revealWhenLoaded, a new surface stays hidden behind the one on screen
+// until its page is up, so switching projects goes straight from one to the
+// other instead of through a blank window.
+function showWorkbenchView(entry, options = {}) {
   if (codexView && codexView !== entry.view) snapshotForegroundSurfaceContext();
+  const holding = options.revealWhenLoaded && liveView(workbenchViewOnScreen) && workbenchViewOnScreen !== entry.view
+    ? workbenchViewOnScreen
+    : null;
   for (const other of workbenchProjectViews.values()) {
-    if (other !== entry && other.view?.webContents && !other.view.webContents.isDestroyed()) other.view.setVisible(false);
+    if (other !== entry && other.view !== holding && liveView(other.view)) other.view.setVisible(false);
   }
-  entry.view.setVisible(true);
+  if (holding) {
+    entry.view.setVisible(false);
+    revealWorkbenchViewWhenLoaded(entry);
+  } else {
+    entry.view.setVisible(true);
+    workbenchViewOnScreen = entry.view;
+  }
   entry.lastShownAt = Date.now();
   codexView = entry.view;
   const context = codexSurfaceContexts.get(entry.view.webContents.id);
@@ -12479,6 +12490,27 @@ function showWorkbenchView(entry) {
   if (mainWindow && !mainWindow.isDestroyed?.() && mainWindow.isFocused?.()) entry.view.webContents.focus();
   // Its sidebar last heard about the projects while it was in the back.
   scheduleWorkbenchThreadOverviewBroadcast(0);
+}
+
+function revealWorkbenchViewWhenLoaded(entry) {
+  const contents = entry.view.webContents;
+  let timer = null;
+  const reveal = () => {
+    clearTimeout(timer);
+    contents.removeListener("dom-ready", reveal);
+    contents.removeListener("did-fail-load", reveal);
+    // The owner switched again meanwhile; that switch decided what shows.
+    if (!liveView(entry.view) || codexView !== entry.view) return;
+    entry.view.setVisible(true);
+    for (const other of workbenchProjectViews.values()) {
+      if (other !== entry && liveView(other.view)) other.view.setVisible(false);
+    }
+    workbenchViewOnScreen = entry.view;
+  };
+  contents.once("dom-ready", reveal);
+  contents.once("did-fail-load", reveal);
+  // A page that never gets there still shows rather than staying hidden.
+  timer = setTimeout(reveal, 2500);
 }
 
 // A surface that isn't Direct (a Codex app-server or URL surface) shares
@@ -12513,6 +12545,7 @@ async function closeWorkbenchView(entry, reason = "Direct Workbench surface clos
     await session.dispose({ silent: true, reason }).catch(() => {});
   }
   codexSurfaceContexts.delete(contents.id);
+  if (workbenchViewOnScreen === entry.view) workbenchViewOnScreen = null;
   try { mainWindow?.contentView?.removeChildView(entry.view); } catch {}
   closeView(entry.view);
 }
@@ -12567,7 +12600,7 @@ async function openWorkbenchProjectView(project, options = {}) {
     return { reused: true, entry: live };
   }
   const entry = createWorkbenchCodexView(project.id);
-  showWorkbenchView(entry);
+  showWorkbenchView(entry, { revealWhenLoaded: true });
   const surfaceOptions = { ...(options.surfaceOptions || {}) };
   if (threadId || options.newThread) {
     surfaceOptions.initialThreadId = threadId;
@@ -12894,8 +12927,6 @@ async function createWorldManagerWindow() {
   }
   configureGuestSurface("codex", codexView);
   mainWindow.on("closed", () => {
-    localSurfaceServer?.dispose();
-    localSurfaceServer = null;
     worldManagerSemanticCoordinator = null;
     clearWorldManagerTransitionSubscribers();
     worldManagerService?.close();
@@ -12909,7 +12940,7 @@ async function createWorldManagerWindow() {
   const config = await loadConfig();
   currentProject = getSelectedProject(config);
   if (!currentProject) throw new Error("WorldManager requires at least one configured project.");
-  const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
+  const localSurfaceBaseUrl = surfaceBaseUrl();
   const localUrl = codexSurfaceUrl(
     localSurfaceBaseUrl,
     currentProject,
@@ -13038,8 +13069,6 @@ async function createWindow() {
       session.dispose({ silent: true, reason: "Main window closed." }).catch(() => {});
     }
     codexSurfaceSessions = null;
-    localSurfaceServer?.dispose();
-    localSurfaceServer = null;
     threadAnalyticsStore?.close();
     threadAnalyticsStore = null;
     directFixtureController = null;
@@ -15331,6 +15360,7 @@ ipcMain.handle("chatgpt:open-settings", async () => {
 ipcMain.handle("chatgpt:force-dark", async () => forceChatgptDark());
 
 let directTestControlServer = null;
+let appControlServer = null;
 
 // A test project's folder is created if missing, from whichever host runs
 // the app (a WSL folder from Windows goes through \\wsl.localhost).
@@ -15422,8 +15452,35 @@ async function startDirectTestControlServer() {
   console.log(`[direct-test-control] listening on 127.0.0.1:${port}`);
 }
 
+// Another launch on this profile (src/boot.js): the launcher found nothing
+// new to restart for, and that launch has passed this app the right to take
+// the foreground.
+app.on("second-instance", () => {
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+  if (codexView?.webContents && !codexView.webContents.isDestroyed()) codexView.webContents.focus();
+});
+
+function startAppControl() {
+  // A hidden test instance stays out of the launcher's way.
+  if (DIRECT_TEST_CONTROL_HIDDEN) return;
+  const generation = readSyncGeneration(appRoot);
+  const channel = appControlChannel({ appRoot, userData: activeAppProfile.isolated ? app.getPath("userData") : "" });
+  appControlServer = startAppControlServer(channel, {
+    hello: () => ({ pid: process.pid, experience: APP_EXPERIENCE.id, generation }),
+    quit: () => app.quit(),
+  });
+  appControlServer.started.catch((error) => {
+    console.warn("[app-control] not started", error?.code || error?.message || error);
+  });
+}
+
 app.whenReady().then(async () => {
   nativeTheme.themeSource = "dark";
+  startAppControl();
   ensureWorkspaceBackendManager();
   await loadConfig();
   await createWindow();
@@ -15443,6 +15500,8 @@ app.whenReady().then(async () => {
 function closeApplicationRuntimeAfterOrderedWorkspaceShutdown() {
   directTestControlServer?.close().catch(() => {});
   directTestControlServer = null;
+  appControlServer?.close();
+  appControlServer = null;
   threadAnalyticsStore?.close();
   threadAnalyticsStore = null;
   directAuthLoginCoordinator = null;

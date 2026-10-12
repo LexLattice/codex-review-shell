@@ -1411,7 +1411,7 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   panel's own shells, MCP servers, and workspace workers stay on Direct's
   backends.
 - Outcome:
-  - **Switch.** Runtime drawer → Runtime → Command execution: "Direct
+  - **Switch.** Inspector (rail ⚙ or R) → Settings → Command execution: "Direct
     executor" or "Codex exec-server" (`runtimeDefaults.direct.executionBackend`
     in the config, every project). `CODEX_DIRECT_EXECUTION_BACKEND` overrides
     it. It is read per command, so a change applies to commands and file
@@ -1551,6 +1551,211 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   script, the same files, checked once each, in parallel by
   `scripts/check-syntax.mjs`), and the scripts and their callers point at
   a group instead of carrying the list or nesting `npm run`.
+
+### Turn 14: the Workbench inspector (right panel)
+
+- Status: done (owner's own check in the daily app pending)
+- Scope: the owner asked for an audit of the right panel. Measured in a
+  fixture Workbench (1440x900, 418 px panel): 12 tabs needing 1,262 px of
+  strip (4 visible), about 256 rows of which 120 were empty ("unknown",
+  "none", "0", "—"), half the tabs 1.6 to 3.7 screens tall, Model, Access
+  and Usage repeating the composer, and schema names and digests on
+  screen. Owner decision: short meaning units, not evidence dumps.
+- Outcome (`src/renderer/codex-surface.js`, `codex-surface.css`):
+  - **Four views**, all on the strip: **Thread** (one line each for
+    backend and its state, commands, model, access, workspace, context,
+    quota, account, activity; lines without a value are left out, and a
+    **Needs attention** box at the top says in plain words what is
+    blocked, with at most one action), **Settings** (the backend switch,
+    command execution, refresh and test models; one line of help each),
+    **Context** (the epistemic sections and the worker policy, with IDs,
+    revisions and invariants behind a Details toggle per section), and
+    **Diagnostics** (everything else as closed groups: observations,
+    runtime, implementation, operation history, policies, capabilities,
+    usage, access, environment, connection). An open group hides empty
+    fields behind "Show N empty fields"; **Copy as JSON** copies every
+    group, closed ones and empty fields included.
+  - Model, Access and Usage are no longer tabs: the composer sets them,
+    and Thread shows them. Old tab names (header chips, the Observations
+    button, messages) map to the view and group that now hold them. The
+    rail's E opens Context and ⚙ opens Settings. The body keeps its
+    scroll position across the drawer's frequent re-renders, and open
+    groups and Details stay open.
+  - Wording: "Settle active policy" is now "Apply policy"; the policy
+    editor's constant rows (authority, router, schema) moved to
+    Diagnostics → Policies → Boundary.
+  - After, same fixture: Thread, Settings and Diagnostics fit one screen
+    without scrolling, Thread has no evidence rows, Context is 1.6 screens
+    (it is mostly actions).
+- **Checks:** `direct-t3-alternate-gui-electron-smoke` now checks the four
+  tabs fit the strip, Thread fits one screen with Backend, Commands, Model
+  and Access and no evidence rows, the Settings switches (backend, command
+  execution saved to the config), the policy editor in Context, closed
+  Diagnostics groups, hidden empty fields and their toggle, and the JSON
+  copy (read back from the clipboard). Pinned source checks in
+  `direct-runtime-path-switch-regression` and
+  `direct-native-agent-tool-routing-regression` follow the new sections.
+  The 16 renderer-reading regressions, the smoke, and `check:syntax` pass
+  on Linux and Windows.
+
+### Startup time and the grey/black/white flashes
+
+- Status: done (owner's own check in the daily app pending)
+- Scope: the owner saw a few seconds of nothing, then grey, black and white
+  before the Workbench, and grey then white on the first open of a thread
+  in another project. Measured on Windows (test profile, pixel sampling of
+  the window, main-process trace and CPU profile): **grey** was the window
+  shown but unpainted while restart recovery held the main thread (it read
+  and parsed every session, turn and event log three times: 0.4 s on the
+  test profile, about 1 s and 215 MB on the owner's); **black** was the
+  window's background while the surface waited for the model catalog and
+  usage fetches (about 1.1 s, sequential, before the page started loading);
+  **white** then **#121212** was the project view's default background.
+  The thread then waited for the same two fetches again (0.6 s) before
+  opening. From WSL, reading Codex CLI's auth.json candidates on `/mnt/c`
+  for every status check cost about 2 s more.
+- Outcome:
+  - Restart recovery (`session-store.js`) keeps a memo
+    (`direct-sessions/restart-recovery-memo.json`): a session whose files
+    (size, mtime, inode of session, turn and event files) are unchanged
+    since a launch found nothing to recover in them is skipped. Files
+    written in the last 5 s are never vouched for (file times can be
+    coarser than writes), a session recovery wrote is checked again, and
+    the memo's key includes the recovery limits; bump its schema when the
+    rules change. Owner's profile: 1,044 ms → 14 ms.
+  - The surface opens on the cached model catalog; only a project with
+    none waits for the fetch. The page refetches it on connect, and its
+    thread no longer waits for that when cached models are shown.
+  - **Launch animation** (`src/main/workbench-splash.js`,
+    `src/renderer/workbench-splash.html`): the window opens on a
+    transparent view that draws the Workbench layout in light at the real
+    borders' places (sidebar edge, thread bar, utility rail, composer,
+    sidebar buttons, breathing thread rows, "Getting the Workbench ready")
+    with a beam sweeping through. Startup waits for its first frame before
+    the work that holds the main thread, so it keeps animating through it.
+    When the surface's DOM is ready and it has painted (under the
+    animation), the veil dissolves over the app and the lines fade into
+    its borders (about 0.35 s; at least 0.65 s on screen in all). On
+    Windows the window is first shown past the right edge of every
+    display and moved into place 0.3 s later: shown in place, Windows
+    showed its unpainted grey while fading it in (0.15 s still showed it;
+    0.22 s did not). No blur filter: a full-window one slowed the loading
+    page. Skipped when the window is hidden for test control and under
+    Playwright (remote debugging), whose first page would otherwise be the
+    animation; `direct-workbench-splash-electron-smoke` drives it in plain
+    Electron.
+  - Without the animation the window stays hidden until the first
+    surface's DOM is ready (1.5 s fallback). Every project view paints the
+    Workbench background, and a project opened from the sidebar stays
+    hidden behind the current one until its page is up (2.5 s fallback),
+    so the switch goes from one page straight to the other.
+  - Codex CLI's auth file reads are reused for 2 s in the app.
+  - The launcher reinstalls packages only when package.json's dependency
+    fields (or the lock) change, not on a new script (`npm install` had
+    run on 3 of the last 4 launches, up to 12 s).
+- Measured after, Windows test profile: composer ready 2.4–3.3 s → 1.2–1.8 s,
+  first screen is the full Workbench (about 0.1 s of background as the
+  window opens); a cross-project open 1.4 s with black, white and grey →
+  0.6 s with no blank frame. Linux (xvfb): composer ready 5.0–5.4 s →
+  1.0–1.1 s. With the animation (Windows): first light on screen at
+  0.75–1.0 s after Electron starts, the app fully in at 1.95–2.15 s,
+  composer ready 1.6–1.7 s; no grey, white or blank frame.
+- **Checks:** new `direct-session-restart-recovery-memo-regression`
+  (skip when unchanged, fresh files not memoized, interrupted turn and
+  executing tool claim in a memoized session still recovered, foreign
+  memo ignored); the session recovery, model catalog, provider metadata
+  and Workbench regressions and both Electron smokes pass on Linux and
+  Windows.
+
+### Launching: earlier animation, compile cache, relaunch without restart
+
+- Status: done (owner's own check in the daily app pending)
+- Scope: after the animation, the owner asked for the rest: skip the
+  restart when nothing changed, compile caches, and a leaner launcher.
+  Measured: the launcher spent about 1.3 s before Electron started (a
+  PowerShell start for the log timestamp 0.35 s, a PowerShell process
+  scan to kill the running app 0.49 s, sync with `git rev-parse` over
+  `\\wsl.localhost` 0.13 s and `robocopy` 0.17 s, a Node start for
+  `run-electron.mjs` 0.07 s) and always restarted the app. main.js's ~400
+  modules took 0.2 s warm and up to 5 s right after a sync (Defender
+  scans the fresh files) with nothing on screen, and the surface page
+  loaded xterm (0.3 MB) on every launch.
+- Outcome:
+  - **Boot entry** (`src/boot.js`, the package's `main`): picks the profile
+    (`src/main/app-profile.js`), takes the single-instance lock, and for
+    the Workbench opens the window and animation
+    (`src/main/workbench-launch.js`) as soon as the app is ready; then it
+    loads main.js, which adopts that window. Other experiences load
+    main.js at once, as before.
+  - Node's compile cache is on for the main process (temp folder; checked
+    against each file's contents). xterm loads when the terminal panel
+    first opens (`direct-terminal-panel.js`), its stylesheet still with the
+    page.
+  - **Surfaces from `codex-surface://app`** (owner's call: remember the
+    Access choice across launches). The app served them from an HTTP
+    server on a new 127.0.0.1 port each launch, so each launch was a new
+    origin: what the page saved in localStorage (the Access choice per
+    project, `codex.directAccessProfile.<project>`; the analytics panel's
+    state; the sidebar's) was gone on the next launch, and Chromium's code
+    cache never applied. A fixed port was ruled out: a program that took it
+    first would be served as the trusted surface. The scheme is registered
+    in `src/boot.js` (standard, secure, code cache) and served only to the
+    Codex partition (`serveSurfaceScheme`); a ChatGPT-partition page gets
+    `ERR_FAILED`. Code cache for custom schemes is keyed to a hash of each
+    script, so a synced change never runs stale code. The same-document
+    check behind keeping the full bridge across navigation compares scheme
+    and host (Node reports every custom scheme's origin as `null`). The
+    HTTP server (`LocalSurfaceServer`) stays for the WorldManager UI
+    regressions, which open the pages in a plain browser; both read files
+    through `readSurfaceFile`. Measured: what the page saves now persists;
+    page load unchanged (0.46–0.66 s): compiling isn't where its time goes.
+  - **Single instance per profile**: a second launch quits and hands the
+    running app the right to take the foreground (Chromium calls
+    `AllowSetForegroundWindow`), and the running app comes to the front
+    (`second-instance`). Windows doesn't let a background app take the
+    foreground on request (tried over the control channel: the window
+    stayed behind), so this is how the launcher brings it back. Not under
+    test control (`DIRECT_TEST_CONTROL`), whose runs manage their own.
+  - **App control channel** (`src/main/app-control.js`): a named pipe
+    (Unix socket elsewhere) named after the app folder and profile, with
+    `hello` (pid, experience, sync generation the app started on) and
+    `quit` (ordered shutdown). The pipe's default security lets only this
+    user and administrators write; not opened for hidden test instances.
+  - **Launcher**: `sync-from-wsl.cmd /check` lists differences without
+    copying (robocopy's exit code can't tell: it counts the mirror's own
+    stamp files as extras, so the check reads its file list), then
+    `scripts/app-control.mjs reuse`: with nothing changed and the same
+    experience and `.sync-generation.txt` (written when a sync changes
+    files or dependencies), it keeps the running app and launches once
+    more to bring it forward. Otherwise the app quits (20 s grace, then
+    `taskkill`), the sync runs, and `electron.exe` starts directly. The
+    PowerShell process scan only runs when nothing answers the pipe but
+    Electron processes run (an app from before the channel, or a hung
+    one). The log timestamp comes from `%DATE%`/`%TIME%`.
+- Measured after, Windows test mirror and profile:
+  - Relaunch with nothing changed: 0.62 s from launcher start to the
+    running app in front, with its threads and terminals as they were
+    (before: the whole restart, about 3 s).
+  - Relaunch after a change: Electron starts 0.78 s after the launcher
+    (the running app quit in 0.11 s), animation up 0.29 s later, composer
+    ready at 1.43 s. With nothing running: Electron at 0.88 s, composer at
+    1.52 s.
+  - Animation page ready 0.29–0.38 s after Electron starts (was
+    0.45–0.57 s); composer 1.40–1.63 s, as before. Main process load 0.20
+    → 0.15 s, surface page load 0.58–0.82 → 0.48–0.57 s with compile cache
+    and lazy xterm. Frames: dark background and animation only.
+- **Checks:** new `direct-app-control-regression` (channel names per
+  folder and profile, hello and quit, one server per channel, stale
+  socket, the client's keep/restart decisions against a stand-in app);
+  `direct-workbench-splash-electron-smoke` now also launches the real app
+  (window and animation up before main.js loads, one window after it, a
+  second launch quits and reaches the first);
+  `mainline-launcher-compatibility-regression` covers the launcher's
+  check, keep, and fallback order; new `direct-surface-origin-electron-smoke`
+  (three launches on one profile: the surface's origin, what it saved still
+  there, the ChatGPT partition refused, code cache written). They pass on
+  Linux and Windows with the Electron smokes and the WorldManager Electron
+  acceptance.
 
 ## Baseline and prerequisites
 

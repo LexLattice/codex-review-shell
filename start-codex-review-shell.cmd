@@ -45,8 +45,16 @@ if not defined CODEX_DIRECT_OPENCODE_WSL_BIN set "CODEX_DIRECT_OPENCODE_WSL_BIN=
 
 set "POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 set "NODE_EXE=C:\Program Files\nodejs\node.exe"
-for /f %%T in ('powershell.exe -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss-fff"') do set "LAUNCH_ID=%%T"
-if not defined LAUNCH_ID set "LAUNCH_ID=unknown-%RANDOM%"
+set "ELECTRON_EXE=%ROOT_DIR%\node_modules\electron\dist\electron.exe"
+rem From %DATE% and %TIME% rather than PowerShell (a third of a second to
+rem start); their format follows the locale, so keep only safe characters.
+set "LAUNCH_ID=%DATE%_%TIME%"
+set "LAUNCH_ID=!LAUNCH_ID:/=-!"
+set "LAUNCH_ID=!LAUNCH_ID::=-!"
+set "LAUNCH_ID=!LAUNCH_ID:.=-!"
+set "LAUNCH_ID=!LAUNCH_ID:,=-!"
+set "LAUNCH_ID=!LAUNCH_ID: =0!"
+set "LAUNCH_ID=!LAUNCH_ID!-%RANDOM%"
 set "LAUNCHER_LOG_DIR=%LOCALAPPDATA%\codex-review-shell-direct\launcher-logs"
 if not exist "%LAUNCHER_LOG_DIR%" mkdir "%LAUNCHER_LOG_DIR%" >nul 2>nul
 set "LAUNCHER_STDOUT=%LAUNCHER_LOG_DIR%\launcher-%LAUNCH_ID%.stdout.log"
@@ -65,16 +73,32 @@ echo Launch started %DATE% %TIME% >> "%LAUNCHER_STDOUT%"
 echo Root: %ROOT_DIR% >> "%LAUNCHER_STDOUT%"
 echo WSL distro: %CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO% >> "%LAUNCHER_STDOUT%"
 echo WSL path: %CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH% >> "%LAUNCHER_STDOUT%"
-call :stage "Stopping an earlier Direct Shell instance, if present"
+if not exist "%NODE_EXE%" (
+  call :stage "Windows Node.js was not found at %NODE_EXE%"
+  exit /b 1
+)
 
-set "KILL_SCRIPT=%TEMP%\codex-review-shell-kill-%RANDOM%.ps1"
-> "%KILL_SCRIPT%" echo $targets = Get-CimInstance Win32_Process ^| Where-Object {
->> "%KILL_SCRIPT%" echo   ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*scripts\run-electron.mjs*' -and $_.CommandLine -like '*codex-review-shell*') -or
->> "%KILL_SCRIPT%" echo   ($_.Name -eq 'electron.exe' -and $_.CommandLine -like '*codex-review-shell*')
->> "%KILL_SCRIPT%" echo }
->> "%KILL_SCRIPT%" echo if ($targets) { $targets ^| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }
-call "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%KILL_SCRIPT%" >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
-if exist "%KILL_SCRIPT%" del "%KILL_SCRIPT%" >nul 2>nul
+rem A launch with nothing new brings the running app to the front instead
+rem of restarting it; otherwise the running app quits (ordered shutdown)
+rem before the sync replaces its files.
+call "%ROOT_DIR%\sync-from-wsl.cmd" /check
+set "SOURCE_CHANGED=!ERRORLEVEL!"
+set "REUSE_FLAGS="
+if not "!SOURCE_CHANGED!"=="0" set "REUSE_FLAGS=--changed"
+set "REUSE_RC=20"
+if exist "%ROOT_DIR%\scripts\app-control.mjs" (
+  "%NODE_EXE%" "%ROOT_DIR%\scripts\app-control.mjs" reuse !REUSE_FLAGS! >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
+  set "REUSE_RC=!ERRORLEVEL!"
+)
+if "!REUSE_RC!"=="0" (
+  rem One more launch: it finds the app running, hands it the right to take
+  rem the foreground, and quits (src/boot.js).
+  set "ELECTRON_RUN_AS_NODE="
+  if exist "%ELECTRON_EXE%" "%ELECTRON_EXE%" . >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
+  call :stage "Direct Shell is already running the current code; brought it to the front"
+  exit /b 0
+)
+if not "!REUSE_RC!"=="10" call :force_stop_instances
 
 call :stage "Synchronizing the WSL worktree"
 call "%ROOT_DIR%\sync-from-wsl.cmd"
@@ -92,14 +116,31 @@ if exist "%ROOT_DIR%\src\renderer\styles.css" (
 )
 
 call :stage "Starting Windows Electron"
-if not exist "%NODE_EXE%" (
-  call :stage "Windows Node.js was not found at %NODE_EXE%"
-  exit /b 1
+rem Electron directly, not through scripts\run-electron.mjs (which only adds
+rem a WSL log filter): one Node.js start fewer.
+set "ELECTRON_RUN_AS_NODE="
+if exist "%ELECTRON_EXE%" (
+  "%ELECTRON_EXE%" . >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
+) else (
+  "%NODE_EXE%" scripts\run-electron.mjs . >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
 )
-call "%NODE_EXE%" scripts\run-electron.mjs . >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
 set "APP_RC=%ERRORLEVEL%"
 call :stage "Windows Electron exited with code %APP_RC%"
 exit /b %APP_RC%
+
+rem Nothing answered the control channel (an app from before it, or a hung
+rem one), or Node.js couldn't ask: stop whatever runs from a Direct Shell folder.
+:force_stop_instances
+call :stage "Stopping an earlier Direct Shell instance, if present"
+set "KILL_SCRIPT=%TEMP%\codex-review-shell-kill-%RANDOM%.ps1"
+> "%KILL_SCRIPT%" echo $targets = Get-CimInstance Win32_Process ^| Where-Object {
+>> "%KILL_SCRIPT%" echo   ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*scripts\run-electron.mjs*' -and $_.CommandLine -like '*codex-review-shell*') -or
+>> "%KILL_SCRIPT%" echo   ($_.Name -eq 'electron.exe' -and $_.CommandLine -like '*codex-review-shell*')
+>> "%KILL_SCRIPT%" echo }
+>> "%KILL_SCRIPT%" echo if ($targets) { $targets ^| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }
+call "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%KILL_SCRIPT%" >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
+if exist "%KILL_SCRIPT%" del "%KILL_SCRIPT%" >nul 2>nul
+exit /b 0
 
 :stage
 echo [Direct Shell] %~1

@@ -622,20 +622,24 @@ textarea {
 
 .runtime-drawer-tabs {
   display: flex;
-  gap: 6px;
-  padding: 10px 12px;
-  overflow-x: auto;
+  gap: 4px;
+  padding: 8px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .runtime-tab-button {
   min-height: 30px;
-  padding: 0 10px;
+  min-width: 0;
+  padding: 0 6px;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.04);
   border-color: rgba(255, 255, 255, 0.08);
   color: var(--muted);
-  flex: 0 0 auto;
+  flex: 1 1 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .runtime-tab-button.active {
@@ -655,11 +659,170 @@ textarea {
 
 .runtime-section {
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  gap: 8px;
+  padding: 10px 12px;
   border: 1px solid rgba(121, 184, 255, 0.12);
-  border-radius: 14px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.035);
+}
+
+.runtime-section[hidden],
+.runtime-field[hidden] {
+  display: none;
+}
+
+.inspector-card {
+  gap: 0;
+  padding: 4px 12px;
+}
+
+.inspector-unit {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.inspector-unit:last-child {
+  border-bottom: 0;
+}
+
+.inspector-unit-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inspector-unit-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector-unit[data-tone="ok"] .inspector-unit-value::before,
+.inspector-unit[data-tone="warn"] .inspector-unit-value::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--success, #6fdea5);
+}
+
+.inspector-unit[data-tone="warn"] .inspector-unit-value {
+  color: var(--warning);
+}
+
+.inspector-unit[data-tone="warn"] .inspector-unit-value::before {
+  background: var(--warning);
+}
+
+.inspector-attention {
+  border-color: rgba(240, 191, 116, 0.45);
+  background: rgba(240, 191, 116, 0.08);
+}
+
+.inspector-attention h3 {
+  color: var(--warning);
+}
+
+.inspector-attention-item {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.inspector-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.inspector-note[data-tone="warn"] {
+  color: var(--warning);
+}
+
+.inspector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.inspector-details > summary,
+.inspector-link {
+  justify-self: start;
+  width: fit-content;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.inspector-details[open] {
+  display: grid;
+  gap: 6px;
+}
+
+.inspector-diagnostics-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.inspector-diagnostics-header .runtime-action {
+  flex: 0 0 auto;
+}
+
+.inspector-group {
+  border: 1px solid rgba(121, 184, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.inspector-group > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.inspector-group-title {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.inspector-group-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector-group-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 8px 10px;
+}
+
+.inspector-group-body .runtime-section {
+  background: rgba(0, 0, 0, 0.12);
 }
 
 .runtime-section[data-runtime-drawer-section="runtime-control"] {
@@ -1036,11 +1199,8 @@ textarea {
   overflow-wrap: anywhere;
   word-break: break-word;
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  line-height: 1.25;
-  text-transform: uppercase;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .runtime-field-value {
@@ -1084,10 +1244,7 @@ textarea {
 
 .runtime-control-label {
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 12px;
 }
 
 .runtime-control select,
@@ -1126,8 +1283,13 @@ textarea {
 
 .runtime-action {
   justify-self: start;
-  min-height: 32px;
+  min-height: 30px;
   padding: 0 12px;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   border-radius: 11px;
   border: 1px solid rgba(121, 184, 255, 0.3);
   background: rgba(121, 184, 255, 0.12);

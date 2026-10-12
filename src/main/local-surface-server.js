@@ -19,6 +19,17 @@ const VENDOR_FILES = Object.freeze({
   "/vendor/xterm/addon-fit.js": path.join(NODE_MODULES_ROOT, "@xterm", "addon-fit", "lib", "addon-fit.js"),
 });
 
+// The app serves its surfaces from this private scheme rather than from an
+// HTTP port: no port another program could take first, and one origin across
+// launches, so the pages' saved settings (Access, panels) and Chromium's code
+// cache for their scripts carry over. Code cache for a custom scheme is keyed
+// to a hash of each script, so a changed file never runs stale code.
+// LocalSurfaceServer (HTTP) stays for tests that open the pages in a plain
+// browser.
+const SURFACE_SCHEME = "codex-surface";
+const SURFACE_HOST = "app";
+const SURFACE_ORIGIN = `${SURFACE_SCHEME}://${SURFACE_HOST}`;
+
 function safePath(rootDir, pathname) {
   if (Object.prototype.hasOwnProperty.call(VENDOR_FILES, pathname)) return VENDOR_FILES[pathname];
   const relativePath = pathname === "/" ? "codex-surface.html" : pathname.replace(/^\/+/, "");
@@ -26,6 +37,49 @@ function safePath(rootDir, pathname) {
   const normalizedRoot = `${path.resolve(rootDir)}${path.sep}`;
   if (resolved !== path.resolve(rootDir) && !resolved.startsWith(normalizedRoot)) return null;
   return resolved;
+}
+
+const textResponse = (status, text) => ({ status, contentType: "text/plain; charset=utf-8", body: Buffer.from(text, "utf8") });
+
+async function readSurfaceFile(rootDir, pathname) {
+  const filePath = safePath(rootDir, pathname);
+  if (!filePath) return textResponse(403, "Forbidden");
+  try {
+    return {
+      status: 200,
+      contentType: CONTENT_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream",
+      body: await fs.readFile(filePath),
+    };
+  } catch (error) {
+    return error?.code === "ENOENT" || error?.code === "EISDIR"
+      ? textResponse(404, "Not found")
+      : textResponse(500, error?.message || "Surface file error");
+  }
+}
+
+// Before the app is ready (src/boot.js).
+function registerSurfaceScheme(protocol) {
+  protocol.registerSchemesAsPrivileged([
+    { scheme: SURFACE_SCHEME, privileges: { standard: true, secure: true, codeCache: true } },
+  ]);
+}
+
+const sessionsServingSurfaces = new WeakSet();
+
+// Only the session given serves the scheme; pages in other sessions (the
+// ChatGPT plane, web views) can't load the surfaces.
+function serveSurfaceScheme(session, rootDir) {
+  if (sessionsServingSurfaces.has(session)) return SURFACE_ORIGIN;
+  const root = path.resolve(rootDir);
+  session.protocol.handle(SURFACE_SCHEME, async (request) => {
+    const url = new URL(request.url);
+    const result = url.host === SURFACE_HOST && request.method === "GET"
+      ? await readSurfaceFile(root, url.pathname)
+      : textResponse(403, "Forbidden");
+    return new Response(result.body, { status: result.status, headers: { "Content-Type": result.contentType } });
+  });
+  sessionsServingSurfaces.add(session);
+  return SURFACE_ORIGIN;
 }
 
 class LocalSurfaceServer {
@@ -45,24 +99,10 @@ class LocalSurfaceServer {
   async start() {
     if (this.server) return this.baseUrl;
     this.server = http.createServer(async (request, response) => {
-      try {
-        const url = new URL(request.url || "/", "http://127.0.0.1");
-        const filePath = safePath(this.rootDir, url.pathname);
-        if (!filePath) {
-          response.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
-          response.end("Forbidden");
-          return;
-        }
-        const body = await fs.readFile(filePath);
-        response.writeHead(200, {
-          "Content-Type": CONTENT_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream",
-          "Cache-Control": "no-store",
-        });
-        response.end(body);
-      } catch (error) {
-        response.writeHead(error?.code === "ENOENT" ? 404 : 500, { "Content-Type": "text/plain; charset=utf-8" });
-        response.end(error?.code === "ENOENT" ? "Not found" : error?.message || "Surface server error");
-      }
+      const url = new URL(request.url || "/", "http://127.0.0.1");
+      const result = await readSurfaceFile(this.rootDir, url.pathname);
+      response.writeHead(result.status, { "Content-Type": result.contentType, "Cache-Control": "no-store" });
+      response.end(result.body);
     });
 
     await new Promise((resolve, reject) => {
@@ -91,5 +131,10 @@ class LocalSurfaceServer {
 
 module.exports = {
   LocalSurfaceServer,
+  SURFACE_ORIGIN,
+  SURFACE_SCHEME,
   VENDOR_FILES,
+  readSurfaceFile,
+  registerSurfaceScheme,
+  serveSurfaceScheme,
 };

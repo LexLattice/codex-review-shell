@@ -206,6 +206,11 @@ const state = {
   runtimeConstitution: null,
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
+  // Open Diagnostics groups, groups showing their empty fields, and open
+  // "Details" toggles, kept across the drawer's frequent re-renders.
+  runtimeDiagnosticsOpen: new Set(),
+  runtimeDiagnosticsShowEmpty: new Set(),
+  runtimeDetailsOpen: new Set(),
   directExecutionBackend: null,
   directExecutionBackendStatus: "idle",
   directExecutionBackendError: "",
@@ -442,7 +447,7 @@ async function reportContextManagementEvidence(input = {}) {
       controlsObserved: newControlsObserved,
     });
     for (const key of pendingKeys) state.contextManagementEvidenceKeys.add(key);
-    if (state.runtimeDrawerOpen && state.runtimeDrawerTab === "implementation") {
+    if (state.runtimeDrawerOpen && state.runtimeDrawerTab === "diagnostics") {
       refreshDirectImplementationUi({ force: true }).catch(() => {});
     }
   } catch {
@@ -797,7 +802,8 @@ function renderMorphicCockpit() {
   }
   if (els.morphicObservationsButton) {
     const count = runtimeObservationsForThread().length;
-    const observationDrawerOpen = state.runtimeDrawerOpen && state.runtimeDrawerTab === "observations";
+    const observationDrawerOpen = state.runtimeDrawerOpen && state.runtimeDrawerTab === "diagnostics" &&
+      state.runtimeDiagnosticsOpen.has("observations");
     els.morphicObservationsButton.textContent = count ? `Observations ${count}` : "Observations";
     els.morphicObservationsButton.classList.toggle("active", observationDrawerOpen);
     els.morphicObservationsButton.setAttribute("aria-expanded", observationDrawerOpen ? "true" : "false");
@@ -1036,19 +1042,41 @@ function renderComposerAttachments() {
 }
 
 const RUNTIME_DRAWER_TABS = [
-  ["runtime", "Runtime"],
-  ["observations", "Observations"],
-  ["model", "Model"],
-  ["access", "Access"],
-  ["usage", "Usage"],
-  ["implementation", "Implementation"],
-  ["epistemic", "Epistemic"],
-  ["history", "History"],
-  ["policy", "Policy"],
-  ["capabilities", "Capabilities"],
-  ["environment", "Environment"],
-  ["advanced", "Advanced"],
+  ["runtime", "Thread"],
+  ["settings", "Settings"],
+  ["context", "Context"],
+  ["diagnostics", "Diagnostics"],
 ];
+
+// Header chips, rail buttons and messages still name the tabs the drawer
+// used to have; each maps to the view (and Diagnostics group) that holds it.
+const RUNTIME_DRAWER_TAB_ALIASES = Object.freeze({
+  model: ["runtime"],
+  access: ["runtime"],
+  usage: ["runtime"],
+  epistemic: ["context"],
+  policy: ["context"],
+  advanced: ["diagnostics", "connection"],
+  observations: ["diagnostics", "observations"],
+  implementation: ["diagnostics", "implementation"],
+  history: ["diagnostics", "history"],
+  capabilities: ["diagnostics", "capabilities"],
+  environment: ["diagnostics", "environment"],
+});
+
+function runtimeDrawerTabs() {
+  const contextAvailable = typeof bridge?.readDirectEpistemicSnapshot === "function" ||
+    typeof bridge?.getDirectActiveSubAgentPolicy === "function";
+  return RUNTIME_DRAWER_TABS.filter(([id]) => id !== "context" || contextAvailable);
+}
+
+function resolveRuntimeDrawerTab(tab) {
+  const [view, group] = RUNTIME_DRAWER_TAB_ALIASES[tab] || [tab];
+  return {
+    view: runtimeDrawerTabs().some(([id]) => id === view) ? view : "runtime",
+    group: group || "",
+  };
+}
 
 const MAX_RUNTIME_OBSERVATIONS_PER_THREAD = 120;
 
@@ -1084,7 +1112,7 @@ function recordRuntimeObservation(params = {}) {
   const activeThread = !params.threadId || threadId === String(state.threadId || "unbound");
   if (activeThread) {
     renderMorphicCockpit();
-    if (state.runtimeDrawerOpen && state.runtimeDrawerTab === "observations") renderRuntimeDrawer();
+    if (state.runtimeDrawerOpen && state.runtimeDrawerTab === "diagnostics") renderRuntimeDrawer();
   }
 }
 
@@ -3018,14 +3046,18 @@ function admitDirectEpistemicPreview(preview) {
 
 function openRuntimeDrawer(tab = "runtime") {
   dismissComposerOverlay("runtime-drawer-open");
+  const { view, group } = resolveRuntimeDrawerTab(tab);
   state.runtimeDrawerOpen = true;
-  state.runtimeDrawerTab = RUNTIME_DRAWER_TABS.some(([id]) => id === tab) ? tab : "runtime";
+  state.runtimeDrawerTab = view;
+  if (group) state.runtimeDiagnosticsOpen.add(group);
   renderRuntimeConstitution();
-  if (["implementation", "history", "policy"].includes(state.runtimeDrawerTab)) {
-    refreshDirectImplementationUi();
-  }
-  if (state.runtimeDrawerTab === "epistemic") refreshDirectEpistemicProjection();
-  if (state.runtimeDrawerTab === "runtime") refreshDirectExecutionBackend();
+  refreshRuntimeDrawerView(view);
+}
+
+function refreshRuntimeDrawerView(view) {
+  if (view === "context" || view === "diagnostics") refreshDirectImplementationUi();
+  if (view === "context") refreshDirectEpistemicProjection();
+  if (view !== "context") refreshDirectExecutionBackend();
 }
 
 async function refreshDirectExecutionBackend() {
@@ -3036,7 +3068,7 @@ async function refreshDirectExecutionBackend() {
   } catch (error) {
     state.directExecutionBackendError = error?.message || "unavailable";
   }
-  if (state.runtimeDrawerOpen && state.runtimeDrawerTab === "runtime") renderRuntimeDrawer();
+  if (state.runtimeDrawerOpen) renderRuntimeDrawer();
 }
 
 async function setDirectExecutionBackend(backend) {
@@ -3053,28 +3085,42 @@ async function setDirectExecutionBackend(backend) {
   renderRuntimeDrawer();
 }
 
+function directExecutionBackendAvailable(currentPath = currentWorkbenchRuntimePath()) {
+  return currentPath === "direct" && typeof bridge?.getDirectExecutionBackend === "function";
+}
+
+function directExecutionBackendLabel(info = state.directExecutionBackend) {
+  if (!info) return "";
+  return info.backend === "codex-exec-server" ? "Codex exec-server" : "Direct executor";
+}
+
+function directExecServerConnectionRows(info = state.directExecutionBackend) {
+  return (info?.codexExecServer?.connections || []).map((entry) => [
+    `exec-server (${entry.key})`,
+    [
+      entry.state,
+      entry.executorVersion,
+      entry.platformOs,
+      Number.isFinite(entry.startupMs) ? `started in ${entry.startupMs} ms` : "",
+    ].filter(Boolean).join(" · "),
+  ]);
+}
+
+function directExecServerLastError(info = state.directExecutionBackend) {
+  const lastErrors = Object.values(info?.codexExecServer?.lastErrors || {});
+  return lastErrors.length ? String(lastErrors[lastErrors.length - 1]) : "";
+}
+
 // Which backend runs this Direct thread's commands and file tools.
 function directExecutionBackendSection(currentPath) {
-  if (currentPath !== "direct" || typeof bridge?.getDirectExecutionBackend !== "function") return null;
+  if (!directExecutionBackendAvailable(currentPath)) return null;
   const info = state.directExecutionBackend;
-  const connections = info?.codexExecServer?.connections || [];
-  const lastErrors = Object.values(info?.codexExecServer?.lastErrors || {});
-  const section = drawerSection("Command execution", [
-    ["commands and files", !info ? "loading" : info.backend === "codex-exec-server" ? "Codex exec-server" : "Direct executor"],
-    ...(info?.environmentOverride ? [["set by", "CODEX_DIRECT_EXECUTION_BACKEND"]] : []),
-    ...connections.map((connection) => [
-      `exec-server (${connection.key})`,
-      [
-        connection.state,
-        connection.executorVersion,
-        connection.platformOs,
-        Number.isFinite(connection.startupMs) ? `started in ${connection.startupMs} ms` : "",
-      ].filter(Boolean).join(" · "),
-    ]),
-    ...(lastErrors.length ? [["last exec-server error", lastErrors[lastErrors.length - 1]]] : []),
-    ...(state.directExecutionBackendError ? [["error", state.directExecutionBackendError]] : []),
-  ]);
-  if (info && typeof bridge?.setDirectExecutionBackend === "function") {
+  const section = drawerSection("Command execution");
+  if (!info) {
+    section.appendChild(inspectorNote(state.directExecutionBackendError || "Loading…"));
+    return section;
+  }
+  if (typeof bridge?.setDirectExecutionBackend === "function") {
     section.appendChild(selectField(
       "Run commands with",
       info.configured,
@@ -3082,11 +3128,66 @@ function directExecutionBackendSection(currentPath) {
       (value) => setDirectExecutionBackend(value),
       {
         disabled: state.directExecutionBackendStatus === "saving" || Boolean(info.environmentOverride),
-        description: "Direct executor is this app's own. Codex exec-server runs codex exec-server in the workspace's environment. Applies to all projects, for commands and file changes started after you switch.",
+        description: info.environmentOverride
+          ? "Set by CODEX_DIRECT_EXECUTION_BACKEND."
+          : "All projects. Applies to commands started after a change.",
       },
     ));
   }
+  if (state.directExecutionBackendError) section.appendChild(inspectorNote(state.directExecutionBackendError, "warn"));
   return section;
+}
+
+// One meaning per line: a label, a short value (full text in the tooltip),
+// and at most one action.
+function inspectorUnit(label, value, options = {}) {
+  const row = document.createElement("div");
+  row.className = "inspector-unit";
+  if (options.tone) row.dataset.tone = options.tone;
+  row.dataset.inspectorUnit = label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const labelNode = document.createElement("span");
+  labelNode.className = "inspector-unit-label";
+  labelNode.textContent = label;
+  const valueNode = document.createElement("span");
+  valueNode.className = "inspector-unit-value";
+  valueNode.textContent = String(value);
+  valueNode.title = options.title || String(value);
+  row.append(labelNode, valueNode);
+  if (options.action) row.appendChild(options.action);
+  return row;
+}
+
+function inspectorNote(text, tone = "") {
+  const note = document.createElement("p");
+  note.className = "inspector-note";
+  if (tone) note.dataset.tone = tone;
+  note.textContent = text;
+  return note;
+}
+
+function inspectorActions(buttons) {
+  const row = document.createElement("div");
+  row.className = "inspector-actions";
+  for (const button of buttons.filter(Boolean)) row.appendChild(button);
+  return row;
+}
+
+// Renders `<details>` that survives re-renders: `openSet` remembers which
+// keys are open, and `onToggle` runs after a user opens or closes it.
+function persistentDetails(key, openSet, summaryContent, onToggle) {
+  const details = document.createElement("details");
+  details.open = openSet.has(key);
+  const summary = document.createElement("summary");
+  if (typeof summaryContent === "string") summary.textContent = summaryContent;
+  else summary.append(...summaryContent);
+  details.appendChild(summary);
+  details.addEventListener("toggle", () => {
+    if (details.open === openSet.has(key)) return;
+    if (details.open) openSet.add(key);
+    else openSet.delete(key);
+    onToggle?.(details.open);
+  });
+  return details;
 }
 
 function closeRuntimeDrawer() {
@@ -3120,7 +3221,9 @@ function evidenceBlock(refs = []) {
   return block;
 }
 
-function drawerSection(title, rows = [], refs = []) {
+// `options.details` rows sit behind a "Details" toggle; `options.detailsKey`
+// names it so it stays open across re-renders.
+function drawerSection(title, rows = [], refs = [], options = {}) {
   const section = document.createElement("section");
   section.className = "runtime-section";
   section.dataset.runtimeDrawerSection = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
@@ -3128,6 +3231,17 @@ function drawerSection(title, rows = [], refs = []) {
   heading.textContent = title;
   section.appendChild(heading);
   for (const [key, value] of rows) section.appendChild(fieldRow(key, value));
+  const details = Array.isArray(options.details) ? options.details : [];
+  if (details.length) {
+    const toggle = persistentDetails(
+      options.detailsKey || `section:${section.dataset.runtimeDrawerSection}`,
+      state.runtimeDetailsOpen,
+      "Details",
+    );
+    toggle.className = "inspector-details";
+    for (const [key, value] of details) toggle.appendChild(fieldRow(key, value));
+    section.appendChild(toggle);
+  }
   if (refs.length) section.appendChild(evidenceBlock(refs));
   return section;
 }
@@ -3138,31 +3252,37 @@ function renderRuntimeDrawer() {
   els.runtimeDrawer.hidden = !state.runtimeDrawerOpen;
   if (!state.runtimeDrawerOpen) return;
 
-  const tabLabel = RUNTIME_DRAWER_TABS.find(([id]) => id === state.runtimeDrawerTab)?.[1] || "Runtime";
+  const tabs = runtimeDrawerTabs();
+  if (!tabs.some(([id]) => id === state.runtimeDrawerTab)) state.runtimeDrawerTab = "runtime";
+  const tabLabel = tabs.find(([id]) => id === state.runtimeDrawerTab)?.[1] || "Thread";
+  const sameView = els.runtimeDrawerBody.dataset.view === state.runtimeDrawerTab;
+  const scrollTop = sameView ? els.runtimeDrawerBody.scrollTop : 0;
   els.runtimeDrawerTitle.textContent = tabLabel;
   els.runtimeDrawerUpdated.textContent = `updated ${new Date(constitution.updatedAt).toLocaleTimeString()}`;
   els.runtimeDrawerTabs.innerHTML = "";
-  for (const [id, label] of RUNTIME_DRAWER_TABS) {
+  for (const [id, label] of tabs) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `runtime-tab-button${id === state.runtimeDrawerTab ? " active" : ""}`;
     button.textContent = label;
     button.dataset.runtimeDrawerTab = id;
+    button.setAttribute("aria-pressed", id === state.runtimeDrawerTab ? "true" : "false");
     button.addEventListener("click", () => {
       state.runtimeDrawerTab = id;
       renderRuntimeDrawer();
       renderMorphicCockpit();
-      if (["implementation", "history", "policy"].includes(id)) refreshDirectImplementationUi();
-      if (id === "epistemic") refreshDirectEpistemicProjection();
-      if (id === "runtime") refreshDirectExecutionBackend();
+      refreshRuntimeDrawerView(id);
     });
     els.runtimeDrawerTabs.appendChild(button);
   }
 
   els.runtimeDrawerBody.innerHTML = "";
+  els.runtimeDrawerBody.dataset.view = state.runtimeDrawerTab;
   for (const section of runtimeDrawerSections(constitution, state.runtimeDrawerTab)) {
     els.runtimeDrawerBody.appendChild(section);
   }
+  // The body is rebuilt on every runtime update; keep the reader's place.
+  if (scrollTop) els.runtimeDrawerBody.scrollTop = scrollTop;
 }
 
 function unsupportedControlNote(text) {
@@ -4621,11 +4741,7 @@ async function settleDirectActiveSubAgentPolicy() {
 function activeSubAgentPolicyEditorSection() {
   const saving =
     state.directActiveSubAgentPolicyStatus === "saving";
-  const section = drawerSection("Active Sub-Agent Policy Editor", [
-    ["authority", "operator semantic admission"],
-    ["router", "harness-owned constitutional meta-role"],
-    ["content schema", "open semantic content · typed discharge"],
-  ]);
+  const section = drawerSection("Change worker policy");
   section.appendChild(selectField(
     "Scope",
     state.directActiveSubAgentPolicyScope,
@@ -4637,10 +4753,7 @@ function activeSubAgentPolicyEditorSection() {
       state.directActiveSubAgentPolicyScope = value;
       renderRuntimeDrawer();
     },
-    {
-      disabled: saving,
-      description: "The editor region fixes the referent; the semantic router settles the policy content.",
-    },
+    { disabled: saving },
   ));
   let submitButton = null;
   section.appendChild(textAreaField(
@@ -4658,11 +4771,11 @@ function activeSubAgentPolicyEditorSection() {
       rows: 5,
       maxLength: 4000,
       placeholder: "For implementation workers, use Sol at high effort with no inherited dialogue. Keep review auditors on…",
-      description: "State the durable rule once. The router proposes typed fields; the harness admits and enforces the resulting policy object.",
+      description: "Say the rule once; new workers follow it until you change it.",
     },
   ));
   submitButton = refreshButton(
-    "Settle active policy",
+    "Apply policy",
     () => settleDirectActiveSubAgentPolicy(),
     {
       busy: saving,
@@ -4674,7 +4787,7 @@ function activeSubAgentPolicyEditorSection() {
   section.appendChild(submitButton);
   if (!state.threadId) {
     section.appendChild(unsupportedControlNote(
-      "Open a Direct task before settling task- or project-scoped worker policy.",
+      "Open a Direct task to change worker policy.",
     ));
   }
   if (state.directActiveSubAgentPolicyError) {
@@ -4752,16 +4865,15 @@ function appendEpistemicPortActions(sections, subjectKind, summary, config = {})
   if (!ports.length) return;
   const options = ports.map((port) => ({
     value: `${subjectKind}:${port.name}`,
-    label: `${port.label || port.name} · ${(port.selector?.facets || []).join(", ") || "all facets"}`,
+    label: port.label || port.name,
   }));
   const available = new Set(options.map((option) => option.value));
   if (!available.has(state.directEpistemicPortSelection[subjectKind])) {
     state.directEpistemicPortSelection[subjectKind] = options[0].value;
   }
-  const section = drawerSection(`${subjectKind === "repository" ? "Repository" : "Thread"} context previews`, ports.map((port) => [
-    port.label || port.name,
-    port.purpose,
-  ]));
+  const selectedName = state.directEpistemicPortSelection[subjectKind].slice(`${subjectKind}:`.length);
+  const selectedPort = ports.find((port) => port.name === selectedName) || ports[0];
+  const section = drawerSection(`${subjectKind === "repository" ? "Repository" : "Thread"} context previews`);
   section.appendChild(selectField(
     "Revisioned view",
     state.directEpistemicPortSelection[subjectKind],
@@ -4772,11 +4884,9 @@ function appendEpistemicPortActions(sections, subjectKind, summary, config = {})
     },
     {
       disabled: directEpistemicBusy(),
-      description: "A port selects records for a local preview. Materializing it does not add context to a Direct turn, and no provider receives it.",
+      description: `${selectedPort.purpose ? `${selectedPort.purpose} ` : ""}Previews stay local: they add nothing to a turn, and no provider receives them.`,
     },
   ));
-  const selectedName = state.directEpistemicPortSelection[subjectKind].slice(`${subjectKind}:`.length);
-  const selectedPort = ports.find((port) => port.name === selectedName) || ports[0];
   const actionKey = `context-preview:${subjectKind}:${summary?.subject?.externalId || "repository"}:${selectedPort.name}`;
   section.appendChild(refreshButton("Materialize local preview", () => {
     return materializeDirectEpistemicPreview(subjectKind, selectedPort);
@@ -4812,20 +4922,23 @@ function directEpistemicDrawerSections() {
   const sections = [];
   const overview = drawerSection("Information plane", [
     ["status", state.directEpistemicStatus],
-    ["profile candidate", projection.profileCandidate || "unknown"],
-    ["active control", projection.invariants?.activeControlDirection || "unknown"],
-    ["passive evidence", projection.invariants?.passiveEvidenceDirection || "unknown"],
-    ["WorldManager standing", projection.invariants?.worldManagerCanonicalStanding ? "canonical" : "separate Direct E"],
-    ["error", state.directEpistemicError || "—"],
-  ]);
+    ...(state.directEpistemicError ? [["error", state.directEpistemicError]] : []),
+  ], [], {
+    detailsKey: "epistemic-overview",
+    details: [
+      ["profile candidate", projection.profileCandidate || "unknown"],
+      ["active control", projection.invariants?.activeControlDirection || "unknown"],
+      ["passive evidence", projection.invariants?.passiveEvidenceDirection || "unknown"],
+      ["WorldManager standing", projection.invariants?.worldManagerCanonicalStanding ? "canonical" : "separate Direct E"],
+    ],
+  });
   overview.appendChild(textField(
     "Preview purpose",
     state.directEpistemicPurpose,
     (value) => { state.directEpistemicPurpose = value; },
     {
-      placeholder: "Optional local preview purpose",
+      placeholder: "Optional; the port's purpose by default",
       disabled: directEpistemicBusy(),
-      description: "If empty, the port purpose is used. This labels an immutable local preview; it is not sent to a provider.",
     },
   ));
   overview.appendChild(refreshButton("Refresh projection", () => refreshDirectEpistemicProjection({ force: true }), {
@@ -4839,9 +4952,13 @@ function directEpistemicDrawerSections() {
   if (!repository) {
     const section = drawerSection("Repository O / E", [
       ["status", "not initialized"],
-      ["effect", "read-only observation plus local Direct E seed"],
-      ["repository mutation", "none"],
-    ]);
+    ], [], {
+      detailsKey: "epistemic-repository",
+      details: [
+        ["effect", "read-only observation plus local Direct E seed"],
+        ["repository mutation", "none"],
+      ],
+    });
     section.appendChild(refreshButton("Initialize ArcAGI3 profile", initializeDirectEpistemicRepository, {
       actionKey: "repository-initialize",
       busy: state.directEpistemicActiveActions.has("repository-initialize"),
@@ -4852,20 +4969,24 @@ function directEpistemicDrawerSections() {
     const observation = repository.observation || {};
     const observationCurrent = observation.observationComplete === true;
     const section = drawerSection("Repository O / E", [
-      ["O revision", shortEpistemicId(repository.oRevision?.oRevisionId)],
-      ["E revision", shortEpistemicId(repository.eRevision?.eRevisionId)],
-      ["E class", repository.eRevision?.revisionClass || "unknown"],
-      ["coverage", repository.eRevision?.coverage?.posture || "unknown"],
-      ["Git head", shortEpistemicId(observation.gitHead || repository.oRevision?.substrateIdentity?.gitHead)],
+      ["observation", observationCurrent ? "current" : "refresh required"],
       ["branch", observation.branch || repository.oRevision?.substrateIdentity?.branch || "unknown"],
-      ["observation freshness", observationCurrent ? "current" : "refresh required"],
       ["worktree", observationCurrent ? (observation.dirty ? "dirty" : "clean") : "refresh required"],
-      ["status entries", observation.statusEntryCount ?? "unknown"],
-      ["untracked files", observation.untrackedFileCount ?? "unknown"],
       ["typed records", repository.recordCount || 0],
-      ["pinned sources", observation.pinnedSourceCount ?? "refresh required"],
-      ["omissions", (observation.omissions || []).join(", ") || "none"],
-    ]);
+    ], [], {
+      detailsKey: "epistemic-repository",
+      details: [
+        ["O revision", shortEpistemicId(repository.oRevision?.oRevisionId)],
+        ["E revision", shortEpistemicId(repository.eRevision?.eRevisionId)],
+        ["E class", repository.eRevision?.revisionClass || "unknown"],
+        ["coverage", repository.eRevision?.coverage?.posture || "unknown"],
+        ["Git head", shortEpistemicId(observation.gitHead || repository.oRevision?.substrateIdentity?.gitHead)],
+        ["status entries", observation.statusEntryCount ?? "unknown"],
+        ["untracked files", observation.untrackedFileCount ?? "unknown"],
+        ["pinned sources", observation.pinnedSourceCount ?? "refresh required"],
+        ["omissions", (observation.omissions || []).join(", ") || "none"],
+      ],
+    });
     section.appendChild(refreshButton("Refresh repository O / E", refreshDirectEpistemicRepository, {
       actionKey: "repository-refresh",
       busy: state.directEpistemicActiveActions.has("repository-refresh"),
@@ -4881,26 +5002,29 @@ function directEpistemicDrawerSections() {
   const thread = projection.thread;
   if (!thread) {
     sections.push(drawerSection("Thread O / E", [
-      ["status", "no Direct session for this project"],
-      ["capture", "begins when a Direct session is persisted"],
+      ["status", "starts once this project has a saved Direct thread"],
     ]));
   } else {
     const transcription = thread.latestTranscription || {};
     const indexedThreads = Array.isArray(projection.threads) ? projection.threads : [];
     const nativeChildCount = indexedThreads.filter((entry) => /^Native child\b/i.test(entry.subject?.label || "")).length;
     const section = drawerSection("Thread O / E", [
-      ["session", shortEpistemicId(thread.subject?.externalId)],
-      ["selected", thread.subject?.label || "Direct thread"],
-      ["indexed project workthreads", indexedThreads.length],
-      ["native child workthreads", nativeChildCount],
-      ["O revision", shortEpistemicId(thread.oRevision?.oRevisionId)],
-      ["E revision", shortEpistemicId(thread.eRevision?.eRevisionId)],
-      ["E class", thread.eRevision?.revisionClass || "unknown"],
+      ["thread", thread.subject?.label || "Direct thread"],
       ["typed records", thread.recordCount || 0],
       ["transcription", transcription.status || "deterministic only"],
-      ["transcriber", `${projection.transcriber?.model || "gpt-5.6-luna"} · ${projection.transcriber?.reasoningEffort || "low"}`],
-      ["semantic promotion", projection.transcriber?.semanticPromotionAllowed ? "allowed" : "forbidden"],
-    ]);
+    ], [], {
+      detailsKey: "epistemic-thread",
+      details: [
+        ["session", shortEpistemicId(thread.subject?.externalId)],
+        ["indexed project workthreads", indexedThreads.length],
+        ["native child workthreads", nativeChildCount],
+        ["O revision", shortEpistemicId(thread.oRevision?.oRevisionId)],
+        ["E revision", shortEpistemicId(thread.eRevision?.eRevisionId)],
+        ["E class", thread.eRevision?.revisionClass || "unknown"],
+        ["transcriber", `${projection.transcriber?.model || "gpt-5.6-luna"} · ${projection.transcriber?.reasoningEffort || "low"}`],
+        ["semantic promotion", projection.transcriber?.semanticPromotionAllowed ? "allowed" : "forbidden"],
+      ],
+    });
     if (indexedThreads.length > 1) {
       section.appendChild(selectField(
         "Project workthread",
@@ -4914,10 +5038,7 @@ function directEpistemicDrawerSections() {
           state.directEpistemicLastPreview = null;
           refreshDirectEpistemicProjection({ force: true, sessionId: value });
         },
-        {
-          disabled: directEpistemicBusy(),
-          description: "Select which persisted primary or native-child workthread the thread ports address.",
-        },
+        { disabled: directEpistemicBusy() },
       ));
     }
     const sessionId = thread.subject?.externalId || "";
@@ -4949,37 +5070,39 @@ function directEpistemicDrawerSections() {
   if (latestPreview) {
     const records = Array.isArray(latestPreview.records) ? latestPreview.records : [];
     sections.push(drawerSection("Latest materialized context preview", [
-      ["preview", shortEpistemicId(latestPreview.importId)],
       ["subject", [
         previewSelection.subjectKind,
         previewSelection.subjectLabel,
         previewSelection.subjectExternalId ? shortEpistemicId(previewSelection.subjectExternalId) : "",
       ].filter(Boolean).join(" · ")],
       ["port", latestPreview.purposeId || shortEpistemicId(latestPreview.portRef?.id)],
-      ["purpose", latestPreview.purpose || "—"],
       ["records", latestPreview.recordCount ?? records.length],
-      ["freshness", latestPreview.freshness || "unknown"],
       ["provider transport", deliveryMatchesPreview && latestDelivery.state === "provider_transport_attempted"
         ? "attempt witnessed"
         : "none"],
       ["Direct turn admission", deliveryMatchesPreview
         ? epistemicLifecycleLabel(latestDelivery.state)
         : "none"],
-      ["O witness", shortEpistemicId(latestPreview.oRevisionRef?.id)],
-      ["E witness", shortEpistemicId(latestPreview.eRevisionRef?.id)],
-      ["digest", shortEpistemicId(latestPreview.importDigest)],
-      ["omissions", (latestPreview.omissions || []).join(", ") || "none"],
-    ]));
-    if (records.length) {
-      sections.push(drawerSection("Previewed semantic records", records.slice(0, 16).map((record) => [
-        record.semanticKey || record.recordType,
-        [
-          record.standing,
-          record.predicate,
-          record.payload?.statement || record.payload?.outcome || record.payload?.name || "typed record",
-        ].filter(Boolean).join(" · "),
-      ])));
-    }
+    ], [], {
+      detailsKey: "epistemic-preview",
+      details: [
+        ["preview", shortEpistemicId(latestPreview.importId)],
+        ["purpose", latestPreview.purpose || "—"],
+        ["freshness", latestPreview.freshness || "unknown"],
+        ["O witness", shortEpistemicId(latestPreview.oRevisionRef?.id)],
+        ["E witness", shortEpistemicId(latestPreview.eRevisionRef?.id)],
+        ["digest", shortEpistemicId(latestPreview.importDigest)],
+        ["omissions", (latestPreview.omissions || []).join(", ") || "none"],
+        ...records.slice(0, 16).map((record) => [
+          record.semanticKey || record.recordType,
+          [
+            record.standing,
+            record.predicate,
+            record.payload?.statement || record.payload?.outcome || record.payload?.name || "typed record",
+          ].filter(Boolean).join(" · "),
+        ]),
+      ],
+    }));
     const targetAvailable = deliverySurface.targetAvailable === true;
     const pendingState = deliveryMatchesPreview && [
       "admitted",
@@ -4987,13 +5110,11 @@ function directEpistemicDrawerSections() {
       "prepared_for_provider",
     ].includes(latestDelivery.state);
     const actionKey = `context-delivery:${deliverySurface.targetSessionId || state.threadId}:${latestPreview.importId}`;
+    const deliveryError = deliveryMatchesPreview ? latestDelivery.errorCode || "" : "";
     const handoff = drawerSection("Next-turn context handoff", [
       ["status", deliveryMatchesPreview
         ? epistemicLifecycleLabel(latestDelivery.state)
         : "not admitted"],
-      ["target task", shortEpistemicId(deliverySurface.targetSessionId)],
-      ["target role", deliverySurface.targetRoleLane || "unknown"],
-      ["target workthread", shortEpistemicId(deliverySurface.targetWorkThreadId)],
       ["consumption", epistemicLifecycleLabel(
         deliverySurface.automaticConsumption,
         "next initial Direct turn",
@@ -5002,17 +5123,22 @@ function directEpistemicDrawerSections() {
         ? `attempt ${latestDelivery.attempt || 1}`
         : "not yet witnessed"],
       ["authority", "quoted evidence only · no capability grant"],
-      ["renderer text accepted", deliverySurface.rendererProjectionTextAccepted ? "yes" : "no"],
-      ["turn", deliveryMatchesPreview ? shortEpistemicId(latestDelivery.turnId) : "—"],
-      ["context build", deliveryMatchesPreview ? shortEpistemicId(latestDelivery.contextBuildId) : "—"],
-      ["request manifest", deliveryMatchesPreview ? shortEpistemicId(latestDelivery.requestManifestId) : "—"],
-      ["transition note", deliveryMatchesPreview
-        ? latestDelivery.reason || "none"
-        : "none"],
-      ["error", deliveryMatchesPreview
-        ? latestDelivery.errorCode || "none"
-        : "none"],
-    ]);
+      ...(deliveryError ? [["error", deliveryError]] : []),
+    ], [], {
+      detailsKey: "epistemic-handoff",
+      details: [
+        ["target task", shortEpistemicId(deliverySurface.targetSessionId)],
+        ["target role", deliverySurface.targetRoleLane || "unknown"],
+        ["target workthread", shortEpistemicId(deliverySurface.targetWorkThreadId)],
+        ["renderer text accepted", deliverySurface.rendererProjectionTextAccepted ? "yes" : "no"],
+        ["turn", deliveryMatchesPreview ? shortEpistemicId(latestDelivery.turnId) : "—"],
+        ["context build", deliveryMatchesPreview ? shortEpistemicId(latestDelivery.contextBuildId) : "—"],
+        ["request manifest", deliveryMatchesPreview ? shortEpistemicId(latestDelivery.requestManifestId) : "—"],
+        ["transition note", deliveryMatchesPreview
+          ? latestDelivery.reason || "none"
+          : "none"],
+      ],
+    });
     handoff.appendChild(refreshButton(
       pendingState ? "Admitted for next Direct turn" : "Admit this preview for next Direct turn",
       () => admitDirectEpistemicPreview(latestPreview),
@@ -5033,372 +5159,714 @@ function directEpistemicDrawerSections() {
 }
 
 function runtimeDrawerSections(c, tab) {
-  if (tab === "epistemic") return directEpistemicDrawerSections();
-  if (tab === "observations") {
-    const observations = [...runtimeObservationsForThread()].reverse();
-    return [
-      drawerSection("Observation posture", [
+  if (tab === "settings") return settingsInspectorSections();
+  if (tab === "context") return contextInspectorSections();
+  if (tab === "diagnostics") return diagnosticsInspectorSections(c);
+  return threadInspectorSections(c);
+}
+
+function humanizeRuntimeCode(value, fallback = "") {
+  const text = String(value || "").trim();
+  return text ? text.replaceAll("_", " ") : fallback;
+}
+
+function threadAccessSummary() {
+  if (isDirectFullAccessSurface()) {
+    const profile = currentDirectAccessProfile() || preferredDirectAccessProfile();
+    const option = directAccessProfileOption(profile);
+    return { text: option?.label || "Not set", title: directAccessProfileDescription(profile) };
+  }
+  if (isDirectLiveTextSurface()) return { text: "No tools (text only)", title: "Text-only Direct threads have no tools." };
+  const parts = [state.runtimeOverrides.approvalPolicy, state.runtimeOverrides.sandboxMode].filter(Boolean);
+  return {
+    text: parts.length ? parts.join(" · ") : "Runtime default",
+    title: `Approval: ${approvalPolicyLabel()}. Sandbox: ${sandboxModeLabel()}.`,
+  };
+}
+
+// What is blocked or failing, in plain words. Empty when all is well.
+function threadAttentionItems(c) {
+  const items = [];
+  const readiness = isDirectLiveTextSurface() ? directLiveTextReadinessStatus() : null;
+  const renew = () => refreshModelsButton("Renew ChatGPT sign-in if needed and reload this account's model list.");
+  if (readiness && !directLiveTextReady()) {
+    items.push({ text: state.directReadinessRefreshError || directLiveTextBlockedMessage(), action: renew() });
+  } else if (readiness && state.directReadinessRefreshError) {
+    items.push({ text: state.directReadinessRefreshError, action: renew() });
+  }
+  const model = activeModelId() || readiness?.model || "";
+  if (readiness && model && directListedModels().length && !directModelListed(model)) {
+    items.push({ text: `${model} isn't in this account's model list. Pick another model in the composer.` });
+  }
+  if (!readiness && c.account.status === "login_required") items.push({ text: "Codex needs you to sign in." });
+  if (["error", "disconnected"].includes(state.connectionStatus)) {
+    items.push({ text: `The runtime connection is ${state.connectionStatus}.` });
+  }
+  if (state.runtimePathTransitionError) items.push({ text: `Backend switch failed: ${state.runtimePathTransitionError}` });
+  if (state.runtimePreferencesStatus === "failed") {
+    items.push({ text: `Saving this thread's model settings failed: ${state.runtimePreferencesError}` });
+  }
+  if (directExecutionBackendAvailable()) {
+    const execError = directExecutionBackendLabel() === "Codex exec-server" ? directExecServerLastError() : "";
+    if (execError) items.push({ text: `Codex exec-server: ${execError}` });
+    if (state.directExecutionBackendError) items.push({ text: `Command execution: ${state.directExecutionBackendError}` });
+  }
+  const quota = c.usage.providerQuota;
+  if (quota.status === "blocked" || quota.snapshot?.rateLimitReachedType) {
+    items.push({ text: "Usage limit reached. Turns can start again once it resets." });
+  }
+  const context = c.usage.contextPressure;
+  if (context.status === "available" && context.percentRemaining != null && context.percentRemaining <= 10) {
+    items.push({ text: `Context is ${context.percentUsed}% full. Compact or start a new thread.` });
+  }
+  return items;
+}
+
+function threadInspectorSections(c) {
+  const sections = [];
+  const attention = threadAttentionItems(c);
+  if (attention.length) {
+    const box = drawerSection("Needs attention");
+    box.classList.add("inspector-attention");
+    for (const item of attention) {
+      const row = document.createElement("div");
+      row.className = "inspector-attention-item";
+      const text = document.createElement("span");
+      text.textContent = item.text;
+      row.appendChild(text);
+      if (item.action) row.appendChild(item.action);
+      box.appendChild(row);
+    }
+    sections.push(box);
+  }
+
+  const card = document.createElement("section");
+  card.className = "runtime-section inspector-card";
+  card.dataset.runtimeDrawerSection = "thread-summary";
+  const readiness = isDirectLiveTextSurface() ? directLiveTextReadinessStatus() : null;
+  const backend = currentWorkbenchRuntimePath() === "direct" ? "Direct" : "Appserver";
+  const status = state.runtimePathTransitionStatus === "transitioning"
+    ? "switching…"
+    : readiness
+      ? state.directReadinessRefreshStatus === "refreshing" ? "refreshing…" : directLiveTextReady() ? "ready" : "not ready"
+      : humanizeRuntimeCode(c.runtime.status, "unknown");
+  card.appendChild(inspectorUnit("Backend", `${backend} · ${status}`, {
+    tone: status === "ready" ? "ok" : ["not ready", "error", "disconnected", "failed"].includes(status) ? "warn" : "",
+  }));
+
+  if (directExecutionBackendAvailable() && state.directExecutionBackend) {
+    const info = state.directExecutionBackend;
+    const execServer = info.backend === "codex-exec-server";
+    const connections = info.codexExecServer?.connections || [];
+    const connectionState = execServer && connections.length ? ` · ${connections.map((entry) => entry.state).join(", ")}` : "";
+    card.appendChild(inspectorUnit("Commands", `${directExecutionBackendLabel(info)}${connectionState}`, {
+      tone: execServer && directExecServerLastError(info) ? "warn" : "",
+      title: "Runs this thread's commands and file tools. Change it in Settings.",
+    }));
+  }
+
+  const modelText = isDirectLiveTextSurface()
+    ? directComposerButtonText()
+    : `${compactModelLabel()} · ${reasoningLabel()}`;
+  card.appendChild(inspectorUnit("Model", modelText, { title: `${modelText}. Change it from the composer.` }));
+
+  const access = threadAccessSummary();
+  card.appendChild(inspectorUnit("Access", access.text, { title: access.title }));
+
+  const envModel = directEnvironmentModel();
+  const workspace = project?.workspace;
+  const where = envModel && workspace?.kind ? envModel.environmentBadge(workspace).text : "";
+  const cwd = c.environment.cwd || "";
+  if (where || cwd) {
+    card.appendChild(inspectorUnit("Workspace", [where, basenameFromPath(cwd)].filter(Boolean).join(" · "), { title: cwd }));
+  }
+
+  const context = c.usage.contextPressure;
+  if (context.status === "available") {
+    const window = context.modelContextWindow ? ` of ${formatCompactTokens(context.modelContextWindow)}` : "";
+    card.appendChild(inspectorUnit(
+      "Context",
+      context.percentUsed != null ? `${context.percentUsed}% used${window}` : context.compactLabel,
+      { tone: context.percentRemaining != null && context.percentRemaining <= 10 ? "warn" : "", title: context.label },
+    ));
+  }
+
+  const quota = composerQuotaLabel();
+  if (quota && !/unknown|not exposed|unavailable/i.test(quota)) {
+    card.appendChild(inspectorUnit("Quota", quota, { title: `${quota}. Share of each usage window left, and when it resets.` }));
+  }
+
+  if (c.account.status === "ready" && c.account.label) card.appendChild(inspectorUnit("Account", c.account.label));
+
+  const activity = c.usage.activity;
+  if (activity.turnCount || activity.commandCount || activity.toolCallCount) {
+    const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+    card.appendChild(inspectorUnit("Activity", [
+      plural(activity.turnCount, "turn"),
+      activity.commandCount ? plural(activity.commandCount, "command") : "",
+      activity.toolCallCount ? plural(activity.toolCallCount, "tool call") : "",
+    ].filter(Boolean).join(" · ")));
+  }
+  sections.push(card);
+  return sections;
+}
+
+function settingsInspectorSections() {
+  const sections = [];
+  const currentPath = currentWorkbenchRuntimePath();
+  if (isDirectWorkbenchExperience() && typeof bridge?.setDirectWorkbenchRuntimePath === "function") {
+    const busy = ["transitioning", "reloading"].includes(state.runtimePathTransitionStatus);
+    const section = drawerSection("Backend");
+    section.appendChild(selectField(
+      "Run this project with",
+      state.runtimePathSelection || currentPath,
+      [
+        { value: "direct", label: "Direct" },
+        { value: "app-server", label: "Appserver" },
+      ],
+      (value) => {
+        state.runtimePathSelection = value;
+        state.runtimePathTransitionError = "";
+        renderRuntimeConstitution();
+      },
+      { disabled: busy },
+    ));
+    section.appendChild(refreshButton(
+      "Apply backend",
+      () => applyWorkbenchRuntimePath().catch((error) => addSystemMessage(`Runtime transition failed: ${error.message}`)),
+      {
+        busy,
+        disabled: busy || (state.runtimePathSelection || currentPath) === currentPath,
+        description: "Switch the active project between the Direct harness and the managed Codex app-server.",
+      },
+    ));
+    if (state.runtimePathTransitionError) {
+      section.appendChild(inspectorNote(`Backend switch failed: ${state.runtimePathTransitionError}`, "warn"));
+    }
+    sections.push(section);
+  }
+
+  const executionSection = directExecutionBackendSection(currentPath);
+  if (executionSection) sections.push(executionSection);
+
+  const readiness = isDirectLiveTextSurface() ? directLiveTextReadinessStatus() : null;
+  const modelSection = drawerSection("Models");
+  const buttons = [];
+  if (readiness) {
+    buttons.push(refreshModelsButton("Renew ChatGPT sign-in if needed and reload this account's model list, without changing backend."));
+    if (typeof bridge?.testDirectModel === "function") {
+      const test = refreshButton("Test model", () => testDirectModel(), {
+        busy: state.directModelTestStatus === "testing",
+        disabled: state.directModelTestStatus === "testing" || !directLiveTextReady(),
+        description: "Optional: send one short prompt to this thread's model to check it answers. Turns never wait on this.",
+      });
+      test.classList.add("secondary");
+      buttons.push(test);
+    }
+  } else {
+    buttons.push(refreshButton("Refresh models", () => refreshModelList(true)));
+  }
+  modelSection.appendChild(inspectorActions(buttons));
+  modelSection.appendChild(inspectorNote("Model, effort and access are set from the composer."));
+  sections.push(modelSection);
+  return sections;
+}
+
+function contextInspectorSections() {
+  const sections = [];
+  if (typeof bridge?.readDirectEpistemicSnapshot === "function") sections.push(...directEpistemicDrawerSections());
+  if (typeof bridge?.getDirectActiveSubAgentPolicy === "function") sections.push(...workerPolicySections());
+  return sections;
+}
+
+function workerPolicySections() {
+  const projection = state.directActiveSubAgentPolicy;
+  const rows = [];
+  const details = [];
+  if (!projection) {
+    rows.push(["status", state.directActiveSubAgentPolicyStatus === "loading" ? "loading" : "not loaded"]);
+  } else {
+    const policy = projection.activePolicy;
+    const latest = projection.latestSemanticSettlement;
+    const requests = Array.isArray(projection.recentUpdateRequests) ? projection.recentUpdateRequests : [];
+    rows.push(["policy", policy
+      ? `${policy.scope?.scopeKind === "project" ? "This project" : "This task"} · revision ${policy.revision}`
+      : "none yet"]);
+    rows.push(["spawning", humanizeRuntimeCode(projection.spawnPosture, "unknown")]);
+    for (const [role, summary] of activeSubAgentPolicyBindingRows(projection)) {
+      if (role !== "roles") rows.push([role, summary]);
+    }
+    if (latest) rows.push(["latest change", `${humanizeRuntimeCode(latest.state)} · ${latest.summary || latest.actionName}`]);
+    if (latest?.clarificationQuestion) rows.push(["question", latest.clarificationQuestion]);
+    if (requests[0]) rows.push(["pending change", `${requests[0].roleId} · ${humanizeRuntimeCode(requests[0].state)}`]);
+    details.push(
+      ["state", humanizeRuntimeCode(projection.state, "unsettled")],
+      ["resolution", projection.resolutionSource || "none"],
+      ["concurrency", policy?.maxActiveChildren || "runtime limit"],
+      ["one-time authority", policy?.deviationRule?.oneTimeAuthority || "unsettled"],
+      ["candidate revisions", requests.length],
+    );
+  }
+  return [
+    drawerSection("Worker policy", rows, [], { details, detailsKey: "worker-policy" }),
+    activeSubAgentPolicyEditorSection(),
+  ];
+}
+
+// ---- Diagnostics: everything else, grouped and closed by default.
+
+const RUNTIME_EMPTY_VALUE = /^(—|-|unknown|none|not observed|not exposed|not loaded|not connected|not yet observed|not requested|not configured|not available|0)$/i;
+
+function diagnosticsGroups(c) {
+  const implementationAvailable = typeof bridge?.getDirectImplementationLaneUiStatus === "function";
+  return [
+    {
+      id: "observations",
+      title: "Observations",
+      summary: () => `${runtimeObservationsForThread().length} recorded`,
+      sections: () => observationDiagnosticSections(),
+    },
+    {
+      id: "runtime",
+      title: "Runtime",
+      summary: () => [humanizeRuntimeCode(c.runtime.status), c.provider?.kind || c.runtime.kind].filter(Boolean).join(" · "),
+      sections: () => runtimeDiagnosticSections(c),
+    },
+    implementationAvailable && {
+      id: "implementation",
+      title: "Implementation",
+      summary: () => humanizeRuntimeCode(state.directUiStatus?.implementationLane?.readiness || state.directUiStatusState, "not loaded"),
+      sections: () => implementationDiagnosticSections(),
+    },
+    implementationAvailable && {
+      id: "history",
+      title: "Operation history",
+      summary: () => `${state.directUiOperationHistory?.rows?.length ?? 0} rows`,
+      sections: () => historyDiagnosticSections(),
+    },
+    implementationAvailable && {
+      id: "policy",
+      title: "Policies",
+      summary: () => humanizeRuntimeCode(state.directActiveSubAgentPolicy?.state, "not loaded"),
+      sections: () => policyDiagnosticSections(),
+    },
+    {
+      id: "capabilities",
+      title: "Capabilities",
+      summary: () => humanizeRuntimeCode(c.capabilities?.status, "unknown"),
+      sections: () => capabilityDiagnosticSections(c),
+    },
+    {
+      id: "usage",
+      title: "Usage",
+      summary: () => c.usage.label,
+      sections: () => usageDiagnosticSections(c),
+    },
+    {
+      id: "access",
+      title: "Access",
+      summary: () => c.access.label,
+      sections: () => accessDiagnosticSections(c),
+    },
+    {
+      id: "environment",
+      title: "Environment",
+      summary: () => humanizeRuntimeCode(c.environment.workspaceStatus, "unknown"),
+      sections: () => environmentDiagnosticSections(c),
+    },
+    {
+      id: "connection",
+      title: "Connection",
+      summary: () => humanizeRuntimeCode(state.connectionStatus, "unknown"),
+      sections: () => connectionDiagnosticSections(),
+    },
+  ].filter(Boolean);
+}
+
+function diagnosticsInspectorSections(c) {
+  const groups = diagnosticsGroups(c);
+  const header = document.createElement("section");
+  header.className = "inspector-diagnostics-header";
+  header.appendChild(inspectorNote("Raw runtime evidence, for troubleshooting and bug reports."));
+  const copy = refreshButton("Copy as JSON", () => copyDiagnosticsJson(groups, copy), {
+    description: "Copies every group, empty fields included.",
+  });
+  copy.classList.add("secondary");
+  header.appendChild(copy);
+  return [header, ...groups.map((group) => diagnosticsGroupElement(group))];
+}
+
+function diagnosticsGroupElement(group) {
+  const title = document.createElement("span");
+  title.className = "inspector-group-title";
+  title.textContent = group.title;
+  const summary = document.createElement("span");
+  summary.className = "inspector-group-summary";
+  summary.textContent = group.summary?.() || "";
+  const details = persistentDetails(group.id, state.runtimeDiagnosticsOpen, [title, summary], () => {
+    renderRuntimeDrawer();
+    renderMorphicCockpit();
+  });
+  details.className = "inspector-group";
+  details.dataset.diagnosticsGroup = group.id;
+  if (!details.open) return details;
+  const body = document.createElement("div");
+  body.className = "inspector-group-body";
+  const showEmpty = state.runtimeDiagnosticsShowEmpty.has(group.id);
+  let hidden = 0;
+  for (const section of group.sections()) {
+    if (!showEmpty) hidden += hideEmptyFields(section);
+    body.appendChild(section);
+  }
+  if (hidden || showEmpty) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "inspector-link";
+    toggle.textContent = showEmpty ? "Hide empty fields" : `Show ${hidden} empty field${hidden === 1 ? "" : "s"}`;
+    toggle.addEventListener("click", () => {
+      if (showEmpty) state.runtimeDiagnosticsShowEmpty.delete(group.id);
+      else state.runtimeDiagnosticsShowEmpty.add(group.id);
+      renderRuntimeDrawer();
+    });
+    body.appendChild(toggle);
+  }
+  details.appendChild(body);
+  return details;
+}
+
+// Hides fields with no value; hides the section too when nothing but its
+// title (and evidence notes) would be left. Returns how many were hidden.
+function hideEmptyFields(section) {
+  let hidden = 0;
+  for (const field of section.querySelectorAll(".runtime-field")) {
+    const value = field.querySelector(".runtime-field-value")?.textContent.trim() || "";
+    if (RUNTIME_EMPTY_VALUE.test(value)) {
+      field.hidden = true;
+      hidden += 1;
+    }
+  }
+  const visible = [...section.children].some((child) =>
+    child.tagName !== "H3" && !child.hidden && !child.classList.contains("runtime-evidence") &&
+    !(child.classList.contains("inspector-details") && ![...child.querySelectorAll(".runtime-field")].some((field) => !field.hidden)));
+  if (!visible) section.hidden = true;
+  return hidden;
+}
+
+async function copyDiagnosticsJson(groups, button) {
+  const report = {
+    generatedAt: nowIso(),
+    projectId: project?.id || "",
+    threadId: state.threadId || "",
+    groups: {},
+  };
+  for (const group of groups) {
+    const sections = {};
+    for (const section of group.sections()) {
+      const title = section.querySelector("h3")?.textContent || "section";
+      const rows = {};
+      for (const field of section.querySelectorAll(".runtime-field")) {
+        let key = field.querySelector(".runtime-field-key")?.textContent || "field";
+        for (let index = 2; Object.hasOwn(rows, key); index += 1) key = `${key.replace(/ #\d+$/, "")} #${index}`;
+        rows[key] = field.querySelector(".runtime-field-value")?.textContent || "";
+      }
+      const evidence = [...section.querySelectorAll(".runtime-evidence-item")].map((item) => item.textContent);
+      sections[title] = evidence.length ? { ...rows, evidence } : rows;
+    }
+    report.groups[group.title] = sections;
+  }
+  const text = JSON.stringify(report, null, 2);
+  try {
+    if (bridge?.copyText) await bridge.copyText(text);
+    else await navigator.clipboard.writeText(text);
+    button.textContent = "Copied";
+  } catch {
+    button.textContent = "Copy failed";
+  }
+  setTimeout(() => { button.textContent = "Copy as JSON"; }, 1200);
+}
+
+function observationDiagnosticSections() {
+  const observations = [...runtimeObservationsForThread()].reverse();
+  return [drawerSection(
+    "Recent runtime observations",
+    observations.length
+      ? observations.map((observation) => [
+          `${new Date(observation.observedAt).toLocaleTimeString()} · ${observation.operation}`,
+          [
+            observation.message,
+            observation.taskName || observation.childAgentId,
+            observation.providerId,
+            observation.model,
+          ].filter(Boolean).join(" · "),
+        ])
+      : [["status", "No runtime observations recorded for this task yet."]],
+    [],
+    {
+      detailsKey: "observation-posture",
+      details: [
         ["scope", "active task"],
         ["main transcript", "excluded"],
         ["authority", "read-only evidence"],
         ["retention", `last ${MAX_RUNTIME_OBSERVATIONS_PER_THREAD} live observations`],
-        ["recorded", observations.length],
-      ]),
-      drawerSection(
-        "Recent runtime observations",
-        observations.length
-          ? observations.map((observation) => [
-              `${new Date(observation.observedAt).toLocaleTimeString()} · ${observation.operation}`,
-              [
-                observation.message,
-                observation.taskName || observation.childAgentId,
-                observation.providerId,
-                observation.model,
-              ].filter(Boolean).join(" · "),
-            ])
-          : [["status", "No runtime observations recorded for this task yet."]],
-      ),
-    ];
+      ],
+    },
+  )];
+}
+
+function runtimeDiagnosticSections(c) {
+  const readiness = isDirectLiveTextSurface() ? directLiveTextReadinessStatus() : null;
+  const sections = [];
+  if (readiness) {
+    sections.push(drawerSection("Readiness", [
+      ["readiness", state.directReadinessRefreshStatus === "refreshing" ? "refreshing" : readiness.status || "unknown"],
+      ["model list", !directListedModels().length
+        ? "unavailable"
+        : directModelListed(activeModelId() || readiness.model) ? "lists this model" : "doesn't list this model"],
+      ["blocker", state.directReadinessRefreshError || readiness.reason || "none"],
+      ["readiness evidence id", readiness.evidenceId || "—"],
+    ]));
   }
-  if (tab === "runtime") {
-    const readiness = isDirectLiveTextSurface() ? directLiveTextReadinessStatus() : null;
-    const currentPath = currentWorkbenchRuntimePath();
-    const controlSection = drawerSection("Runtime control", [
-      ["backend", currentPath === "direct" ? "Direct" : "Appserver"],
-      ["transition", state.runtimePathTransitionStatus],
-      ["task model", activeModelId() || readiness?.model || "unknown"],
-      ...(readiness ? [
-        ["readiness", state.directReadinessRefreshStatus === "refreshing" ? "refreshing" : readiness.status || "unknown"],
-        ["model list", !directListedModels().length
-          ? "unavailable"
-          : directModelListed(activeModelId() || readiness.model) ? "lists this model" : "doesn't list this model"],
-        ["blocker", state.directReadinessRefreshError || readiness.reason || "none"],
-      ] : []),
-    ]);
-    const runtimeSection = drawerSection("Runtime evidence", [
-        ["provider", c.provider?.label || c.provider?.kind || "unknown"],
-        ["provider kind", c.provider?.kind || "unknown"],
-        ["configured flavor", c.provider?.executable?.flavor?.configuredFlavor || c.provider?.flavor || "—"],
-        ["proven flavor", c.provider?.executable?.flavor?.provenFlavor || "unknown"],
-        ["compatibility", c.provider?.executable?.flavor?.compatibility || "unknown"],
-        ["capability sources", (c.provider?.capabilitySources || []).map((source) => source.source).join(", ") || c.provider?.capabilitySource || "unknown"],
-        ["kind", c.runtime.kind],
-        ["status", c.runtime.status],
-        ["transport", connection?.transport || connection?.capabilities?.coreRuntime?.transport || "websocket"],
-        ["binary", c.provider?.executable?.command || connection?.runtime || "unknown"],
-        ["codex home", c.provider?.executable?.codexHome || "default"],
-        ["ready URL", c.provider?.executable?.appServer?.readyUrl || connection?.readyUrlLabel || "not connected"],
-        ["thread state", c.thread.status],
-        ["direct input", c.thread.directInput?.status || "unknown"],
-        ["last notification", state.lastAppServerNotificationEvidence?.method || "not observed"],
-        ["app-server emitted", state.lastAppServerNotificationEvidence?.emittedAt || "not exposed"],
-        ["locally received", state.lastAppServerNotificationEvidence?.receivedAt || "not observed"],
-        ...(readiness ? [["readiness evidence id", readiness.evidenceId || "—"]] : []),
-      ], [...(c.provider?.evidenceRefs || []), ...c.runtime.evidenceRefs, ...c.thread.evidenceRefs]);
-    if (readiness) {
-      controlSection.appendChild(refreshModelsButton("Renew ChatGPT sign-in if needed and reload this account's model list, without changing backend."));
-      if (typeof bridge?.testDirectModel === "function") {
-        const test = refreshButton("Test model", () => testDirectModel(), {
-          busy: state.directModelTestStatus === "testing",
-          disabled: state.directModelTestStatus === "testing" || !directLiveTextReady(),
-          description: "Optional: send one short prompt to this thread's model to check it answers. Turns never wait on this.",
-        });
-        test.classList.add("secondary");
-        controlSection.appendChild(test);
-      }
-    }
-    if (isDirectWorkbenchExperience() && typeof bridge?.setDirectWorkbenchRuntimePath === "function") {
-      controlSection.appendChild(selectField(
-        "Backend",
-        state.runtimePathSelection || currentPath,
-        [
-          { value: "direct", label: "Direct" },
-          { value: "app-server", label: "Appserver" },
-        ],
-        (value) => {
-          state.runtimePathSelection = value;
-          state.runtimePathTransitionError = "";
-          renderRuntimeConstitution();
-        },
-        {
-          disabled: ["transitioning", "reloading"].includes(state.runtimePathTransitionStatus),
-          description: "Changes the task backend. This is separate from refreshing models.",
-        },
-      ));
-      controlSection.appendChild(refreshButton(
-        "Apply backend",
-        () => applyWorkbenchRuntimePath().catch((error) => addSystemMessage(`Runtime transition failed: ${error.message}`)),
-        {
-          busy: ["transitioning", "reloading"].includes(state.runtimePathTransitionStatus),
-          disabled: ["transitioning", "reloading"].includes(state.runtimePathTransitionStatus) ||
-            (state.runtimePathSelection || currentPath) === currentPath,
-          description: "Switch the active project between the Direct harness and the managed Codex app-server.",
-        },
-      ));
-      if (state.runtimePathTransitionError) {
-        controlSection.appendChild(unsupportedControlNote(`Backend transition failed: ${state.runtimePathTransitionError}`));
-      }
-    }
-    const executionSection = directExecutionBackendSection(currentPath);
-    return [
-      controlSection,
-      ...(executionSection ? [executionSection] : []),
-      runtimeSection,
-      drawerSection("Account", [
-        ["status", c.account.status],
-        ["label", c.account.label],
-      ], c.account.evidenceRefs),
-    ];
+  sections.push(drawerSection("Runtime evidence", [
+    ["provider", c.provider?.label || c.provider?.kind || "unknown"],
+    ["provider kind", c.provider?.kind || "unknown"],
+    ["configured flavor", c.provider?.executable?.flavor?.configuredFlavor || c.provider?.flavor || "—"],
+    ["proven flavor", c.provider?.executable?.flavor?.provenFlavor || "unknown"],
+    ["compatibility", c.provider?.executable?.flavor?.compatibility || "unknown"],
+    ["capability sources", (c.provider?.capabilitySources || []).map((source) => source.source).join(", ") || c.provider?.capabilitySource || "unknown"],
+    ["kind", c.runtime.kind],
+    ["status", c.runtime.status],
+    ["transport", connection?.transport || connection?.capabilities?.coreRuntime?.transport || "websocket"],
+    ["binary", c.provider?.executable?.command || connection?.runtime || "unknown"],
+    ["codex home", c.provider?.executable?.codexHome || "default"],
+    ["ready URL", c.provider?.executable?.appServer?.readyUrl || connection?.readyUrlLabel || "not connected"],
+    ["thread state", c.thread.status],
+    ["direct input", c.thread.directInput?.status || "unknown"],
+    ["last notification", state.lastAppServerNotificationEvidence?.method || "not observed"],
+    ["app-server emitted", state.lastAppServerNotificationEvidence?.emittedAt || "not exposed"],
+    ["locally received", state.lastAppServerNotificationEvidence?.receivedAt || "not observed"],
+  ], [...(c.provider?.evidenceRefs || []), ...c.runtime.evidenceRefs, ...c.thread.evidenceRefs]));
+  if (directExecutionBackendAvailable()) {
+    const info = state.directExecutionBackend;
+    sections.push(drawerSection("Command execution backend", [
+      ["commands and files", !info ? "loading" : directExecutionBackendLabel(info)],
+      ...(info?.environmentOverride ? [["set by", "CODEX_DIRECT_EXECUTION_BACKEND"]] : []),
+      ...directExecServerConnectionRows(info),
+      ["last exec-server error", directExecServerLastError(info) || "none"],
+    ]));
   }
-  if (tab === "model") {
-    const section = drawerSection("Model And Reasoning", [
-      ["active model", c.model.label],
-      ["model source", c.model.source],
-      ["model next turn", c.model.selection.canSetNextTurn ? "supported" : "unsupported"],
-      ["reasoning", c.reasoning.label],
-      ["reasoning next turn", c.reasoning.selection.canSetNextTurn ? "supported" : "unsupported"],
-    ], [...c.model.evidenceRefs, ...c.reasoning.evidenceRefs]);
-    section.appendChild(selectField("Model", c.model.selectedId, modelOptions(), (value) => setRuntimeOverride("model", value), {
-      disabled: !c.model.selection.canSetNextTurn,
-      description: "Applies to the next Codex turn and subsequent turns in this thread.",
-    }));
-    section.appendChild(selectField("Reasoning effort", state.runtimeOverrides.reasoningEffort, reasoningOptions(), (value) => setRuntimeOverride("reasoningEffort", value), {
-      disabled: !c.reasoning.selection.canSetNextTurn,
-      description: "Uses the selected model's supported reasoning efforts.",
-    }));
-    section.appendChild(refreshButton("Refresh models", () => refreshModelList(true)));
-    section.appendChild(unsupportedControlNote(
-      state.runtimePreferencesStatus === "saving"
-        ? "Saving the task runtime binding…"
-        : state.runtimePreferencesStatus === "failed"
-          ? `Task runtime binding failed: ${state.runtimePreferencesError}`
-          : "The task binding is canonical for subsequent turns; the project default only seeds new tasks.",
-    ));
-    return [section];
-  }
-  if (tab === "access") {
-    const section = drawerSection("Access And Safety", [
-      ["header label", c.access.label],
-      ["policy known", c.access.policyKnown ? "yes" : "no"],
-      ["request handling", c.access.requestHandlingKnown ? "known" : "unknown"],
-      ["mutable scopes", c.access.mutableScopes.join(", ")],
-      ...accessRequirementsRows(),
-    ], c.access.evidenceRefs);
-    section.appendChild(selectField("Approval policy", c.access.approvalPolicy, approvalPolicyOptions(), (value) => setRuntimeOverride("approvalPolicy", value), {
-      disabled: !c.access.mutableScopes.includes("next_turn"),
-      description: "Controls when Codex asks before executing risky actions.",
-    }));
-    section.appendChild(selectField("Sandbox", c.access.sandboxMode, sandboxModeOptions(), (value) => setRuntimeOverride("sandboxMode", value), {
-      disabled: !c.access.mutableScopes.includes("next_turn"),
-      description: "Applies as a turn-scoped sandbox policy override.",
-    }));
-    section.appendChild(unsupportedControlNote("Danger-full-access remains explicit and visible; no access setting is auto-promoted."));
-    return [section];
-  }
-  if (tab === "usage") {
-    const quotaSection = drawerSection("Provider Quota", quotaWindowRows(c.usage.providerQuota.snapshot), c.usage.providerQuota.evidenceRefs);
-    quotaSection.appendChild(refreshButton("Refresh quota", () => refreshRateLimits(true)));
-    return [
-      quotaSection,
-      drawerSection("Context Pressure", [
-        ["status", c.usage.contextPressure.status],
-        ["label", c.usage.contextPressure.label],
-        ["used", c.usage.contextPressure.percentUsed != null ? `${c.usage.contextPressure.percentUsed}%` : "unknown"],
-        ["remaining", c.usage.contextPressure.percentRemaining != null ? `${c.usage.contextPressure.percentRemaining}%` : "unknown"],
-        ["tokens", c.usage.contextPressure.tokensInContext != null ? formatCompactTokens(c.usage.contextPressure.tokensInContext) : "unknown"],
-        ["window", c.usage.contextPressure.modelContextWindow ? formatCompactTokens(c.usage.contextPressure.modelContextWindow) : "unknown"],
-        ["event", c.usage.contextPressure.eventName || "thread/tokenUsage/updated"],
-        ["observed", c.usage.contextPressure.observedAt || "not observed"],
-      ], c.usage.contextPressure.evidenceRefs),
-      drawerSection("Local Activity", [
-        ["turns", c.usage.activity.turnCount],
-        ["commands", c.usage.activity.commandCount],
-        ["tool calls", c.usage.activity.toolCallCount],
-        ["approvals", c.usage.activity.approvalCount],
-        ["duration", c.usage.activity.sessionDurationMs ? `${Math.round(c.usage.activity.sessionDurationMs / 1000)}s` : "—"],
-      ], c.usage.activity.evidenceRefs),
-      drawerSection("Usage Ledger", [
-        ["status", c.usage.ledger?.status || "disabled"],
-        ["enabled", c.usage.ledger?.enabled ? "yes" : "no"],
-        ["rows", c.usage.ledger?.rowCount || 0],
-        ["queued", c.usage.ledger?.queuedRows || 0],
-        ["dropped", c.usage.ledger?.droppedRows || 0],
-        ["ledger id", c.usage.ledger?.ledgerId || "—"],
-        ["ledger file", c.usage.ledger?.ledgerLabel || "—"],
-        ["manifest file", c.usage.ledger?.manifestLabel || "—"],
-        ["ledger evidence", c.usage.ledger?.ledgerPathEvidenceKey || "—"],
-        ["last observed", c.usage.ledger?.lastObservedAt || "—"],
-        ["error", c.usage.ledger?.lastError || "—"],
-      ], c.usage.ledger?.evidenceRefs || []),
-    ];
-  }
-  if (tab === "implementation") {
-    const status = state.directUiStatus || {};
-    const readiness = status.implementationLane || {};
-    return [
-      drawerSection("Direct Implementation Projection", directUiProjectionRows()),
-      drawerSection("Readiness", readinessRows(readiness)),
-      drawerSection("Witness Chips", witnessRows(status)),
-      drawerSection("Context Maintenance", contextMaintenanceRows(status)),
-      drawerSection("Active Turn", [
-        ["state", status.activeTurn?.state || "unknown"],
-        ["composer", status.activeTurn?.composerAllowed ? "allowed" : "blocked"],
-        ["reason", status.activeTurn?.composerAllowedReason || "unknown"],
-        ["unresolved obligations", status.currentSession?.unresolvedObligationCount ?? "unknown"],
-      ]),
-    ];
-  }
-  if (tab === "history") {
-    const history = state.directUiOperationHistory;
-    return [
-      drawerSection("Operation History", [
-        ["schema", history?.schema || "direct_operation_history_projection@1"],
-        ["scope", history?.scope || "active-turn"],
-        ["rows", history?.rows?.length ?? 0],
-        ["actionable", "false"],
-        ["page digest", history?.pageDigest || "not loaded"],
-      ]),
-      drawerSection("Recent Rows", operationHistoryRows(history)),
-    ];
-  }
-  if (tab === "policy") {
-    return [
-      drawerSection("Implementation Policy Snapshot", policyRows(state.directUiPolicyView)),
-      drawerSection(
-        "Active Sub-Agent Policy",
-        activeSubAgentPolicyRows(
-          state.directActiveSubAgentPolicy,
-        ),
-      ),
-      drawerSection(
-        "Worker Role Bindings",
-        activeSubAgentPolicyBindingRows(
-          state.directActiveSubAgentPolicy,
-        ),
-      ),
-      activeSubAgentPolicyEditorSection(),
-      drawerSection(
-        "Policy Revision History",
-        activeSubAgentPolicyHistoryRows(
-          state.directActiveSubAgentPolicy,
-        ),
-      ),
-      drawerSection("Boundary", [
-        ["implementation policy", "read-only"],
-        ["sub-agent policy", "semantic editor enabled"],
-        ["runtime authority", "main-process revalidation only"],
-        ["silent launch override", "forbidden"],
-        ["policy update during active turn", "blocked"],
-        ["right-pane ChatGPT", "separate"],
-        ["handoff queue", "unchanged"],
-      ]),
-    ];
-  }
-  if (tab === "capabilities") {
-    const caps = c.capabilities?.profile || {};
-    const appSnapshot = c.apps?.snapshot || {};
-    const appSection = drawerSection("Installed Application Evidence", [
-      ["status", c.apps?.status || "unknown"],
-      ["installed", appSnapshot.installedCount ?? 0],
-      ["enabled", appSnapshot.enabledCount ?? 0],
-      ["callable", appSnapshot.callableCount ?? 0],
-      ["metadata read", appSnapshot.metadataCount ?? 0],
-      ["display-only tool summaries", appSnapshot.toolSummaryCount ?? 0],
-      ["missing metadata ids", (appSnapshot.missingAppIds || []).length],
-      ["action authority", appSnapshot.actionAuthorityGranted ? "granted" : "not granted"],
-      ["provider tool declaration", appSnapshot.providerToolDeclarationGranted ? "granted" : "not granted"],
-      ["observed", appSnapshot.observedAt || "not observed"],
-      ["error", c.apps?.error || appSnapshot.metadataError || "—"],
-    ], c.apps?.evidenceRefs || []);
-    appSection.appendChild(refreshButton("Refresh app evidence", () => refreshAppEvidence({
-      threadId: state.threadId,
-      forceRefresh: true,
-    })));
-    return [
-      drawerSection("Capability Provenance", [
-        ["status", c.capabilities?.status || "unknown"],
-        ["schema source", c.capabilities?.schemaSource || "unknown"],
-        ["unsupported entries", (c.capabilities?.unsupported || []).length],
-      ], c.capabilities?.evidenceRefs || []),
-      appSection,
-      drawerSection("Installed Applications", appEvidenceRows(appSnapshot)),
-      drawerSection("Thread Operations", Object.entries(caps.threads || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
-      drawerSection("Turn Operations", Object.entries(caps.turns || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
-      drawerSection("Model Scope", Object.entries(caps.model || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
-      drawerSection("Reasoning Scope", Object.entries(caps.reasoning || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
-      drawerSection("Orchestration", [
-        ["binary selection", caps.agents?.binarySelection || "unknown"],
-        ["requested contract", caps.agents?.spawnProviderContract || "unknown"],
-        ["contract status", caps.agents?.spawnContractStatus || "unknown"],
-        ["provider acceptance", caps.agents?.spawnProviderAcceptanceStatus || "unknown"],
-        ["profile requested", caps.agents?.projectProfileRequestedStatus || "not requested"],
-        ["profile configured", caps.agents?.projectProfileConfiguredStatus || "not configured"],
-        ["profile provider accepted", caps.agents?.projectProfileProviderAcceptedStatus || "not yet observed"],
-        ["profile runtime verified", caps.agents?.projectProfileRuntimeVerifiedStatus || "not yet observed"],
-        ["profile authority", caps.agents?.projectProfileAuthorityGranted ? "granted" : "not granted"],
-        ["visible spawn inputs", (caps.agents?.spawnVisibleInputFields || []).join(", ") || "none"],
-        ["hidden spawn inputs", (caps.agents?.spawnHiddenInputFields || []).join(", ") || "none"],
-        ["requested runtime selection", caps.agents?.perSpawnRuntimeSelection || "unknown"],
-        ["effective model/effort controls", caps.agents?.effectiveModelVisibleSpawnControls || "unknown"],
-        ["override fork contexts", (caps.agents?.perSpawnOverrideForkTurns || []).join(", ") || "none"],
-        ["full-history override", caps.agents?.fullHistoryOverrideAllowed ? "allowed" : "blocked"],
-      ]),
-      drawerSection("Authority", Object.entries(caps.authority || {}).map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") || "none" : value ? "yes" : "no"])),
-      drawerSection("Provider Profile", [
-        ["kind", caps.provider?.kind || "unknown"],
-        ["configured flavor", caps.provider?.executable?.flavor?.configuredFlavor || caps.provider?.flavor || "unknown"],
-        ["proven flavor", caps.provider?.executable?.flavor?.provenFlavor || "unknown"],
-        ["compatibility", caps.provider?.executable?.flavor?.compatibility || "unknown"],
-        ["status", caps.provider?.status || "unknown"],
-        ["sources", (caps.provider?.capabilitySources || []).map((source) => `${source.source}${source.enablesMutation ? "*" : ""}`).join(", ") || caps.provider?.capabilitySource || "unknown"],
-        ["main default", caps.provider?.defaultForMainBranch ? "yes" : "no"],
-      ]),
-      drawerSection("Settings Projection", [
-        ["model next turn", caps.provider?.settingsProjection?.model?.scopes?.nextTurn ? "yes" : "no"],
-        ["model list", caps.provider?.settingsProjection?.model?.canList ? "yes" : "no"],
-        ["reasoning next turn", caps.provider?.settingsProjection?.reasoning?.scopes?.nextTurn ? "yes" : "no"],
-        ["access approval override", settingScopeEnabled(caps.provider?.settingsProjection?.access?.scopes?.approvalPolicy) || caps.provider?.settingsProjection?.access?.scopes?.nextTurnApprovalPolicy ? "yes" : "no"],
-        ["access sandbox override", settingScopeEnabled(caps.provider?.settingsProjection?.access?.scopes?.sandbox) || caps.provider?.settingsProjection?.access?.scopes?.nextTurnSandbox ? "yes" : "no"],
-        ["quota read", caps.provider?.settingsProjection?.usage?.providerQuota?.canRead || caps.provider?.settingsProjection?.usage?.canReadRateLimits ? "yes" : "no"],
-        ["context usage event", caps.provider?.settingsProjection?.usage?.contextPressure?.canRead || caps.usage?.canReadContextUsage ? "yes" : "no"],
-        ["requirements", state.configRequirementsStatus || "unknown"],
-      ]),
-      drawerSection("Requests", [
-        ["supported", (caps.requests?.supportedServerMethods || []).length],
-        ["auto unsupported", (caps.requests?.unsupportedButHandledMethods || []).length],
-        ["unknown policy", caps.requests?.unknownRequestPolicy || "unknown"],
-      ]),
-    ];
-  }
-  if (tab === "environment") {
-    return [
-      drawerSection("Workspace", [
-        ["cwd", c.environment.cwd],
-        ["repo", c.environment.repo || "unknown"],
-        ["backend", c.environment.workspaceStatus || "unknown"],
-        ["runtime environment", c.environment.runtime?.environmentId || "not observed"],
-        ["runtime status", c.environment.runtime?.status || "unknown"],
-        ["runtime evidence", c.environment.runtime?.evidenceSource || "unknown"],
-        ["runtime observed", c.environment.runtime?.observedAt || "not observed"],
-        ["runtime error", c.environment.runtime?.error || c.environment.runtime?.probeError || "—"],
-        ["branch", c.environment.branch || "not exposed"],
-        ["PR", c.environment.pr?.label || "not exposed"],
-        ["Codex .codex hygiene", c.environment.hygiene?.codexSandboxPlaceholderIgnored ? "ignored" : "unknown"],
-        ["hygiene pattern", c.environment.hygiene?.pattern || "not exposed"],
-      ], c.environment.evidenceRefs),
-    ];
-  }
+  sections.push(drawerSection("Account", [
+    ["status", c.account.status],
+    ["label", c.account.label],
+  ], c.account.evidenceRefs));
+  return sections;
+}
+
+function implementationDiagnosticSections() {
+  const status = state.directUiStatus || {};
+  const readiness = status.implementationLane || {};
   return [
-    drawerSection("Diagnostics", [
-      ["connection status", state.connectionStatus],
-      ["connection id", connection?.connectionId || "not connected"],
-      ["schema version", state.runtimeConstitution?.schemaVersion || "unknown"],
-      ["source revision", state.runtimeConstitution?.sourceRevision || "unknown"],
-      ["capability source", state.runtimeConstitution?.capabilities?.schemaSource || connection?.capabilities?.diagnostics?.source || "unknown"],
-      ["schema source", connection?.capabilities?.coreRuntime?.schemaSource || "unknown"],
-      ["activation epoch", payload.activationEpoch || 0],
-    ], [evidenceRef("runtime_snapshot", "Renderer diagnostic snapshot", { confidence: "observed" })]),
+    drawerSection("Direct Implementation Projection", directUiProjectionRows()),
+    drawerSection("Readiness", readinessRows(readiness)),
+    drawerSection("Witness Chips", witnessRows(status)),
+    drawerSection("Context Maintenance", contextMaintenanceRows(status)),
+    drawerSection("Active Turn", [
+      ["state", status.activeTurn?.state || "unknown"],
+      ["composer", status.activeTurn?.composerAllowed ? "allowed" : "blocked"],
+      ["reason", status.activeTurn?.composerAllowedReason || "unknown"],
+      ["unresolved obligations", status.currentSession?.unresolvedObligationCount ?? "unknown"],
+    ]),
   ];
+}
+
+function historyDiagnosticSections() {
+  const history = state.directUiOperationHistory;
+  return [
+    drawerSection("Operation History", [
+      ["schema", history?.schema || "direct_operation_history_projection@1"],
+      ["scope", history?.scope || "active-turn"],
+      ["rows", history?.rows?.length ?? 0],
+      ["actionable", "false"],
+      ["page digest", history?.pageDigest || "not loaded"],
+    ]),
+    drawerSection("Recent Rows", operationHistoryRows(history)),
+  ];
+}
+
+function policyDiagnosticSections() {
+  return [
+    drawerSection("Implementation Policy Snapshot", policyRows(state.directUiPolicyView)),
+    drawerSection("Active Sub-Agent Policy", activeSubAgentPolicyRows(state.directActiveSubAgentPolicy)),
+    drawerSection("Worker Role Bindings", activeSubAgentPolicyBindingRows(state.directActiveSubAgentPolicy)),
+    drawerSection("Policy Revision History", activeSubAgentPolicyHistoryRows(state.directActiveSubAgentPolicy)),
+    drawerSection("Boundary", [
+      ["implementation policy", "read-only"],
+      ["sub-agent policy", "semantic editor enabled"],
+      ["sub-agent policy authority", "operator semantic admission"],
+      ["sub-agent policy router", "harness-owned constitutional meta-role"],
+      ["sub-agent policy content", "open semantic content · typed discharge"],
+      ["runtime authority", "main-process revalidation only"],
+      ["silent launch override", "forbidden"],
+      ["policy update during active turn", "blocked"],
+      ["right-pane ChatGPT", "separate"],
+      ["handoff queue", "unchanged"],
+    ]),
+  ];
+}
+
+function capabilityDiagnosticSections(c) {
+  const caps = c.capabilities?.profile || {};
+  const appSnapshot = c.apps?.snapshot || {};
+  const appSection = drawerSection("Installed Application Evidence", [
+    ["status", c.apps?.status || "unknown"],
+    ["installed", appSnapshot.installedCount ?? 0],
+    ["enabled", appSnapshot.enabledCount ?? 0],
+    ["callable", appSnapshot.callableCount ?? 0],
+    ["metadata read", appSnapshot.metadataCount ?? 0],
+    ["display-only tool summaries", appSnapshot.toolSummaryCount ?? 0],
+    ["missing metadata ids", (appSnapshot.missingAppIds || []).length],
+    ["action authority", appSnapshot.actionAuthorityGranted ? "granted" : "not granted"],
+    ["provider tool declaration", appSnapshot.providerToolDeclarationGranted ? "granted" : "not granted"],
+    ["observed", appSnapshot.observedAt || "not observed"],
+    ["error", c.apps?.error || appSnapshot.metadataError || "—"],
+  ], c.apps?.evidenceRefs || []);
+  appSection.appendChild(refreshButton("Refresh app evidence", () => refreshAppEvidence({
+    threadId: state.threadId,
+    forceRefresh: true,
+  })));
+  return [
+    drawerSection("Capability Provenance", [
+      ["status", c.capabilities?.status || "unknown"],
+      ["schema source", c.capabilities?.schemaSource || "unknown"],
+      ["unsupported entries", (c.capabilities?.unsupported || []).length],
+    ], c.capabilities?.evidenceRefs || []),
+    appSection,
+    drawerSection("Installed Applications", appEvidenceRows(appSnapshot)),
+    drawerSection("Thread Operations", Object.entries(caps.threads || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
+    drawerSection("Turn Operations", Object.entries(caps.turns || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
+    drawerSection("Model Scope", Object.entries(caps.model || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
+    drawerSection("Reasoning Scope", Object.entries(caps.reasoning || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
+    drawerSection("Orchestration", [
+      ["binary selection", caps.agents?.binarySelection || "unknown"],
+      ["requested contract", caps.agents?.spawnProviderContract || "unknown"],
+      ["contract status", caps.agents?.spawnContractStatus || "unknown"],
+      ["provider acceptance", caps.agents?.spawnProviderAcceptanceStatus || "unknown"],
+      ["profile requested", caps.agents?.projectProfileRequestedStatus || "not requested"],
+      ["profile configured", caps.agents?.projectProfileConfiguredStatus || "not configured"],
+      ["profile provider accepted", caps.agents?.projectProfileProviderAcceptedStatus || "not yet observed"],
+      ["profile runtime verified", caps.agents?.projectProfileRuntimeVerifiedStatus || "not yet observed"],
+      ["profile authority", caps.agents?.projectProfileAuthorityGranted ? "granted" : "not granted"],
+      ["visible spawn inputs", (caps.agents?.spawnVisibleInputFields || []).join(", ") || "none"],
+      ["hidden spawn inputs", (caps.agents?.spawnHiddenInputFields || []).join(", ") || "none"],
+      ["requested runtime selection", caps.agents?.perSpawnRuntimeSelection || "unknown"],
+      ["effective model/effort controls", caps.agents?.effectiveModelVisibleSpawnControls || "unknown"],
+      ["override fork contexts", (caps.agents?.perSpawnOverrideForkTurns || []).join(", ") || "none"],
+      ["full-history override", caps.agents?.fullHistoryOverrideAllowed ? "allowed" : "blocked"],
+    ]),
+    drawerSection("Authority", Object.entries(caps.authority || {}).map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") || "none" : value ? "yes" : "no"])),
+    drawerSection("Provider Profile", [
+      ["kind", caps.provider?.kind || "unknown"],
+      ["configured flavor", caps.provider?.executable?.flavor?.configuredFlavor || caps.provider?.flavor || "unknown"],
+      ["proven flavor", caps.provider?.executable?.flavor?.provenFlavor || "unknown"],
+      ["compatibility", caps.provider?.executable?.flavor?.compatibility || "unknown"],
+      ["status", caps.provider?.status || "unknown"],
+      ["sources", (caps.provider?.capabilitySources || []).map((source) => `${source.source}${source.enablesMutation ? "*" : ""}`).join(", ") || caps.provider?.capabilitySource || "unknown"],
+      ["main default", caps.provider?.defaultForMainBranch ? "yes" : "no"],
+    ]),
+    drawerSection("Settings Projection", [
+      ["model next turn", caps.provider?.settingsProjection?.model?.scopes?.nextTurn ? "yes" : "no"],
+      ["model list", caps.provider?.settingsProjection?.model?.canList ? "yes" : "no"],
+      ["reasoning next turn", caps.provider?.settingsProjection?.reasoning?.scopes?.nextTurn ? "yes" : "no"],
+      ["access approval override", settingScopeEnabled(caps.provider?.settingsProjection?.access?.scopes?.approvalPolicy) || caps.provider?.settingsProjection?.access?.scopes?.nextTurnApprovalPolicy ? "yes" : "no"],
+      ["access sandbox override", settingScopeEnabled(caps.provider?.settingsProjection?.access?.scopes?.sandbox) || caps.provider?.settingsProjection?.access?.scopes?.nextTurnSandbox ? "yes" : "no"],
+      ["quota read", caps.provider?.settingsProjection?.usage?.providerQuota?.canRead || caps.provider?.settingsProjection?.usage?.canReadRateLimits ? "yes" : "no"],
+      ["context usage event", caps.provider?.settingsProjection?.usage?.contextPressure?.canRead || caps.usage?.canReadContextUsage ? "yes" : "no"],
+      ["requirements", state.configRequirementsStatus || "unknown"],
+    ]),
+    drawerSection("Requests", [
+      ["supported", (caps.requests?.supportedServerMethods || []).length],
+      ["auto unsupported", (caps.requests?.unsupportedButHandledMethods || []).length],
+      ["unknown policy", caps.requests?.unknownRequestPolicy || "unknown"],
+    ]),
+  ];
+}
+
+function usageDiagnosticSections(c) {
+  const quotaSection = drawerSection("Provider Quota", quotaWindowRows(c.usage.providerQuota.snapshot), c.usage.providerQuota.evidenceRefs);
+  quotaSection.appendChild(refreshButton("Refresh quota", () => refreshRateLimits(true)));
+  return [
+    quotaSection,
+    drawerSection("Context Pressure", [
+      ["status", c.usage.contextPressure.status],
+      ["label", c.usage.contextPressure.label],
+      ["used", c.usage.contextPressure.percentUsed != null ? `${c.usage.contextPressure.percentUsed}%` : "unknown"],
+      ["remaining", c.usage.contextPressure.percentRemaining != null ? `${c.usage.contextPressure.percentRemaining}%` : "unknown"],
+      ["tokens", c.usage.contextPressure.tokensInContext != null ? formatCompactTokens(c.usage.contextPressure.tokensInContext) : "unknown"],
+      ["window", c.usage.contextPressure.modelContextWindow ? formatCompactTokens(c.usage.contextPressure.modelContextWindow) : "unknown"],
+      ["event", c.usage.contextPressure.eventName || "thread/tokenUsage/updated"],
+      ["observed", c.usage.contextPressure.observedAt || "not observed"],
+    ], c.usage.contextPressure.evidenceRefs),
+    drawerSection("Local Activity", [
+      ["turns", c.usage.activity.turnCount],
+      ["commands", c.usage.activity.commandCount],
+      ["tool calls", c.usage.activity.toolCallCount],
+      ["approvals", c.usage.activity.approvalCount],
+      ["duration", c.usage.activity.sessionDurationMs ? `${Math.round(c.usage.activity.sessionDurationMs / 1000)}s` : "—"],
+    ], c.usage.activity.evidenceRefs),
+    drawerSection("Usage Ledger", [
+      ["status", c.usage.ledger?.status || "disabled"],
+      ["enabled", c.usage.ledger?.enabled ? "yes" : "no"],
+      ["rows", c.usage.ledger?.rowCount || 0],
+      ["queued", c.usage.ledger?.queuedRows || 0],
+      ["dropped", c.usage.ledger?.droppedRows || 0],
+      ["ledger id", c.usage.ledger?.ledgerId || "—"],
+      ["ledger file", c.usage.ledger?.ledgerLabel || "—"],
+      ["manifest file", c.usage.ledger?.manifestLabel || "—"],
+      ["ledger evidence", c.usage.ledger?.ledgerPathEvidenceKey || "—"],
+      ["last observed", c.usage.ledger?.lastObservedAt || "—"],
+      ["error", c.usage.ledger?.lastError || "—"],
+    ], c.usage.ledger?.evidenceRefs || []),
+  ];
+}
+
+function accessDiagnosticSections(c) {
+  return [drawerSection("Access And Safety", [
+    ["header label", c.access.label],
+    ["approval policy", c.access.approvalPolicy || "runtime default"],
+    ["sandbox", c.access.sandboxMode || "runtime default"],
+    ["policy known", c.access.policyKnown ? "yes" : "no"],
+    ["request handling", c.access.requestHandlingKnown ? "known" : "unknown"],
+    ["mutable scopes", c.access.mutableScopes.join(", ")],
+    ...accessRequirementsRows(),
+  ], c.access.evidenceRefs)];
+}
+
+function environmentDiagnosticSections(c) {
+  return [drawerSection("Workspace", [
+    ["cwd", c.environment.cwd],
+    ["repo", c.environment.repo || "unknown"],
+    ["backend", c.environment.workspaceStatus || "unknown"],
+    ["runtime environment", c.environment.runtime?.environmentId || "not observed"],
+    ["runtime status", c.environment.runtime?.status || "unknown"],
+    ["runtime evidence", c.environment.runtime?.evidenceSource || "unknown"],
+    ["runtime observed", c.environment.runtime?.observedAt || "not observed"],
+    ["runtime error", c.environment.runtime?.error || c.environment.runtime?.probeError || "—"],
+    ["branch", c.environment.branch || "not exposed"],
+    ["PR", c.environment.pr?.label || "not exposed"],
+    ["Codex .codex hygiene", c.environment.hygiene?.codexSandboxPlaceholderIgnored ? "ignored" : "unknown"],
+    ["hygiene pattern", c.environment.hygiene?.pattern || "not exposed"],
+  ], c.environment.evidenceRefs)];
+}
+
+function connectionDiagnosticSections() {
+  return [drawerSection("Diagnostics", [
+    ["connection status", state.connectionStatus],
+    ["connection id", connection?.connectionId || "not connected"],
+    ["schema version", state.runtimeConstitution?.schemaVersion || "unknown"],
+    ["source revision", state.runtimeConstitution?.sourceRevision || "unknown"],
+    ["capability source", state.runtimeConstitution?.capabilities?.schemaSource || connection?.capabilities?.diagnostics?.source || "unknown"],
+    ["schema source", connection?.capabilities?.coreRuntime?.schemaSource || "unknown"],
+    ["activation epoch", payload.activationEpoch || 0],
+  ], [evidenceRef("runtime_snapshot", "Renderer diagnostic snapshot", { confidence: "observed" })])];
 }
 
 function userInputToText(entry) {
@@ -10814,8 +11282,12 @@ async function initializeBridgeSession() {
   });
   await bridge.notify("initialized", {});
   await loadAccountState();
+  // A Direct surface opens on the catalog main cached; its thread doesn't
+  // wait for the refetch (a models and a usage request, ~0.6 s).
+  const cachedModelsShown = isDirectLiveTextSurface() && effectiveModels().length > 0;
+  const modelRefresh = refreshModelList().catch(() => {});
   await Promise.allSettled([
-    refreshModelList(),
+    cachedModelsShown ? null : modelRefresh,
     refreshRateLimits(),
     refreshConfigRequirements(),
     refreshAppEvidence(),
@@ -11012,7 +11484,7 @@ function handleNotification(method, params) {
       refreshDirectThreadList({ showErrors: false }).catch(() => {});
       if (
         state.runtimeDrawerOpen &&
-        state.runtimeDrawerTab === "policy"
+        ["context", "diagnostics"].includes(state.runtimeDrawerTab)
       ) {
         refreshDirectImplementationUi({ force: true }).catch(() => {});
       }
@@ -11722,7 +12194,7 @@ els.morphicCompactButton?.addEventListener("click", async () => {
     renderMorphicCockpit();
   }
 });
-els.morphicSettingsButton?.addEventListener("click", () => openRuntimeDrawer("runtime"));
+els.morphicSettingsButton?.addEventListener("click", () => openRuntimeDrawer("settings"));
 
 els.threadAnalyticsPanelClose?.addEventListener("click", () => {
   state.analyticsPanelOpen = false;

@@ -354,7 +354,36 @@ try {
     await page.locator('.t3-utility-rail [data-runtime-tab="runtime"]').getAttribute("aria-pressed"),
     "true",
   );
-  const embeddedBackendSelect = page.getByLabel("Backend");
+  const drawerTitle = (title) => page.waitForFunction(
+    (expected) => document.querySelector("#runtimeDrawerTitle")?.textContent === expected,
+    title,
+  );
+  const openDrawerView = async (label) => {
+    await page.locator("#runtimeDrawerTabs").getByRole("button", { name: label, exact: true }).click();
+    await drawerTitle(label);
+  };
+  // Four views, all on the tab strip without sideways scrolling.
+  await drawerTitle("Thread");
+  assert.deepEqual(
+    await page.locator("#runtimeDrawerTabs button").allInnerTexts(),
+    ["Thread", "Settings", "Context", "Diagnostics"],
+  );
+  const tabStrip = await page.locator("#runtimeDrawerTabs").evaluate((node) => ({ scroll: node.scrollWidth, client: node.clientWidth }));
+  assert.ok(tabStrip.scroll <= tabStrip.client + 1, `the tab strip overflows: ${JSON.stringify(tabStrip)}`);
+
+  // Thread: one line per item, on one screen, no evidence rows.
+  await page.locator('#runtimeDrawerBody [data-inspector-unit="commands"]').waitFor({ state: "visible", timeout: 10_000 });
+  const threadUnits = await page.locator("#runtimeDrawerBody .inspector-unit-label").allInnerTexts();
+  for (const label of ["Backend", "Commands", "Model", "Access"]) {
+    assert.ok(threadUnits.includes(label), `the Thread view shows ${label}: ${threadUnits.join(", ")}`);
+  }
+  assert.match(await page.locator('#runtimeDrawerBody [data-inspector-unit="commands"]').innerText(), /Direct executor/);
+  assert.equal(await page.locator("#runtimeDrawerBody .runtime-field").count(), 0, "the Thread view has no evidence rows");
+  const threadBody = await page.locator("#runtimeDrawerBody").evaluate((node) => ({ scroll: node.scrollHeight, client: node.clientHeight }));
+  assert.ok(threadBody.scroll <= threadBody.client + 1, `the Thread view scrolls: ${JSON.stringify(threadBody)}`);
+
+  await openDrawerView("Settings");
+  const embeddedBackendSelect = page.getByLabel("Run this project with");
   await embeddedBackendSelect.waitFor({ state: "visible" });
   assert.equal(await embeddedBackendSelect.inputValue(), "direct");
   assert.deepEqual(
@@ -372,60 +401,78 @@ try {
     await executionSelect.locator("option").evaluateAll((options) => options.map((option) => option.textContent)),
     ["Direct executor", "Codex exec-server"],
   );
-  const executionSection = page.locator('[data-runtime-drawer-section="command-execution"]');
-  const waitForExecutionBackend = async (label) => {
-    try {
-      await page.waitForFunction(
-        // Field labels are uppercased by CSS, which innerText reflects.
-        (expected) => new RegExp(`commands and files\\s+${expected}`, "i").test(document.querySelector('[data-runtime-drawer-section="command-execution"]')?.innerText || ""),
-        label,
-        { timeout: 10_000 },
-      );
-    } catch (error) {
-      throw new Error(`Command execution never showed ${label}: ${await executionSection.innerText().catch(() => "(no section)")}`, { cause: error });
+  const configPathForExecution = path.join(userDataRoot, "workspace-config.json");
+  const waitForExecutionBackend = async (value) => {
+    await page.waitForFunction((expected) => {
+      const select = document.querySelector('[data-runtime-drawer-section="command-execution"] select');
+      return select?.value === expected && select.disabled === false;
+    }, value, { timeout: 10_000 });
+    for (let waited = 0; waited < 5_000; waited += 100) {
+      const saved = JSON.parse(fs.readFileSync(configPathForExecution, "utf8")).runtimeDefaults?.direct?.executionBackend;
+      if ((saved || "direct") === value) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    throw new Error(`Command execution was never saved as ${value}`);
   };
   await executionSelect.selectOption("codex-exec-server");
-  await waitForExecutionBackend("Codex exec-server");
-  const executionConfig = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
-  assert.equal(executionConfig.runtimeDefaults?.direct?.executionBackend, "codex-exec-server");
+  await waitForExecutionBackend("codex-exec-server");
   await page.getByLabel("Run commands with").selectOption("direct");
-  await waitForExecutionBackend("Direct executor");
+  await waitForExecutionBackend("direct");
 
-  await page.getByRole("button", { name: "Policy", exact: true }).click();
+  await openDrawerView("Context");
   await page.waitForFunction(() =>
-    document.querySelector("#runtimeDrawerTitle")?.textContent === "Policy"
-  );
-  await page.waitForFunction(() =>
-    /Active Sub-Agent Policy Editor/.test(
+    /Change worker policy/.test(
       document.querySelector("#runtimeDrawerBody")?.textContent || "",
     )
   );
   const policyBody = await page.locator("#runtimeDrawerBody").innerText();
-  assert.match(policyBody, /Active Sub-Agent Policy/);
-  assert.match(policyBody, /Worker Role Bindings/);
-  assert.match(policyBody, /operator semantic admission/);
-  assert.match(policyBody, /silent launch override/i);
+  assert.match(policyBody, /Worker policy/);
+  assert.doesNotMatch(policyBody, /operator semantic admission/, "policy constants live in Diagnostics");
   assert.equal(
-    await page.getByRole("button", { name: "Settle active policy" }).isDisabled(),
+    await page.getByRole("button", { name: "Apply policy" }).isDisabled(),
     true,
     "an empty semantic policy statement must not be submitted",
   );
   const policyStatement = page.getByLabel("Standing policy");
   await policyStatement.fill("Use Sol high workers for implementation.");
   assert.equal(
-    await page.getByRole("button", { name: "Settle active policy" }).isEnabled(),
+    await page.getByRole("button", { name: "Apply policy" }).isEnabled(),
     true,
   );
   await policyStatement.fill("");
 
-  await page.locator('.t3-utility-rail [data-runtime-tab="epistemic"]').click();
-  await page.waitForFunction(() => document.querySelector("#runtimeDrawerTitle")?.textContent === "Epistemic");
+  // Diagnostics: closed groups; empty fields hidden behind a count; all of
+  // it copyable as JSON.
+  await openDrawerView("Diagnostics");
+  assert.ok(await page.locator("#runtimeDrawerBody .inspector-group").count() >= 8);
+  assert.equal(await page.locator("#runtimeDrawerBody .inspector-group[open]").count(), 0, "groups start closed");
+  await page.locator('[data-diagnostics-group="policy"] > summary').click();
+  await page.waitForFunction(() =>
+    /silent launch override/i.test(document.querySelector('[data-diagnostics-group="policy"]')?.innerText || ""));
+  assert.match(await page.locator('[data-diagnostics-group="policy"]').innerText(), /operator semantic admission/);
+  await page.locator('[data-diagnostics-group="capabilities"] > summary').click();
+  const capabilities = page.locator('[data-diagnostics-group="capabilities"]');
+  await capabilities.locator(".inspector-group-body").waitFor({ state: "visible" });
+  assert.ok(await capabilities.locator(".runtime-field[hidden]").count() > 0, "empty capability fields are hidden");
+  assert.match(await capabilities.locator(".inspector-link").innerText(), /^Show \d+ empty fields?$/);
+  await capabilities.locator(".inspector-link").click();
+  await page.waitForFunction(() =>
+    document.querySelectorAll('[data-diagnostics-group="capabilities"] .runtime-field[hidden]').length === 0);
+  await page.getByRole("button", { name: "Copy as JSON" }).click();
+  await page.waitForFunction(() => /Copied|Copy failed/.test(
+    [...document.querySelectorAll("#runtimeDrawerBody button")].map((button) => button.textContent).join(" ")));
+  const copiedDiagnostics = JSON.parse(await app.evaluate(({ clipboard }) => clipboard.readText()));
+  assert.ok(copiedDiagnostics.groups.Capabilities?.Orchestration, "the copy holds every group");
+  assert.ok(copiedDiagnostics.groups.Runtime?.["Runtime evidence"], "the copy holds closed groups too");
+
+  await page.locator('.t3-utility-rail [data-runtime-tab="context"]').click();
+  await drawerTitle("Context");
   await page.waitForFunction(() => /Information plane|not loaded|failed/.test(document.querySelector("#runtimeDrawerBody")?.textContent || ""));
   const epistemicBody = page.locator("#runtimeDrawerBody");
   assert.match(await epistemicBody.innerText(), /Information plane/);
-  assert.match(await epistemicBody.innerText(), /top_down_only/);
-  assert.match(await epistemicBody.innerText(), /Materializing it does not add context to a Direct turn, and no provider receives it\./);
+  // Invariants sit behind the section's Details toggle.
+  assert.match(await epistemicBody.textContent(), /top_down_only/);
+  assert.match(await epistemicBody.innerText(), /Previews stay local: they add nothing to a turn, and no provider receives them\./);
   assert.equal(await page.getByRole("button", { name: "Import selected context" }).count(), 0);
   const localPreviewButton = page.locator('[data-epistemic-action^="context-preview:thread:"]').first();
   await localPreviewButton.waitFor({ state: "visible" });
@@ -459,7 +506,7 @@ try {
   assert.match(await epistemicBody.innerText(), /transport witness\s+not yet witnessed/i);
   assert.match(await epistemicBody.innerText(), /provider transport\s+none/i);
   assert.equal(
-    await page.locator('.t3-utility-rail [data-runtime-tab="epistemic"]').getAttribute("aria-pressed"),
+    await page.locator('.t3-utility-rail [data-runtime-tab="context"]').getAttribute("aria-pressed"),
     "true",
   );
   await page.screenshot({ path: epistemicScreenshotPath, fullPage: true });
