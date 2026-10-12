@@ -69,7 +69,7 @@ try {
   const fakeApp = path.join(temp, "fake-app.cjs");
   fs.writeFileSync(fakeApp, `
 const control = require(${JSON.stringify(path.join(repo, "src", "main", "app-control.js"))});
-const channel = control.appControlChannel({ appRoot: ${JSON.stringify(repo)}, userData: ${JSON.stringify(profile)} });
+const channel = control.appControlChannel({ appRoot: process.env.FAKE_ROOT || ${JSON.stringify(repo)}, userData: ${JSON.stringify(profile)} });
 const server = control.startAppControlServer(channel, {
   hello: () => ({ pid: process.pid, experience: process.env.FAKE_EXPERIENCE, generation: process.env.FAKE_GENERATION }),
   quit: () => { console.log("quitting"); server.close(); setTimeout(() => process.exit(0), 200); },
@@ -83,8 +83,8 @@ setTimeout(() => process.exit(3), 30000);
     CODEX_EXPERIENCE: "direct-workbench",
   };
   const generation = readSyncGeneration(repo);
-  const startFake = async (experience = "direct-workbench", fakeGeneration = generation) => {
-    const child = spawn(process.execPath, [fakeApp], { env: { ...process.env, FAKE_EXPERIENCE: experience, FAKE_GENERATION: fakeGeneration }, stdio: ["ignore", "pipe", "inherit"] });
+  const startFake = async (experience = "direct-workbench", fakeGeneration = generation, fakeRoot = "") => {
+    const child = spawn(process.execPath, [fakeApp], { env: { ...process.env, FAKE_EXPERIENCE: experience, FAKE_GENERATION: fakeGeneration, FAKE_ROOT: fakeRoot }, stdio: ["ignore", "pipe", "inherit"] });
     let output = "";
     child.stdout.on("data", (chunk) => { output += chunk; });
     const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code)));
@@ -123,8 +123,34 @@ setTimeout(() => process.exit(3), 30000);
   const older = await startFake("direct-workbench", "an older generation");
   const olderRun = client("reuse");
   assert.equal(olderRun.status, 10);
-  assert.match(olderRun.stdout, /older synced code/);
+  assert.match(olderRun.stdout, /runs other code/);
   assert.equal(await older.exited, 0);
+
+  // Installed versions share their release root's channel
+  // (CODEX_REVIEW_SHELL_CONTROL_ROOT), whichever version folder runs.
+  const releaseRoot = path.join(temp, "Release-Root");
+  assert.equal(control.appControlRoot(repo, {}), repo);
+  assert.equal(control.appControlRoot(repo, { [control.CONTROL_ROOT_ENV_VAR]: ` ${releaseRoot} ` }), releaseRoot);
+  const released = await startFake("direct-workbench", generation, releaseRoot);
+  const releaseClient = spawnSync(process.execPath, [path.join(repo, "scripts", "app-control.mjs"), "reuse"], {
+    env: { ...clientEnv, [control.CONTROL_ROOT_ENV_VAR]: releaseRoot },
+    encoding: "utf8",
+    timeout: 30000,
+  });
+  assert.equal(releaseClient.status, 0, releaseClient.stdout + releaseClient.stderr);
+  assert.match(releaseClient.stdout, /is current; keeping it/);
+
+  // The mirror's launcher retires the installed app on the same profile
+  // (and the release launcher the mirror's); a root that runs nothing is skipped.
+  const retired = client("reuse", "--retire-root", path.join(temp, "nothing-here"), "--retire-root", process.platform === "win32" ? releaseRoot.toUpperCase() : releaseRoot);
+  assert.ok(freshCodes.includes(retired.status), retired.stdout + retired.stderr);
+  assert.match(retired.stdout, new RegExp(`the app from .*Release-Root.* \\(pid ${released.child.pid}\\) is running on this profile; asking it to quit`, "i"));
+  assert.equal(await released.exited, 0);
+  const self = await startFake();
+  const selfRetire = client("reuse", "--retire-root", repo);
+  assert.equal(selfRetire.status, 0, "its own root is never retired");
+  self.child.kill();
+  await self.exited;
 
   console.log("direct app control regression passed");
 } finally {

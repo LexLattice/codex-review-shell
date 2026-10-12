@@ -85,6 +85,11 @@ call "%ROOT_DIR%\sync-from-wsl.cmd" /check
 set "SOURCE_CHANGED=!ERRORLEVEL!"
 set "REUSE_FLAGS="
 if not "!SOURCE_CHANGED!"=="0" set "REUSE_FLAGS=--changed"
+rem The installed daily app (release\) runs on the same profile; one profile
+rem runs one app.
+set "RELEASE_ROOT=%CODEX_REVIEW_SHELL_RELEASE_ROOT%"
+if not defined RELEASE_ROOT set "RELEASE_ROOT=C:\LexLattice\direct-workbench"
+if exist "!RELEASE_ROOT!\current.txt" set "REUSE_FLAGS=!REUSE_FLAGS! --retire-root "!RELEASE_ROOT!""
 set "REUSE_RC=20"
 if exist "%ROOT_DIR%\scripts\app-control.mjs" (
   "%NODE_EXE%" "%ROOT_DIR%\scripts\app-control.mjs" reuse !REUSE_FLAGS! >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"

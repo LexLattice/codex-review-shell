@@ -519,6 +519,8 @@
       "scripts/direct-app-control-regression.mjs",
       "scripts/direct-surface-origin-electron-smoke.mjs",
       "scripts/app-control.mjs",
+      "scripts/release-install.mjs",
+      "scripts/direct-release-install-regression.mjs",
       "scripts/direct-bridge-daemon.mjs",
       "scripts/direct-bridge-submit-event.mjs",
       "scripts/direct-headless-bridge-substrate-regression.mjs",

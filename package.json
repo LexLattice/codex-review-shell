@@ -1,7 +1,7 @@
 {
   "name": "codex-review-shell",
   "private": false,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Dual-partner Codex + ChatGPT workflow shell with WSL backend attachment and project-bound thread deck",
   "license": "Apache-2.0",
   "repository": {
@@ -191,6 +191,8 @@
     "direct:thread-deck": "node ./scripts/direct-thread-deck-regression.mjs",
     "direct:session-restart-recovery-memo": "node ./scripts/direct-session-restart-recovery-memo-regression.mjs",
     "direct:app-control": "node ./scripts/direct-app-control-regression.mjs",
+    "direct:release-install": "node ./scripts/direct-release-install-regression.mjs",
+    "release:install": "node ./scripts/release-install.mjs",
     "direct:thread-turn-parity": "node ./scripts/direct-thread-turn-parity-regression.mjs",
     "direct:thread-control-recovery": "node ./scripts/direct-thread-control-recovery-regression.mjs",
     "direct:headless-bridge-substrate": "node ./scripts/direct-headless-bridge-substrate-regression.mjs",

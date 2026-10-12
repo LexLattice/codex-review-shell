@@ -1757,6 +1757,74 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   Linux and Windows with the Electron smokes and the WorldManager Electron
   acceptance.
 
+### Releases: the daily app runs tagged versions
+
+- Status: done (the first tag, `v0.5.0`, after the merge; the owner's
+  switch of the daily shortcut pending)
+- Scope: the owner's daily app ran from the WSL mirror, so every launch
+  picked up whatever the WSL checkout held, half-done work included. Step
+  one of a release cycle: the daily app runs tagged versions, installed
+  side by side; its launcher only starts or focuses; a separate command
+  updates, with a way back. Packaging (an installer, auto-update) later.
+- Mapped first: the app needs its whole tracked tree at run time (the
+  DSS-04 runtime reads `docs/`, the WSL agent runs scripts from the app
+  folder through `wslpath`), keeps no state in its folder, and only
+  `dependencies` at run time (no native modules). A version is about 45 MB
+  of source plus its `node_modules`.
+- Outcome:
+  - **Release root** `C:\LexLattice\direct-workbench`
+    (`CODEX_REVIEW_SHELL_RELEASE_ROOT`): `versions\<tag>\` (a full
+    `git archive` of the tag, then `npm ci --omit=dev`), `current.txt`,
+    `previous.txt`, and the launchers, copied from the current version's
+    `release\` folder.
+  - **`scripts/release-install.mjs`** (`update-direct-workbench.cmd`):
+    takes the newest `v*` tag (a prerelease only when named), or a tag,
+    or `--ref`/`--name` for testing; reads the WSL checkout through
+    `wsl.exe` (fetching tags first). It installs into `<name>.partial` and
+    renames when done, so a failed install never becomes current. It
+    writes `.release.json` and `.sync-generation.txt` (`release <name>
+    <commit>`), switches `current.txt` (the old one becomes
+    `previous.txt`), keeps three versions (current, previous, the most
+    recently used other), and starts the launcher. `--previous`
+    (`rollback-direct-workbench.cmd`) swaps back; `--list` shows what is
+    installed and tagged.
+  - **`start-direct-workbench.cmd`/`.vbs`** in the release root: starts
+    `versions\<current>\...\electron.exe`, or brings it to the front; no
+    sync, no install. Both launchers here run from a copy in `%TEMP%`: the
+    installer rewrites them, and cmd.exe reads a batch file as it runs.
+  - **One control channel for all versions**: the release launcher sets
+    `CODEX_REVIEW_SHELL_CONTROL_ROOT` to the release root, so whichever
+    version runs answers on the same pipe, and its generation tells the
+    launcher whether it is the current version (an update or rollback
+    restarts it the ordinary way).
+  - **One app per profile**: the mirror and the installed app share the
+    default profile, and the single-instance lock would otherwise hand a
+    launch to the other one. `app-control.mjs reuse --retire-root DIR`
+    asks an app running from DIR on the profile to quit first; the release
+    launcher retires the mirror's app, the mirror's launcher the installed
+    one (when a release root exists). When nothing answers but Electron
+    runs, the release launcher stops only Electron processes under its own
+    `versions\`.
+- Measured on Windows (temp release root, test profile): install 10.7 s
+  (npm ci 4–6 s, cached Electron download); first launch to Electron
+  0.29 s; relaunch with the current version running 0.45 s, same app in
+  front; update and rollback each quit the running version (0.2–0.5 s)
+  and started the other one; each launcher retired the other's running
+  app.
+- Found while testing: npm runs Electron's install script through cmd.exe,
+  which finds nothing on a `PATH` over 8191 characters (the agent's shell
+  had 9,931): the installer puts Node first and drops repeated entries,
+  and calls `wsl.exe` by its full path. On Windows npm links a `file:`
+  package with an absolute junction, which the rename from `.partial`
+  would break (no such package in the app's dependencies).
+- **Checks:** new `direct-release-install-regression` (tag order, argument
+  parsing, pruning; the installer end to end against a fixture checkout
+  with local packages: newest tag, already installed, switch, back, a
+  prerelease, a test name, pruning by use, refusing to replace a version
+  from another commit or the current one; the launchers' contracts);
+  `direct-app-control-regression` adds the shared control root and
+  `--retire-root`. Both pass on Linux and Windows.
+
 ## Baseline and prerequisites
 
 | Item | State |
