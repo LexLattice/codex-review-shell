@@ -175,12 +175,14 @@ cd C:\LexLattice\codex-review-shell-direct
 
 What it does:
 
+- checks whether the WSL worktree differs from the mirror (`sync-from-wsl.cmd /check`, which copies nothing)
+- asks the app already running from this folder what it runs (`scripts/app-control.mjs`, over a local named pipe): when nothing changed and it runs the same experience and synced code, the launcher brings it to the front and stops there, with no restart; otherwise the running app quits the ordinary way (ordered shutdown), and is force-stopped if it doesn't within 20 s
 - mirrors `\\wsl.localhost\<distro>\<path>` to the Windows repo root via `sync-from-wsl.cmd`
 - runs `npm install` only when `package.json` or `package-lock.json` changed, or when the Windows dependency installation is incomplete
-- writes `.wsl-sync-head.txt` in the Windows repo with the mirrored WSL commit hash
+- writes `.wsl-sync-head.txt` in the Windows repo with the mirrored WSL commit hash, and `.sync-generation.txt`, which changes whenever a sync changes files or dependencies
 - writes a timestamped log pair under `%LOCALAPPDATA%\codex-review-shell-direct\launcher-logs` and records the newest pair in `launcher-latest.txt`
 - prints the active preflight stage in the launcher console
-- starts Electron via `scripts/run-electron.mjs`
+- starts `node_modules\electron\dist\electron.exe` directly (`scripts/run-electron.mjs` only when it is missing)
 
 Default source path is `/home/rose/work/LexLattice/codex-review-shell-direct` in `Ubuntu`.
 Override source by setting:

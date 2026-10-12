@@ -63,7 +63,10 @@ assert.doesNotMatch(alternateHtml, /Terminal is not connected in this experiment
 assert.match(alternateHtml, /id="t3TerminalButton"/);
 assert.match(alternateHtml, /data-morphic-region="terminal-panel"/);
 assert.match(alternateHtml, /src="\.\/direct-terminal-panel\.js"/);
-assert.match(alternateHtml, /src="\/vendor\/xterm\/xterm\.js"/);
+// xterm loads when the terminal panel first opens, not with the page.
+assert.doesNotMatch(alternateHtml, /src="\/vendor\/xterm\//);
+assert.match(alternateHtml, /href="\/vendor\/xterm\/xterm\.css"/);
+assert.match(read("src/renderer/direct-terminal-panel.js"), /XTERM_SCRIPTS = \["\/vendor\/xterm\/xterm\.js", "\/vendor\/xterm\/addon-fit\.js"\]/);
 assert.match(alternateJs, /runtimeDrawerClose\?\.click\(\)/);
 assert.match(alternateJs, /analyticsClose\?\.click\(\)/);
 assert.match(projectDirectoryJs, /readDirectWorkbenchProjectDirectory/);

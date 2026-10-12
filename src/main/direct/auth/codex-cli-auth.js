@@ -161,6 +161,12 @@ class CodexCliAuthStore {
     const explicit = options.filePaths ? uniquePaths(options.filePaths) : explicitCodexAuthFileCandidates(options);
     this.explicitFilePaths = explicit;
     this.filePaths = explicit.length ? explicit : defaultCodexAuthFileCandidates(options);
+    // Reuse what was read for this long. Every status check stats each
+    // candidate auth.json and reads one; from WSL, the /mnt/c candidates
+    // cost seconds of a launch. The file is Codex CLI's (never written here),
+    // so its own refresh shows up within cacheMs.
+    this.cacheMs = Math.max(0, Number(options.cacheMs) || 0);
+    this.cached = null;
   }
 
   readSourceFilePath() {
@@ -180,9 +186,13 @@ class CodexCliAuthStore {
   }
 
   readCredentials() {
+    if (this.cacheMs && this.cached && Date.now() - this.cached.at < this.cacheMs) {
+      return this.cached.credentials ? { ...this.cached.credentials } : null;
+    }
     const filePath = this.readSourceFilePath();
-    if (!filePath) return null;
-    return normalizeCodexCliCredentials(readJsonFile(filePath), { filePath });
+    const credentials = filePath ? normalizeCodexCliCredentials(readJsonFile(filePath), { filePath }) : null;
+    if (this.cacheMs) this.cached = { at: Date.now(), credentials };
+    return credentials ? { ...credentials } : null;
   }
 
   readStatus(options = {}) {

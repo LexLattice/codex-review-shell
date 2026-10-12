@@ -341,8 +341,8 @@
         <button type="button" data-t3-action="projects" aria-label="Open project directory" title="Projects">P</button>
         <button type="button" data-t3-action="threads" aria-label="Focus thread directory" title="Threads">☰</button>
         <span class="t3-utility-separator" aria-hidden="true"></span>
-        <button type="button" data-runtime-tab="runtime" aria-label="Open runtime inspector" title="Runtime">R</button>
-        <button type="button" data-runtime-tab="epistemic" aria-label="Open epistemic inspector" title="Epistemic context">E</button>
+        <button type="button" data-runtime-tab="runtime" aria-label="Open thread inspector" title="Thread">R</button>
+        <button type="button" data-runtime-tab="context" aria-label="Open context and worker policy" title="Context">E</button>
         <button type="button" data-t3-action="analytics" aria-label="Open thread analytics" title="Analytics">A</button>
         <button type="button" data-t3-action="usage" aria-label="Open usage overview" title="Usage">U</button>
         <button type="button" data-t3-action="intake" aria-label="Open Direct thread intake" title="Thread intake">I</button>
@@ -351,7 +351,7 @@
         <button id="t3TerminalButton" type="button" aria-label="Open terminal panel" aria-pressed="false" title="Terminal">›_</button>
         <button type="button" disabled aria-label="Browser preview is not connected in this experiment" title="Browser preview is not connected in this experiment">◎</button>
         <span class="t3-utility-spacer" aria-hidden="true"></span>
-        <button type="button" data-runtime-tab="advanced" aria-label="Open advanced Direct settings" title="Settings">⚙</button>
+        <button type="button" data-runtime-tab="settings" aria-label="Open Direct settings" title="Settings">⚙</button>
       </nav>
 
       <section class="transcript" id="transcript" aria-label="Codex transcript"></section>
@@ -419,8 +419,6 @@
     <script src="./t3-direct-surface.js"></script>
     <script src="./direct-project-directory-surface.js"></script>
     <script src="./direct-workbench-sidebar.js"></script>
-    <script src="/vendor/xterm/xterm.js"></script>
-    <script src="/vendor/xterm/addon-fit.js"></script>
     <script src="./direct-terminal-panel.js"></script>
     <script src="./direct-thread-intake-surface.js"></script>
     <script src="./direct-usage-surface.js"></script>

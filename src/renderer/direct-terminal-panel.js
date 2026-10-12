@@ -15,10 +15,33 @@
   const closeButton = document.getElementById("directTerminalClose");
   const statusEl = document.getElementById("directTerminalStatus");
   if (!panel || !button || !tabsEl || !viewsEl) return;
-  if (typeof bridge?.listDirectTerminals !== "function" || typeof window.Terminal !== "function" || typeof window.FitAddon?.FitAddon !== "function") {
+  if (typeof bridge?.listDirectTerminals !== "function") {
     button.disabled = true;
     button.title = "The terminal isn't available here.";
     return;
+  }
+
+  // xterm.js (about 0.5 MB) loads the first time the panel opens, not with
+  // every surface.
+  const XTERM_SCRIPTS = ["/vendor/xterm/xterm.js", "/vendor/xterm/addon-fit.js"];
+  let xtermLoading = null;
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = src;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error(`${src} didn't load.`));
+      document.head.appendChild(script);
+    });
+  }
+  function ensureXterm() {
+    if (typeof window.Terminal === "function" && typeof window.FitAddon?.FitAddon === "function") return Promise.resolve();
+    xtermLoading ||= XTERM_SCRIPTS.reduce((chain, src) => chain.then(() => loadScript(src)), Promise.resolve())
+      .catch((error) => {
+        xtermLoading = null;
+        throw error;
+      });
+    return xtermLoading;
   }
 
   const entries = new Map();
@@ -177,12 +200,26 @@
     }
   }
 
+  let openRequest = 0;
+
   async function setOpen(open) {
+    const request = ++openRequest;
+    // Closed (or opened again) while this one waited on xterm or the
+    // listing: it must not go on to start a shell, hidden or twice.
+    const superseded = () => request !== openRequest;
     panel.hidden = !open;
     button.setAttribute("aria-pressed", open ? "true" : "false");
     button.classList.toggle("active", open);
     if (!open) return;
+    try {
+      await ensureXterm();
+    } catch (error) {
+      if (!superseded()) setStatus(`The terminal couldn't load: ${reason(error)}`);
+      return;
+    }
+    if (superseded()) return;
     const listing = await refresh();
+    if (superseded()) return;
     // Like an editor's terminal: opening the panel with nothing in it starts a shell.
     if (listing && !entries.size) await openShell();
     fitActive();

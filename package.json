@@ -12,7 +12,7 @@
     "url": "https://github.com/LexLattice/codex-review-shell/issues"
   },
   "homepage": "https://github.com/LexLattice/codex-review-shell#readme",
-  "main": "src/main.js",
+  "main": "src/boot.js",
   "scripts": {
     "direct:everyday-live-acceptance": "node ./scripts/direct-everyday-live-acceptance.mjs",
     "direct:everyday-live-acceptance-regression": "node ./scripts/direct-everyday-live-acceptance-regression.mjs",
@@ -189,6 +189,8 @@
     "direct:full-local-harness-execution": "node ./scripts/direct-full-local-harness-execution-regression.mjs",
     "direct:code-mode-execution-lane": "node ./scripts/direct-code-mode-execution-lane-regression.mjs",
     "direct:thread-deck": "node ./scripts/direct-thread-deck-regression.mjs",
+    "direct:session-restart-recovery-memo": "node ./scripts/direct-session-restart-recovery-memo-regression.mjs",
+    "direct:app-control": "node ./scripts/direct-app-control-regression.mjs",
     "direct:thread-turn-parity": "node ./scripts/direct-thread-turn-parity-regression.mjs",
     "direct:thread-control-recovery": "node ./scripts/direct-thread-control-recovery-regression.mjs",
     "direct:headless-bridge-substrate": "node ./scripts/direct-headless-bridge-substrate-regression.mjs",
@@ -324,6 +326,8 @@
     "direct:windows-job-receipt": "node ./scripts/direct-windows-job-receipt-regression.mjs",
     "direct:workbench-live-projects": "node ./scripts/direct-workbench-live-projects-regression.mjs",
     "direct:workbench-live-projects:electron": "node ./scripts/direct-workbench-live-projects-electron-smoke.mjs",
+    "direct:workbench-splash:electron": "node ./scripts/direct-workbench-splash-electron-smoke.mjs",
+    "direct:surface-origin:electron": "node ./scripts/direct-surface-origin-electron-smoke.mjs",
     "direct:regression-sweep": "node ./scripts/direct-regression-sweep.mjs",
     "direct:review-findings": "node ./scripts/direct-review-findings-regression.mjs",
     "direct:agent-codex-patch": "node ./scripts/direct-agent-codex-patch-regression.mjs",
