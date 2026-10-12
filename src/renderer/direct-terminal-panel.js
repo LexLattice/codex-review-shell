@@ -200,7 +200,13 @@
     }
   }
 
+  let openRequest = 0;
+
   async function setOpen(open) {
+    const request = ++openRequest;
+    // Closed (or opened again) while this one waited on xterm or the
+    // listing: it must not go on to start a shell, hidden or twice.
+    const superseded = () => request !== openRequest;
     panel.hidden = !open;
     button.setAttribute("aria-pressed", open ? "true" : "false");
     button.classList.toggle("active", open);
@@ -208,10 +214,12 @@
     try {
       await ensureXterm();
     } catch (error) {
-      setStatus(`The terminal couldn't load: ${reason(error)}`);
+      if (!superseded()) setStatus(`The terminal couldn't load: ${reason(error)}`);
       return;
     }
+    if (superseded()) return;
     const listing = await refresh();
+    if (superseded()) return;
     // Like an editor's terminal: opening the panel with nothing in it starts a shell.
     if (listing && !entries.size) await openShell();
     fitActive();

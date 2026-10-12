@@ -197,8 +197,27 @@ try {
   assert.equal(await page.locator(".wb-sidebar-footer").isVisible(), true);
   const frontThreads = ".wb-project.front .wb-thread";
 
-  // Terminal panel: opening it with no terminals starts a real shell in the project's environment.
-  await page.locator("#t3TerminalButton").click();
+  // Terminal panel. Closed again while xterm still loads (the first open):
+  // nothing starts, hidden.
+  const terminalCount = () => page.evaluate(async () => (await window.codexSurfaceBridge.listDirectTerminals()).terminals.length);
+  await page.evaluate(() => {
+    const toggle = document.querySelector("#t3TerminalButton");
+    toggle.click();
+    toggle.click();
+  });
+  await page.waitForFunction(() => typeof window.Terminal === "function", null, { timeout: 20_000 });
+  await page.waitForTimeout(700);
+  assert.equal(await page.locator("#directTerminalPanel").isHidden(), true);
+  assert.equal(await page.locator("#directTerminalTabs .direct-terminal-tab").count(), 0);
+  assert.equal(await terminalCount(), 0, "a panel closed while loading starts no shell");
+  // Opened, closed and opened again at once: one shell, in the project's
+  // environment (opening with no terminals starts one).
+  await page.evaluate(() => {
+    const toggle = document.querySelector("#t3TerminalButton");
+    toggle.click();
+    toggle.click();
+    toggle.click();
+  });
   await page.waitForFunction(
     () => document.querySelector("#directTerminalPanel:not([hidden]) .direct-terminal-tab.user.active") || !document.querySelector("#directTerminalStatus")?.hidden,
     null,
@@ -206,6 +225,16 @@ try {
   );
   assert.equal(await page.locator("#directTerminalStatus").isHidden(), true, await page.locator("#directTerminalStatus").innerText());
   assert.equal(await page.locator("#t3TerminalButton").getAttribute("aria-pressed"), "true");
+  await page.waitForTimeout(700);
+  assert.equal(await page.locator("#directTerminalTabs .direct-terminal-tab.user").count(), 1);
+  assert.equal(await terminalCount(), 1, "one shell, not one per open");
+  // Typed before the shell's prompt, keys can be lost (seen on Windows when
+  // PowerShell starts cold).
+  await page.waitForFunction(
+    () => /\S/.test(document.querySelector("#directTerminalViews .direct-terminal-view:not([hidden]) .xterm-rows")?.textContent || ""),
+    null,
+    { timeout: 30_000 },
+  );
   await page.locator("#directTerminalViews .direct-terminal-view:not([hidden]) .xterm").click();
   await page.keyboard.type("echo smoke_$((40+2))_terminal\n");
   await page.waitForFunction(
