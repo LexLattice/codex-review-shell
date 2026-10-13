@@ -159,6 +159,23 @@ try {
   });
   sessionStore.recoverInterruptedTurns({ nowMs: Date.parse("2026-06-13T12:03:00.000Z") });
 
+  const stopped = sessionStore.createSession({
+    projectId: project.id,
+    title: "Stopped direct session",
+    model: "gpt-5.4",
+    createdAt: "2026-06-13T12:10:00.000Z",
+    updatedAt: "2026-06-13T12:10:00.000Z",
+    runtimeMode: "direct-experimental",
+    directTransport: "direct-live-text",
+  });
+  sessionStore.createTurn(stopped.sessionId, {
+    turnId: "direct_turn_stopped",
+    state: "aborted",
+    model: "gpt-5.4",
+    createdAt: "2026-06-13T12:11:00.000Z",
+    updatedAt: "2026-06-13T12:12:00.000Z",
+  });
+
   const running = sessionStore.createSession({
     projectId: project.id,
     title: "Running direct session",
@@ -327,7 +344,7 @@ try {
   assert.equal(result.deck.actions.start.mutationAuthorityGranted, false);
   assert.equal(result.deck.rawPathExposed, false);
   assert.equal(result.deck.rawPromptTextExposed, false);
-  assert.equal(result.deck.rows.length, 7);
+  assert.equal(result.deck.rows.length, 8);
 
   const scopedRow = result.deck.rows.find((row) => row.threadId === scoped.sessionId);
   assert(scopedRow, "WorkThread scoped row should be present");
@@ -347,7 +364,12 @@ try {
   assert.equal(interruptedRow.displayState, "recoverable_interrupted");
   assert.equal(interruptedRow.recoverableInterruptedTurnCount, 1);
   assert.equal(interruptedRow.actions.focus.enabled, true);
-  assert.equal(interruptedRow.actions.resume.enabled, false);
+  // A thread goes on after a turn that ended any way, as in Codex: the
+  // next message resumes it.
+  assert.equal(interruptedRow.actions.resume.enabled, true, "a turn cut off by a restart doesn't block the thread");
+  const stoppedRow = result.deck.rows.find((row) => row.threadId === stopped.sessionId);
+  assert.equal(stoppedRow.lastTurnState, "aborted");
+  assert.equal(stoppedRow.actions.resume.enabled, true, "nor does a stopped one");
 
   const corruptSessionRow = result.deck.rows.find((row) => row.threadId === corruptSession.sessionId);
   assert(corruptSessionRow, "Corrupt session index row should degrade without failing the deck");

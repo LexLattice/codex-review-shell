@@ -308,6 +308,7 @@
     "direct:request-permissions": "node ./scripts/direct-request-permissions-regression.mjs",
     "direct:windows-prewarm": "node ./scripts/direct-windows-prewarm-regression.mjs",
     "direct:history-items": "node ./scripts/direct-history-items-regression.mjs",
+    "direct:followup-after-stopped-turn": "node ./scripts/direct-followup-after-stopped-turn-regression.mjs",
     "direct:reasoning-replay": "node ./scripts/direct-reasoning-replay-regression.mjs",
     "direct:parallel-tool-calls": "node ./scripts/direct-parallel-tool-calls-regression.mjs",
     "direct:sub-agent-policy-tool": "node ./scripts/direct-sub-agent-policy-tool-regression.mjs",

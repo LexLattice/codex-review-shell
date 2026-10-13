@@ -227,7 +227,10 @@ const TERMINAL_TURN_STATES = new Set([
   "max_output_terminal",
   "empty_output_terminal",
 ]);
-const SAFE_TEXT_ONLY_FOLLOWUP_PREVIOUS_STATES = new Set(["completed"]);
+// As in Codex and Claude Code, a thread continues after any turn that
+// ended: stopped, failed, or cut off by a restart. The history tells the
+// model how that turn ended (priorTurnHistoryItems).
+const FOLLOWUP_PREVIOUS_TURN_STATES = TERMINAL_TURN_STATES;
 const BLOCKED_WORK_THREAD_LIFECYCLE_STATES = new Set(["archived", "stale"]);
 const DEFAULT_MAX_PROMPT_CHARS = 64_000;
 const DEFAULT_MAX_ASSISTANT_CHARS = 256_000;
@@ -331,6 +334,15 @@ function historyText(text = "", limit = HISTORY_TEXT_CHARS) {
     return "[withheld from history: failed the exposure scan]";
   }
   return value.length > limit ? `${value.slice(0, limit)}\n[… truncated in history]` : value;
+}
+
+// Follows a turn that didn't complete in the history, so the model knows
+// its work there may be unfinished (Claude Code adds "[Request interrupted
+// by user]" the same way).
+function turnEndedEarlyNote(state = "") {
+  if (!state || state === "completed") return "";
+  if (state === "aborted") return "[The user stopped this turn before it finished.]";
+  return `[This turn ended before it finished (${state.replace(/_/g, " ")}).]`;
 }
 
 function historyToolOutput(toolName = "", outputText) {
@@ -8470,11 +8482,16 @@ class DirectLiveTextController {
         .join("\n\n");
       if (userText) items.push({ role: "user", content: [{ type: "input_text", text: historyText(userText) }] });
       const results = new Map((Array.isArray(turn.toolResults) ? turn.toolResults : []).map((result) => [result.obligationId, result]));
+      const turnState = normalizeString(turn.state, "");
       for (const obligation of Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : []) {
         const callId = normalizeString(obligation?.callId, "");
         const name = normalizeString(obligation?.name, "");
         if (!callId || !name) continue;
-        const outputText = historyToolOutput(name, results.get(obligation.obligationId)?.providerOutputText ?? obligation.result?.providerOutputText);
+        const recordedOutput = results.get(obligation.obligationId)?.providerOutputText ?? obligation.result?.providerOutputText;
+        // Codex's output for a call its stopped turn never finished.
+        const outputText = turnState === "aborted" && !(typeof recordedOutput === "string" && recordedOutput)
+          ? "aborted"
+          : historyToolOutput(name, recordedOutput);
         if (normalizeString(obligation.providerCallType || obligation.toolType, "") === "custom_tool_call") {
           items.push(
             { type: "custom_tool_call", call_id: callId, name, input: historyText(obligation.argumentsText || "", HISTORY_ARGUMENTS_CHARS) },
@@ -8494,6 +8511,8 @@ class DirectLiveTextController {
         .filter(Boolean)
         .join("\n\n");
       if (replyText) items.push({ role: "assistant", content: [{ type: "output_text", text: historyText(replyText) }] });
+      const endNote = turnEndedEarlyNote(turnState);
+      if (items.length && endNote) items.push({ role: "user", content: [{ type: "input_text", text: endNote }] });
       if (items.length) {
         turns.push(items);
         turnIds.push(turnId);
@@ -12142,8 +12161,8 @@ class DirectLiveTextController {
       : existingTurnCount > 0 && ranTurnCount > 0;
     let frozenContextProjection = null;
     if (useRecentDialogue) {
-      if (!previousTurn || !SAFE_TEXT_ONLY_FOLLOWUP_PREVIOUS_STATES.has(previousTurn.state)) {
-        const error = new Error("Direct text-only follow-up requires the previous turn to have completed safely.");
+      if (!previousTurn || !FOLLOWUP_PREVIOUS_TURN_STATES.has(previousTurn.state)) {
+        const error = new Error("Direct follow-up requires the previous turn to have ended.");
         error.code = "previous_turn_not_safe";
         error.previousTurnState = normalizeString(previousTurn?.state, "");
         throw error;
