@@ -131,6 +131,13 @@ try {
   const v2 = commitVersion("0.2.0", "v0.2.0");
   const rc = commitVersion("0.3.0", "v0.3.0-rc.1");
   const head = commitVersion("0.3.1", "");
+  // A commit npm ci refuses (package.json and the lock disagree), on a side branch.
+  git("checkout", "--quiet", "-b", "broken");
+  const brokenPackage = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"));
+  brokenPackage.dependencies["missing-dep"] = "file:vendor/missing-dep";
+  fs.writeFileSync(path.join(source, "package.json"), `${JSON.stringify(brokenPackage, null, 2)}\n`);
+  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-am", "broken");
+  git("checkout", "--quiet", "-");
 
   const env = { ...process.env, CODEX_REVIEW_SHELL_RELEASE_ROOT: root, CODEX_REVIEW_SHELL_RELEASE_SOURCE: source };
   const install = (...args) => spawnSync(process.execPath, [path.join(repo, "scripts", "release-install.mjs"), "--offline", "--no-start", ...args], { env, encoding: "utf8", timeout: 120000 });
@@ -199,11 +206,36 @@ try {
   assert.equal(install("no-such-tag").status, 1);
   assert.match(install("--ref", "HEAD", "--name", "../escape").stderr, /can't name a version folder/);
 
+  // A forced reinstall of the rollback version that fails leaves it as it was.
+  const releaseOf = (name) => JSON.parse(fs.readFileSync(path.join(root, "versions", name, ".release.json"), "utf8"));
+  const failedForce = install("--ref", "broken", "--name", "v0.3.0-rc.1", "--force");
+  assert.equal(failedForce.status, 1, failedForce.stdout + failedForce.stderr);
+  assert.equal(releaseOf("v0.3.0-rc.1").commit, rc, "the previous version survives a failed reinstall");
+  assert.equal(current(), "main-test");
+  assert.equal(previous(), "v0.3.0-rc.1");
+
+  // The fixture has no origin: without --offline an update stops rather than
+  // take the newest local tag for the newest release; --list only warns.
+  const script = path.join(repo, "scripts", "release-install.mjs");
+  const unfetched = spawnSync(process.execPath, [script, "--no-start"], { env, encoding: "utf8", timeout: 120000 });
+  assert.equal(unfetched.status, 1);
+  assert.match(unfetched.stderr, /Couldn't fetch tags from origin [\s\S]*--offline uses the tags the checkout already has/);
+  assert.equal(current(), "main-test");
+  const listed = spawnSync(process.execPath, [script, "--list"], { env, encoding: "utf8", timeout: 120000 });
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.match(listed.stdout, /warning: couldn't fetch tags/);
+
   const list = ok("--list");
   assert.match(list, /installed main-test [0-9a-f]{12} .* \(current\)/);
   assert.match(list, /installed v0\.3\.0-rc\.1 [0-9a-f]{12} .* \(previous\)/);
   assert.match(list, /tags: v0\.1\.0 v0\.2\.0 v0\.3\.0-rc\.1/);
-  assert.ok(!versions().some((name) => name.endsWith(".partial")));
+
+  // One that succeeds replaces it, and leaves no staging folders behind.
+  ok("--ref", "v0.1.0", "--name", "v0.3.0-rc.1", "--force");
+  assert.equal(releaseOf("v0.3.0-rc.1").commit, v1);
+  assert.equal(current(), "v0.3.0-rc.1");
+  assert.equal(previous(), "main-test");
+  assert.ok(!versions().some((name) => name.endsWith(".partial") || name.endsWith(".replaced")), versions().join(" "));
 
   console.log("direct release install regression passed");
 } finally {

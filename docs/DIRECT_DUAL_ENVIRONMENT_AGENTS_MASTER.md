@@ -1780,8 +1780,12 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   - **`scripts/release-install.mjs`** (`update-direct-workbench.cmd`):
     takes the newest `v*` tag (a prerelease only when named), or a tag,
     or `--ref`/`--name` for testing; reads the WSL checkout through
-    `wsl.exe` (fetching tags first). It installs into `<name>.partial` and
-    renames when done, so a failed install never becomes current. It
+    `wsl.exe`. It fetches tags first, and stops when the fetch fails (60 s
+    limit, no prompt): the newest local tag may not be the newest release;
+    `--offline` uses the local tags, `--list` only warns. It installs into
+    `<name>.partial` and renames when done, so a failed install never
+    becomes current; a `--force` reinstall keeps the old copy (perhaps the
+    rollback version) until the new one is in place. It
     writes `.release.json` and `.sync-generation.txt` (`release <name>
     <commit>`), switches `current.txt` (the old one becomes
     `previous.txt`), keeps three versions (current, previous, the most
@@ -1821,7 +1825,9 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   parsing, pruning; the installer end to end against a fixture checkout
   with local packages: newest tag, already installed, switch, back, a
   prerelease, a test name, pruning by use, refusing to replace a version
-  from another commit or the current one; the launchers' contracts);
+  from another commit or the current one, a failed forced reinstall of the
+  previous version leaving it intact, a failed tag fetch stopping the
+  update; the launchers' contracts);
   `direct-app-control-regression` adds the shared control root and
   `--retire-root`. Both pass on Linux and Windows.
 

@@ -23,6 +23,8 @@ import { pathToFileURL } from "node:url";
 const RELEASE_FILE = ".release.json";
 const GENERATION_FILE = ".sync-generation.txt";
 const KEEP_VERSIONS = 3;
+const PARTIAL_SUFFIX = ".partial";
+const REPLACED_SUFFIX = ".replaced";
 const VERSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 // "v0.5.0" -> [0, 5, 0]; prereleases ("v0.5.0-rc.1") sort before the release.
@@ -101,9 +103,17 @@ function gitInvocation(args, env = process.env) {
   return { command: "git", args: ["-C", source, ...args] };
 }
 
-function git(args, { allowFailure = false } = {}) {
+// stdin closed and a time limit: a fetch that wants a password fails
+// instead of waiting for input nobody sees.
+function git(args, { allowFailure = false, timeoutMs = 120000 } = {}) {
   const { command, args: fullArgs } = gitInvocation(args);
-  const run = spawnSync(command, fullArgs, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  const run = spawnSync(command, fullArgs, {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: timeoutMs,
+  });
+  if (run.error?.code === "ETIMEDOUT") throw new Error(`git ${args.join(" ")} didn't finish within ${timeoutMs / 1000} s.`);
   if (run.error) throw new Error(`Couldn't run ${command}: ${run.error.message}`);
   if (run.status !== 0 && !allowFailure) {
     throw new Error(`git ${args.join(" ")} failed: ${(run.stderr || run.error?.message || "").trim()}`);
@@ -122,7 +132,7 @@ function readText(file) {
 function installedVersions(versionsDir) {
   if (!fs.existsSync(versionsDir)) return [];
   return fs.readdirSync(versionsDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !entry.name.endsWith(".partial"))
+    .filter((entry) => entry.isDirectory() && !entry.name.endsWith(PARTIAL_SUFFIX) && !entry.name.endsWith(REPLACED_SUFFIX))
     .map((entry) => {
       try {
         return JSON.parse(fs.readFileSync(path.join(versionsDir, entry.name, RELEASE_FILE), "utf8"));
@@ -202,7 +212,7 @@ async function renameDir(from, to) {
 
 async function installVersion({ versionsDir, name, commit, label }) {
   const finalDir = path.join(versionsDir, name);
-  const partialDir = path.join(versionsDir, `${name}.partial`);
+  const partialDir = path.join(versionsDir, `${name}${PARTIAL_SUFFIX}`);
   removeDir(partialDir);
   fs.mkdirSync(partialDir, { recursive: true });
   log(`extracting ${label} (${commit.slice(0, 12)})`);
@@ -240,7 +250,21 @@ async function installVersion({ versionsDir, name, commit, label }) {
     packageVersion,
     installedAt: new Date().toISOString(),
   }, null, 2)}\n`);
-  await renameDir(partialDir, finalDir);
+  // A forced reinstall keeps the old copy until the new one is complete
+  // and in place: it may be the version a rollback returns to.
+  const replacedDir = path.join(versionsDir, `${name}${REPLACED_SUFFIX}`);
+  const replacing = fs.existsSync(finalDir);
+  if (replacing) {
+    removeDir(replacedDir);
+    await renameDir(finalDir, replacedDir);
+  }
+  try {
+    await renameDir(partialDir, finalDir);
+  } catch (error) {
+    if (replacing) await renameDir(replacedDir, finalDir);
+    throw error;
+  }
+  if (replacing) removeDir(replacedDir, { required: false });
 }
 
 function copyLaunchers(versionDir, root) {
@@ -273,7 +297,17 @@ async function main(argv) {
   const previous = readText(previousFile);
   fs.mkdirSync(versionsDir, { recursive: true });
 
-  if (!options.offline && !options.previous) git(["fetch", "--tags", "--quiet", "origin"], { allowFailure: true });
+  // Without the fetch, "newest tag" means newest known here, which may be
+  // an older release: an update stops; --list only warns.
+  if (!options.offline && !options.previous) {
+    try {
+      git(["fetch", "--tags", "--quiet", "origin"], { timeoutMs: 60000 });
+    } catch (error) {
+      const message = `couldn't fetch tags from origin (${error.message}); --offline uses the tags the checkout already has`;
+      if (!options.list) throw new Error(message.replace(/^c/, "C"));
+      log(`warning: ${message}`);
+    }
+  }
 
   if (options.list) {
     for (const release of installedVersions(versionsDir).sort((a, b) => String(a.installedAt).localeCompare(String(b.installedAt)))) {
@@ -297,7 +331,7 @@ async function main(argv) {
       if (!ref) throw new Error("No release tag (v*) found. Tag a commit on main, or pass --ref.");
     }
     name = options.name || ref;
-    if (!VERSION_NAME.test(name)) throw new Error(`"${name}" can't name a version folder; pass --name.`);
+    if (!VERSION_NAME.test(name) || name.endsWith(PARTIAL_SUFFIX) || name.endsWith(REPLACED_SUFFIX)) throw new Error(`"${name}" can't name a version folder; pass --name.`);
     const commit = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { allowFailure: true });
     if (!commit) throw new Error(`${ref} isn't a tag or commit in the source checkout.`);
     const existing = installedVersions(versionsDir).find((release) => release.name === name);
@@ -307,7 +341,6 @@ async function main(argv) {
     if (!existing || options.force) {
       if (existing) {
         if (name === current) throw new Error(`${name} is the current version; switch to another before reinstalling it.`);
-        removeDir(path.join(versionsDir, name));
       }
       await installVersion({ versionsDir, name, commit, label: ref });
     } else {
@@ -335,7 +368,7 @@ async function main(argv) {
     removeDir(path.join(versionsDir, stale), { required: false });
   }
   for (const entry of fs.readdirSync(versionsDir)) {
-    if (entry.endsWith(".partial")) removeDir(path.join(versionsDir, entry), { required: false });
+    if (entry.endsWith(PARTIAL_SUFFIX) || entry.endsWith(REPLACED_SUFFIX)) removeDir(path.join(versionsDir, entry), { required: false });
   }
 
   if (options.start) {
