@@ -16,7 +16,19 @@ const ACTIVE_TURN_STATES = new Set([
   "continuation_sent",
   "streaming_continuation",
 ]);
-const RESUMABLE_PREVIOUS_TURN_STATES = new Set(["completed"]);
+// Any turn that ended, as the controller's follow-up rule (stopped, failed,
+// or cut off by a restart).
+const RESUMABLE_PREVIOUS_TURN_STATES = new Set([
+  "completed",
+  "failed",
+  "aborted",
+  "tool_call_blocked_text_only",
+  "transport_handoff_unknown",
+  "response_incomplete",
+  "content_filter_terminal",
+  "max_output_terminal",
+  "empty_output_terminal",
+]);
 const RECOVERABLE_INTERRUPTION_CODES = new Set(["restart_interrupted_turn", "stream_interrupted"]);
 
 function isPlainObject(value) {
@@ -182,7 +194,7 @@ function buildThreadDeckRow(entry = {}, options = {}) {
         : recoverableInterruptedTurnCount > 0
           ? "interrupted_turn_requires_operator_recovery"
           : lastTurnState
-            ? "previous_turn_not_safely_completed"
+            ? "previous_turn_not_ended"
             : "missing_thread_id",
       method: "thread/read",
       effect: "Focus this session so the next direct turn can use local context continuity.",

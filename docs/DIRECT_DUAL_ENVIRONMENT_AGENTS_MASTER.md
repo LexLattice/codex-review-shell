@@ -1837,6 +1837,32 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   `direct-app-control-regression` adds the shared control root and
   `--retire-root`. Both pass on Linux and Windows.
 
+### A thread goes on after a turn that didn't complete
+
+- Status: done
+- Scope: the owner's thread failed every new message with "Direct
+  text-only follow-up requires the previous turn to have completed
+  safely": its last turn had been stopped. The rule, from the text-only
+  prototype (`081b342`), let a thread continue only after a `completed`
+  turn, and Stop marks a turn `aborted`, so any thread whose last turn was
+  stopped, failed, or cut off by a restart took no more messages. Codex
+  and Claude Code continue after an interrupt.
+- Outcome:
+  - A follow-up starts after any turn that ended (the terminal states);
+    the thread deck's Resume follows the same rule.
+  - History (`priorTurnHistoryItems`) keeps what the ended turn did. A
+    call a stopped turn never finished gets Codex's `aborted` output, so
+    every call still has its output. After the turn's items a note says
+    how it ended: "[The user stopped this turn before it finished.]", or
+    "[This turn ended before it finished (failed).]" and the like.
+- **Checks:** new `direct-followup-after-stopped-turn-regression` (stop a
+  turn while its command runs: the next message starts and completes; its
+  history has both calls with outputs, `aborted` for the one that never
+  ran, and the note; a turn the provider failed with 500 doesn't block
+  either). On the old rule it fails with the owner's error.
+  `direct-thread-deck-regression`: Resume is on after a stopped turn and
+  after one cut off by a restart.
+
 ## Baseline and prerequisites
 
 | Item | State |
