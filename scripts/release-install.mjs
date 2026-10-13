@@ -91,12 +91,15 @@ function releaseRoot(env = process.env) {
   return path.resolve(configured || "C:\\LexLattice\\direct-workbench");
 }
 
-function gitInvocation(args, env = process.env) {
-  if (process.platform === "win32" && !env.CODEX_REVIEW_SHELL_RELEASE_SOURCE) {
+function gitInvocation(args, env = process.env, platform = process.platform) {
+  if (platform === "win32" && !env.CODEX_REVIEW_SHELL_RELEASE_SOURCE) {
     const distro = String(env.CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO || "Ubuntu").trim();
     const wslPath = String(env.CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH || "/home/rose/work/LexLattice/codex-review-shell-direct").trim();
-    const wsl = path.join(env.SystemRoot || "C:\\Windows", "System32", "wsl.exe");
-    return { command: fs.existsSync(wsl) ? wsl : "wsl.exe", args: ["-d", distro, "--", "git", "-C", wslPath, ...args] };
+    const wsl = path.win32.join(env.SystemRoot || "C:\\Windows", "System32", "wsl.exe");
+    // --exec, not --: after -- wsl.exe hands the command line to the Linux
+    // shell, which expanded "v*" (git tag --list) against the files in the
+    // current folder.
+    return { command: fs.existsSync(wsl) ? wsl : "wsl.exe", args: ["-d", distro, "--exec", "git", "-C", wslPath, ...args] };
   }
   const source = String(env.CODEX_REVIEW_SHELL_RELEASE_SOURCE || "").trim();
   if (!source) throw new Error("Set CODEX_REVIEW_SHELL_RELEASE_SOURCE to the checkout to install from.");
@@ -379,7 +382,7 @@ async function main(argv) {
   }
 }
 
-export { compareReleaseTags, latestReleaseTag, parseArgs, parseReleaseTag, versionsToPrune };
+export { compareReleaseTags, gitInvocation, latestReleaseTag, parseArgs, parseReleaseTag, versionsToPrune };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main(process.argv.slice(2)).catch((error) => {

@@ -11,6 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   compareReleaseTags,
+  gitInvocation,
   latestReleaseTag,
   parseArgs,
   parseReleaseTag,
@@ -42,6 +43,26 @@ assert.deepEqual(
 assert.equal(parseArgs(["v0.5.1"]).tag, "v0.5.1");
 assert.equal(parseArgs(["--previous"]).previous, true);
 assert.throws(() => parseArgs(["--latest"]), /Unknown option --latest/);
+
+// The WSL checkout is read without a Linux shell in between: through `--`,
+// wsl.exe let the shell expand "v*" against the current folder's files.
+const viaWsl = gitInvocation(["tag", "--list", "v*"], { CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO: "Ubuntu", CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH: "/src/app" }, "win32");
+assert.match(viaWsl.command, /wsl\.exe$/i);
+assert.deepEqual(viaWsl.args, ["-d", "Ubuntu", "--exec", "git", "-C", "/src/app", "tag", "--list", "v*"]);
+assert.deepEqual(gitInvocation(["status"], { CODEX_REVIEW_SHELL_RELEASE_SOURCE: "/src/local" }, "win32"), { command: "git", args: ["-C", "/src/local", "status"] });
+if (process.platform === "win32") {
+  // The real thing, from a folder with a file the pattern would match.
+  const globDir = fs.mkdtempSync(path.join(os.tmpdir(), "direct-release-glob-"));
+  try {
+    fs.writeFileSync(path.join(globDir, "v-not-a-tag.txt"), "");
+    const echoed = spawnSync(viaWsl.command, ["-d", process.env.CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO || "Ubuntu", "--exec", "echo", "v*"], { cwd: globDir, encoding: "utf8", timeout: 60000 });
+    assert.equal(echoed.status, 0, echoed.stderr);
+    assert.equal(echoed.stdout.trim(), "v*", "no shell expands the pattern");
+  } finally {
+    // WSL may hold the folder for a moment after it exits.
+    fs.rmSync(globDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  }
+}
 
 // Pruning keeps current, previous and the newest others, three in all.
 const installed = [

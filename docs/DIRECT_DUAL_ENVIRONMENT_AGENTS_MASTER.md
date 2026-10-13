@@ -1821,6 +1821,12 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   and calls `wsl.exe` by its full path. On Windows npm links a `file:`
   package with an absolute junction, which the rename from `.partial`
   would break (no such package in the app's dependencies).
+- Found at the first real install (`v0.5.0`, no `--ref`): "No release
+  tag". After `--`, `wsl.exe` hands the command line to the Linux shell,
+  which expanded `v*` in `git tag --list v*` against the current folder's
+  files (`C:\` has `venustrade-tray`). The installer now runs git with
+  `wsl.exe --exec` (no shell); fixed in `v0.5.1`. `v0.5.0`'s own updater
+  still has the bug, so the first install is `v0.5.1`.
 - **Checks:** new `direct-release-install-regression` (tag order, argument
   parsing, pruning; the installer end to end against a fixture checkout
   with local packages: newest tag, already installed, switch, back, a
