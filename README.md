@@ -164,6 +164,27 @@ modes refuse to run commands rather than running them unsandboxed. Access
 can't change while a turn is running. `npm run direct:access-profiles` covers
 this behavior.
 
+## Daily app: installed releases
+
+For everyday use, run a tagged release instead of the mirror. Versions are
+installed side by side under `C:\LexLattice\direct-workbench`
+(`CODEX_REVIEW_SHELL_RELEASE_ROOT`); starting the app never changes them.
+
+First install (the newest `v*` tag of the WSL checkout):
+
+```powershell
+node \\wsl.localhost\Ubuntu\home\rose\work\LexLattice\codex-review-shell-direct\scripts\release-install.mjs
+```
+
+Then, from `C:\LexLattice\direct-workbench`:
+
+- `start-direct-workbench.vbs` (or `.cmd`): starts the current version, or brings it to the front. Point the desktop shortcut here.
+- `update-direct-workbench.cmd [TAG]`: installs the newest tag (or TAG), switches to it, and restarts the app on it.
+- `rollback-direct-workbench.cmd`: switches back to the version before.
+- `update-direct-workbench.cmd --list`: installed versions and tags.
+
+To release, tag a commit on `main` (`git tag v0.5.1 && git push origin v0.5.1`) and run the update. The installed app and the mirror share the default profile, so each launcher first asks the other's running app to quit. Three versions are kept: the current one, the previous one, and the most recently used other.
+
 ## Windows + WSL mirror launcher
 
 While building, use the tracked Windows launcher scripts in this repo so the Windows checkout mirrors the WSL worktree before each run:
@@ -177,6 +198,7 @@ What it does:
 
 - checks whether the WSL worktree differs from the mirror (`sync-from-wsl.cmd /check`, which copies nothing)
 - asks the app already running from this folder what it runs (`scripts/app-control.mjs`, over a local named pipe): when nothing changed and it runs the same experience and synced code, the launcher brings it to the front and stops there, with no restart; otherwise the running app quits the ordinary way (ordered shutdown), and is force-stopped if it doesn't within 20 s
+- first asks the installed daily app (see above) to quit when it runs on the same profile
 - mirrors `\\wsl.localhost\<distro>\<path>` to the Windows repo root via `sync-from-wsl.cmd`
 - runs `npm install` only when `package.json` or `package-lock.json` changed, or when the Windows dependency installation is incomplete
 - writes `.wsl-sync-head.txt` in the Windows repo with the mirrored WSL commit hash, and `.sync-generation.txt`, which changes whenever a sync changes files or dependencies

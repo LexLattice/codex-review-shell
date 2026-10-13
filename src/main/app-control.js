@@ -17,8 +17,12 @@ const os = require("node:os");
 const path = require("node:path");
 
 // Written by sync-from-wsl.cmd whenever it changes the mirror's files or
-// dependencies. A running app whose generation differs runs older code.
+// dependencies, and by scripts/release-install.mjs for an installed version.
+// A running app whose generation differs runs older code.
 const SYNC_GENERATION_FILE = ".sync-generation.txt";
+// Installed versions each have their own folder; the release launcher names
+// their shared root here so every version answers on one channel.
+const CONTROL_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_CONTROL_ROOT";
 const MAX_REQUEST_BYTES = 4096;
 const SERVER_SOCKET_TIMEOUT_MS = 5000;
 
@@ -37,6 +41,11 @@ function appControlChannel({ appRoot, userData = "" }) {
     ? process.env.XDG_RUNTIME_DIR
     : os.tmpdir();
   return path.join(runtimeDir, `${name}.sock`);
+}
+
+function appControlRoot(appRoot, env = process.env) {
+  const configured = typeof env[CONTROL_ROOT_ENV_VAR] === "string" ? env[CONTROL_ROOT_ENV_VAR].trim() : "";
+  return configured ? path.resolve(configured) : appRoot;
 }
 
 function readSyncGeneration(appRoot) {
@@ -134,8 +143,10 @@ function startAppControlServer(channel, handlers) {
 }
 
 module.exports = {
+  CONTROL_ROOT_ENV_VAR,
   SYNC_GENERATION_FILE,
   appControlChannel,
+  appControlRoot,
   readSyncGeneration,
   requestAppControl,
   startAppControlServer,

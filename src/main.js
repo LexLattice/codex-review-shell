@@ -401,7 +401,7 @@ const {
 } = require("./main/app-experience");
 
 const { APP_TITLE, CONFIG_FILE_NAME, configureAppProfile } = require("./main/app-profile");
-const { appControlChannel, readSyncGeneration, startAppControlServer } = require("./main/app-control");
+const { appControlChannel, appControlRoot, readSyncGeneration, startAppControlServer } = require("./main/app-control");
 const CHATGPT_THREAD_CACHE_FILE_NAME = "chatgpt-thread-cache.json";
 const MIDDLE_WEB_HISTORY_FILE_NAME = "middle-web-history.json";
 const CHATGPT_THREAD_CACHE_VERSION = 1;
@@ -15468,7 +15468,10 @@ function startAppControl() {
   // A hidden test instance stays out of the launcher's way.
   if (DIRECT_TEST_CONTROL_HIDDEN) return;
   const generation = readSyncGeneration(appRoot);
-  const channel = appControlChannel({ appRoot, userData: activeAppProfile.isolated ? app.getPath("userData") : "" });
+  const channel = appControlChannel({
+    appRoot: appControlRoot(appRoot),
+    userData: activeAppProfile.isolated ? app.getPath("userData") : "",
+  });
   appControlServer = startAppControlServer(channel, {
     hello: () => ({ pid: process.pid, experience: APP_EXPERIENCE.id, generation }),
     quit: () => app.quit(),
