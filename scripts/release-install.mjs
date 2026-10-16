@@ -29,6 +29,38 @@ const REPLACED_SUFFIX = ".replaced";
 const VERSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const INSTALL_LOCK_FILE = ".release-install.lock";
 
+// A PID can outlive its original owner through reuse. Linux start ticks are
+// relative to a boot, while Windows/macOS expose a dated process start time.
+// Unknown identity is never evidence that another installer has exited.
+function processStartIdentity(pid, { platform = process.platform, readFile = fs.readFileSync, run = spawnSync } = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    if (platform === "linux") {
+      const boot = readFile("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      const stat = readFile(`/proc/${pid}/stat`, "utf8");
+      // comm (field 2) can contain spaces and closing parentheses.
+      const start = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[19];
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(boot) && /^\d+$/.test(start || "") ? `linux:${boot}:${start}` : null;
+    }
+    let command;
+    let args;
+    if (platform === "win32") {
+      command = path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+      args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference = 'Stop'; ([System.Diagnostics.Process]::GetProcessById(${pid})).StartTime.ToUniversalTime().Ticks.ToString([System.Globalization.CultureInfo]::InvariantCulture)`];
+    } else if (platform === "darwin") {
+      command = "/bin/ps";
+      args = ["-p", String(pid), "-o", "lstart="];
+    } else return null;
+    const result = run(command, args, { encoding: "utf8", timeout: 5000, maxBuffer: 65536, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, LC_ALL: "C", TZ: "UTC" } });
+    if (result.error || result.status !== 0) return null;
+    const start = String(result.stdout || "").trim();
+    const valid = platform === "win32" ? /^[1-9]\d*$/.test(start) : /^[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}$/.test(start);
+    return valid ? `${platform}:${start}` : null;
+  } catch {
+    return null;
+  }
+}
+
 // Publish a populated directory atomically: rename cannot replace another
 // owner's nonempty lock directory. Recovery renames a dead claim into a
 // permanent, nonempty tombstone keyed by its token. Two stale observers
@@ -36,6 +68,8 @@ const INSTALL_LOCK_FILE = ".release-install.lock";
 // lock after the first has recovered it. No separate recovery lock can be
 // stranded by a crash. Ordinary release also renames before deleting.
 function acquireInstallLock(root) {
+  const startIdentity = processStartIdentity(process.pid);
+  if (!startIdentity) throw new Error("Cannot determine installer process identity; release root was not locked. Retry when process metadata is available.");
   fs.mkdirSync(root, { recursive: true });
   const lockPath = path.join(root, INSTALL_LOCK_FILE);
   const claimsDir = path.join(root, ".release-install-locks");
@@ -51,14 +85,16 @@ function acquireInstallLock(root) {
     if (!Number.isInteger(owner?.pid) || owner.pid <= 0 || !/^[A-Za-z0-9_-]{1,100}$/.test(owner.token || "")) return false;
     try {
       process.kill(owner.pid, 0);
-      return false;
     } catch (error) {
       return error.code === "ESRCH";
     }
+    if (typeof owner.startIdentity !== "string" || !owner.startIdentity.startsWith(`${process.platform}:`)) return false;
+    const currentIdentity = processStartIdentity(owner.pid);
+    return currentIdentity !== null && currentIdentity !== owner.startIdentity;
   };
   fs.mkdirSync(claimPath);
   try {
-    fs.writeFileSync(path.join(claimPath, ownerFile), `${JSON.stringify({ pid: process.pid, token })}\n`, { mode: 0o600 });
+    fs.writeFileSync(path.join(claimPath, ownerFile), `${JSON.stringify({ pid: process.pid, token, startIdentity })}\n`, { mode: 0o600 });
     if (fs.existsSync(lockPath)) {
       const owner = readOwner();
       if (!ownerIsDead(owner)) throw busy();
@@ -448,7 +484,7 @@ async function install(options, root) {
   }
 }
 
-export { acquireInstallLock, compareReleaseTags, gitInvocation, latestReleaseTag, parseArgs, parseReleaseTag, versionsToPrune };
+export { acquireInstallLock, compareReleaseTags, gitInvocation, latestReleaseTag, parseArgs, parseReleaseTag, processStartIdentity, versionsToPrune };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main(process.argv.slice(2)).catch((error) => {

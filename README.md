@@ -185,7 +185,7 @@ Then, from `C:\LexLattice\direct-workbench`:
 
 To release, tag a commit on `main` (`git tag v0.5.1 && git push origin v0.5.1`) and run the update. The installed app and the mirror share the default profile, so each launcher first asks the other's running app to quit. Three versions are kept: the current one, the previous one, and the most recently used other.
 
-Only one installer may update a release root at a time; a second update or rollback refuses while it is busy. Locks from an exited installer are recovered on retry. A release launch whose profile channel does not answer uses that profile's single-instance lock; it does not stop other profiles' Electron processes.
+Only one installer may update a release root at a time; a second update or rollback refuses while it is busy. Locks from an exited installer are recovered on retry, including when its PID has been reused: ownership also records the process start identity (and boot identity on Linux). Unavailable identity metadata preserves existing ownership. A release launch whose profile channel does not answer uses that profile's single-instance lock; it does not stop other profiles' Electron processes.
 
 ## Windows + WSL mirror launcher
 

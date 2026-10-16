@@ -1898,12 +1898,19 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   retry. Nonempty recovery tombstones remain under
   `.release-install-locks` so a paused stale observer cannot displace a
   new owner. There is no separate recovery lock to strand after a crash.
+  Lock records also include a process start identity (boot ID and start
+  ticks on Linux; dated process start time on Windows/macOS), so an unrelated
+  process reusing an interrupted installer's PID does not prevent recovery.
+  Unknown process metadata preserves existing ownership; a new installer
+  refuses before publishing a lock if its own identity cannot be read.
 - Regression coverage stays in the existing exec-server, MCP HTTP,
   workbench live-projects, app-control, and release-install suites. It
   includes denied/unavailable remote metadata, cancellation during
   discovery, Windows file routing, independent MCP switches after saving,
   collapsed activation, missing-profile isolation, concurrent real offline
-  installs, stale observers, and interrupted lock recovery. Windows policy
+  installs, stale observers, interrupted lock recovery, reused live PIDs,
+  Linux boot/start identity changes, and bounded Windows start-time queries.
+  Windows policy
   and routing tests use synthetic transports; native Windows remains a
   separate validation requirement.
 
