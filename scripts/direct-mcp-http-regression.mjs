@@ -19,7 +19,10 @@ const {
   configuredMcpServersForProject,
   configuredMcpServerIdentityInput,
   callConfiguredMcpTool,
+  codexMcpServerEnabledForProject,
   codexServerIdentityId,
+  legacyDisabledCodexMcpServerIds,
+  listConfiguredMcpTools,
   setCodexMcpServersForProject,
   normalizeConfiguredMcpServer,
 } = require("../src/main/direct/external/configured-mcp-adapter.js");
@@ -177,6 +180,57 @@ try {
   assert.equal(catalog.entries.length, distinctNames.length);
   assert.equal(new Set(catalog.entries.map((entry) => entry.functionName)).size, distinctNames.length);
   assert(catalog.entries.every((entry) => entry.functionName.length <= 64 && /^[A-Za-z0-9_-]+$/.test(entry.functionName)));
+
+  // Older project switches used the colliding readable id. Preserve every
+  // disable, but let a later exact switch affect only that server. The UI
+  // spreads the project and its settings when writing an exact identity.
+  const plainName = "my_server";
+  const dottedName = "my.server";
+  const longName = "a".repeat(174);
+  const migrationNames = [plainName, dottedName, "my/server", "my:server", "my@server", longName, `${longName}x`, `${longName}y`];
+  const legacyProject = {
+    id: "p_legacy_disabled",
+    mcpServerSettings: { codex_my_server: { enabled: false }, [`codex_${longName}`]: { enabled: false } },
+  };
+  setCodexMcpServersForProject(legacyProject.id, migrationNames.map((name) => ({ name, command: `never-spawn-${name}` })));
+  assert(configuredMcpServersForProject(legacyProject).every((entry) => entry.enabledState === "disabled"), "raw legacy projects keep their disabled switches");
+  const migratedProject = JSON.parse(JSON.stringify({
+    ...legacyProject,
+    legacyDisabledCodexMcpServerIds: legacyDisabledCodexMcpServerIds(legacyProject),
+  }));
+  const toggle = (project, name, enabled) => JSON.parse(JSON.stringify({
+    ...project,
+    mcpServerSettings: { ...project.mcpServerSettings, [codexServerIdentityId(name)]: { ...project.mcpServerSettings[codexServerIdentityId(name)], enabled } },
+  }));
+  const enabledNames = (project) => configuredMcpServersForProject(project).filter((entry) => entry.enabledState === "enabled").map((entry) => entry.displayName);
+  assert.deepEqual(enabledNames(migratedProject), []);
+  let transportCalls = 0;
+  const listWithSpy = (project) => listConfiguredMcpTools({
+    project, threadId: "migration_thread",
+    profile: { projectId: project.id, serverIdentities: configuredMcpServersForProject(project).map(configuredMcpServerIdentityInput) },
+    mcpSessionPool: { request: async () => { transportCalls += 1; return { tools: [] }; } },
+  });
+  await listWithSpy(migratedProject);
+  assert.equal(transportCalls, 0, "disabled migrated servers never reach tools/list or spawn a process");
+  const plainEnabled = toggle(migratedProject, plainName, true);
+  assert.deepEqual(enabledNames(plainEnabled), [plainName], "enabling the old readable identity leaves its colliding names off");
+  assert.deepEqual(legacyDisabledCodexMcpServerIds(plainEnabled), migratedProject.legacyDisabledCodexMcpServerIds, "saved disables survive enabling the old identity");
+  assert.deepEqual(enabledNames(toggle(plainEnabled, plainName, false)), []);
+  const dottedEnabled = toggle(migratedProject, dottedName, true);
+  assert.deepEqual(enabledNames(dottedEnabled), [dottedName], "enabling a hashed identity leaves the readable identity and other collisions off");
+  await listWithSpy(dottedEnabled);
+  assert.equal(transportCalls, 1, "only the explicitly enabled identity reaches the transport");
+  const bothEnabled = toggle(plainEnabled, dottedName, true);
+  assert.deepEqual(enabledNames(toggle(bothEnabled, plainName, false)), [dottedName]);
+  assert.deepEqual(enabledNames(toggle(bothEnabled, dottedName, false)), [plainName]);
+  const longEnabled = toggle(migratedProject, `${longName}x`, true);
+  assert.equal(codexMcpServerEnabledForProject(longEnabled, `${longName}x`), true);
+  assert.equal(codexMcpServerEnabledForProject(longEnabled, `${longName}y`), false);
+  const freshProject = { ...legacyProject, mcpServerSettings: {}, legacyDisabledCodexMcpServerIds: [] };
+  const newlyDisabled = toggle(freshProject, plainName, false);
+  assert.equal(codexMcpServerEnabledForProject(newlyDisabled, dottedName), true, "new exact disables do not create another legacy collision");
+  assert.deepEqual(legacyDisabledCodexMcpServerIds(newlyDisabled), [], "an empty persisted snapshot marks migration complete");
+
   const approvalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-mcp-name-approvals-"));
   try {
     const rules = new DirectApprovalRuleStore({ rootDir: approvalRoot });

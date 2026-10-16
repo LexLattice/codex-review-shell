@@ -20,7 +20,7 @@ const {
   CODEX_EXEC_SERVER_BACKEND_ID,
   SCRATCH_PARENT,
   SCRATCH_PREFIX,
-  execServerSandboxFor,
+  execServerSandboxForSession,
   execUriToPath,
   isAbsoluteFor,
   pathApiFor,
@@ -145,7 +145,7 @@ class CodexExecServerProcessHandle extends EventEmitter {
     try {
       const resolved = await this.manager.connectionFor(this.project);
       connection = resolved.connection;
-      const { environment, info } = resolved;
+      const { environment } = resolved;
       if (this.state !== "starting") return;
       this.connection = connection;
       connection.on("notification", this.onNotification);
@@ -157,10 +157,14 @@ class CodexExecServerProcessHandle extends EventEmitter {
         this.removeScratch();
         return;
       }
-      const sandbox = execServerSandboxFor(this.plan.sandboxMode, environment, info, {
+      const sandbox = await execServerSandboxForSession(this.plan.sandboxMode, resolved, {
         windowsSandboxLevel: this.plan.windowsSandboxLevel || windowsSandboxLevel(),
         writableDirs: scratch ? [scratch] : [],
       });
+      if (this.state !== "starting") {
+        this.removeScratch();
+        return;
+      }
       this.startDispatched = true;
       const result = await connection.request("process/start", {
         processId: this.sessionId,
@@ -495,6 +499,19 @@ class CodexExecServerFilePort {
     this.manager = options.manager || null;
   }
 
+  // Windows restricted-token cannot hide credential files, and exec-server's
+  // protocol has no post-open identity check. Keep sandboxed file tools on
+  // Direct's local/remote ports, which perform that check before reading.
+  canServe(grant, project) {
+    return Boolean(this.manager) && (grant?.sandboxMode === "danger-full-access" || this.manager.environmentFor(project).platform !== "win32");
+  }
+
+  assertSafeEnvironment(grant, environment) {
+    if (environment.platform === "win32" && grant?.sandboxMode !== "danger-full-access") {
+      throw localError("direct_codex_exec_server_file_sandbox_unavailable", "Sandboxed Windows file tools require Direct's file executor to protect credential stores.");
+    }
+  }
+
   async session(input) {
     if (!this.manager || !input?.project) {
       throw localError("direct_full_access_environment_unavailable", "Codex exec-server isn't available for this workspace.");
@@ -507,11 +524,12 @@ class CodexExecServerFilePort {
     return connection.request(method, params, FILE_REQUEST_TIMEOUT_MS);
   }
 
-  sandbox(grant, session) {
-    return execServerSandboxFor(grant?.sandboxMode, session.environment, session.info, { windowsSandboxLevel: windowsSandboxLevel() });
+  async sandbox(grant, session) {
+    this.assertSafeEnvironment(grant, session.environment);
+    return execServerSandboxForSession(grant?.sandboxMode, session, { windowsSandboxLevel: windowsSandboxLevel() });
   }
 
-  resolveTarget(input, _grant, rawPath, label) {
+  resolveTarget(input, grant, rawPath, label) {
     if (!this.manager) throw localError("direct_full_access_environment_unavailable", "Codex exec-server isn't available for this workspace.");
     let environment;
     try {
@@ -519,6 +537,7 @@ class CodexExecServerFilePort {
     } catch (error) {
       throw localError(error.code || "direct_full_access_environment_unavailable", error.message);
     }
+    this.assertSafeEnvironment(grant, environment);
     const api = pathApiFor(environment.platform);
     const text = pathText(rawPath, label);
     const target = api.resolve(isAbsoluteFor(environment.platform, text) ? text : api.join(environment.root, text));
@@ -559,6 +578,7 @@ class CodexExecServerFilePort {
   async assertReadable(grant, resolved, input) {
     if (grant?.sandboxMode === "danger-full-access") return;
     const session = await this.session(input);
+    this.assertSafeEnvironment(grant, session.environment);
     const real = await this.realPath(session, resolved);
     const realRoot = await this.realPath(session, resolved, resolved.root);
     const refusal = sandboxedReadRefusal(real, { platform: resolved.platform === "win32" ? "win32" : "linux", workspaceRoot: realRoot });
@@ -591,6 +611,7 @@ class CodexExecServerFilePort {
 
   async readFile(resolved, maxBytesInput, input = {}, grant = null, capBytes = MAX_READ_FILE_BYTES) {
     const session = await this.session(input);
+    this.assertSafeEnvironment(grant, session.environment);
     let meta;
     try {
       meta = await this.metadata(session, resolved, grant);
@@ -605,11 +626,12 @@ class CodexExecServerFilePort {
     const handleId = `direct_read_${crypto.randomBytes(8).toString("hex")}`;
     const chunks = [];
     let total = 0;
+    const sandbox = await this.sandbox(grant, session);
     try {
       await session.connection.request("fs/open", {
         handleId,
         path: pathToExecUri(resolved.target, resolved.platform),
-        sandbox: this.sandbox(grant, session),
+        sandbox,
       }, FILE_REQUEST_TIMEOUT_MS);
     } catch (error) {
       if (rpcDenied(error)) throw this.deniedError();
@@ -635,6 +657,7 @@ class CodexExecServerFilePort {
 
   async readPatchTarget(resolved, operation, input = {}, grant = null) {
     const session = await this.session(input);
+    this.assertSafeEnvironment(grant, session.environment);
     let meta;
     try {
       meta = await this.metadata(session, resolved, grant);
@@ -648,10 +671,11 @@ class CodexExecServerFilePort {
       throw localError("direct_full_access_patch_target_oversized", "The selected patch target exceeds the bounded patch input limit.");
     }
     let result;
+    const sandbox = await this.sandbox(grant, session);
     try {
       result = await session.connection.request("fs/readFile", {
         path: pathToExecUri(resolved.target, resolved.platform),
-        sandbox: this.sandbox(grant, session),
+        sandbox,
       }, FILE_REQUEST_TIMEOUT_MS);
     } catch (error) {
       if (rpcDenied(error)) throw this.deniedError();
@@ -699,7 +723,7 @@ class CodexExecServerFilePort {
       }
     }
     const session = await this.session(input);
-    const sandbox = this.sandbox(grant, session);
+    const sandbox = await this.sandbox(grant, session);
     for (const plan of plans) {
       const resolved = plan._resolved;
       const api = pathApiFor(resolved.platform);

@@ -11,8 +11,8 @@
 //       once more, which brings it to the front (src/boot.js).
 //     Exit 10: no app is running now (one running other code was asked to
 //       quit, and force-stopped if it didn't within the grace period).
-//     Exit 20: nothing answered but Electron processes are running (an app
-//       from before the channel, or a hung one): the launcher stops them.
+//     An unanswered channel never authorizes stopping other processes. The
+//       next launch uses Electron's single-instance lock for this profile.
 //   node scripts/app-control.mjs hello
 //     Prints the running app's reply; exit 1 when none answers.
 import { spawnSync } from "node:child_process";
@@ -65,12 +65,6 @@ function forceStop(pid) {
   }
 }
 
-function electronProcessesRunning() {
-  if (process.platform !== "win32") return false;
-  const run = spawnSync(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tasklist.exe"), ["/FI", "IMAGENAME eq electron.exe", "/FO", "CSV", "/NH"], { encoding: "utf8" });
-  return /electron\.exe/i.test(run.stdout || "");
-}
-
 // Asks the app to quit the ordinary way; force-stops it after the grace period.
 async function stopApp(channel, pid) {
   const started = Date.now();
@@ -115,11 +109,7 @@ if (command !== "reuse") {
 }
 
 if (!hello.ok) {
-  if (electronProcessesRunning()) {
-    log(`no app answered (${hello.error}); Electron processes are running`);
-    process.exit(20);
-  }
-  log("no app is running");
+  log(`no app answered on this profile (${hello.error}); starting through its single-instance lock`);
   process.exit(10);
 }
 

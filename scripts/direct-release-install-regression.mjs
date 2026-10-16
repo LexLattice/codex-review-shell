@@ -4,22 +4,58 @@
 // the release launchers it copies into the release root.
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  acquireInstallLock,
   compareReleaseTags,
   gitInvocation,
   latestReleaseTag,
   parseArgs,
   parseReleaseTag,
+  processStartIdentity,
   versionsToPrune,
 } from "./release-install.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relativePath) => fs.readFileSync(path.join(repo, relativePath), "utf8");
+
+// Process identity is independent of PID liveness, and failed inspection is
+// unknown rather than permission to take over another installer's lock.
+const selfIdentity = processStartIdentity(process.pid);
+assert.ok(selfIdentity?.startsWith(`${process.platform}:`));
+assert.equal(processStartIdentity(-1), null);
+const bootId = "12345678-1234-1234-1234-123456789abc";
+const linuxIdentity = (boot, start) => processStartIdentity(42, {
+  platform: "linux",
+  readFile: (file) => file.endsWith("boot_id") ? `${boot}\n` : `42 (worker ) with spaces) ${["S", ...Array(18).fill("0"), start, "0"].join(" ")}\n`,
+});
+assert.equal(linuxIdentity(bootId, "98765"), `linux:${bootId}:98765`, "stat starttime is field 22 even with parentheses in comm");
+assert.notEqual(linuxIdentity(bootId, "98765"), linuxIdentity(bootId, "98766"), "PID reuse within a boot changes identity");
+assert.notEqual(linuxIdentity(bootId, "98765"), linuxIdentity("abcdefab-1234-1234-1234-123456789abc", "98765"), "identical PID/start ticks after reboot remain distinct");
+assert.equal(linuxIdentity("not-a-boot-id", "98765"), null);
+assert.equal(linuxIdentity(bootId, "bad-start"), null);
+assert.equal(processStartIdentity(42, { platform: "linux", readFile: () => { throw new Error("access denied"); } }), null);
+const windowsIdentity = (result) => processStartIdentity(42, { platform: "win32", run: (command, args, options) => {
+  assert.match(command, /WindowsPowerShell\\v1\.0\\powershell\.exe$/);
+  assert.ok(args.includes("-NoProfile"));
+  assert.match(args.at(-1), /GetProcessById\(42\).*StartTime\.ToUniversalTime\(\)\.Ticks/);
+  assert.equal(options.timeout, 5000, "process inspection is bounded");
+  assert.equal(options.windowsHide, true);
+  return result;
+} });
+assert.equal(windowsIdentity({ status: 0, stdout: "638962500000000000\r\n" }), "win32:638962500000000000");
+assert.equal(windowsIdentity({ status: 1, stdout: "" }), null);
+assert.equal(windowsIdentity({ status: 0, stdout: "Access denied" }), null);
+assert.equal(windowsIdentity({ status: null, error: { code: "ETIMEDOUT" } }), null);
+assert.equal(processStartIdentity(42, { platform: "darwin", run: (_command, _args, options) => {
+  assert.equal(options.env.TZ, "UTC", "timezone changes cannot alter a live process identity");
+  assert.equal(options.env.LC_ALL, "C");
+  return { status: 0, stdout: "Fri Oct 16 21:30:00 2026\n" };
+} }), "darwin:Fri Oct 16 21:30:00 2026");
 
 // Tags.
 assert.deepEqual(parseReleaseTag("v0.5.0"), { tag: "v0.5.0", numbers: [0, 5, 0], prerelease: "" });
@@ -89,7 +125,7 @@ assert.match(releaseLauncher, /set "ELECTRON_EXE=%VERSION_DIR%\\node_modules\\el
 assert.match(releaseLauncher, /app-control\.mjs" reuse --retire-root "%MIRROR_ROOT%"/);
 assert.match(releaseLauncher, /copy \/y "%~f0" "!LAUNCH_COPY!"/, "an update may rewrite it while it waits on the app");
 assert.doesNotMatch(releaseLauncher, /sync-from-wsl|npm(?:\.cmd"?)? (?:install|ci)|release-install\.mjs"/i, "starting never changes the installed code");
-assert.match(releaseLauncher, /\$_\.ExecutablePath -like \(\$env:RELEASE_VERSIONS \+ '\*'\)/, "only this release root's hung apps are stopped");
+assert.doesNotMatch(releaseLauncher, /Stop-Process|taskkill|stop_unanswering_versions/i, "an unanswered profile never authorizes killing other profiles");
 const updater = read("release/update-direct-workbench.cmd");
 assert.match(updater, /versions\\%CURRENT%\\scripts\\release-install\.mjs/);
 assert.match(updater, /copy \/y "%~f0" "!UPDATE_COPY!"/, "the installer rewrites it while it runs");
@@ -101,6 +137,56 @@ assert.match(mirrorLauncher, /if exist "!RELEASE_ROOT!\\current\.txt" set "REUSE
 // End to end against a fixture checkout (no dependencies, so npm ci runs offline).
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "direct-release-install-"));
 try {
+  const lockRoot = path.join(temp, "lock ownership");
+  const unlock = acquireInstallLock(lockRoot);
+  const ownerPath = path.join(lockRoot, ".release-install.lock", "owner.json");
+  const liveOwner = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
+  assert.equal(liveOwner.startIdentity, selfIdentity, "the published owner records its process start identity");
+  assert.throws(() => acquireInstallLock(lockRoot), /Another release install owns/);
+  assert.equal(fs.readFileSync(ownerPath, "utf8").includes(liveOwner.token), true, "a matching live owner remains protected");
+  fs.writeFileSync(ownerPath, JSON.stringify({ pid: liveOwner.pid, token: liveOwner.token }));
+  assert.throws(() => acquireInstallLock(lockRoot), /Another release install owns/, "legacy live-PID locks without identity remain protected");
+  fs.writeFileSync(ownerPath, JSON.stringify(liveOwner));
+  unlock();
+  // A stale record names a PID which is demonstrably still alive, but now
+  // belongs to a different process incarnation. Recovery must not kill it.
+  process.kill(process.pid, 0);
+  fs.mkdirSync(path.dirname(ownerPath));
+  const staleIdentity = process.platform === "linux" ? `linux:00000000-0000-0000-0000-000000000000:${selfIdentity.split(":").at(-1)}`
+    : process.platform === "win32" ? `win32:${BigInt(selfIdentity.split(":")[1]) - 1n}`
+      : "darwin:Thu Jan  1 00:00:00 1970";
+  fs.writeFileSync(ownerPath, JSON.stringify({ pid: process.pid, token: "reused-pid", startIdentity: staleIdentity }));
+  const unlockReusedPid = acquireInstallLock(lockRoot);
+  assert.notEqual(JSON.parse(fs.readFileSync(ownerPath, "utf8")).token, "reused-pid", "a reused live PID does not strand updates or rollback");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(lockRoot, ".release-install-locks", "recovered-reused-pid", "owner.json"), "utf8")).startIdentity, staleIdentity);
+  process.kill(process.pid, 0);
+  unlockReusedPid();
+  if (process.platform === "linux") {
+    fs.mkdirSync(path.dirname(ownerPath));
+    const earlierStart = `${selfIdentity.slice(0, selfIdentity.lastIndexOf(":"))}:${BigInt(selfIdentity.split(":").at(-1)) - 1n}`;
+    fs.writeFileSync(ownerPath, JSON.stringify({ pid: process.pid, token: "same-boot-reused-pid", startIdentity: earlierStart }));
+    acquireInstallLock(lockRoot)();
+    assert.equal(fs.existsSync(path.join(lockRoot, ".release-install-locks", "recovered-same-boot-reused-pid")), true, "a reused PID from the same boot is also recovered");
+  }
+  const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"], { encoding: "utf8" });
+  assert.equal(exited.status, 0);
+  fs.mkdirSync(path.join(lockRoot, ".release-install.lock"));
+  fs.writeFileSync(path.join(lockRoot, ".release-install.lock", "owner.json"), JSON.stringify({ pid: exited.pid, token: "dead-owner" }));
+  const unlockRecovered = acquireInstallLock(lockRoot);
+  const recoveredOwner = JSON.parse(fs.readFileSync(path.join(lockRoot, ".release-install.lock", "owner.json"), "utf8"));
+  assert.equal(recoveredOwner.pid, process.pid);
+  const tombstone = path.join(lockRoot, ".release-install-locks", "recovered-dead-owner");
+  assert.throws(() => fs.renameSync(path.join(lockRoot, ".release-install.lock"), tombstone), "a paused stale observer cannot replace its predecessor's nonempty tombstone with a live owner's lock");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(lockRoot, ".release-install.lock", "owner.json"), "utf8")).token, recoveredOwner.token);
+  unlockRecovered();
+  assert.equal(fs.existsSync(path.join(lockRoot, ".release-install.lock")), false, "locks are released after ownership ends");
+  // A recovery interrupted after retiring the dead lock leaves only its
+  // tombstone. There is no second lock to strand, and retry can acquire.
+  fs.mkdirSync(path.join(lockRoot, ".release-install.lock"));
+  fs.writeFileSync(path.join(lockRoot, ".release-install.lock", "owner.json"), JSON.stringify({ pid: exited.pid, token: "interrupted-recovery" }));
+  fs.renameSync(path.join(lockRoot, ".release-install.lock"), path.join(lockRoot, ".release-install-locks", "recovered-interrupted-recovery"));
+  acquireInstallLock(lockRoot)();
+
   const source = path.join(temp, "source");
   const root = path.join(temp, "release root");
   fs.mkdirSync(path.join(source, "release"), { recursive: true });
@@ -257,6 +343,53 @@ try {
   assert.equal(current(), "v0.3.0-rc.1");
   assert.equal(previous(), "main-test");
   assert.ok(!versions().some((name) => name.endsWith(".partial") || name.endsWith(".replaced")), versions().join(" "));
+
+  // Hold the first real installer inside npm's lifecycle hook. A second
+  // installer must refuse before touching its staging directory or pointers.
+  const waitingPackage = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"));
+  waitingPackage.scripts = { install: "node install-wait.cjs" };
+  fs.writeFileSync(path.join(source, "package.json"), JSON.stringify(waitingPackage));
+  fs.writeFileSync(path.join(source, "install-wait.cjs"), `
+const fs = require("node:fs");
+fs.writeFileSync(process.env.RELEASE_TEST_READY, "ready");
+const timer = setInterval(() => {
+  if (fs.existsSync(process.env.RELEASE_TEST_CONTINUE)) clearInterval(timer);
+}, 20);
+setTimeout(() => process.exit(2), 30000).unref();
+`);
+  git("add", "-A");
+  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "waiting install fixture");
+  const concurrentRoot = path.join(temp, "concurrent releases");
+  const ready = path.join(temp, "install-ready");
+  const proceed = path.join(temp, "install-continue");
+  const concurrentEnv = { ...env, CODEX_REVIEW_SHELL_RELEASE_ROOT: concurrentRoot, RELEASE_TEST_READY: ready, RELEASE_TEST_CONTINUE: proceed };
+  const first = spawn(process.execPath, [script, "--offline", "--no-start", "--ref", "HEAD", "--name", "slow"], { env: concurrentEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let firstOutput = "";
+  first.stdout.on("data", (chunk) => { firstOutput += chunk; });
+  first.stderr.on("data", (chunk) => { firstOutput += chunk; });
+  const firstDone = new Promise((resolve, reject) => {
+    first.on("error", reject);
+    first.on("close", resolve);
+  });
+  try {
+    const deadline = Date.now() + 15000;
+    while (!fs.existsSync(ready) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(fs.existsSync(ready), `the first installer entered npm: ${firstOutput}`);
+    const second = spawnSync(process.execPath, [script, "--offline", "--no-start", "v0.1.0"], { env: concurrentEnv, encoding: "utf8", timeout: 15000 });
+    assert.equal(second.status, 1, second.stdout + second.stderr);
+    assert.match(second.stderr, /Another release install owns/);
+    assert.ok(fs.existsSync(path.join(concurrentRoot, "versions", "slow.partial", "package.json")), "the active staging folder survives");
+    assert.equal(fs.existsSync(path.join(concurrentRoot, "current.txt")), false, "the refused installer changes no pointers");
+    fs.writeFileSync(proceed, "continue");
+    assert.equal(await firstDone, 0, firstOutput);
+    assert.equal(fs.readFileSync(path.join(concurrentRoot, "current.txt"), "utf8").trim(), "slow");
+    const after = spawnSync(process.execPath, [script, "--offline", "--no-start", "v0.1.0"], { env: concurrentEnv, encoding: "utf8", timeout: 15000 });
+    assert.equal(after.status, 0, after.stdout + after.stderr);
+    assert.equal(fs.existsSync(path.join(concurrentRoot, ".release-install.lock")), false);
+  } finally {
+    fs.writeFileSync(proceed, "continue");
+    await firstDone;
+  }
 
   console.log("direct release install regression passed");
 } finally {

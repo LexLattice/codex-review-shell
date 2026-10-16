@@ -8,6 +8,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +20,43 @@ const temp = fs.mkdtempSync(path.join(os.tmpdir(), "direct-app-control-"));
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 try {
+  // Windows: a missing channel for B says nothing about the healthy app
+  // in A. Exercise the actual client with a synthetic process table; no
+  // native process is enumerated or signalled by this fixture.
+  const script = path.join(repo, "scripts", "app-control.mjs");
+  const clientSource = fs.readFileSync(script, "utf8")
+    .replace(/^#!.*\n/, "")
+    .replace(/^import .*;\s*$/gm, "")
+    .replaceAll("import.meta.url", JSON.stringify(new URL("./app-control.mjs", import.meta.url).href));
+  let processQueries = 0;
+  let channelRequests = 0;
+  const fixtureProcess = {
+    platform: "win32",
+    env: { CODEX_REVIEW_SHELL_USER_DATA_DIR: "/fixture/profile-b", CODEX_EXPERIENCE: "direct-workbench" },
+    argv: ["node", script, "reuse"],
+    exit: (code) => { throw Object.assign(new Error("fixture exit"), { fixtureExit: code }); },
+    kill: () => { throw new Error("An unrelated profile must never be signalled"); },
+  };
+  const context = vm.createContext({
+    process: fixtureProcess, os, path, fileURLToPath, setTimeout,
+    console: { log() {}, error() {} },
+    spawnSync: () => {
+      processQueries += 1;
+      return { stdout: '"electron.exe","424242","profile-a"\r\n' };
+    },
+    createRequire: () => (name) => name === "../src/main/app-control.js"
+      ? { ...control, requestAppControl: async () => { channelRequests += 1; return { ok: false, error: "ENOENT" }; } }
+      : require(name),
+  });
+  let exit;
+  try { await vm.runInContext(`(async () => { ${clientSource}\n})()`, context); } catch (error) {
+    if (error.fixtureExit === undefined) throw error;
+    exit = error.fixtureExit;
+  }
+  assert.equal(exit, 10, "B starts through its own singleton lock, leaving A alone");
+  assert.equal(channelRequests, 1);
+  assert.equal(processQueries, 0, "a missing profile channel does not trigger an unscoped process search");
+
   // Channel names: per folder and profile; the default profile has its own.
   const a = appControlChannel({ appRoot: "/apps/one" });
   assert.equal(a, appControlChannel({ appRoot: "/apps/one/" }));
@@ -95,8 +133,7 @@ setTimeout(() => process.exit(3), 30000);
   const client = (...args) => spawnSync(process.execPath, [path.join(repo, "scripts", "app-control.mjs"), ...args], { env: clientEnv, encoding: "utf8", timeout: 30000 });
 
   const none = client("reuse");
-  // 20 on Windows when other Electron apps happen to run.
-  const freshCodes = process.platform === "win32" ? [10, 20] : [10];
+  const freshCodes = [10];
   assert.ok(freshCodes.includes(none.status), `nothing running: start fresh (${none.status}) ${none.stdout}${none.stderr}`);
 
   const same = await startFake();

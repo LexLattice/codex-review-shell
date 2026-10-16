@@ -237,6 +237,13 @@
     return button;
   }
 
+  function openProjectButton(row) {
+    const open = el("button", "wb-empty-start", row.needsYouCount ? "Waiting for you · Open to see its threads" : "Open to see its threads");
+    open.type = "button";
+    open.addEventListener("click", () => run("open", () => bridge.openDirectWorkbenchThread({ projectId: row.projectId, threadId: "" })));
+    return open;
+  }
+
   function projectGroup(row) {
     const { threads, hidden, unlisted } = visibleThreads(row);
     if (view.query && !threads.length) return null;
@@ -277,10 +284,7 @@
       for (const thread of threads) list.append(threadRow(row, thread));
       if (unlisted) {
         // An Appserver project's threads are listed once it is open.
-        const open = el("button", "wb-empty-start", row.needsYouCount ? "Waiting for you · Open to see its threads" : "Open to see its threads");
-        open.type = "button";
-        open.addEventListener("click", () => run("open", () => bridge.openDirectWorkbenchThread({ projectId: row.projectId, threadId: "" })));
-        list.append(open);
+        list.append(openProjectButton(row));
       } else if (!threads.length) {
         const start = el("button", "wb-empty-start", "No threads yet · Start one");
         start.type = "button";
@@ -340,6 +344,7 @@
     flyout.append(head);
     const { threads, unlisted } = visibleThreads(row);
     for (const thread of threads) flyout.append(threadRow(row, thread));
+    if (unlisted) flyout.append(openProjectButton(row));
     const start = el("button", "wb-empty-start", threads.length || unlisted ? "New thread here" : "No threads yet · Start one");
     start.type = "button";
     start.addEventListener("click", () => newThread(row));

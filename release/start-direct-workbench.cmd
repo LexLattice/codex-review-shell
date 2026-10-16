@@ -39,7 +39,6 @@ set "MIRROR_ROOT=%CODEX_REVIEW_SHELL_WINDOWS_MIRROR%"
 if not defined MIRROR_ROOT set "MIRROR_ROOT=C:\LexLattice\codex-review-shell-direct"
 
 set "NODE_EXE=C:\Program Files\nodejs\node.exe"
-set "POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 set "LAUNCH_ID=%DATE%_%TIME%"
 set "LAUNCH_ID=!LAUNCH_ID:/=-!"
 set "LAUNCH_ID=!LAUNCH_ID::=-!"
@@ -77,7 +76,7 @@ cd /d "%VERSION_DIR%"
 
 rem Keeps a running app on the current version; one on another version, or
 rem one from the mirror, quits first.
-set "REUSE_RC=20"
+set "REUSE_RC=10"
 if exist "%NODE_EXE%" (
   "%NODE_EXE%" "%VERSION_DIR%\scripts\app-control.mjs" reuse --retire-root "%MIRROR_ROOT%" >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
   set "REUSE_RC=!ERRORLEVEL!"
@@ -90,21 +89,15 @@ if "!REUSE_RC!"=="0" (
   call :stage "Direct Workbench %CURRENT% is already running; brought it to the front"
   exit /b 0
 )
-if "!REUSE_RC!"=="20" call :stop_unanswering_versions
+rem An unanswered profile channel is not evidence that another profile's
+rem app is hung. Electron's profile lock handles an existing instance; only
+rem app-control may stop a PID that answered this profile's channel.
 
 call :stage "Starting Direct Workbench %CURRENT%"
 "%ELECTRON_EXE%" . >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
 set "APP_RC=%ERRORLEVEL%"
 call :stage "Direct Workbench exited with code %APP_RC%"
 exit /b %APP_RC%
-
-rem Nothing answered the control channel, or Node.js couldn't ask: stop an
-rem app from this release root that hangs (Electron processes of anything
-rem else stay).
-:stop_unanswering_versions
-set "RELEASE_VERSIONS=%ROOT_DIR%\versions\"
-"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'electron.exe' -and $_.ExecutablePath -like ($env:RELEASE_VERSIONS + '*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
-exit /b 0
 
 :stage
 echo [Direct Workbench] %~1

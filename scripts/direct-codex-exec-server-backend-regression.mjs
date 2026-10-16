@@ -17,6 +17,7 @@ const {
   execServerEnvironmentFor,
   execServerLaunchSpec,
   execServerSandboxFor,
+  execServerSandboxForSession,
   execUriToPath,
   pathToExecUri,
   posixExecServerScript,
@@ -178,14 +179,111 @@ await check("sandbox: none for Full access; profiles map to read/write entries a
   assert.equal(access(onDrive).includes("deny:file:///mnt"), false, "a project on a Windows drive keeps its drive");
   assert.equal(access(onDrive).includes("deny:file:///run/WSL"), true, "interop stays closed either way");
   const windowsEnvironment = { key: "local", platform: "win32", root: "C:\\p", local: false };
-  const windows = execServerSandboxFor("workspace-write", windowsEnvironment, { userHomeDir: "file:///C:/Users/u" }, { windowsSandboxLevel: "mxc" });
+  const windows = execServerSandboxFor("workspace-write", windowsEnvironment, { userHomeDir: "file:///C:/Users/u" }, { windowsSandboxLevel: "mxc", credentialFiles: [] });
   assert.equal(windows.windowsSandboxLevel, "mxc");
   assert.equal(access(windows).includes("deny:file:///C:/Users/u/.codex/auth.json"), true);
-  const restrictedToken = execServerSandboxFor("workspace-write", windowsEnvironment, { userHomeDir: "file:///C:/Users/u" }, {});
+  const restrictedToken = execServerSandboxFor("workspace-write", windowsEnvironment, { userHomeDir: "file:///C:/Users/u" }, { credentialFiles: [] });
   assert.equal(restrictedToken.windowsSandboxLevel, "restricted-token");
   assert.deepEqual(access(restrictedToken), ["read:root", "write:project_roots", "write:tmpdir"], "restricted-token refuses denied paths");
-  const windowsReadOnly = execServerSandboxFor("read-only", windowsEnvironment, { userHomeDir: "file:///C:/Users/u" }, {});
+  const windowsReadOnly = execServerSandboxFor("read-only", windowsEnvironment, { userHomeDir: "file:///C:/Users/u" }, { credentialFiles: [] });
   assert.deepEqual(access(windowsReadOnly), ["read:root"], "restricted-token refuses a read-only profile with any writable folder");
+});
+
+function remoteCredentialFixture(overrides = {}) {
+  const directory = (fileName) => ({ fileName, isDirectory: true, isFile: false });
+  const config = "/home/u/.config";
+  const dirs = new Map([
+    [config, [directory("app"), directory("linked-app"), { fileName: "ordinary.conf", isDirectory: false, isFile: true }]],
+    [`${config}/app`, [directory("direct-auth"), directory("profile")]],
+    [`${config}/linked-app`, []],
+  ]);
+  const stores = [
+    `${config}/app/direct-auth/auth.json`,
+    `${config}/app/profile/direct-auth/auth.json`,
+    `${config}/linked-app/direct-auth/auth.json`,
+  ];
+  const canonicalStore = "/credential-data/direct-token.json";
+  const connection = new FakeConnection({
+    "fs/readDirectory": ({ path: uri }) => {
+      const entries = dirs.get(execUriToPath(uri, "linux"));
+      if (!entries) throw missing();
+      return { entries };
+    },
+    "fs/getMetadata": ({ path: uri }) => {
+      const target = execUriToPath(uri, "linux");
+      if (!stores.includes(target)) throw missing();
+      return { isFile: true, isDirectory: false, isSymlink: target === stores[2] };
+    },
+    "fs/canonicalize": ({ path: uri }) => ({ path: execUriToPath(uri, "linux") === stores[2] ? pathToExecUri(canonicalStore, "linux") : uri }),
+    "process/start": () => ({ sandboxType: "linuxSeccomp" }),
+    ...overrides,
+  });
+  const environment = { key: "wsl:fixture", platform: "linux", root: ROOT, local: false };
+  const session = { connection, environment, info: INFO };
+  const manager = { environmentFor: () => environment, connectionFor: async () => session };
+  return { connection, session, manager, stores: [...stores, canonicalStore] };
+}
+
+await check("remote sandbox discovery denies native app/profile stores and canonical aliases without reading content", async () => {
+  const f = remoteCredentialFixture();
+  for (const sandboxMode of ["workspace-write", "read-only"]) {
+    const profile = await execServerSandboxForSession(sandboxMode, f.session);
+    const deniedUris = profile.permissions.file_system.entries.filter((entry) => entry.access === "deny").map((entry) => entry.path.path);
+    for (const store of f.stores) assert(deniedUris.includes(pathToExecUri(store, "linux")), `${sandboxMode}: ${store}`);
+  }
+  assert(f.connection.calls.every((call) => ["fs/readDirectory", "fs/getMetadata", "fs/canonicalize"].includes(call.method)), "discovery must never read credential contents");
+  const handle = new CodexExecServerProcessHandle({ manager: f.manager, project, sessionId: "remote_stores", plan: { sandboxMode: "workspace-write", argv: ["/bin/true"], cwd: ROOT } });
+  await new Promise((resolve, reject) => { handle.onStarted(resolve); handle.onError(reject); });
+  const start = f.connection.calls.find((call) => call.method === "process/start");
+  for (const store of f.stores) assert(start.params.sandbox.permissions.file_system.entries.some((entry) => entry.access === "deny" && entry.path.path === pathToExecUri(store, "linux")));
+  f.connection.emit("notification", "process/closed", { processId: "remote_stores" });
+  const metadata = f.connection.handlers["fs/getMetadata"];
+  f.connection.handlers["fs/getMetadata"] = (params) => execUriToPath(params.path, "linux") === `${ROOT}/ordinary.txt`
+    ? { isFile: true, isDirectory: false, isSymlink: false, size: 4 }
+    : metadata(params);
+  f.connection.handlers["fs/readBlock"] = () => ({ chunk: Buffer.from("safe").toString("base64"), eof: true });
+  const port = new CodexExecServerFilePort({ manager: f.manager });
+  const resolved = port.resolveTarget({ project }, { sandboxMode: "read-only" }, "ordinary.txt");
+  assert.equal((await port.readFile(resolved, undefined, { project }, { sandboxMode: "read-only" })).bytes.toString(), "safe");
+  const open = f.connection.calls.find((call) => call.method === "fs/open");
+  for (const store of f.stores) assert(open.params.sandbox.permissions.file_system.entries.some((entry) => entry.access === "deny" && entry.path.path === pathToExecUri(store, "linux")));
+});
+
+await check("incomplete remote credential policy refuses sandboxed commands, while Full access needs no discovery", async () => {
+  for (const override of [
+    () => { throw denied(); },
+    () => ({}),
+    () => ({ entries: Array.from({ length: 201 }, (_, index) => ({ fileName: `app${index}`, isDirectory: true, isFile: false })) }),
+  ]) {
+    const f = remoteCredentialFixture({ "fs/readDirectory": override });
+    const handle = new CodexExecServerProcessHandle({ manager: f.manager, project, sessionId: "policy_failure", plan: { sandboxMode: "workspace-write", argv: ["/bin/true"], cwd: ROOT } });
+    const errors = [];
+    handle.onError((error) => errors.push(error.code));
+    await new Promise((resolve) => handle.onClose(resolve));
+    assert.deepEqual(errors, ["direct_codex_exec_server_credential_policy_unavailable"]);
+    assert(!f.connection.calls.some((call) => call.method === "process/start"));
+    const callCount = f.connection.calls.length;
+    assert.equal(await execServerSandboxForSession("danger-full-access", f.session), null);
+    assert.equal(f.connection.calls.length, callCount);
+  }
+  const f = remoteCredentialFixture();
+  assert.throws(() => execServerSandboxFor("read-only", f.session.environment, INFO), (error) => error.code === "direct_codex_exec_server_credential_policy_unavailable");
+});
+
+await check("cancellation during remote credential discovery never dispatches a process", async () => {
+  let releaseListing;
+  const listing = new Promise((resolve) => { releaseListing = resolve; });
+  const f = remoteCredentialFixture({ "fs/readDirectory": () => listing });
+  const handle = new CodexExecServerProcessHandle({ manager: f.manager, project, sessionId: "cancel_policy", plan: { sandboxMode: "workspace-write", argv: ["/bin/true"], cwd: ROOT } });
+  await tick();
+  assert(f.connection.calls.some((call) => call.method === "fs/readDirectory"));
+  const closed = new Promise((resolve) => handle.onClose(resolve));
+  assert.equal(handle.kill("SIGTERM"), true);
+  await closed;
+  releaseListing({ entries: [] });
+  await tick();
+  await tick();
+  assert(!f.connection.calls.some((call) => call.method === "process/start"));
 });
 
 await check("commands get the host's additions; base variables come from exec-server's own environment", async () => {
@@ -428,6 +526,74 @@ await check("a kill before dispatch sends nothing; a lost exec-server reports th
   await tick();
   f.connection.emit("closed", {});
   assert.deepEqual(lost, ["direct_stateful_exec_executor_lost"]);
+});
+
+await check("sandboxed Windows standalone file ports refuse mutable-path reads; Full access remains on exec-server", async () => {
+  const connection = new FakeConnection({
+    "fs/getMetadata": () => ({ isFile: true, size: 4 }),
+    "fs/readBlock": () => ({ chunk: Buffer.from("safe").toString("base64"), eof: true }),
+  });
+  const environment = { key: "windows", platform: "win32", root: "C:\\fixture", local: false };
+  const manager = { environmentFor: () => environment, connectionFor: async () => ({ connection, environment, info: { userHomeDir: "file:///C:/Users/fixture" } }) };
+  const port = new CodexExecServerFilePort({ manager });
+  const resolved = { root: environment.root, target: "C:\\fixture\\junction\\auth.json", platform: "win32" };
+  for (const sandboxMode of ["read-only", "workspace-write"]) {
+    const grant = { sandboxMode };
+    assert.equal(port.canServe(grant, project), false);
+    assert.throws(() => port.resolveTarget({ project }, grant, "junction/auth.json"), (error) => error.code === "direct_codex_exec_server_file_sandbox_unavailable");
+    await assert.rejects(() => port.readFile(resolved, undefined, { project }, grant), (error) => error.code === "direct_codex_exec_server_file_sandbox_unavailable");
+    await assert.rejects(() => port.readPatchTarget(resolved, "update", { project }, grant), (error) => error.code === "direct_codex_exec_server_file_sandbox_unavailable");
+  }
+  assert.deepEqual(connection.calls, [], "a bypassed host precheck must never reach fs/open or readFile");
+  const full = { sandboxMode: "danger-full-access" };
+  assert.equal(port.canServe(full, project), true);
+  assert.equal((await port.readFile(resolved, undefined, { project }, full)).bytes.toString(), "safe");
+  assert.equal(connection.calls.find((call) => call.method === "fs/open").params.sandbox, null);
+});
+
+await check("Windows sandboxed read, image, and patch tools retain Direct local/remote routing", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]);
+  for (const local of [true, false]) {
+    const connection = new FakeConnection();
+    const environment = { key: local ? "local" : "windows", platform: "win32", root: "C:\\fixture", local };
+    const port = new CodexExecServerFilePort({ manager: { environmentFor: () => environment, connectionFor: async () => ({ connection, environment, info: INFO }) } });
+    let commits = 0;
+    const directPort = {
+      kind: local ? "local" : "executor",
+      resolveTarget: () => ({ root: "C:\\fixture", target: "C:\\fixture\\a.txt", canonicalTarget: "a.txt", pathEvidenceKey: "fixture" }),
+      assertReadable: async () => {}, assertWritable: async () => {},
+      readFile: async (_resolved, _maxBytes, _input, _grant, capBytes) => {
+        const bytes = capBytes ? png : Buffer.from("alpha\n");
+        return { bytes, size: bytes.length };
+      },
+      readPatchTarget: async () => ({ exists: true, bytes: Buffer.from("alpha\n") }),
+      commit: async () => { commits += 1; },
+    };
+    const executor = new DirectFullAccessLocalEnvironmentExecutor({
+      workspaceLocalityResolver: () => local,
+      executorFilePort: directPort,
+      filePortOverride: (grant, selectedProject) => port.canServe(grant, selectedProject) ? port : null,
+    });
+    executor.localPort = directPort;
+    for (const accessProfile of ["workspace", "read_only", "full_access"]) {
+      const grant = DirectThreadHarnessGrant.issue({
+        taskId: "routing", threadId: "routing", projectId: project.id,
+        executionEnvironment: { kind: "windows", environmentId: "fixture", bindingDigest: "sha256:fixture" },
+        capabilities: ["read_file", "apply_patch"], accessProfile,
+      });
+      const input = { project, taskId: grant.taskId, threadId: grant.threadId, projectId: grant.projectId, harnessGrant: grant, executionEnvironmentDigest: grant.executionEnvironmentDigest };
+      assert.equal(executor.portFor(grant, project), accessProfile === "full_access" ? port : directPort);
+      if (accessProfile === "full_access") continue;
+      assert.equal((await executor.request(input, "readFile", { relPath: "a.txt" })).text, "alpha\n");
+      assert.equal((await executor.request(input, "readImage", { relPath: "a.png" })).mimeType, "image/png");
+      if (accessProfile === "workspace") {
+        const result = await executor.request(input, "applyPatch", { mode: "apply", patch: "*** Begin Patch\n*** Update File: a.txt\n@@\n-alpha\n+beta\n*** End Patch" });
+        assert.equal(result.status, "applied");
+      }
+    }
+    assert.equal(commits, 1);
+    assert.deepEqual(connection.calls, [], "sandboxed Windows content must use the Direct port");
+  }
 });
 
 const issueBinding = (accessProfile, capabilities) => {

@@ -1449,7 +1449,12 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
     `restricted-token` (`direct_stateful_exec_sandbox_unavailable`; the
     message points to the Direct executor or Full access); only Full
     access runs there.
-    File tools still work: `read_file` refuses credential paths host-side.
+    File tools still work: sandboxed Windows `read_file`, `view_image`, and
+    `apply_patch` use Direct's local/remote file ports, whose reads check the
+    opened file's identity and credential policy. Full access file tools
+    continue through exec-server. Remote sandbox policies discover native
+    app/profile credential paths through exec-server metadata requests;
+    incomplete discovery refuses the operation.
     `mxc` fails to start ("cannot locate required Windows platform
     directory"). `elevated` (`CODEX_DIRECT_EXEC_SERVER_WINDOWS_SANDBOX`)
     is set up on this machine, but Codex's setup refresh, run before every
@@ -1729,9 +1734,9 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
     files or dependencies), it keeps the running app and launches once
     more to bring it forward. Otherwise the app quits (20 s grace, then
     `taskkill`), the sync runs, and `electron.exe` starts directly. The
-    PowerShell process scan only runs when nothing answers the pipe but
-    Electron processes run (an app from before the channel, or a hung
-    one). The log timestamp comes from `%DATE%`/`%TIME%`.
+    A missing profile channel now returns the fresh-launch result without
+    scanning other Electron processes; the new launch uses the profile's
+    single-instance lock. The log timestamp comes from `%DATE%`/`%TIME%`.
 - Measured after, Windows test mirror and profile:
   - Relaunch with nothing changed: 0.62 s from launcher start to the
     running app in front, with its threads and terminals as they were
@@ -1806,9 +1811,10 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
     launch to the other one. `app-control.mjs reuse --retire-root DIR`
     asks an app running from DIR on the profile to quit first; the release
     launcher retires the mirror's app, the mirror's launcher the installed
-    one (when a release root exists). When nothing answers but Electron
-    runs, the release launcher stops only Electron processes under its own
-    `versions\`.
+    one (when a release root exists). An unanswered channel never
+    authorizes terminating another profile. The release launcher starts
+    through Electron's profile lock instead of scanning `versions\` for
+    processes to kill.
 - Measured on Windows (temp release root, test profile): install 10.7 s
   (npm ci 4–6 s, cached Electron download); first launch to Electron
   0.29 s; relaunch with the current version running 0.45 s, same app in
@@ -1862,6 +1868,51 @@ shell picks up a Node without `node:sqlite`, and most regressions then fail.
   either). On the old rule it fails with the owner's error.
   `direct-thread-deck-regression`: Resume is on after a stopped turn and
   after one cut off by a restart.
+
+### Review fixes for PRs #321–#326 (2026-10-17)
+
+- Remote exec-server sandbox policy discovers app/profile `direct-auth`
+  paths in the target filesystem, including canonical aliases. Discovery
+  reads metadata only and refreshes for each sandboxed operation. Missing
+  directories are allowed; unavailable or malformed metadata and scans
+  above 200 app directories or 50 profile directories per app refuse the
+  operation rather than omit protection. Full access skips discovery.
+- Sandboxed Windows file tools fall back to Direct's local/remote ports;
+  the exec-server file port also refuses direct sandboxed Windows use.
+  The exec-server protocol cannot verify the identity of an opened file,
+  and its restricted-token profile cannot deny credential paths.
+- Disabled Codex MCP switches survive the identity upgrade in a persisted
+  `legacyDisabledCodexMcpServerIds` snapshot. Exact new identities can be
+  enabled independently, including formerly colliding names. Saved
+  approvals keep their separate identities.
+- Collapsed Appserver flyouts offer "Open to see its threads" as well as
+  "New thread here", using the same activation as the expanded sidebar.
+- An unanswered profile channel returns a fresh-launch result and the
+  release launcher performs no process scan or broad termination. Only an
+  app that answered the requested profile's channel can be stopped by the
+  app-control client.
+- Update and rollback acquire one release-root lock before reading or
+  changing staging and version pointers. A populated owner directory is
+  published atomically; a busy update refuses, normal/failure completion
+  releases ownership, and a dead owner's directory can be retired on
+  retry. Nonempty recovery tombstones remain under
+  `.release-install-locks` so a paused stale observer cannot displace a
+  new owner. There is no separate recovery lock to strand after a crash.
+  Lock records also include a process start identity (boot ID and start
+  ticks on Linux; dated process start time on Windows/macOS), so an unrelated
+  process reusing an interrupted installer's PID does not prevent recovery.
+  Unknown process metadata preserves existing ownership; a new installer
+  refuses before publishing a lock if its own identity cannot be read.
+- Regression coverage stays in the existing exec-server, MCP HTTP,
+  workbench live-projects, app-control, and release-install suites. It
+  includes denied/unavailable remote metadata, cancellation during
+  discovery, Windows file routing, independent MCP switches after saving,
+  collapsed activation, missing-profile isolation, concurrent real offline
+  installs, stale observers, interrupted lock recovery, reused live PIDs,
+  Linux boot/start identity changes, and bounded Windows start-time queries.
+  Windows policy
+  and routing tests use synthetic transports; native Windows remains a
+  separate validation requirement.
 
 ## Baseline and prerequisites
 
