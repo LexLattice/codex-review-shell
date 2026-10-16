@@ -319,6 +319,26 @@ function codexServerIdentityId(name) {
   return `${readable.slice(0, 180 - suffix.length)}${suffix}`;
 }
 
+// Freeze the old switches once when a project is normalized. The old id
+// could name several servers; its disable applies to all of them until the
+// owner selects an exact identity. Keep the snapshot when that old id's
+// unchanged-name server is later enabled, so its siblings stay off.
+function legacyDisabledCodexMcpServerIds(project = {}) {
+  const settings = isPlainObject(project.mcpServerSettings) ? project.mcpServerSettings : {};
+  const ids = Array.isArray(project.legacyDisabledCodexMcpServerIds)
+    ? project.legacyDisabledCodexMcpServerIds
+    : Object.entries(settings).filter(([, entry]) => entry?.enabled === false).map(([id]) => id);
+  return [...new Set(ids.filter((id) => typeof id === "string" && /^codex_[A-Za-z0-9_-]{1,174}$/.test(id)))].slice(0, 256);
+}
+
+function codexMcpServerEnabledForProject(project = {}, name = "") {
+  const settings = isPlainObject(project.mcpServerSettings) ? project.mcpServerSettings : {};
+  const current = settings[codexServerIdentityId(name)];
+  if (typeof current?.enabled === "boolean") return current.enabled;
+  const legacyId = `codex_${String(name).replace(/[^A-Za-z0-9_-]/g, "_")}`.slice(0, 180);
+  return !legacyDisabledCodexMcpServerIds(project).includes(legacyId);
+}
+
 // A Codex [mcp_servers.<name>] entry as a Direct server: it runs where the
 // project runs (Codex runs servers where the agent runs).
 function configuredFromCodexServer(server = {}) {
@@ -371,7 +391,10 @@ function configuredMcpServersForProject(project = {}) {
     for (const entry of arrayOrEmpty(source)) {
       const id = normalizeString(entry?.serverIdentityId || entry?.id || entry?.name, "");
       const override = isPlainObject(settings[id]) ? settings[id] : null;
-      const normalized = normalizeConfiguredMcpServer(override && typeof override.enabled === "boolean" && override.enabled === false
+      const disabled = entry?.source === "codex_config"
+        ? !codexMcpServerEnabledForProject(project, entry.displayName)
+        : override?.enabled === false;
+      const normalized = normalizeConfiguredMcpServer(disabled
         ? { ...entry, enabledState: "disabled" }
         : entry);
       if (!normalized || seen.has(normalized.serverIdentityId)) continue;
@@ -959,7 +982,9 @@ function disposeHostMcpSessions() {
 
 module.exports = {
   callConfiguredMcpTool,
+  codexMcpServerEnabledForProject,
   codexServerIdentityId,
+  legacyDisabledCodexMcpServerIds,
   setCodexMcpServersForProject,
   listConfiguredMcpTools,
   configuredMcpServersForProject,

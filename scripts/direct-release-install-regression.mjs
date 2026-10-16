@@ -4,12 +4,13 @@
 // the release launchers it copies into the release root.
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  acquireInstallLock,
   compareReleaseTags,
   gitInvocation,
   latestReleaseTag,
@@ -89,7 +90,7 @@ assert.match(releaseLauncher, /set "ELECTRON_EXE=%VERSION_DIR%\\node_modules\\el
 assert.match(releaseLauncher, /app-control\.mjs" reuse --retire-root "%MIRROR_ROOT%"/);
 assert.match(releaseLauncher, /copy \/y "%~f0" "!LAUNCH_COPY!"/, "an update may rewrite it while it waits on the app");
 assert.doesNotMatch(releaseLauncher, /sync-from-wsl|npm(?:\.cmd"?)? (?:install|ci)|release-install\.mjs"/i, "starting never changes the installed code");
-assert.match(releaseLauncher, /\$_\.ExecutablePath -like \(\$env:RELEASE_VERSIONS \+ '\*'\)/, "only this release root's hung apps are stopped");
+assert.doesNotMatch(releaseLauncher, /Stop-Process|taskkill|stop_unanswering_versions/i, "an unanswered profile never authorizes killing other profiles");
 const updater = read("release/update-direct-workbench.cmd");
 assert.match(updater, /versions\\%CURRENT%\\scripts\\release-install\.mjs/);
 assert.match(updater, /copy \/y "%~f0" "!UPDATE_COPY!"/, "the installer rewrites it while it runs");
@@ -101,6 +102,29 @@ assert.match(mirrorLauncher, /if exist "!RELEASE_ROOT!\\current\.txt" set "REUSE
 // End to end against a fixture checkout (no dependencies, so npm ci runs offline).
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "direct-release-install-"));
 try {
+  const lockRoot = path.join(temp, "lock ownership");
+  const unlock = acquireInstallLock(lockRoot);
+  assert.throws(() => acquireInstallLock(lockRoot), /Another release install owns/);
+  unlock();
+  const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"], { encoding: "utf8" });
+  assert.equal(exited.status, 0);
+  fs.mkdirSync(path.join(lockRoot, ".release-install.lock"));
+  fs.writeFileSync(path.join(lockRoot, ".release-install.lock", "owner.json"), JSON.stringify({ pid: exited.pid, token: "dead-owner" }));
+  const unlockRecovered = acquireInstallLock(lockRoot);
+  const recoveredOwner = JSON.parse(fs.readFileSync(path.join(lockRoot, ".release-install.lock", "owner.json"), "utf8"));
+  assert.equal(recoveredOwner.pid, process.pid);
+  const tombstone = path.join(lockRoot, ".release-install-locks", "recovered-dead-owner");
+  assert.throws(() => fs.renameSync(path.join(lockRoot, ".release-install.lock"), tombstone), "a paused stale observer cannot replace its predecessor's nonempty tombstone with a live owner's lock");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(lockRoot, ".release-install.lock", "owner.json"), "utf8")).token, recoveredOwner.token);
+  unlockRecovered();
+  assert.equal(fs.existsSync(path.join(lockRoot, ".release-install.lock")), false, "locks are released after ownership ends");
+  // A recovery interrupted after retiring the dead lock leaves only its
+  // tombstone. There is no second lock to strand, and retry can acquire.
+  fs.mkdirSync(path.join(lockRoot, ".release-install.lock"));
+  fs.writeFileSync(path.join(lockRoot, ".release-install.lock", "owner.json"), JSON.stringify({ pid: exited.pid, token: "interrupted-recovery" }));
+  fs.renameSync(path.join(lockRoot, ".release-install.lock"), path.join(lockRoot, ".release-install-locks", "recovered-interrupted-recovery"));
+  acquireInstallLock(lockRoot)();
+
   const source = path.join(temp, "source");
   const root = path.join(temp, "release root");
   fs.mkdirSync(path.join(source, "release"), { recursive: true });
@@ -257,6 +281,53 @@ try {
   assert.equal(current(), "v0.3.0-rc.1");
   assert.equal(previous(), "main-test");
   assert.ok(!versions().some((name) => name.endsWith(".partial") || name.endsWith(".replaced")), versions().join(" "));
+
+  // Hold the first real installer inside npm's lifecycle hook. A second
+  // installer must refuse before touching its staging directory or pointers.
+  const waitingPackage = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"));
+  waitingPackage.scripts = { install: "node install-wait.cjs" };
+  fs.writeFileSync(path.join(source, "package.json"), JSON.stringify(waitingPackage));
+  fs.writeFileSync(path.join(source, "install-wait.cjs"), `
+const fs = require("node:fs");
+fs.writeFileSync(process.env.RELEASE_TEST_READY, "ready");
+const timer = setInterval(() => {
+  if (fs.existsSync(process.env.RELEASE_TEST_CONTINUE)) clearInterval(timer);
+}, 20);
+setTimeout(() => process.exit(2), 30000).unref();
+`);
+  git("add", "-A");
+  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "waiting install fixture");
+  const concurrentRoot = path.join(temp, "concurrent releases");
+  const ready = path.join(temp, "install-ready");
+  const proceed = path.join(temp, "install-continue");
+  const concurrentEnv = { ...env, CODEX_REVIEW_SHELL_RELEASE_ROOT: concurrentRoot, RELEASE_TEST_READY: ready, RELEASE_TEST_CONTINUE: proceed };
+  const first = spawn(process.execPath, [script, "--offline", "--no-start", "--ref", "HEAD", "--name", "slow"], { env: concurrentEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let firstOutput = "";
+  first.stdout.on("data", (chunk) => { firstOutput += chunk; });
+  first.stderr.on("data", (chunk) => { firstOutput += chunk; });
+  const firstDone = new Promise((resolve, reject) => {
+    first.on("error", reject);
+    first.on("close", resolve);
+  });
+  try {
+    const deadline = Date.now() + 15000;
+    while (!fs.existsSync(ready) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(fs.existsSync(ready), `the first installer entered npm: ${firstOutput}`);
+    const second = spawnSync(process.execPath, [script, "--offline", "--no-start", "v0.1.0"], { env: concurrentEnv, encoding: "utf8", timeout: 15000 });
+    assert.equal(second.status, 1, second.stdout + second.stderr);
+    assert.match(second.stderr, /Another release install owns/);
+    assert.ok(fs.existsSync(path.join(concurrentRoot, "versions", "slow.partial", "package.json")), "the active staging folder survives");
+    assert.equal(fs.existsSync(path.join(concurrentRoot, "current.txt")), false, "the refused installer changes no pointers");
+    fs.writeFileSync(proceed, "continue");
+    assert.equal(await firstDone, 0, firstOutput);
+    assert.equal(fs.readFileSync(path.join(concurrentRoot, "current.txt"), "utf8").trim(), "slow");
+    const after = spawnSync(process.execPath, [script, "--offline", "--no-start", "v0.1.0"], { env: concurrentEnv, encoding: "utf8", timeout: 15000 });
+    assert.equal(after.status, 0, after.stdout + after.stderr);
+    assert.equal(fs.existsSync(path.join(concurrentRoot, ".release-install.lock")), false);
+  } finally {
+    fs.writeFileSync(proceed, "continue");
+    await firstDone;
+  }
 
   console.log("direct release install regression passed");
 } finally {

@@ -303,6 +303,9 @@ function execServerLaunchSpec(environment, options = {}) {
  */
 function execServerSandboxFor(sandboxMode, environment, info = {}, options = {}) {
   if (sandboxMode !== "read-only" && sandboxMode !== "workspace-write") return null;
+  if (!environment.local && !Array.isArray(options.credentialFiles)) {
+    throw execServerError("direct_codex_exec_server_credential_policy_unavailable", "The target environment's credential-store policy is unavailable; the sandboxed operation was refused.");
+  }
   const platform = environment.platform === "win32" ? "win32" : "linux";
   const uri = (target) => pathToExecUri(target, platform);
   const special = (kind) => ({ type: "special", value: { kind } });
@@ -319,7 +322,7 @@ function execServerSandboxFor(sandboxMode, environment, info = {}, options = {})
   // The restricted-token sandbox refuses any profile with denied paths
   // ("requires the elevated Windows sandbox backend"), so it can't hide
   // credential stores. The backend refuses sandboxed commands at that level;
-  // file tools still use this profile and refuse credential paths host-side.
+  // sandboxed Windows file tools use Direct's file ports instead.
   const denials = !(platform === "win32" && level === "restricted-token");
   const deny = (target) => {
     if (denials) entries.push({ path: { type: "path", path: uri(target) }, access: "deny", missing_path_behavior: "skip" });
@@ -327,6 +330,7 @@ function execServerSandboxFor(sandboxMode, environment, info = {}, options = {})
   const api = pathApiFor(platform);
   const home = info.userHomeDir ? execUriToPath(info.userHomeDir, platform) : "";
   const credentialFiles = new Set();
+  for (const file of options.credentialFiles || []) credentialFiles.add(file);
   if (home) {
     credentialFiles.add(api.join(home, ".codex", "auth.json"));
     credentialFiles.add(api.join(home, ".codex-review-shell", "direct-auth", "auth.json"));
@@ -352,6 +356,75 @@ function execServerSandboxFor(sandboxMode, environment, info = {}, options = {})
     ...(info.userHomeDir ? { userHomeDir: info.userHomeDir } : {}),
     windowsSandboxLevel: platform === "win32" ? (WINDOWS_SANDBOX_LEVELS.has(level) ? level : "restricted-token") : "disabled",
   };
+}
+
+// Discover stores in the executor's filesystem, never their contents. A host
+// cannot enumerate another distro's Electron userData with its own fs module.
+// Keep the native Direct layout (app/direct-auth and app/profile/direct-auth),
+// including symlinked config folders and credential files. Incomplete policy
+// is a refusal, rather than silently leaving a store readable through root.
+async function discoverExecServerCredentialStoreFiles(connection, environment, info = {}) {
+  const platform = environment.platform === "win32" ? "win32" : "linux";
+  const api = pathApiFor(platform);
+  const unavailable = (cause) => execServerError(
+    "direct_codex_exec_server_credential_policy_unavailable",
+    "The target environment's credential stores could not be checked; the sandboxed operation was refused. Use Direct executor or Full access.",
+    { cause, userActionable: true },
+  );
+  const missing = (error) => error?.rpcCode === -32004 || /os error (2|3|20|267)\b|no such file|not a directory|cannot find the (file|path)/i.test(String(error?.message || ""));
+  const request = (method, target) => connection.request(method, { path: pathToExecUri(target, platform), sandbox: null });
+  const list = async (dir, limit) => {
+    let result;
+    try { result = await request("fs/readDirectory", dir); } catch (error) {
+      if (missing(error)) return [];
+      throw error;
+    }
+    if (!Array.isArray(result?.entries)) throw new Error("Invalid directory metadata");
+    for (const entry of result.entries) {
+      if (typeof entry?.isDirectory !== "boolean" || typeof entry?.isFile !== "boolean"
+        || typeof entry.fileName !== "string" || !entry.fileName || [".", ".."].includes(entry.fileName) || /[\\/\0]/.test(entry.fileName)) throw new Error("Invalid directory metadata");
+    }
+    const directories = result.entries.filter((entry) => entry.isDirectory || !entry.isFile);
+    if (directories.length > limit) throw new Error("Credential discovery directory limit exceeded");
+    return directories.map((entry) => api.join(dir, entry.fileName));
+  };
+  const files = new Set();
+  const checkFile = async (file) => {
+    let metadata;
+    try { metadata = await request("fs/getMetadata", file); } catch (error) {
+      if (missing(error)) return;
+      throw error;
+    }
+    if (typeof metadata?.isFile !== "boolean" || typeof metadata?.isSymlink !== "boolean") throw new Error("Invalid file metadata");
+    if (!metadata.isFile && !metadata.isSymlink) return;
+    const canonical = await request("fs/canonicalize", file);
+    if (typeof canonical?.path !== "string" || !canonical.path.startsWith("file:")) throw new Error("Invalid canonical file metadata");
+    files.add(file);
+    files.add(execUriToPath(canonical.path, platform));
+  };
+  try {
+    if (typeof info.userHomeDir !== "string" || !info.userHomeDir.startsWith("file:")) throw new Error("Target home is unavailable");
+    const home = execUriToPath(info.userHomeDir, platform);
+    if (!isAbsoluteFor(platform, home)) throw new Error("Target home is not absolute");
+    await checkFile(api.join(home, ".codex", "auth.json"));
+    await checkFile(api.join(home, ".codex-review-shell", "direct-auth", "auth.json"));
+    const configRoot = platform === "win32" ? api.join(home, "AppData", "Roaming") : api.join(home, ".config");
+    for (const app of await list(configRoot, 200)) {
+      await checkFile(api.join(app, "direct-auth", "auth.json"));
+      for (const profile of await list(app, 50)) await checkFile(api.join(profile, "direct-auth", "auth.json"));
+    }
+    return [...files];
+  } catch (error) {
+    throw unavailable(error);
+  }
+}
+
+async function execServerSandboxForSession(sandboxMode, session, options = {}) {
+  if (sandboxMode !== "read-only" && sandboxMode !== "workspace-write") return null;
+  const credentialFiles = session.environment.local
+    ? undefined
+    : await discoverExecServerCredentialStoreFiles(session.connection, session.environment, session.info);
+  return execServerSandboxFor(sandboxMode, session.environment, session.info, { ...options, ...(credentialFiles ? { credentialFiles } : {}) });
 }
 
 class CodexExecServerConnection extends EventEmitter {
@@ -629,6 +702,8 @@ module.exports = {
   execServerError,
   execServerLaunchSpec,
   execServerSandboxFor,
+  execServerSandboxForSession,
+  discoverExecServerCredentialStoreFiles,
   execUriToPath,
   isAbsoluteFor,
   pathApiFor,

@@ -447,6 +447,7 @@ tiles[0].click();
 const flyout = sidebarElement.querySelector(".wb-flyout");
 assert(flyout, "a tile shows its project's threads");
 assert.deepEqual(rowsOf(flyout).map((row) => row.dataset.threadId), ["t_w3", "t_w1", "t_w2"]);
+assert.deepEqual(descendants(flyout).filter((node) => node.classList.contains("wb-empty-start")).map((node) => node.textContent), ["New thread here"], "a Direct flyout keeps its thread rows and new-thread action");
 shell.dataset.t3Sidebar = "expanded";
 byId("t3SidebarToggle").click();
 await settle();
@@ -571,9 +572,30 @@ const openAppProject = descendants(appGroup).find((node) => node.classList.conta
 assert.match(openAppProject.textContent, /Open to see its threads/);
 assert.doesNotMatch(text(appGroup), /No threads yet/);
 calls.open.length = 0;
+calls.newThread.length = 0;
 openAppProject.click();
 await settle();
 assert.deepEqual(calls.open, [{ projectId: "p_wsl", threadId: "" }]);
+assert.deepEqual(calls.newThread, [], "opening an unlisted project doesn't start a thread");
+// Collapsing the sidebar preserves project activation, alongside the
+// separate choice to create a thread in that project.
+shell.dataset.t3Sidebar = "collapsed";
+byId("t3SidebarToggle").click();
+await settle();
+tree.querySelector('.wb-tile[data-project-id="p_wsl"]').click();
+const appFlyout = sidebarElement.querySelector(".wb-flyout");
+const appFlyoutActions = descendants(appFlyout).filter((node) => node.classList.contains("wb-empty-start"));
+assert.deepEqual(rowsOf(appFlyout), [], "a background Appserver's threads remain unlisted");
+assert.deepEqual(appFlyoutActions.map((node) => node.textContent), [openAppProject.textContent, "New thread here"], "collapsed activation matches the expanded action and retains explicit thread creation");
+calls.open.length = 0;
+appFlyoutActions[0].click();
+await settle();
+assert.deepEqual(calls.open, [{ projectId: "p_wsl", threadId: "" }], "collapsed activation opens the project without a thread id");
+assert.deepEqual(calls.newThread, [], "collapsed activation doesn't create a thread");
+appFlyoutActions[1].click();
+await settle();
+assert.deepEqual(calls.newThread, [{ projectId: "p_wsl" }], "New thread here keeps its explicit creation route");
+assert.deepEqual(calls.open, [{ projectId: "p_wsl", threadId: "" }], "thread creation doesn't dispatch another activation request");
 checks.push("sidebar_renderer");
 
 // 4. The surface: threads switch while a turn runs; events for a thread

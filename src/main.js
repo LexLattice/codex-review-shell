@@ -336,9 +336,11 @@ const {
 const {
   configuredMcpServerIdentityInput,
   configuredMcpServersForProject,
+  codexMcpServerEnabledForProject,
   codexServerIdentityId,
   createDirectConfiguredMcpResolvers,
   disposeHostMcpSessions,
+  legacyDisabledCodexMcpServerIds,
   normalizeConfiguredMcpServer,
 } = require("./main/direct/external/configured-mcp-adapter");
 const {
@@ -2817,6 +2819,8 @@ function normalizeProject(input, index = 0) {
     mcpServers: configuredMcpServers,
     // Per-project switches for MCP servers (Direct's and Codex's), by id.
     mcpServerSettings: normalizeMcpServerSettings(raw.mcpServerSettings),
+    // An empty snapshot also marks the legacy identity migration complete.
+    legacyDisabledCodexMcpServerIds: legacyDisabledCodexMcpServerIds(raw),
     // Who gets AGENTS.md: "workbench_and_children" (default), "workbench",
     // "all" (workspace workers too), or "off".
     agentsMdScope: ["workbench_and_children", "workbench", "all", "off"].includes(raw.agentsMdScope) ? raw.agentsMdScope : "workbench_and_children",
@@ -4914,7 +4918,9 @@ function ensureDirectLiveTextController() {
     grantStore: directHarnessGrantStore,
     workspaceRootResolver: (input) => workspaceRoot(input?.project || input, repoRoot),
     executorFilePort: new ExecutorFilePort({ workspaceBackends: environmentExecutors }),
-    filePortOverride: () => (useCodexExecServer() ? codexExecServerFilePort : null),
+    // Windows sandboxed reads need Direct's post-open credential check;
+    // returning null keeps the normal local/ExecutorFilePort routing.
+    filePortOverride: (grant, project) => (useCodexExecServer() && codexExecServerFilePort.canServe(grant, project) ? codexExecServerFilePort : null),
   });
   directLiveTextController = new DirectLiveTextController({
     sessionStore: ensureDirectSessionStore(),
@@ -13145,7 +13151,6 @@ ipcMain.handle("direct-codex:context", async (_event, payload = {}) => {
   const project = (config.projects || []).find((candidate) => candidate.id === payload.projectId);
   if (!project) throw new Error("Unknown project.");
   const context = await ensureDirectCodexContextService().contextFor(project, { force: payload.force === true });
-  const settings = isPlainObject(project.mcpServerSettings) ? project.mcpServerSettings : {};
   const rules = ensureDirectApprovalRuleStore();
   const bytes = (text) => Buffer.byteLength(String(text || ""), "utf8");
   return {
@@ -13169,7 +13174,7 @@ ipcMain.handle("direct-codex:context", async (_event, payload = {}) => {
         headerNames: Object.keys(server.headers || {}),
         enabledInConfig: server.enabled !== false,
         unavailable: server.unavailable || "",
-        enabledForProject: settings[serverIdentityId]?.enabled !== false,
+        enabledForProject: codexMcpServerEnabledForProject(project, server.name),
         enabledTools: server.enabledTools || null,
         disabledTools: server.disabledTools || [],
       };
